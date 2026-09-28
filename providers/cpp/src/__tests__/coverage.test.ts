@@ -263,16 +263,44 @@ describe("C++ structural coverage", () => {
 		});
 	});
 
-	test("keeps template-dependent binding and type answers unknown", () => {
+	test("binds a template's names that wait on no argument and leaves the ones that do unknown", () => {
 		const provider = wire();
-		const text = "template <typename T> T call(T value) { return value; }";
+		const text = [
+			"int total;",
+			"struct Box { int size; };",
+			"template <typename T> T count(T item, Box box) {",
+			"\tint n = total + box.size;",
+			"\tn += item.size + T::value;",
+			"\thelper(item);",
+			"\treturn n;",
+			"}",
+		].join("\n");
 		const facts = provider.parseFile({ module: "dependent.cpp", contentHash: "dependent", text });
-		const value = facts.references.find((reference) => reference.name === "value");
-		const functionDeclaration = facts.declarations.find((declaration) => declaration.name === "call");
+		const bindings = facts.references
+			.filter((reference) => ["total", "size", "value", "helper", "n", "item"].includes(reference.name))
+			.map((reference) => [
+				reference.name,
+				reference.binding.status === "bound"
+					? (reference.binding.symbolId.split(" ").at(-1) ?? "")
+					: reference.binding.status === "unbound"
+						? reference.binding.reason
+						: reference.binding.status,
+			]);
+		const count = facts.declarations.find((declaration) => declaration.name === "count");
 
-		expect(value?.binding).toMatchObject({ status: "unbound", reason: "NotImplemented" });
-		if (functionDeclaration === undefined) throw new Error("template function missing");
-		expect(provider.typeOf({ symbolId: functionDeclaration.symbolId })).toMatchObject({
+		expect(bindings).toEqual([
+			["total", "total."],
+			["size", "Box#size."],
+			["n", "count().n."],
+			["item", "count().(item)"],
+			["size", "NotImplemented"],
+			["value", "NotImplemented"],
+			["helper", "NotImplemented"],
+			["item", "count().(item)"],
+			["n", "count().n."],
+		]);
+		if (count === undefined) throw new Error("template function missing");
+		expect(provider.typeOf({ symbolId: count.symbolId })).toMatchObject({
 			status: "unknown",
 			reason: "NotImplemented",
 		});
@@ -314,6 +342,10 @@ describe("C++ structural coverage", () => {
 				"auto tooLargeHex = 0xffffffffffffffff;",
 				"auto tooLargeDecimal = 18446744073709551615;",
 				"bool ready = false;",
+				"double tiny = 1e-4;",
+				"float scale = 2.5f;",
+				"long double big = 1.5E+3L;",
+				"double twelve = 0x1.8p3, eighth = 0x1p-3f;",
 			].join("\n"),
 		);
 		const strings = facts.literals.filter((literal) => literal.kind === "string");
@@ -326,6 +358,11 @@ describe("C++ structural coverage", () => {
 		expect(facts.literals.find((literal) => literal.value === "0xffffffffffffffff")?.number).toBeUndefined();
 		expect(facts.literals.find((literal) => literal.value === "18446744073709551615")?.number).toBeUndefined();
 		expect(facts.literals.find((literal) => literal.value === "false")?.kind).toBe("boolean");
+		expect(
+			["1e-4", "2.5f", "1.5E+3L", "0x1.8p3", "0x1p-3f"].map(
+				(value) => facts.literals.find((literal) => literal.value === value)?.number,
+			),
+		).toEqual([0.0001, 2.5, 1500, 12, 0.125]);
 	});
 
 	test("reports unmatched delimiters and unterminated block comments", () => {
@@ -365,6 +402,7 @@ describe("C++ structural coverage", () => {
 			"moveEdits",
 			"parseFile",
 			"probeFile",
+			"releaseModule",
 			"renameEdits",
 			"resolveImport",
 			"shutdown",

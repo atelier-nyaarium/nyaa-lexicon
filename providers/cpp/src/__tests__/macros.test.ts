@@ -13,6 +13,8 @@ describe("C++ translation phase two", () => {
 			["second", 8],
 		]);
 		expect(facts.diagnostics).toEqual([]);
+		// A directive's own word names nothing.
+		expect(facts.references.map((item) => item.name)).not.toContain("define");
 	});
 
 	test("splices CRLF in directives and macro bodies", () => {
@@ -57,6 +59,58 @@ describe("C++ translation phase two", () => {
 		const value = tokens.find((item) => item.text === "value");
 		expect(tokens.map((item) => item.text)).toEqual(["int", "value", ";", "\n"]);
 		expect(value?.start).toEqual({ line: 1, character: 2 });
+	});
+
+	test("reads a name, a number and an operator through a splice inside them, at their physical span", () => {
+		const text = "int fo\\\no = 1\\\n2;\nint x = a -\\\n> b;\n";
+		expect(tokenize(text, "inside.cpp").tokens.map((item) => item.text)).toEqual([
+			"int",
+			"foo",
+			"=",
+			"12",
+			";",
+			"\n",
+			"int",
+			"x",
+			"=",
+			"a",
+			"->",
+			"b",
+			";",
+			"\n",
+		]);
+		const foo = parseCppFile("inside.cpp", text).declarations[0];
+		expect(foo).toMatchObject({
+			name: "foo",
+			signature: "int foo = 12",
+			selectionRange: { start: { line: 0, character: 4 }, end: { line: 1, character: 1 } },
+		});
+	});
+
+	test("removes a splice before reading an escape, a literal's prefix or a number's leading dot", () => {
+		for (const newline of ["\n", "\r\n"]) {
+			const text = [
+				`const char* spliced = "\\\\${newline}bar";`,
+				`const char* escaped = "a\\\\\\${newline}b";`,
+				`auto prefixed = u8\\${newline}"hello";`,
+				`auto raw = R\\${newline}"(x)";`,
+				`double dotted = .\\${newline}5;`,
+			].join("\n");
+			const tokens = tokenize(text, "splices.cpp").tokens.filter(
+				(item) => item.kind === "string" || item.kind === "number",
+			);
+			// A splice's backslash never starts an escape: `"\<splice>bar"` is `"\bar"`.
+			expect(
+				tokens.map((item) => [item.kind, item.value]),
+				JSON.stringify(newline),
+			).toEqual([
+				["string", "\bar"],
+				["string", "a\\b"],
+				["string", "hello"],
+				["string", "x"],
+				["number", ".5"],
+			]);
+		}
 	});
 
 	test("keeps line comment continuation behavior", () => {

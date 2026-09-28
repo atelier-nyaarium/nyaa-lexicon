@@ -1,11 +1,11 @@
 // Token marks, line walks and diagnostics under every C++ parse layer.
 
 import { comparePositions, type Diagnostic } from "@nyaa-lexicon/protocol";
-import { templateAngles } from "./angles.js";
+import { type DeclaredName, templateAngles } from "./angles.js";
 import type { ImportFact } from "./model.js";
 import type { Token } from "./tokens.js";
 import { directiveTokenIndexes, isSignificant } from "./tokens.js";
-import { rangeFrom, significantAfter, tokenAt } from "./tokenWalk.js";
+import { codeText, MetricsIndex, rangeFrom, significantAfter, tokenAt } from "./tokenWalk.js";
 import { isNameToken } from "./words.js";
 
 ////////////////////////////////
@@ -25,15 +25,37 @@ export class CppTokenStream {
 	/** Offsets of template brackets. */
 	protected readonly angles: Set<number>;
 
+	protected readonly metrics: MetricsIndex;
+
+	/** Tokens on preprocessing directive lines, which no declaration is made of. */
+	protected readonly directiveTokens: Set<number>;
+
 	constructor(
 		protected readonly module: string,
 		protected readonly text: string,
 		protected readonly tokens: Token[],
 		protected readonly blankLines: number[],
 		diagnostics: Diagnostic[],
+		names?: ReadonlyMap<string, DeclaredName>,
 	) {
 		this.diagnostics = diagnostics.map((item) => ({ ...item, path: module }));
-		this.angles = templateAngles(tokens, directiveTokenIndexes(tokens));
+		this.directiveTokens = directiveTokenIndexes(tokens);
+		this.angles = templateAngles(tokens, this.directiveTokens, names);
+		this.metrics = new MetricsIndex(tokens);
+	}
+
+	/** Whether `names` would mark other template brackets than this read did. */
+	anglesDifferWith(names: ReadonlyMap<string, DeclaredName>): boolean {
+		const angles = templateAngles(this.tokens, this.directiveTokens, names);
+		return angles.size !== this.angles.size || [...angles].some((offset) => !this.angles.has(offset));
+	}
+
+	/** The next token after `index` that is code: not blank, not on a directive line; -1 when none. */
+	protected codeAfter(index: number, limit = this.tokens.length): number {
+		let current = significantAfter(this.tokens, index, limit);
+		while (current >= 0 && this.directiveTokens.has(current))
+			current = significantAfter(this.tokens, current, limit);
+		return current;
 	}
 
 	protected addDiagnostic(message: string, startIndex: number, endIndex = startIndex + 1): void {
@@ -158,7 +180,7 @@ export class CppTokenStream {
 			["}", "{"],
 		]);
 		for (let index = 0; index < this.tokens.length; index++) {
-			const value = tokenAt(this.tokens, index)?.text;
+			const value = codeText(this.tokens, index);
 			if (value === "(" || value === "[" || value === "{") {
 				stack.push({ value, index });
 				continue;
@@ -193,7 +215,7 @@ export class CppTokenStream {
 		let brackets = 0;
 		let braces = 0;
 		for (let index = startIndex; index < limit; index++) {
-			const value = tokenAt(this.tokens, index)?.text;
+			const value = codeText(this.tokens, index);
 			if (value === "(" && parentheses === 0 && brackets === 0 && braces === 0 && values.includes(value))
 				return index;
 			if (value === "[" && parentheses === 0 && brackets === 0 && braces === 0 && values.includes(value))
@@ -218,7 +240,12 @@ export class CppTokenStream {
 		const indexes: number[] = [];
 		for (let index = Math.max(0, startIndex); index < endIndex; index++) {
 			const token = tokenAt(this.tokens, index);
-			if (token !== undefined && isSignificant(token) && !this.declarationSpecifierTokenIndexes.has(index))
+			if (
+				token !== undefined &&
+				isSignificant(token) &&
+				!this.declarationSpecifierTokenIndexes.has(index) &&
+				!this.directiveTokens.has(index)
+			)
 				indexes.push(index);
 		}
 		return indexes;

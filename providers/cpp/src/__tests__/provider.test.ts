@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -19,10 +20,13 @@ import {
 	handlersFor,
 	InitializeResponseSchema,
 	PROTOCOL_VERSION,
+	parseSymbolId,
 	type Range,
 } from "@nyaa-lexicon/protocol";
 import { CppProvider, REFERENCE_ROLES, TIERS } from "../main.js";
+import type { CppFacts, ImportFact } from "../model.js";
 import { parseCppFile } from "../parser.js";
+import { reachesOf } from "../reach.js";
 
 const roots: string[] = [];
 
@@ -266,6 +270,372 @@ describe("C++ provider contract", () => {
 		).toBe("bound");
 	});
 
+	test("searches the includer's directory, then include directories and the root, and binds what reached headers declare, nearest first", () => {
+		const root = workspace({
+			"include/lib/thing.hpp": '#include "detail.hpp"\nnamespace lib { struct Thing { int size; }; int twin; }\n',
+			"include/lib/detail.hpp": '#include "thing.hpp"\nnamespace lib { int helper(); int twin; }\n',
+			"include/config.hpp": "int shared_only;\n",
+			"include/foo": "int foo_plain;\n",
+			"src/config.hpp": "int local_only;\n",
+			"src/foo.hpp": "int foo_hpp;\n",
+			"hidden.hpp": "int hidden;\n",
+			"src/main.cpp": [
+				"#include <lib/thing.hpp>",
+				'#include "config.hpp"',
+				"#include <config.hpp>",
+				'#include "foo"',
+				"int run(lib::Thing* t) { return t->size + lib::helper() + lib::twin + local_only + shared_only + hidden; }",
+				"int more() { return foo_plain + foo_hpp; }",
+			].join("\n"),
+		});
+		const provider = wire(root);
+		const facts = provider.parseFile({
+			module: "src/main.cpp",
+			contentHash: "main",
+			text: readFileSync(path.join(root, "src/main.cpp"), "utf8"),
+		});
+		const home = (name: string) => {
+			const binding = facts.references.find(
+				(reference) => reference.name === name && reference.role !== "import",
+			)?.binding;
+			return binding?.status === "bound" ? parseSymbolId(binding.symbolId)?.module : binding?.status;
+		};
+		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/main.cpp", specifier });
+
+		// A name is looked up as written: `"foo"` never finds foo.hpp. A bare name takes the kind it is
+		// written with, and written both ways to different files, none.
+		expect(
+			["<lib/thing.hpp>", '"config.hpp"', "<config.hpp>", '"foo"', "lib/thing.hpp", "config.hpp"].map(resolve),
+		).toEqual([
+			{ status: "resolved", module: "include/lib/thing.hpp" },
+			{ status: "resolved", module: "src/config.hpp" },
+			{ status: "resolved", module: "include/config.hpp" },
+			{ status: "resolved", module: "include/foo" },
+			{ status: "resolved", module: "include/lib/thing.hpp" },
+			{ status: "unresolved", reason: "Ambiguous", detail: expect.any(String) },
+		]);
+		// Through thing.hpp to detail.hpp, whose include of thing.hpp again ends the walk; the nearer
+		// `twin` wins, and hidden.hpp is never reached.
+		expect(
+			["Thing", "size", "helper", "twin", "local_only", "shared_only", "hidden", "foo_plain", "foo_hpp"].map(
+				home,
+			),
+		).toEqual([
+			"include/lib/thing.hpp",
+			"include/lib/thing.hpp",
+			"include/lib/detail.hpp",
+			"include/lib/thing.hpp",
+			"src/config.hpp",
+			"include/config.hpp",
+			"unbound",
+			"include/foo",
+			"unbound",
+		]);
+	});
+
+	test("searches a compilation database's lists and forced includes for its units, and moves the fingerprint when they change", () => {
+		const database = (mode: string, prelude: string) =>
+			JSON.stringify([
+				{
+					directory: ".",
+					file: "../src/app.cpp",
+					arguments: [
+						"c++",
+						"-I../vendor/api",
+						"-iquote",
+						"../quoted",
+						"-include",
+						`../forced/${prelude}`,
+						`-DMODE=${mode}`,
+						"-c",
+						"../src/app.cpp",
+					],
+				},
+				{
+					directory: ".",
+					file: "../src/split.cpp",
+					arguments: ["c++", "-I../early", "-I-", "-I../late", "-c", "../src/split.cpp"],
+				},
+			]);
+		const root = workspace({
+			"build/compile_commands.json": database("1", "prelude.hpp"),
+			"forced/prelude.hpp": "int prelude_value;\n",
+			"forced/other.hpp": "int other_value;\n",
+			"vendor/api/api.hpp": "int api_value;\n",
+			"vendor/api/bare.hpp": "int bare_value;\n",
+			"include/api.hpp": "int api_value;\n",
+			"quoted/q.hpp": "int q_value;\n",
+			"early/cfg.hpp": "int early_cfg;\n",
+			"late/cfg.hpp": "int late_cfg;\n",
+			"src/cfg.hpp": "int sibling_cfg;\n",
+			"src/app.cpp":
+				'#include "api.hpp"\n#include "q.hpp"\n#include <q.hpp>\nint read() { return api_value + prelude_value; }\n',
+			"src/split.cpp": '#include "cfg.hpp"\n#include <cfg.hpp>\n',
+		});
+		const provider = wire(root);
+		const facts = provider.parseFile({
+			module: "src/app.cpp",
+			contentHash: "app",
+			text: readFileSync(path.join(root, "src/app.cpp"), "utf8"),
+		});
+		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/app.cpp", specifier });
+		const home = (name: string) => {
+			const binding = facts.references.find((reference) => reference.name === name)?.binding;
+			return binding?.status === "bound" ? parseSymbolId(binding.symbolId)?.module : binding?.status;
+		};
+		const first = provider.discoverProject({ workspaceRoot: root });
+		writeFileSync(path.join(root, "build/compile_commands.json"), database("1", "other.hpp"));
+		const second = provider.discoverProject({ workspaceRoot: root });
+		writeFileSync(path.join(root, "build/compile_commands.json"), database("2", "other.hpp"));
+		const third = provider.discoverProject({ workspaceRoot: root });
+
+		// The database's lists replace the conventional ones; an angle include skips `-iquote`, and a
+		// name is looked up as written, never with an extension added.
+		expect(["api.hpp", '"q.hpp"', "<q.hpp>", '"bare"'].map(resolve)).toEqual([
+			{ status: "resolved", module: "vendor/api/api.hpp" },
+			{ status: "resolved", module: "quoted/q.hpp" },
+			{ status: "external", packageName: "q.hpp" },
+			{ status: "unresolved", reason: "NotIndexed", detail: expect.any(String) },
+		]);
+		// After `-I-`, the `-I` before it serve quoted includes only, and the includer's own directory none.
+		expect(
+			['"cfg.hpp"', "<cfg.hpp>"].map((specifier) =>
+				provider.resolveImport({ fromModule: "src/split.cpp", specifier }),
+			),
+		).toEqual([
+			{ status: "resolved", module: "early/cfg.hpp" },
+			{ status: "resolved", module: "late/cfg.hpp" },
+		]);
+		// A forced include is read before the unit's first line.
+		expect(["api_value", "prelude_value"].map(home)).toEqual(["vendor/api/api.hpp", "forced/prelude.hpp"]);
+		expect(first.configFiles).toContain("build/compile_commands.json");
+		expect(second.fingerprint).not.toBe(first.fingerprint);
+		expect(third.fingerprint).not.toBe(second.fingerprint);
+	});
+
+	test("resolves a file several entries build only where they agree, whatever their order, and roots its forced includes", () => {
+		const entry = (config: string) => ({
+			directory: ".",
+			file: "../src/app.cpp",
+			arguments: ["c++", `-I../${config}`, "-I../shared", "-include", "early.hpp", "-c", "../src/app.cpp"],
+		});
+		const root = workspace({
+			"build/early.hpp": "int early_value;\n",
+			"debug/cfg.hpp": "int debug_value;\n",
+			"release/cfg.hpp": "int release_value;\n",
+			"shared/common.hpp": "int common_value;\n",
+			"src/app.cpp": "#include <cfg.hpp>\n#include <common.hpp>\n",
+		});
+		const provider = wire(root);
+		const discover = (configs: string[]) => {
+			writeFileSync(path.join(root, "build/compile_commands.json"), JSON.stringify(configs.map(entry)));
+			const project = provider.discoverProject({ workspaceRoot: root });
+			return {
+				resolved: ["<cfg.hpp>", "<common.hpp>"].map((specifier) =>
+					provider.resolveImport({ fromModule: "src/app.cpp", specifier }),
+				),
+				fingerprint: project.fingerprint,
+				rooted: project.files.includes("build/early.hpp"),
+			};
+		};
+		const forward = discover(["debug", "release"]);
+
+		expect(forward.resolved).toEqual([
+			{ status: "unresolved", reason: "Ambiguous", detail: expect.any(String) },
+			{ status: "resolved", module: "shared/common.hpp" },
+		]);
+		expect(discover(["release", "debug"])).toEqual(forward);
+		// A forced include in an excluded directory is still a file of the project.
+		expect(forward.rooted).toBe(true);
+	});
+
+	test("reads a header it could not read again on the next request, and lists past a directory it cannot", () => {
+		// Permissions do not stop an administrator, and mean something else on Windows.
+		if (process.platform === "win32" || process.getuid?.() === 0) return;
+		const text = '#include "locked.hpp"\n#include <api.hpp>\nint read() { return locked_value; }\n';
+		const root = workspace({
+			"include/api.hpp": "int api_value;\n",
+			"closed/include/other.hpp": "int other_value;\n",
+			"src/locked.hpp": "int locked_value;\n",
+			"src/use.cpp": text,
+		});
+		const header = path.join(root, "src/locked.hpp");
+		const closed = path.join(root, "closed");
+		chmodSync(header, 0o000);
+		chmodSync(closed, 0o000);
+		try {
+			const provider = wire(root);
+			const project = provider.discoverProject({ workspaceRoot: root });
+			const bound = () =>
+				provider.bind({ module: "src/use.cpp", name: "locked_value", range: span(text, "locked_value") })
+					.status;
+			const before = bound();
+			chmodSync(header, 0o644);
+
+			expect({
+				diagnostics: project.diagnostics,
+				api: provider.resolveImport({ fromModule: "src/use.cpp", specifier: "<api.hpp>" }),
+				bound: [before, bound()],
+			}).toEqual({
+				diagnostics: [],
+				api: { status: "resolved", module: "include/api.hpp" },
+				bound: ["unbound", "bound"],
+			});
+		} finally {
+			chmodSync(header, 0o644);
+			chmodSync(closed, 0o755);
+		}
+	});
+
+	test("searches a shared header's includes under the lists of the unit that reaches it, or every unit's alone", () => {
+		const entry = (unit: string, directory: string) => ({
+			directory: ".",
+			file: `../src/${unit}.cpp`,
+			arguments: ["c++", `-I../${directory}`, "-c", `../src/${unit}.cpp`],
+		});
+		const root = workspace({
+			"build/compile_commands.json": JSON.stringify([entry("a", "a_config"), entry("b", "b_config")]),
+			"common/shared.hpp": "#include <config.hpp>\n",
+			"a_config/config.hpp": "int from_a;\n",
+			"b_config/config.hpp": "int from_b;\n",
+			"src/a.cpp": '#include "../common/shared.hpp"\nint read() { return from_a + from_b; }\n',
+			"src/b.cpp": '#include "../common/shared.hpp"\nint read() { return from_a + from_b; }\n',
+		});
+		const provider = wire(root);
+		const bindings = (unit: string) =>
+			provider
+				.parseFile({
+					module: `src/${unit}.cpp`,
+					contentHash: unit,
+					text: readFileSync(path.join(root, `src/${unit}.cpp`), "utf8"),
+				})
+				.references.filter((reference) => reference.name.startsWith("from_"))
+				.map((reference) =>
+					reference.binding.status === "bound"
+						? parseSymbolId(reference.binding.symbolId)?.module
+						: reference.binding.status,
+				);
+
+		expect(bindings("a")).toEqual(["a_config/config.hpp", "unbound"]);
+		expect(bindings("b")).toEqual(["unbound", "b_config/config.hpp"]);
+		// Read on its own, the header is every unit's, and they disagree.
+		expect(provider.resolveImport({ fromModule: "common/shared.hpp", specifier: "<config.hpp>" })).toMatchObject({
+			status: "unresolved",
+			reason: "Ambiguous",
+		});
+	});
+
+	test("never finds a header the read policy denies, as an include directory or a file", () => {
+		const root = workspace({
+			"secret/include/hidden.hpp": "int hidden_value;\n",
+			"secret/api.hpp": "int secret_value;\n",
+			"lib/include/open.hpp": "int open_value;\n",
+			"src/main.cpp": '#include <hidden.hpp>\n#include "../secret/api.hpp"\n#include <open.hpp>\n',
+		});
+		const provider = handlersFor(new CppProvider());
+		provider.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, deny: ["secret/**"] });
+		provider.discoverProject({ workspaceRoot: root });
+		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/main.cpp", specifier });
+
+		expect(["<hidden.hpp>", '"../secret/api.hpp"', "<open.hpp>"].map(resolve)).toEqual([
+			{ status: "external", packageName: "hidden.hpp" },
+			{ status: "unresolved", reason: "NotIndexed", detail: expect.any(String) },
+			{ status: "resolved", module: "lib/include/open.hpp" },
+		]);
+	});
+
+	test("walks each reached header once and reads each scope from the headers declaring in it", () => {
+		const count = 2_000;
+		/** A header's facts as the walk reads them, counting each scope looked up in it. */
+		let scopeReads = 0;
+		const header = (index: number, chained: boolean): CppFacts => {
+			const members = new Map([[`n${index}`, new Map([[`v${index}`, []]])]]);
+			const counted = new Map(members);
+			counted.get = (path: string) => {
+				scopeReads++;
+				return members.get(path);
+			};
+			const next = chained && index + 1 < count ? [includeOf(`h${index + 1}`, 0)] : [];
+			return { importFacts: next, membersByPath: counted, references: [] } as unknown as CppFacts;
+		};
+		const includeOf = (name: string, at: number): ImportFact => ({
+			imported: { specifier: name, imported: [], reExport: false },
+			quoted: false,
+			tokenStart: at,
+			tokenEnd: at + 1,
+		});
+		const walk = (chained: boolean) => {
+			const headers = new Map(Array.from({ length: count }, (_, index) => [`h${index}`, header(index, chained)]));
+			let resolved = 0;
+			const unit = {
+				importFacts: Array.from({ length: count }, (_, index) => includeOf(`h${index}`, index)),
+				references: [{ tokenIndex: count, macro: false }],
+			} as unknown as CppFacts;
+			const reaches = reachesOf("main.cpp", [], unit, {
+				resolve: (_includer, include) => {
+					resolved++;
+					return { status: "resolved", module: include.imported.specifier };
+				},
+				load: (module) => headers.get(module),
+			});
+			scopeReads = 0;
+			const reach = reaches.before(count);
+			const found = Array.from({ length: count }, (_, index) => reach.declared(`n${index}`, `v${index}`).length);
+			return { resolved, scopeReads, found: found.filter((groups) => groups === 1).length };
+		};
+
+		const chained = walk(true);
+		const spread = walk(false);
+
+		// Every header included, each also including the next: rewalking the chain from each later
+		// include reads count squared.
+		expect(chained.resolved).toBeLessThanOrEqual(4 * count);
+		// Each scope in one header: scanning every header per scope reads count squared.
+		expect(spread.found).toBe(count);
+		expect(spread.scopeReads).toBeLessThanOrEqual(2 * count);
+	});
+
+	test("binds names reached through many headers in time near linear in their count", () => {
+		const shapes: Record<string, (count: number) => string[]> = {
+			interleaved: (count) =>
+				Array.from({ length: count }, (_, index) => `#include <h${index}.hpp>\nint u${index} = v${index};`),
+			chained: (count) => [
+				"#include <h0.hpp>",
+				...Array.from({ length: count }, (_, index) => `int u${index} = v${index};`),
+			],
+		};
+		// Names no reference asks for, so a scan of every header per name costs more than a parse.
+		const unused = (index: number) => Array.from({ length: 8 }, (_, slot) => `int w${index}_${slot};\n`).join("");
+		const headers = (count: number, chained: boolean) =>
+			Object.fromEntries(
+				Array.from({ length: count }, (_, index) => [
+					`include/h${index}.hpp`,
+					`${chained && index + 1 < count ? `#include <h${index + 1}.hpp>\n` : ""}int v${index};\n${unused(index)}`,
+				]),
+			);
+		const timed = (shape: string, count: number) => {
+			const root = workspace(headers(count, shape === "chained"));
+			const text = (shapes[shape] as (count: number) => string[])(count).join("\n");
+			let best = Number.POSITIVE_INFINITY;
+			let bound = 0;
+			for (let round = 0; round < 3; round++) {
+				const provider = wire(root);
+				const started = performance.now();
+				const facts = provider.parseFile({ module: "src/main.cpp", contentHash: "main", text });
+				best = Math.min(best, performance.now() - started);
+				bound = facts.references.filter((reference) => reference.binding.status === "bound").length;
+			}
+			return { best, bound };
+		};
+		// Linear reads 8x; a walk or a scan of every header per include or per name reads 64x.
+		for (const shape of Object.keys(shapes)) {
+			const small = timed(shape, 100);
+			const large = timed(shape, 800);
+			expect([small.bound, large.bound]).toEqual([100, 800]);
+			expect(large.best / small.best).toBeLessThan(24);
+		}
+	});
+
 	test("answers a probe from the candidate, then binds includes into what the index holds", () => {
 		const use = '#include "cart.hpp"\nint run() { return total() + discount(); }\n';
 		const root = workspace({ "src/cart.hpp": "int total();\n", "src/use.cpp": use });
@@ -360,6 +730,23 @@ describe("C++ provider contract", () => {
 
 		expect(FileFactsSchema.safeParse(facts).success).toBe(true);
 	});
+
+	test("writes the tables that find a draft again only where drafts are added", () => {
+		const sources = path.join(import.meta.dirname, "..");
+		// Kept in step with `drafts` by `addDraft`; the layers above only read them.
+		const uses = readdirSync(sources)
+			.filter((file) => file.endsWith(".ts") && file !== "drafts.ts")
+			.flatMap((file) =>
+				[
+					...readFileSync(path.join(sources, file), "utf8").matchAll(
+						/this\.(declaredIn|typeNames)\s*\.(\w+)/g,
+					),
+				].map((found) => `${file}: ${found[1]}.${found[2]}`),
+			);
+
+		expect(uses.length).toBeGreaterThan(0);
+		expect(uses.filter((use) => !use.endsWith(".get") && !use.endsWith(".has"))).toEqual([]);
+	});
 });
 
 const corpusRoot = path.join(process.cwd(), "temp", "json");
@@ -396,6 +783,7 @@ corpusTest(
 		const provider = wire(corpusRoot);
 		const files = corpusSourceFiles(corpusRoot);
 		const errorFiles: string[] = [];
+		const sharedIds: string[] = [];
 		// A span whose range does not cut its own text back out attaches to the wrong symbol,
 		// and only real source has the string forms that break that.
 		const strayed: string[] = [];
@@ -406,6 +794,8 @@ corpusTest(
 			const text = readFileSync(path.join(corpusRoot, module), "utf8");
 			const facts = provider.parseFile({ module, contentHash: `corpus:${module}`, text });
 			if (facts.diagnostics.some((diagnostic) => diagnostic.severity === "error")) errorFiles.push(module);
+			const ids = facts.declarations.map((declaration) => declaration.symbolId);
+			if (new Set(ids).size !== ids.length) sharedIds.push(module);
 
 			const coordinates = coordinatesOf(text);
 			for (const comment of facts.comments ?? []) {
@@ -421,6 +811,7 @@ corpusTest(
 		);
 		expect(files.length).toBeGreaterThan(0);
 		expect(errorFiles).toEqual([]);
+		expect(sharedIds).toEqual([]);
 		expect(strayed).toEqual([]);
 		expect(spans).toBeGreaterThan(0);
 	},

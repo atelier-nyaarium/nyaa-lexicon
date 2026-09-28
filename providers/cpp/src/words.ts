@@ -140,6 +140,56 @@ export const MODIFIERS: ReadonlySet<string> = new Set([
 
 export const DECLARATION_SPECIFIERS: ReadonlySet<string> = new Set(["__declspec", "__attribute__", "alignas"]);
 
+export const CLASS_KEYS: ReadonlySet<string> = new Set(["class", "struct", "union", "enum"]);
+
+/** Words that name a type on their own. */
+export const FUNDAMENTAL_TYPES: ReadonlySet<string> = new Set([
+	"auto",
+	"bool",
+	"char",
+	"char8_t",
+	"char16_t",
+	"char32_t",
+	"decltype",
+	"double",
+	"float",
+	"int",
+	"long",
+	"short",
+	"signed",
+	"unsigned",
+	"void",
+	"wchar_t",
+]);
+
+/** Words a declaration's specifiers may hold and an expression never starts with. */
+export const SPECIFIER_WORDS: ReadonlySet<string> = new Set([...MODIFIERS, ...CLASS_KEYS, ...FUNDAMENTAL_TYPES]);
+
+/** Words that open a declaration and never follow its type, so a macro before one is a prefix. */
+export const DECLARATION_OPENERS: ReadonlySet<string> = new Set([
+	"class",
+	"concept",
+	"consteval",
+	"constexpr",
+	"constinit",
+	"enum",
+	"explicit",
+	"export",
+	"extern",
+	"friend",
+	"inline",
+	"namespace",
+	"static",
+	"static_assert",
+	"struct",
+	"template",
+	"thread_local",
+	"typedef",
+	"union",
+	"using",
+	"virtual",
+]);
+
 export const CONTROL_NAMES: ReadonlySet<string> = new Set([
 	"if",
 	"for",
@@ -182,6 +232,7 @@ export const FUNCTION_QUALIFIERS: ReadonlySet<string> = new Set(["const", "volat
 ////////////////////////////////
 //  Functions & Helpers
 
+/** An identifier a declaration could name: no keyword, no fundamental type word. */
 export function isNameToken(token: Token | undefined): boolean {
-	return token?.kind === "identifier" && !KEYWORDS.has(token.value);
+	return token?.kind === "identifier" && !KEYWORDS.has(token.value) && !FUNDAMENTAL_TYPES.has(token.value);
 }

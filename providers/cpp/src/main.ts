@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
 	type Binding,
 	comparePositions,
@@ -21,11 +22,24 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
-	workspaceFile,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { type CppFacts, type CppReferenceRecord, LANGUAGE } from "./model.js";
+import { CppBinder } from "./binder.js";
+import { type CppFacts, LANGUAGE } from "./model.js";
 import { parseCppFile } from "./parser.js";
+import {
+	bareProject,
+	type CppProject,
+	contextOf,
+	discoverCppProject,
+	type FoundInclude,
+	findInclude,
+	forcedDirectories,
+	type IncludeKind,
+	type SearchContext,
+	searchOrders,
+} from "./project.js";
+import { type Reaches, reachesOf } from "./reach.js";
 
 ////////////////////////////////
 //  Constants
@@ -185,25 +199,40 @@ function contains(range: Range, position: Range["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
-function namesOf(id: string): string[] {
-	return parseSymbolId(id)?.descriptors.map((descriptor) => descriptor.name) ?? [];
-}
-
-function sameSuffix(left: string[], right: string[]): boolean {
-	return (
-		left.length >= right.length && right.every((name, index) => left[left.length - right.length + index] === name)
-	);
-}
-
 function unknown(reason: UnknownReason, detail: string): TypeInfo {
 	return { status: "unknown", reason, detail };
+}
+
+/** An include's name without its `<>` or `""`. */
+function headerName(specifier: string): string {
+	const delimited =
+		(specifier.startsWith("<") && specifier.endsWith(">")) ||
+		(specifier.startsWith('"') && specifier.endsWith('"'));
+	return delimited ? specifier.slice(1, -1) : specifier;
+}
+
+/** A relative path, a directory or a C++ source extension, as a workspace header's name is. */
+function looksLikeWorkspacePath(name: string): boolean {
+	return name.startsWith(".") || name.includes("/") || EXTENSIONS.some((extension) => name.endsWith(extension));
+}
+
+/**
+ * What finding `name`, or not, means for an include of `kind`: a bare name found nowhere is
+ * external unless it reads like a workspace path.
+ */
+function resolutionOf(found: FoundInclude | undefined, name: string, kind: IncludeKind | undefined): ImportResolution {
+	if (found !== undefined && "module" in found) return { status: "resolved", module: found.module };
+	if (found !== undefined || kind === "angle") return { status: "external", packageName: name };
+	if (kind === undefined && !looksLikeWorkspacePath(name)) return { status: "external", packageName: name };
+	return { status: "unresolved", reason: "NotIndexed", detail: `no workspace header matches ${name}` };
 }
 
 ////////////////////////////////
 //  Classes
 
 export class CppProvider {
-	readonly store = moduleStore<CppFacts>({ read: (module, text) => parseCppFile(module, text) });
+	/** Include lookup reads the store's project and held facts. */
+	readonly store = moduleStore<CppFacts, CppProject>({ read: (module, text) => parseCppFile(module, text) });
 
 	initialize(_workspaceRoot: string) {
 		return {
@@ -218,27 +247,32 @@ export class CppProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string, _previous: null | undefined): { model: ProjectModel; project: null } {
+	discoverProject(workspaceRoot: string, _previous?: CppProject): { model: ProjectModel; project: CppProject } {
 		const root = path.resolve(workspaceRoot);
+		const failed = (message: string) => ({ model: projectDiagnostic(root, message), project: bareProject(root) });
 		try {
-			if (!existsSync(root))
-				return { model: projectDiagnostic(root, `workspace root does not exist: ${root}`), project: null };
-			if (!statSync(root).isDirectory())
-				return {
-					model: projectDiagnostic(root, `workspace root is not a directory: ${root}`),
-					project: null,
-				};
+			if (!existsSync(root)) return failed(`workspace root does not exist: ${root}`);
+			if (!statSync(root).isDirectory()) return failed(`workspace root is not a directory: ${root}`);
 			const walked = discoverByWalk(root, {
 				extensions: EXTENSIONS,
 				excludedDirectories: EXCLUDED_DIRECTORIES,
 			});
+			if (walked.diagnostics.length > 0) return { model: walked, project: bareProject(root) };
+			const project = discoverCppProject(root, EXCLUDED_DIRECTORIES, this.store.policy);
 			return {
-				model: { files: walked.files, externalRoots: [], configFiles: walked.configFiles, diagnostics: [] },
-				project: null,
+				model: {
+					// A forced include is no file's import, so its header is named here, however its directory is kept out.
+					files: [...new Set([...walked.files, ...project.forcedModules])].sort(),
+					externalRoots: [],
+					configFiles: [...new Set([...walked.configFiles, ...project.databases])],
+					diagnostics: [...project.diagnostics],
+					fingerprint: project.fingerprint,
+				},
+				project,
 			};
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			return { model: projectDiagnostic(root, `unable to inspect workspace root: ${detail}`), project: null };
+			return failed(`unable to inspect workspace root: ${detail}`);
 		}
 	}
 
@@ -246,6 +280,7 @@ export class CppProvider {
 		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
 		facts: CppFacts,
 	) {
+		const binder = this.binder(params.module, facts);
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -255,7 +290,7 @@ export class CppProvider {
 				range: reference.range,
 				role: reference.role,
 				qualified: reference.qualified,
-				binding: this.bindingForReference(params.module, facts, reference),
+				binding: binder.bind(params.module, reference),
 				...(reference.from === null ? {} : { fromId: reference.from.declaration.symbolId }),
 			})),
 			imports: facts.imports,
@@ -268,20 +303,31 @@ export class CppProvider {
 	}
 
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
-		const specifier = params.specifier.replace(/^<|>$/g, "").replace(/^"|"$/g, "");
-		const knownImport = this.store
-			.load(params.fromModule)
-			?.importFacts.find((item) => item.imported.specifier === specifier);
-		if (knownImport !== undefined) {
-			if (!knownImport.quoted) return { status: "external", packageName: specifier };
-			return this.resolveQuotedImport(params.fromModule, specifier);
-		}
-		const workspaceCandidate = this.workspaceCandidate(params.fromModule, specifier);
-		if (workspaceCandidate !== null) return { status: "resolved", module: workspaceCandidate };
-		if (this.looksLikeWorkspaceSpecifier(specifier)) {
-			return { status: "unresolved", reason: "NotIndexed", detail: "no workspace header matched the include" };
-		}
-		return { status: "external", packageName: specifier };
+		const name = headerName(params.specifier);
+		const delimited = params.specifier.startsWith("<")
+			? "angle"
+			: params.specifier.startsWith('"')
+				? "quoted"
+				: undefined;
+		const context = contextOf(this.store.project, params.fromModule);
+		if (delimited !== undefined) return this.resolveInclude(context, params.fromModule, name, delimited);
+		// A bare name takes the kinds its includes are written with; two finding different files, neither.
+		const kinds = new Set(
+			(this.store.load(params.fromModule)?.importFacts ?? [])
+				.filter((item) => item.imported.specifier === name)
+				.map((item): IncludeKind => (item.quoted ? "quoted" : "angle")),
+		);
+		const answers = (kinds.size === 0 ? [undefined] : [...kinds]).map((kind) =>
+			this.resolveInclude(context, params.fromModule, name, kind),
+		);
+		const first = answers[0] as ImportResolution;
+		return answers.every((answer) => isDeepStrictEqual(answer, first))
+			? first
+			: {
+					status: "unresolved",
+					reason: "Ambiguous",
+					detail: `the file includes ${name} both ways, finding different files`,
+				};
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {
@@ -290,7 +336,7 @@ export class CppProvider {
 		const reference = facts.references.find(
 			(candidate) => candidate.name === params.name && contains(candidate.range, params.range.start),
 		);
-		if (reference !== undefined) return this.bindingForReference(params.module, facts, reference);
+		if (reference !== undefined) return this.binder(params.module, facts).bind(params.module, reference);
 		// Every declaration this provider extracts has its name in the source.
 		const declaration = facts.declarations.find(
 			(candidate) =>
@@ -348,118 +394,91 @@ export class CppProvider {
 		return notImplementedMove("C++ move rendering is not implemented");
 	}
 
-	private workspaceCandidate(fromModule: string, specifier: string): string | null {
-		const fromDirectory = path.posix.dirname(fromModule.replace(/\\/g, "/"));
-		const raw = specifier.startsWith("/") ? specifier.slice(1) : path.posix.join(fromDirectory, specifier);
-		const candidates = [raw, ...EXTENSIONS.map((extension) => `${raw}${extension}`)];
-		for (const candidate of candidates) {
-			const absolute = workspaceFile(this.store.root, candidate);
-			if (absolute === null || !existsSync(absolute)) continue;
-			try {
-				if (statSync(absolute).isFile()) return path.posix.normalize(candidate);
-			} catch {}
-		}
-		return null;
+	/**
+	 * An include written in `includer`, searched on disk under the lists of `context`, so held for
+	 * the store generation. A kind unknown is searched as quoted. Where every unit's lists apply and
+	 * they find different files, none is chosen.
+	 */
+	private resolveInclude(
+		context: SearchContext,
+		includer: string,
+		name: string,
+		kind: IncludeKind | undefined,
+	): ImportResolution {
+		// Only a quoted include searches its includer's directory.
+		const from = kind === "angle" ? "" : path.posix.dirname(includer);
+		return this.store.memo(`\u0000include\u0000${context}\u0000${from}\u0000${kind ?? ""}\u0000${name}`, () => {
+			const project = this.store.project;
+			const written = name.replace(/\\/gu, "/");
+			const answers = searchOrders(project, context, includer, kind ?? "quoted").map((directories) =>
+				resolutionOf(findInclude(project, this.store.policy, directories, written), name, kind),
+			);
+			const first = answers[0] as ImportResolution;
+			return answers.every((answer) => isDeepStrictEqual(answer, first))
+				? first
+				: {
+						status: "unresolved",
+						reason: "Ambiguous",
+						detail: `the entries find different headers for ${name}`,
+					};
+		});
 	}
 
-	private looksLikeWorkspaceSpecifier(specifier: string): boolean {
-		return (
-			specifier.startsWith(".") ||
-			specifier.includes("/") ||
-			EXTENSIONS.some((extension) => specifier.endsWith(extension))
+	/** A binder for one request, reading other files and their includes through the store. */
+	private binder(module: string, facts: CppFacts): CppBinder {
+		return new CppBinder(
+			{
+				load: (other) => this.store.load(other),
+				reached: (from, held) => this.reached(from, held),
+			},
+			module,
+			facts,
 		);
 	}
 
-	private bindingForReference(module: string, facts: CppFacts, reference: CppReferenceRecord): Binding {
-		if (reference.templateDependent)
-			return { status: "unbound", reason: "NotImplemented", detail: "template-dependent lookup is not resolved" };
-		const local = this.localCandidates(facts, reference);
-		if (local.length > 0) return this.chooseCandidates(local);
-		return this.importedBinding(module, facts, reference);
+	/** What `unit`'s includes reach; one walk per unit and store generation. */
+	private reached(unit: string, facts: CppFacts): Reaches {
+		const held = this.store.memo(`\u0000reach\u0000${unit}`, (): { facts: CppFacts; reaches?: Reaches } => ({
+			facts,
+		}));
+		// A probe's text is not the held one.
+		if (held.facts !== facts) return this.walkIncludes(unit, facts);
+		if (held.reaches !== undefined) return held.reaches;
+		const reaches = this.walkIncludes(unit, facts);
+		// A header that could not be read is tried again on the next request.
+		if (reaches.complete) held.reaches = reaches;
+		return reaches;
 	}
 
-	private localCandidates(facts: CppFacts, reference: CppReferenceRecord) {
-		const candidates = facts.records.filter((record) => {
-			if (record.declaration.name !== reference.name) return false;
-			if (record.nameTokenStart === reference.tokenIndex) return false;
-			if (reference.qualifiedPath.length > 1)
-				return sameSuffix(namesOf(record.declaration.symbolId), reference.qualifiedPath);
-			return true;
+	/** From the unit's forced includes, then its own, each include searched under the unit's lists. */
+	private walkIncludes(unit: string, facts: CppFacts): Reaches {
+		const project = this.store.project;
+		const context = contextOf(project, unit);
+		// Each entry's, looked for in its working directory, then along its quoted search.
+		const [first = [], ...others] = (project.units.get(unit) ?? []).map((entry) =>
+			entry.forced.map((name) =>
+				resolutionOf(
+					findInclude(project, this.store.policy, forcedDirectories(project, entry), name),
+					name,
+					"quoted",
+				),
+			),
+		);
+		// What every entry forces is read; what only some do, is not.
+		const agreed = first.filter((resolution) =>
+			others.every((other) => other.some((candidate) => isDeepStrictEqual(candidate, resolution))),
+		);
+		const forced: ImportResolution[] = [first, ...others].every((list) => list.length === agreed.length)
+			? agreed
+			: [
+					...agreed,
+					{ status: "unresolved", reason: "Ambiguous", detail: "the entries force different includes" },
+				];
+		return reachesOf(unit, forced, facts, {
+			resolve: (includer, include) =>
+				this.resolveInclude(context, includer, include.imported.specifier, include.quoted ? "quoted" : "angle"),
+			load: (module) => this.store.load(module),
 		});
-		const scored = candidates.map((record) => ({ record, score: this.scopeScore(reference.from, record) }));
-		const best = Math.min(...scored.map((item) => item.score), Number.MAX_SAFE_INTEGER);
-		return scored.filter((item) => item.score === best).map((item) => item.record);
-	}
-
-	private scopeScore(from: CppReferenceRecord["from"], candidate: CppFacts["records"][number]): number {
-		if (from === null) return candidate.parent === null ? 0 : 100 + namesOf(candidate.declaration.symbolId).length;
-		let score = 0;
-		let current: CppFacts["records"][number] | null = from;
-		while (current !== null) {
-			if (candidate.parent === current) return score;
-			current = current.parent;
-			score++;
-		}
-		const fromNames = namesOf(from.declaration.symbolId).slice(0, -1);
-		const candidateNames = namesOf(candidate.declaration.symbolId).slice(0, -1);
-		if (sameSuffix(candidateNames, fromNames) || sameSuffix(fromNames, candidateNames))
-			return 20 + Math.abs(fromNames.length - candidateNames.length);
-		return 100 + candidateNames.length;
-	}
-
-	private chooseCandidates(records: CppFacts["records"]): Binding {
-		const ids = records.map((record) => record.declaration.symbolId);
-		if (ids.length === 1) return { status: "bound", symbolId: ids[0] as string, provenance: "bound" };
-		return { status: "ambiguous", candidates: ids, provenance: "bound" };
-	}
-
-	private importedBinding(module: string, facts: CppFacts, reference: CppReferenceRecord): Binding {
-		const candidates: CppFacts["records"] = [];
-		let external = false;
-		let unresolved = false;
-		for (const imported of facts.importFacts) {
-			const resolution = imported.quoted
-				? this.resolveQuotedImport(module, imported.imported.specifier)
-				: { status: "external" as const, packageName: imported.imported.specifier };
-			if (resolution.status === "external") {
-				external = true;
-				continue;
-			}
-			if (resolution.status !== "resolved") {
-				unresolved = true;
-				continue;
-			}
-			const target = this.store.load(resolution.module);
-			if (target === undefined) {
-				unresolved = true;
-				continue;
-			}
-			for (const candidate of target.records) {
-				if (candidate.declaration.name !== reference.name) continue;
-				if (
-					reference.qualifiedPath.length > 1 &&
-					!sameSuffix(namesOf(candidate.declaration.symbolId), reference.qualifiedPath)
-				)
-					continue;
-				candidates.push(candidate);
-			}
-		}
-		if (candidates.length > 0) return this.chooseCandidates(candidates);
-		if (external)
-			return {
-				status: "unbound",
-				reason: "ExternalDependency",
-				detail: "the name comes from an external header",
-			};
-		if (unresolved) return { status: "unbound", reason: "NotIndexed", detail: "the included header is unresolved" };
-		return { status: "unbound", reason: "NotIndexed", detail: "no indexed declaration matches the name" };
-	}
-
-	private resolveQuotedImport(fromModule: string, specifier: string): ImportResolution {
-		const module = this.workspaceCandidate(fromModule, specifier);
-		return module === null
-			? { status: "unresolved", reason: "NotIndexed", detail: "no workspace header matched the include" }
-			: { status: "resolved", module };
 	}
 }
 

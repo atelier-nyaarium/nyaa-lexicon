@@ -27,10 +27,29 @@ describe("C++ declaration-scope macro invocations", () => {
 		expect(facts.declarations[0]?.kind).toBe("function");
 	});
 
-	test("leaves mixed-case calls unchanged", () => {
-		const facts = parseCppFile("mixed.cpp", "mixedCase()\nint real;\n");
+	test("never lets a call missing its semicolon take the declaration on the next line", () => {
+		const facts = parseCppFile(
+			"mixed.cpp",
+			"mixedCase()\nint real;\nstruct Foo {\nFoo(int)\n  noexcept;\n};\nPREFIX\nTYPE OTHER()\nint last;\n",
+		);
 		expect(facts.declarations.map((item) => [item.name, item.range.start.line, item.range.end.line])).toEqual([
-			["mixedCase", 0, 1],
+			["real", 1, 1],
+			["Foo", 2, 5],
+			["Foo", 3, 4],
+			["OTHER", 6, 7],
+			["last", 8, 8],
+		]);
+	});
+
+	test("keeps a macro call before a declaration on its line in the declaration's range, never its name", () => {
+		const facts = parseCppFile(
+			"attribute.hpp",
+			"JSON_HEDLEY_NON_NULL(1) int parse(const char* text);\nWARN DEPRECATED(1) static int g();\n",
+		);
+		expect(facts.declarations.map((item) => [item.name, item.range.start])).toEqual([
+			["parse", { line: 0, character: 0 }],
+			["text", { line: 0, character: 34 }],
+			["g", { line: 1, character: 0 }],
 		]);
 	});
 
@@ -70,6 +89,28 @@ describe("C++ declaration-scope macro invocations", () => {
 		expect(facts.declarations.map((item) => item.kind)).toEqual(["struct", "field"]);
 	});
 
+	test("reads a class between namespace-opening macros, with a macro standing for an access label", () => {
+		const facts = parseCppFile(
+			"namespace.hpp",
+			[
+				"NLOHMANN_JSON_NAMESPACE_BEGIN",
+				"class basic_json {",
+				"  JSON_PRIVATE_UNLESS_TESTED:",
+				"    int hidden;",
+				"  public:",
+				"    int shown;",
+				"};",
+				"NLOHMANN_JSON_NAMESPACE_END",
+			].join("\n"),
+		);
+		expect(facts.declarations.map((item) => [item.name, item.visibility])).toEqual([
+			["basic_json", "public"],
+			["hidden", "private"],
+			["shown", "public"],
+		]);
+		expect(facts.declarations[0]?.range.end.line).toBe(6);
+	});
+
 	test("drops a standalone prefix before a pragma", () => {
 		const facts = parseCppFile("pragma.cpp", "PREFIX\n#pragma once\nint real;\n");
 		expect(facts.declarations.map((item) => item.name)).toEqual(["real"]);
@@ -98,11 +139,5 @@ describe("C++ declaration-scope macro invocations", () => {
 		const facts = parseCppFile("chain.cpp", text);
 		expect(facts.declarations.map((item) => item.name)).toEqual([...names]);
 		expect(facts.diagnostics).toEqual([]);
-	});
-
-	test("keeps a prefix whose chain is broken by a token sharing a line", () => {
-		const facts = parseCppFile("broken.cpp", "PREFIX\nTYPE OTHER()\nint real;\n");
-		const other = facts.declarations.find((item) => item.name === "OTHER");
-		expect(other?.range.start.line).toBe(0);
 	});
 });

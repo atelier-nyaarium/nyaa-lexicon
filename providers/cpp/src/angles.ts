@@ -13,12 +13,24 @@ interface OpenList {
 	depth: number;
 	/** Inside a `template <...>` head, where a condition in a default argument is not a comparison. */
 	head: boolean;
+	/** Holds `&&` or `||`, so `a < b && c > d` may be comparisons. */
+	joined: boolean;
+	/** Holds a comma, which no comparison chain does. */
+	listed: boolean;
+	/** Opened after a name the file declares as a template. */
+	named: boolean;
 }
+
+/** What the file declares a name as: a template, whose `<` opens a list, or a value, whose never does. */
+export type DeclaredName = "template" | "value";
 
 ////////////////////////////////
 //  Constants
 
 const ASSIGNMENTS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
+
+/** What may follow a list's `>`; a comparison's `>` is followed by its operand instead. */
+const AFTER_LIST = new Set(["::", ">", ">>", ",", ")", "]", ";", "{", "}", "...", "=", ""]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -35,10 +47,25 @@ function significantFrom(tokens: readonly Token[], index: number, step: 1 | -1):
 	return undefined;
 }
 
-/** A name opens a list after it; `operator` names the operator instead. */
-function opensList(tokens: readonly Token[], index: number): boolean {
+/** What the unqualified name before the `<` at `index` is declared as; qualified names are other scopes'. */
+function declaredBefore(
+	tokens: readonly Token[],
+	index: number,
+	names: ReadonlyMap<string, DeclaredName>,
+): DeclaredName | undefined {
+	let at = index - 1;
+	while (at >= 0 && !isSignificant(tokens[at] as Token)) at--;
+	const name = tokens[at];
+	const access = punctuation(significantFrom(tokens, at, -1));
+	if (name?.kind !== "identifier" || access === "::" || access === "." || access === "->") return undefined;
+	return names.get(name.value);
+}
+
+/** A name opens a list after it, unless declared a value; `operator` names the operator instead. */
+function opensList(tokens: readonly Token[], index: number, names: ReadonlyMap<string, DeclaredName>): boolean {
 	const before = significantFrom(tokens, index, -1);
-	return before?.kind === "identifier" && before.value !== "operator";
+	if (before?.kind !== "identifier" || before.value === "operator") return false;
+	return declaredBefore(tokens, index, names) !== "value";
 }
 
 /** `&&` ending a type, as in `T&&>`, rather than joining conditions. */
@@ -47,10 +74,17 @@ function endsType(tokens: readonly Token[], index: number): boolean {
 	return next === ">" || next === ">>" || next === "," || next === "...";
 }
 
-/** `||`, an assignment, or `&&` joining conditions: none stands in a template argument unparenthesized. */
-function outsideArguments(tokens: readonly Token[], index: number): boolean {
+/** `||`, or `&&` joining conditions: legal in a template argument, and the mark of a comparison chain. */
+function joinsConditions(tokens: readonly Token[], index: number): boolean {
 	const value = punctuation(tokens[index]);
-	return value === "||" || ASSIGNMENTS.has(value) || (value === "&&" && !endsType(tokens, index));
+	return value === "||" || (value === "&&" && !endsType(tokens, index));
+}
+
+/** What follows a `>`: its punctuation, `operand` for anything else, empty at the end. */
+function followerOf(tokens: readonly Token[], index: number): string {
+	const next = significantFrom(tokens, index, 1);
+	if (next === undefined) return "";
+	return next.kind === "punctuation" ? next.text : "operand";
 }
 
 /** The offsets of a `<`, `>` or `>>` token's characters that `angles` holds. */
@@ -70,10 +104,17 @@ export function bracketDelta(token: Token | undefined, angles: ReadonlySet<numbe
 
 /**
  * Marks template bracket offsets, including both halves of a `>>` closing two lists. A list opens
- * after a name, closes at its depth, and is dropped if still open at a boundary. One pass avoids
- * rescanning comparison runs.
+ * after a name, closes at its depth, and is dropped if still open at a boundary or an assignment.
+ * One joining `&&` or `||` and holding no comma closes as a list only before what may follow one,
+ * so `a < b && c > d` stays comparisons. `names` settles what tokens cannot: after a declared
+ * value `<` compares, and after a declared template it opens a list whatever follows its `>`.
+ * One pass avoids rescanning comparison runs.
  */
-export function templateAngles(tokens: readonly Token[], directives: ReadonlySet<number>): Set<number> {
+export function templateAngles(
+	tokens: readonly Token[],
+	directives: ReadonlySet<number>,
+	names: ReadonlyMap<string, DeclaredName> = new Map(),
+): Set<number> {
 	const angles = new Set<number>();
 	const open: OpenList[] = [];
 	let depth = 0;
@@ -92,18 +133,25 @@ export function templateAngles(tokens: readonly Token[], directives: ReadonlySet
 			drop(false);
 			depth = Math.max(0, depth - 1);
 		} else if (value === ";" || value === "{" || value === "}") drop(false);
-		else if (outsideArguments(tokens, index)) drop(true);
-		else if (value === "<" && opensList(tokens, index)) {
+		else if (ASSIGNMENTS.has(value)) drop(true);
+		else if (joinsConditions(tokens, index) || value === ",") {
+			const top = open.at(-1);
+			if (top?.depth === depth && value === ",") top.listed = true;
+			else if (top?.depth === depth) top.joined = true;
+		} else if (value === "<" && opensList(tokens, index, names)) {
 			const enclosing = open.at(-1);
-			const head =
-				significantFrom(tokens, index, -1)?.value === "template" ||
-				(enclosing?.depth === depth && enclosing.head);
-			open.push({ offset: token.startOffset, depth, head });
+			const before = significantFrom(tokens, index, -1)?.value ?? "";
+			const head = before === "template" || (enclosing?.depth === depth && enclosing.head);
+			const named = declaredBefore(tokens, index, names) === "template";
+			open.push({ offset: token.startOffset, depth, head, joined: false, listed: false, named });
 		} else if (value === ">" || value === ">>") {
 			for (let at = 0; at < value.length; at++) {
 				const top = open.at(-1);
 				if (top === undefined || top.depth !== depth) break;
 				open.pop();
+				// The second half of `>>` follows the first.
+				const follower = at + 1 < value.length ? ">" : followerOf(tokens, index);
+				if (top.joined && !top.listed && !top.head && !top.named && !AFTER_LIST.has(follower)) break;
 				angles.add(top.offset);
 				angles.add(token.startOffset + at);
 			}

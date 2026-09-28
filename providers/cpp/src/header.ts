@@ -19,17 +19,13 @@ export interface TokenSpan {
 interface Cuts {
 	folds: OffsetRange[];
 	omit: OffsetRange[];
+	splices: OffsetRange[];
 	verbatim: OffsetRange[];
 	angles: number[];
 }
 
 ////////////////////////////////
 //  Functions & Helpers
-
-/** Non-whitespace source between tokens: an inactive branch or continuation. */
-function hidden(text: string, from: number, to: number): boolean {
-	return from < to && text.slice(from, to).trim() !== "";
-}
 
 function isPunctuation(token: Token, value: string): boolean {
 	return token.kind === "punctuation" && token.text === value;
@@ -55,6 +51,7 @@ function closingBrace(tokens: Token[], index: number, last: number): number {
 	let depth = 0;
 	for (let current = index; current <= last; current++) {
 		const token = tokens[current] as Token;
+		if (token.directive === true) continue;
 		if (isPunctuation(token, "{")) depth++;
 		else if (isPunctuation(token, "}")) {
 			depth--;
@@ -80,7 +77,6 @@ function offsetsOf(tokens: Token[], span: TokenSpan): OffsetRange {
 
 /** Drops comments, directives and inactive text; keeps literals verbatim, folds braces by `kind`, marks template brackets. */
 function collectCuts(
-	text: string,
 	tokens: Token[],
 	span: TokenSpan,
 	kind: HeaderKind,
@@ -92,8 +88,9 @@ function collectCuts(
 	for (let index = span.start; index <= last; index++) {
 		const token = tokens[index] as Token;
 		const previous = tokens[index - 1];
-		if (index > span.start && previous !== undefined && hidden(text, previous.endOffset, token.startOffset))
+		if (index > span.start && previous !== undefined && token.hiddenBefore === true)
 			cuts.omit.push({ start: previous.endOffset, end: token.startOffset });
+		if (token.splices !== undefined) cuts.splices.push(...token.splices);
 		if (token.kind === "comment") {
 			cuts.omit.push({ start: token.startOffset, end: token.endOffset });
 		} else if (token.kind === "string" || token.kind === "character") {
@@ -117,7 +114,8 @@ function collectCuts(
 /**
  * Header over `[startIndex, endIndex)`, comments, directives and inactive branches dropped. A later
  * declarator names its shared specifiers as `lead`, so it never walks its siblings. `angles` holds
- * the offsets of template brackets; every other `<` and `>` is an operator.
+ * the offsets of template brackets; every other `<` and `>` is an operator. With `splitEnd`, the
+ * last token counts its first character only.
  */
 export function headerOf(
 	text: string,
@@ -127,14 +125,18 @@ export function headerOf(
 	kind: HeaderKind,
 	angles: ReadonlySet<number>,
 	lead?: TokenSpan,
+	splitEnd = false,
 ): string | undefined {
 	const own = trimmed(tokens, { start: startIndex, end: endIndex });
 	if (own === undefined) return undefined;
 	const shared = lead === undefined ? undefined : trimmed(tokens, lead);
-	const cuts: Cuts = { folds: [], omit: [], verbatim: [], angles: [] };
-	collectCuts(text, tokens, own, kind, angles, cuts);
-	if (shared !== undefined) collectCuts(text, tokens, shared, kind, angles, cuts);
-	const { start, end } = offsetsOf(tokens, own);
+	const cuts: Cuts = { folds: [], omit: [], splices: [], verbatim: [], angles: [] };
+	collectCuts(tokens, own, kind, angles, cuts);
+	if (shared !== undefined) collectCuts(tokens, shared, kind, angles, cuts);
+	const start = offsetsOf(tokens, own).start;
+	const last = tokens[own.end - 1] as Token;
+	const end = splitEnd && own.end === endIndex ? last.startOffset + 1 : last.endOffset;
+	cuts.angles = cuts.angles.filter((offset) => offset < end);
 	return renderHeader(text, {
 		...(shared === undefined ? {} : { lead: offsetsOf(tokens, shared) }),
 		start,

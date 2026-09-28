@@ -53,6 +53,24 @@ describe("C++ declaration attributes", () => {
 		expect(facts.diagnostics).toEqual([]);
 	});
 
+	test("names a function after attribute macros that follow its template head", () => {
+		const facts = parseCppFile(
+			"hedley.hpp",
+			[
+				"struct basic_json {",
+				"    template<typename A1>",
+				"    JSON_HEDLEY_WARN_UNUSED_RESULT",
+				"    JSON_HEDLEY_DEPRECATED_FOR(3.11.0, from_cbor(ptr, ptr + len))",
+				"    static basic_json from_cbor(A1 && a1, const bool strict = true);",
+				"};",
+			].join("\n"),
+		);
+		const method = facts.declarations.find((item) => item.kind === "method");
+		expect(method?.name).toBe("from_cbor");
+		expect(method?.range.start.line).toBe(1);
+		expect(facts.declarations.map((item) => item.name)).toEqual(["basic_json", "from_cbor", "A1", "a1", "strict"]);
+	});
+
 	test("starts a function's range at its first specifier", () => {
 		const facts = parseCppFile("range.cpp", "[[nodiscard]]\nstatic int f();\n");
 		expect(facts.declarations.find((item) => item.name === "f")?.range.start.line).toBe(0);

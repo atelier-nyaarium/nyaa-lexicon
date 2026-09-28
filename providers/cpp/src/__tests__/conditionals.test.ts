@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 import { tokenize } from "../tokens.js";
 
@@ -62,7 +64,7 @@ describe("C++ conditional groups", () => {
 		[
 			"spliced condition",
 			"void run() {\n#if A \\\n && B\nint first;\n#else\nint second;\n#endif\n}\n",
-			["run"],
+			["run", "first", "second"],
 			0,
 			undefined,
 		],
@@ -103,7 +105,7 @@ describe("C++ conditional groups", () => {
 			"fragment.cpp",
 			"void run() {\n#if A\nint x; x = (1\n#else\nint x; x = (2\n#endif\n);\n}\n",
 		);
-		expect(facts.declarations.map((item) => item.name)).toEqual(["run"]);
+		expect(facts.declarations.map((item) => item.name)).toEqual(["run", "x"]);
 		expect(facts.diagnostics).toEqual([]);
 	});
 
@@ -116,16 +118,165 @@ describe("C++ conditional groups", () => {
 		expect(facts.diagnostics).toEqual([]);
 	});
 
-	test("ignores delimiters in directive lines when judging a branch", () => {
+	test("ignores delimiters in directive lines when judging a branch and reading structure", () => {
 		const tokens = tokenize("#if A\n#define OPEN {\nint first;\n#else\nint second;\n#endif\n").tokens;
 		expect(tokens.map((item) => item.value)).toContain("first");
 		expect(tokens.map((item) => item.value)).toContain("second");
+
+		const facts = parseCppFile("directive-brace.cpp", "struct S {\n#define OPEN {\n};\nint after;\n");
+		expect(facts.declarations.map((item) => [item.name, item.range.end.line])).toEqual([
+			["S", 2],
+			["after", 3],
+		]);
+		expect(facts.diagnostics).toEqual([]);
+	});
+
+	test("declares what each alternative writes after specifiers shared before the group", () => {
+		const facts = parseCppFile("shared.cpp", "int\n#if A\n*p;\n#else\np;\n#endif\nint after;\n");
+		expect(facts.declarations.map((item) => [item.name, item.signature])).toEqual([
+			["p", "int *p"],
+			["p", "int p"],
+			["after", "int after"],
+		]);
+	});
+
+	test("binds a name declared in every alternative to all of them, and one inside a branch to its own", () => {
+		const text = [
+			"#if A",
+			"int x;",
+			"#else",
+			"int x;",
+			"#endif",
+			"void f() { x++; }",
+			"void g() {",
+			"#if A",
+			"\tint y; y++;",
+			"#else",
+			"\tint y; y++;",
+			"#endif",
+			"\ty++;",
+			"}",
+		].join("\n");
+		const provider = handlersFor(new CppProvider());
+		provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		const facts = provider.parseFile({ module: "alternatives.cpp", contentHash: "alternatives", text });
+		const lines = (symbolId: string) =>
+			facts.declarations.find((item) => item.symbolId === symbolId)?.range.start.line ?? -1;
+		const bindings = facts.references
+			.filter((item) => item.name === "x" || item.name === "y")
+			.map((item) =>
+				item.binding.status === "bound"
+					? [lines(item.binding.symbolId)]
+					: item.binding.status === "ambiguous"
+						? item.binding.candidates.map(lines).sort((left, right) => left - right)
+						: [],
+			);
+
+		expect(bindings).toEqual([[1, 3], [8], [10], [8, 10]]);
+	});
+
+	test("merges no declarations across exclusive alternatives, but a body after them completes each head", () => {
+		const text = [
+			"#if A",
+			"int f();",
+			"struct S;",
+			"int g(int a)",
+			"#else",
+			"double f();",
+			"struct S {};",
+			"int g(int b)",
+			"#endif",
+			"{ return 0; }",
+			"void use() { f(); S* p; g(1); }",
+		].join("\n");
+		const provider = handlersFor(new CppProvider());
+		provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		const facts = provider.parseFile({ module: "exclusive.cpp", contentHash: "exclusive", text });
+		const lines = (symbolId: string) =>
+			facts.declarations.find((item) => item.symbolId === symbolId)?.range.start.line ?? -1;
+		const uses = facts.references
+			.filter((item) => ["f", "S", "g"].includes(item.name) && item.range.start.line === 10)
+			.map((item) => [
+				item.name,
+				item.binding.status === "ambiguous"
+					? item.binding.candidates.map(lines).sort((left, right) => left - right)
+					: item.binding.status === "bound"
+						? [lines(item.binding.symbolId)]
+						: item.binding.status,
+			]);
+
+		expect(facts.declarations.filter((item) => ["f", "S", "g"].includes(item.name))).toHaveLength(5);
+		expect(uses).toEqual([
+			["f", [1, 5]],
+			["S", [2, 6]],
+			["g", [7]],
+		]);
+	});
+
+	test("binds a name declared in many alternatives in time linear in their count", () => {
+		const timed = (count: number) => {
+			const branches = Array.from(
+				{ length: count },
+				(_, index) => `${index === 0 ? "#if" : "#elif"} A${index}\n\tint x = ${index};\n`,
+			);
+			const text = `void f() {\n${branches.join("")}#endif\n${"\tx++;\n".repeat(32)}}\n`;
+			let best = Number.POSITIVE_INFINITY;
+			let candidates = 0;
+			for (let round = 0; round < 3; round++) {
+				const provider = handlersFor(new CppProvider());
+				provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+				const started = performance.now();
+				const facts = provider.parseFile({ module: "branches.cpp", contentHash: String(round), text });
+				best = Math.min(best, performance.now() - started);
+				const use = facts.references.at(-1)?.binding;
+				candidates = use?.status === "ambiguous" ? use.candidates.length : 0;
+			}
+			return { best, candidates };
+		};
+		const small = timed(250);
+		const large = timed(2_000);
+
+		// Each alternative's local stays in view, and each use lists them all: linear reads 8x, comparing
+		// every pair 64x.
+		expect([small.candidates, large.candidates]).toEqual([250, 2_000]);
+		expect(large.best / small.best).toBeLessThan(24);
+	});
+
+	test("resolves deeply nested groups in time linear in their depth", () => {
+		const timed = (count: number) => {
+			const text = `${"#if A\n".repeat(count)}int x;\n${"#else\nint y;\n#endif\n".repeat(count)}`;
+			let best = Number.POSITIVE_INFINITY;
+			for (let round = 0; round < 3; round++) {
+				const started = performance.now();
+				tokenize(text, "nested.cpp");
+				best = Math.min(best, performance.now() - started);
+			}
+			return best;
+		};
+		// Linear reads 8x; rescanning each enclosing branch per group reads 64x.
+		expect(timed(4_000) / timed(500)).toBeLessThan(24);
 	});
 
 	test("keeps duplicate declarations from whole alternatives", () => {
-		const facts = parseCppFile("duplicates.cpp", "#if A\nint value;\n#else\nint value;\n#endif\n");
-		const values = facts.declarations.filter((item) => item.name === "value");
-		expect(values).toHaveLength(2);
+		const facts = parseCppFile(
+			"duplicates.cpp",
+			"#if A\nint value;\nvoid run() {}\n#else\nint value;\nvoid run() { int inner; }\n#endif\n",
+		);
+		expect(facts.declarations.filter((item) => item.name === "value")).toHaveLength(2);
+		expect(facts.declarations.filter((item) => item.name === "run").map((item) => item.range.start.line)).toEqual([
+			2, 5,
+		]);
+	});
+
+	test("reads a constructor whose member initializers hold a conditional", () => {
+		const facts = parseCppFile(
+			"initializers.cpp",
+			"Foo::Foo() : a(1)\n#if FEATURE\n, b(2)\n#endif\n{ int inner; }\nint after;\n",
+		);
+		const foo = facts.declarations.find((item) => item.name === "Foo");
+		expect(facts.declarations.map((item) => item.name)).toEqual(["Foo", "inner", "after"]);
+		expect(facts.declarations[1]?.containerId).toBe(foo?.symbolId);
+		expect(foo?.range.end.line).toBe(4);
 	});
 
 	// doctest.h lost its whole implementation namespace to a `"("` in a reporter string.

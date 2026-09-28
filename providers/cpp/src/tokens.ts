@@ -1,5 +1,21 @@
-import type { Diagnostic, Position, Range } from "@nyaa-lexicon/protocol";
-import { Cursor, isIdentifierPart, isIdentifierStart } from "./cursor.js";
+import {
+	type CursorMark,
+	type Diagnostic,
+	defined,
+	type OffsetRange,
+	type Position,
+	type Range,
+	SourceCursor,
+} from "@nyaa-lexicon/protocol";
+import {
+	isDigit,
+	isExponent,
+	isHorizontalSpace,
+	isIdentifierPart,
+	isIdentifierStart,
+	isNumberPart,
+	isSign,
+} from "./characters.js";
 
 export type TokenKind = "identifier" | "number" | "string" | "character" | "comment" | "newline" | "punctuation";
 
@@ -15,6 +31,49 @@ export interface Token {
 	codeBefore?: boolean;
 	/** Whether code follows the comment on its last line. */
 	codeAfter?: boolean;
+	/** Whether a splice or a removed branch sits between the previous kept token and this one. */
+	hiddenBefore?: boolean;
+	/** Backslash-newlines inside the token, which its `text` leaves out. */
+	splices?: OffsetRange[];
+	/** On a preprocessing directive's line, so no bracket or statement of the code around it. */
+	directive?: boolean;
+	/** The innermost kept alternative around it; each links the one around it. */
+	alternative?: Alternative;
+}
+
+/** One branch of an `#if` group whose branches are all kept; its declarations exclude the others'. */
+export interface Alternative {
+	group: number;
+	branch: number;
+	outer?: Alternative;
+}
+
+/** The branch `left` takes of a group where `right` takes another; undefined when the chains agree. */
+export function divergence(left: Alternative | undefined, right: Alternative | undefined): Alternative | undefined {
+	const taken = new Map<number, number>();
+	for (let current = right; current !== undefined; current = current.outer) taken.set(current.group, current.branch);
+	for (let current = left; current !== undefined; current = current.outer) {
+		const branch = taken.get(current.group);
+		if (branch !== undefined && branch !== current.branch) return current;
+	}
+	return undefined;
+}
+
+/** Whether two chains of alternatives take different branches of one group, so never both hold. */
+export function exclusive(left: Alternative | undefined, right: Alternative | undefined): boolean {
+	return divergence(left, right) !== undefined;
+}
+
+/** Whether a chain of alternatives lies inside some branch of `group`. */
+export function withinGroup(chain: Alternative | undefined, group: number): boolean {
+	for (let current = chain; current !== undefined; current = current.outer) if (current.group === group) return true;
+	return false;
+}
+
+/** A token's characters read so far, splices left out, and where each splice was. */
+interface Spelling {
+	text: string;
+	splices: OffsetRange[];
 }
 
 export interface TokenizedSource {
@@ -36,11 +95,20 @@ interface ConditionalBranch {
 	end: number;
 }
 
+interface AlternativeSpan extends ConditionalBranch {
+	group: number;
+	branch: number;
+}
+
 interface ConditionalGroup {
 	ifIndex: number;
 	branches: ConditionalBranch[];
 	parent: ConditionalGroup | undefined;
 	closed: boolean;
+	/** Past its `#endif` line. */
+	end: number;
+	/** The brackets its kept branches leave unmatched, once resolved. */
+	kept?: string[];
 }
 
 const OPERATORS = [
@@ -74,7 +142,20 @@ const OPERATORS = [
 	"##",
 ];
 
+const OPERATOR_STARTS: ReadonlySet<string> = new Set(OPERATORS.map((operator) => operator[0] as string));
+
 const STRING_PREFIXES = ["u8R", "u8", "uR", "UR", "LR", "R", "u", "U", "L"];
+
+const PREFIX_STARTS: ReadonlySet<string> = new Set(STRING_PREFIXES.map((prefix) => prefix[0] as string));
+
+/** Each closing bracket's opener. */
+const CLOSING: ReadonlyMap<string, string> = new Map([
+	[")", "("],
+	["]", "["],
+	["}", "{"],
+]);
+
+const BRACKETS: ReadonlySet<string> = new Set(["(", "[", "{", ")", "]", "}"]);
 
 /** Not code, so a comment after it has none before it. */
 const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
@@ -83,34 +164,18 @@ function pointRange(start: Position, end: Position): Range {
 	return { start, end };
 }
 
-function tokenFrom(
-	kind: TokenKind,
-	text: string,
-	value: string,
-	start: Position,
-	end: Position,
-	startOffset: number,
-	endOffset: number,
-): Token {
-	return { kind, text, value, start, end, startOffset, endOffset };
-}
-
 function diagnostic(message: string, start: Position, end: Position): Diagnostic {
 	return { severity: "error", message, range: pointRange(start, end) };
 }
 
-function isDigit(character: string): boolean {
-	return /^[0-9]$/.test(character);
-}
-
-function isNumberPart(character: string): boolean {
-	return /^[A-Za-z0-9_'.]$/.test(character);
-}
-
-function prefixAt(cursor: Cursor): string | null {
-	for (const prefix of STRING_PREFIXES) {
-		if (cursor.startsWith(prefix) && cursor.peek(prefix.length) === '"') return prefix;
-		if (cursor.startsWith(prefix) && cursor.peek(prefix.length) === "'") return prefix;
+/** A literal's encoding prefix and the quote after it, read through splices. */
+function prefixAt(cursor: SourceCursor): { prefix: string; quote: string } | null {
+	const first = cursor.peek();
+	if (!PREFIX_STARTS.has(first) && first !== '"' && first !== "'") return null;
+	const ahead = spelledAhead(cursor, 4);
+	for (const prefix of ["", ...STRING_PREFIXES]) {
+		const quote = ahead[prefix.length] ?? "";
+		if (ahead.startsWith(prefix) && (quote === '"' || quote === "'")) return { prefix, quote };
 	}
 	return null;
 }
@@ -147,132 +212,204 @@ function decodeString(value: string): string {
 }
 
 /** A CRLF carriage return ends the line, so it is not comment text. */
-function endsLine(cursor: Cursor): boolean {
+function endsLine(cursor: SourceCursor): boolean {
 	return cursor.peek() === "\n" || (cursor.peek() === "\r" && cursor.peek(1) === "\n");
 }
 
-/** Backslash-newline continues a line comment onto the next line. */
-function continuesLine(cursor: Cursor): boolean {
+/** Backslash-newline, deleted before tokenizing. */
+function continuesLine(cursor: SourceCursor): boolean {
 	if (cursor.peek() !== "\\") return false;
 	return cursor.peek(1) === "\n" || (cursor.peek(1) === "\r" && cursor.peek(2) === "\n");
 }
 
-function readLineComment(cursor: Cursor): string {
-	let value = cursor.next();
-	value += cursor.next();
-	while (cursor.good() && !endsLine(cursor)) {
-		if (continuesLine(cursor)) {
-			value += cursor.next();
-			if (cursor.peek() === "\r") value += cursor.next();
-		}
-		value += cursor.next();
+/** Past the backslash-newline `continuesLine` saw. */
+function takeSplice(cursor: SourceCursor): void {
+	cursor.next();
+	if (cursor.peek() === "\r") cursor.next();
+	cursor.next();
+}
+
+/** Past a splice the token goes on after, into `spelling`; false and unmoved otherwise. */
+function spliceInto(cursor: SourceCursor, spelling: Spelling, continues: (character: string) => boolean): boolean {
+	if (!continuesLine(cursor)) return false;
+	const splice = cursor.mark();
+	takeSplice(cursor);
+	if (continues(cursor.peek())) {
+		spelling.splices.push({ start: splice.offset, end: cursor.offset });
+		return true;
 	}
-	return value;
+	cursor.rewind(splice);
+	return false;
 }
 
-function readBlockComment(cursor: Cursor): { value: string; closed: boolean } {
-	let value = cursor.next();
-	value += cursor.next();
-	while (cursor.good() && !cursor.startsWith("*/")) value += cursor.next();
-	if (!cursor.startsWith("*/")) return { value, closed: false };
-	value += cursor.next();
-	value += cursor.next();
-	return { value, closed: true };
+/** Characters while `part` holds, through splices. */
+function readSpelled(cursor: SourceCursor, spelling: Spelling, part: (character: string) => boolean): void {
+	let guard = -1;
+	while (cursor.good()) {
+		if (cursor.offset <= guard) throw new Error("token scan failed to advance");
+		guard = cursor.offset;
+		if (spliceInto(cursor, spelling, part)) continue;
+		if (!part(cursor.peek())) return;
+		spelling.text += cursor.next();
+	}
 }
 
-function readRawString(cursor: Cursor, prefix: string): { text: string; value: string; closed: boolean } {
+/** Past any splices at the cursor, each recorded. */
+function takeSplices(cursor: SourceCursor, splices: OffsetRange[]): void {
+	while (continuesLine(cursor)) {
+		const at = cursor.offset;
+		takeSplice(cursor);
+		splices.push({ start: at, end: cursor.offset });
+	}
+}
+
+/** Past `text`, which `spelledAhead` saw, and the splices inside it. */
+function takeSpelled(cursor: SourceCursor, text: string, splices: OffsetRange[]): void {
+	for (const expected of text) {
+		takeSplices(cursor, splices);
+		if (cursor.peek() !== expected) return;
+		cursor.next();
+	}
+}
+
+/** Up to the next `count` characters, splices left out. */
+function spelledAhead(cursor: SourceCursor, count: number): string {
 	let text = "";
-	for (const _character of prefix) text += cursor.next();
-	text += cursor.next();
-	let delimiter = "";
-	while (cursor.good() && cursor.peek() !== "(") {
-		delimiter += cursor.next();
-		if (delimiter.length > 16) return { text, value: delimiter, closed: false };
+	let at = 0;
+	let guard = -1;
+	while (text.length < count) {
+		if (at <= guard) throw new Error("spelling scan failed to advance");
+		guard = at;
+		const character = cursor.peek(at);
+		if (character === "") break;
+		const newline =
+			cursor.peek(at + 1) === "\n" ? 2 : cursor.peek(at + 1) === "\r" && cursor.peek(at + 2) === "\n" ? 3 : 0;
+		if (character === "\\" && newline > 0) {
+			at += newline;
+			continue;
+		}
+		text += character;
+		at += character.length;
 	}
-	if (cursor.peek() !== "(") return { text, value: delimiter, closed: false };
-	text += cursor.next();
-	let value = "";
+	return text;
+}
+
+function readLineComment(cursor: SourceCursor): void {
+	cursor.take("//");
+	let guard = -1;
+	while (cursor.good() && !endsLine(cursor)) {
+		if (cursor.offset <= guard) throw new Error("line comment scan failed to advance");
+		guard = cursor.offset;
+		if (continuesLine(cursor)) takeSplice(cursor);
+		else cursor.next();
+	}
+}
+
+/** Whether the comment closes. */
+function readBlockComment(cursor: SourceCursor): boolean {
+	cursor.take("/*");
+	let guard = -1;
+	while (cursor.good() && !cursor.startsWith("*/")) {
+		if (cursor.offset <= guard) throw new Error("block comment scan failed to advance");
+		guard = cursor.offset;
+		cursor.next();
+	}
+	return cursor.take("*/");
+}
+
+function readRawString(
+	cursor: SourceCursor,
+	prefix: string,
+	splices: OffsetRange[],
+): { value: string; closed: boolean } {
+	takeSpelled(cursor, `${prefix}"`, splices);
+	const delimiterFrom = cursor.mark();
+	let delimiterGuard = -1;
+	while (cursor.good() && cursor.peek() !== "(") {
+		if (cursor.offset <= delimiterGuard) throw new Error("raw string delimiter scan failed to advance");
+		delimiterGuard = cursor.offset;
+		cursor.next();
+		if (cursor.offset - delimiterFrom.offset > 16) return { value: cursor.textSince(delimiterFrom), closed: false };
+	}
+	const delimiter = cursor.textSince(delimiterFrom);
+	if (cursor.peek() !== "(") return { value: delimiter, closed: false };
+	cursor.next();
+	const contentFrom = cursor.mark();
 	let guard = -1;
 	while (cursor.good()) {
 		if (cursor.offset <= guard) throw new Error("raw string scan failed to advance");
 		guard = cursor.offset;
 		if (cursor.peek() === ")") {
-			const mark = cursor.mark();
-			let candidate = cursor.next();
-			let matches = true;
-			for (const character of delimiter) {
-				if (cursor.peek() !== character) matches = false;
-				candidate += cursor.next();
+			const close = cursor.mark();
+			cursor.next();
+			if (cursor.take(delimiter) && cursor.peek() === '"') {
+				const value = cursor.textOf(contentFrom.offset, close.offset);
+				cursor.next();
+				return { value, closed: true };
 			}
-			if (matches && cursor.peek() === '"') {
-				candidate += cursor.next();
-				text += candidate;
-				return { text, value, closed: true };
-			}
-			cursor.rewind(mark);
+			cursor.rewind(close);
 		}
-		const character = cursor.next();
-		text += character;
-		value += character;
+		cursor.next();
 	}
-	return { text, value, closed: false };
+	return { value: cursor.textSince(contentFrom), closed: false };
 }
 
-function readQuoted(cursor: Cursor, prefix: string): { text: string; value: string; closed: boolean } {
-	let text = "";
-	for (const _character of prefix) text += cursor.next();
-	const quote = cursor.next();
-	text += quote;
+function readQuoted(
+	cursor: SourceCursor,
+	prefix: string,
+	quote: string,
+	splices: OffsetRange[],
+): { value: string; closed: boolean } {
+	takeSpelled(cursor, `${prefix}${quote}`, splices);
 	let value = "";
+	let guard = -1;
 	while (cursor.good()) {
+		if (cursor.offset <= guard) throw new Error("quoted literal scan failed to advance");
+		guard = cursor.offset;
 		if (cursor.peek() === quote) {
-			text += cursor.next();
-			return { text, value: decodeString(value), closed: true };
+			cursor.next();
+			return { value: decodeString(value), closed: true };
 		}
-		if (cursor.peek() === "\n") return { text, value: decodeString(value), closed: false };
+		if (cursor.peek() === "\n") return { value: decodeString(value), closed: false };
+		if (continuesLine(cursor)) {
+			takeSplices(cursor, splices);
+			continue;
+		}
 		const character = cursor.next();
-		text += character;
-		if (character === "\\") {
-			if (!cursor.good()) return { text, value: decodeString(value), closed: false };
-			// Backslash-newline splices before tokenizing, so the string continues on the next line.
-			if (endsLine(cursor)) {
-				if (cursor.peek() === "\r") text += cursor.next();
-				text += cursor.next();
-				continue;
-			}
-			const escaped = cursor.next();
-			text += escaped;
-			value += character + escaped;
-		} else {
+		if (character !== "\\") {
 			value += character;
+			continue;
 		}
+		// Splices go before escapes: `\\` then a line break escapes what follows the break.
+		takeSplices(cursor, splices);
+		if (cursor.good()) value += character + cursor.next();
 	}
-	return { text, value: decodeString(value), closed: false };
+	return { value: decodeString(value), closed: false };
 }
 
-function readNumber(cursor: Cursor): string {
-	let value = "";
-	if (cursor.peek() === ".") value += cursor.next();
-	while (cursor.good() && isNumberPart(cursor.peek())) value += cursor.next();
-	return value;
+/** A pp-number: digits, name characters, separators, periods, and a sign after an exponent letter. */
+function readNumber(cursor: SourceCursor, spelling: Spelling): void {
+	if (cursor.peek() === ".") spelling.text += cursor.next();
+	readSpelled(
+		cursor,
+		spelling,
+		(character) => isNumberPart(character) || (isSign(character) && isExponent(spelling.text.at(-1) ?? "")),
+	);
 }
 
-function longestOperator(cursor: Cursor): string | null {
-	for (const operator of OPERATORS) if (cursor.startsWith(operator)) return operator;
+function longestOperator(cursor: SourceCursor): string | null {
+	if (!OPERATOR_STARTS.has(cursor.peek())) return null;
+	const next = spelledAhead(cursor, 4);
+	for (const operator of OPERATORS) if (next.startsWith(operator)) return operator;
 	return null;
 }
 
-function addToken(
-	tokens: Token[],
-	kind: TokenKind,
-	text: string,
-	value: string,
-	start: Position,
-	end: Position,
-	startOffset: number,
-	endOffset: number,
-): void {
-	tokens.push(tokenFrom(kind, text, value, start, end, startOffset, endOffset));
+/** The characters of `operator`, which `longestOperator` saw ahead, through splices. */
+function readOperator(cursor: SourceCursor, spelling: Spelling, operator: string): void {
+	for (const expected of operator) {
+		spliceInto(cursor, spelling, (character) => character === expected);
+		spelling.text += cursor.next();
+	}
 }
 
 /** A token's last line; one ending at a line's start ends on the line before. */
@@ -312,102 +449,81 @@ function blankLinesOf(tokens: readonly Token[], spliced: readonly number[], line
 }
 
 export function tokenize(text: string, module?: string): TokenizedSource {
-	const cursor = new Cursor(text);
+	const cursor = new SourceCursor(text);
 	const tokens: Token[] = [];
 	const spliced: number[] = [];
 	const diagnostics: Diagnostic[] = [];
+	let splicedBefore = false;
+	const emit = (kind: TokenKind, from: CursorMark, value?: string, spelling?: Spelling) => {
+		const span = cursor.span(from);
+		const text = spelling?.text ?? cursor.textSince(from);
+		const token: Token = {
+			kind,
+			text,
+			value: value ?? text,
+			start: span.start,
+			end: span.end,
+			startOffset: span.startOffset,
+			endOffset: span.endOffset,
+		};
+		if (splicedBefore) token.hiddenBefore = true;
+		if (spelling !== undefined && spelling.splices.length > 0) token.splices = spelling.splices;
+		splicedBefore = false;
+		tokens.push(token);
+	};
+	const spell = (): Spelling => ({ text: "", splices: [] });
+	const unterminated = (message: string, from: CursorMark) =>
+		diagnostics.push(diagnostic(message, cursor.span(from).start, cursor.position));
 	if (cursor.peek() === BYTE_ORDER_MARK) cursor.next();
 	while (cursor.good()) {
-		const before = cursor.offset;
-		const start = cursor.position;
-		const startOffset = cursor.offset;
-		if (
-			cursor.peek() === "\\" &&
-			(cursor.peek(1) === "\n" || (cursor.peek(1) === "\r" && cursor.peek(2) === "\n"))
-		) {
-			spliced.push(start.line);
+		const from = cursor.mark();
+		const character = cursor.peek();
+		if (continuesLine(cursor)) {
+			spliced.push(from.line);
+			takeSplice(cursor);
+			splicedBefore = true;
+		} else if (character === "\n") {
 			cursor.next();
-			if (cursor.peek() === "\r") cursor.next();
-			cursor.next();
-		} else if (cursor.peek() === "\n") {
-			const value = cursor.next();
-			addToken(tokens, "newline", value, value, start, cursor.position, startOffset, cursor.offset);
-		} else if (
-			cursor.peek() === " " ||
-			cursor.peek() === "\t" ||
-			cursor.peek() === "\r" ||
-			cursor.peek() === "\f"
-		) {
-			cursor.skipHorizontalWhitespace();
+			emit("newline", from);
+		} else if (isHorizontalSpace(character)) {
+			cursor.readWhile(isHorizontalSpace);
 		} else if (cursor.startsWith("//")) {
-			const value = readLineComment(cursor);
-			addToken(tokens, "comment", value, value, start, cursor.position, startOffset, cursor.offset);
+			readLineComment(cursor);
+			emit("comment", from);
 		} else if (cursor.startsWith("/*")) {
-			const result = readBlockComment(cursor);
-			addToken(tokens, "comment", result.value, result.value, start, cursor.position, startOffset, cursor.offset);
-			if (!result.closed) diagnostics.push(diagnostic("Unterminated block comment.", start, cursor.position));
+			const closed = readBlockComment(cursor);
+			emit("comment", from);
+			if (!closed) unterminated("Unterminated block comment.", from);
 		} else {
-			const prefix = prefixAt(cursor);
-			const raw = prefix?.endsWith("R") ?? false;
-			if (prefix !== null && raw) {
-				const result = readRawString(cursor, prefix);
-				addToken(
-					tokens,
-					"string",
-					result.text,
-					result.value,
-					start,
-					cursor.position,
-					startOffset,
-					cursor.offset,
-				);
+			const literal = prefixAt(cursor);
+			if (literal !== null) {
+				const { prefix, quote } = literal;
+				const splices: OffsetRange[] = [];
+				const raw = prefix.endsWith("R") && quote === '"';
+				const result = raw
+					? readRawString(cursor, prefix, splices)
+					: readQuoted(cursor, prefix, quote, splices);
+				const text = cursor.textSince(from);
+				emit(quote === "'" ? "character" : "string", from, result.value, { text, splices });
 				if (!result.closed)
-					diagnostics.push(diagnostic("Unterminated raw string literal.", start, cursor.position));
-			} else if (prefix !== null) {
-				const quote = cursor.peek(prefix.length);
-				const result = readQuoted(cursor, prefix);
-				addToken(
-					tokens,
-					quote === "'" ? "character" : "string",
-					result.text,
-					result.value,
-					start,
-					cursor.position,
-					startOffset,
-					cursor.offset,
-				);
-				if (!result.closed)
-					diagnostics.push(diagnostic("Unterminated string literal.", start, cursor.position));
-			} else if (cursor.peek() === '"' || cursor.peek() === "'") {
-				const quote = cursor.peek();
-				const result = readQuoted(cursor, "");
-				addToken(
-					tokens,
-					quote === "'" ? "character" : "string",
-					result.text,
-					result.value,
-					start,
-					cursor.position,
-					startOffset,
-					cursor.offset,
-				);
-				if (!result.closed)
-					diagnostics.push(diagnostic("Unterminated string literal.", start, cursor.position));
-			} else if (isIdentifierStart(cursor.peek())) {
-				const value = cursor.readWhile((character) => isIdentifierPart(character));
-				const kind: TokenKind = value === "true" || value === "false" ? "identifier" : "identifier";
-				addToken(tokens, kind, value, value, start, cursor.position, startOffset, cursor.offset);
-			} else if (isDigit(cursor.peek()) || (cursor.peek() === "." && isDigit(cursor.peek(1)))) {
-				const value = readNumber(cursor);
-				addToken(tokens, "number", value, value, start, cursor.position, startOffset, cursor.offset);
+					unterminated(raw ? "Unterminated raw string literal." : "Unterminated string literal.", from);
+			} else if (isIdentifierStart(character)) {
+				const spelling = spell();
+				readSpelled(cursor, spelling, isIdentifierPart);
+				emit("identifier", from, undefined, spelling);
+			} else if (isDigit(character) || (character === "." && isDigit(spelledAhead(cursor, 2)[1] ?? ""))) {
+				const spelling = spell();
+				readNumber(cursor, spelling);
+				emit("number", from, undefined, spelling);
 			} else {
+				const spelling = spell();
 				const operator = longestOperator(cursor);
-				const value = operator ?? cursor.next();
-				for (const _character of operator ?? "") cursor.next();
-				addToken(tokens, "punctuation", value, value, start, cursor.position, startOffset, cursor.offset);
+				if (operator === null) spelling.text += cursor.next();
+				else readOperator(cursor, spelling, operator);
+				emit("punctuation", from, undefined, spelling);
 			}
 		}
-		if (cursor.offset <= before) throw new Error("tokenizer failed to advance");
+		if (cursor.offset <= from.offset) throw new Error("tokenizer failed to advance");
 	}
 	markTrivia(tokens);
 	const blankLines = blankLinesOf(tokens, spliced, cursor.line + (cursor.column > 0 ? 1 : 0));
@@ -477,40 +593,38 @@ function firstConditionIsZero(tokens: Token[], directive: ConditionalDirective):
 	return next >= directive.end;
 }
 
-/** An unclosed group anywhere above leaves a group's branches as they are. */
-function closedThroughout(group: ConditionalGroup): boolean {
-	for (let current: ConditionalGroup | undefined = group; current !== undefined; current = current.parent) {
-		if (!current.closed) return false;
-	}
-	return true;
+/** Adds a bracket to a run, cancelling it against the opener it closes; a balanced run is empty. */
+function extendRun(run: string[], bracket: string): void {
+	const opener = CLOSING.get(bracket);
+	if (opener !== undefined && run.at(-1) === opener) run.pop();
+	else run.push(bracket);
 }
 
-function branchIsWhole(
+/**
+ * The brackets a branch leaves unmatched. A nested group, already resolved, adds what its kept
+ * branches leave, so no token is read twice.
+ */
+function bracketRun(
 	tokens: Token[],
 	branch: ConditionalBranch,
 	directiveTokens: Set<number>,
-	removed: Set<number>,
-): boolean {
-	const expected: string[] = [];
-	const closing = new Map([
-		[")", "("],
-		["]", "["],
-		["}", "{"],
-	]);
+	groupAt: ReadonlyMap<number, ConditionalGroup>,
+): string[] {
+	const run: string[] = [];
 	for (let index = branch.start; index < branch.end; index++) {
-		if (directiveTokens.has(index) || removed.has(index)) continue;
+		const inner = groupAt.get(index);
+		if (inner?.kept !== undefined) {
+			for (const bracket of inner.kept) extendRun(run, bracket);
+			index = inner.end - 1;
+			continue;
+		}
+		if (directiveTokens.has(index)) continue;
 		// A string or comment spelling a bracket is content, not a delimiter.
 		const token = tokens[index];
 		const value = token?.kind === "punctuation" ? token.value : "";
-		if (value === "(" || value === "[" || value === "{") {
-			expected.push(value);
-			continue;
-		}
-		const opener = closing.get(value ?? "");
-		if (opener === undefined) continue;
-		if (expected.pop() !== opener) return false;
+		if (BRACKETS.has(value)) extendRun(run, value);
 	}
-	return expected.length === 0;
+	return run;
 }
 
 function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[]): Token[] {
@@ -532,6 +646,7 @@ function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[]): Token[
 				branches: [{ start: directive.end, end: tokens.length }],
 				parent: stack.at(-1),
 				closed: false,
+				end: tokens.length,
 			};
 			groups.push(group);
 			stack.push(group);
@@ -563,6 +678,7 @@ function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[]): Token[
 			}
 			(group.branches.at(-1) as ConditionalBranch).end = directive.start;
 			group.closed = true;
+			group.end = directive.end;
 		}
 	}
 	for (const group of stack) {
@@ -572,21 +688,87 @@ function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[]): Token[
 			range: rangeOfToken(tokens[group.ifIndex] as Token),
 		});
 	}
-	const removed = new Set<number>();
+	// Innermost groups first, so each branch reads a nested group through its summary.
+	const groupAt = new Map<number, ConditionalGroup>();
+	const removedSpans: ConditionalBranch[] = [];
+	const alternativeSpans: AlternativeSpan[] = [];
+	// An unclosed group anywhere above leaves a group's branches as they are.
+	const closedThroughout = new Set<ConditionalGroup>();
+	for (const group of groups)
+		if (group.closed && (group.parent === undefined || closedThroughout.has(group.parent)))
+			closedThroughout.add(group);
 	for (const group of groups.toReversed()) {
-		if (!closedThroughout(group)) continue;
+		groupAt.set(group.ifIndex, group);
+		if (!closedThroughout.has(group)) continue;
 		const directive = directiveByIndex.get(group.ifIndex) as ConditionalDirective;
 		const activeBranch = firstConditionIsZero(tokens, directive) ? 1 : 0;
-		const allWhole = group.branches.every((branch) => branchIsWhole(tokens, branch, directiveTokens, removed));
-		for (let branch = 0; branch < group.branches.length; branch++) {
-			if ((allWhole && !(activeBranch === 1 && branch === 0)) || (!allWhole && branch === activeBranch)) continue;
-			const segment = group.branches[branch] as ConditionalBranch;
-			for (let index = segment.start; index < segment.end; index++) {
-				if (!protectedTokens.has(index)) removed.add(index);
+		const runs = group.branches.map((branch) => bracketRun(tokens, branch, directiveTokens, groupAt));
+		const allWhole = runs.every((run) => run.length === 0);
+		const kept: string[] = [];
+		const keptBranches: number[] = [];
+		for (const [branch, segment] of group.branches.entries()) {
+			const keep = allWhole ? !(activeBranch === 1 && branch === 0) : branch === activeBranch;
+			if (!keep) {
+				removedSpans.push(segment);
+				continue;
 			}
+			keptBranches.push(branch);
+			for (const bracket of runs[branch] ?? []) extendRun(kept, bracket);
 		}
+		group.kept = kept;
+		if (keptBranches.length < 2) continue;
+		for (const branch of keptBranches)
+			alternativeSpans.push({ ...(group.branches[branch] as ConditionalBranch), group: group.ifIndex, branch });
 	}
-	return tokens.filter((_token, index) => !removed.has(index));
+	for (const index of directiveTokens) (tokens[index] as Token).directive = true;
+	const removed = spanned(tokens.length, removedSpans);
+	markAlternatives(tokens, alternativeSpans);
+	const kept: Token[] = [];
+	let hidden = false;
+	for (const [index, token] of tokens.entries()) {
+		if (removed[index] === 1 && !protectedTokens.has(index)) {
+			hidden ||= token.kind !== "newline" || token.hiddenBefore === true;
+			continue;
+		}
+		if (hidden) token.hiddenBefore = true;
+		hidden = false;
+		kept.push(token);
+	}
+	return kept;
+}
+
+/** Which of `count` indexes some span covers, 1 or 0, in one sweep. */
+function spanned(count: number, spans: readonly ConditionalBranch[]): Uint8Array {
+	const starts = new Int32Array(count + 1);
+	for (const span of spans) {
+		starts[span.start] = (starts[span.start] as number) + 1;
+		starts[span.end] = (starts[span.end] as number) - 1;
+	}
+	const covered = new Uint8Array(count);
+	let depth = 0;
+	for (let index = 0; index < count; index++) {
+		depth += starts[index] as number;
+		covered[index] = depth > 0 ? 1 : 0;
+	}
+	return covered;
+}
+
+/** Gives each token the innermost kept alternative around it, in one sweep over nested spans. */
+function markAlternatives(tokens: Token[], spans: AlternativeSpan[]): void {
+	if (spans.length === 0) return;
+	spans.sort((left, right) => left.start - right.start || right.end - left.end);
+	const open: Array<{ end: number; alternative: Alternative }> = [];
+	let next = 0;
+	for (let index = 0; index < tokens.length; index++) {
+		while (open.length > 0 && (open.at(-1) as { end: number }).end <= index) open.pop();
+		while (next < spans.length && (spans[next] as AlternativeSpan).start <= index) {
+			const { end, group, branch } = spans[next] as AlternativeSpan;
+			open.push({ end, alternative: { group, branch, ...defined({ outer: open.at(-1)?.alternative }) } });
+			next++;
+		}
+		const alternative = open.at(-1)?.alternative;
+		if (alternative !== undefined) (tokens[index] as Token).alternative = alternative;
+	}
 }
 
 export function isSignificant(token: Token): boolean {
