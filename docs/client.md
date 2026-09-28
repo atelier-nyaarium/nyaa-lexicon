@@ -300,7 +300,8 @@ The owner of that floor is exported for a consumer that wants the same judgement
 `runtimeVerdict(versions?)` answering `bun`, `belowFloor` with the floor, or `notBun` naming what
 it is, and `refuseRuntime(what)`, the sentence lexicon's own entry points print before exiting,
 or null when the runtime is accepted. `bundleStamp(root)` and `bundleFiles(root)` are the bundle
-identity the lock carries, described under Compatibility in `docs/daemon-protocol.md`.
+identity the lock carries, and `bundleWrittenAt(root)` the time that orders two bundles of one
+build, described under Compatibility in `docs/daemon-protocol.md`.
 
 Every bun process lexicon starts, daemon and providers alike, begins with `bunCommand(runtime, host)`:
 the executable, `--config` and `--tsconfig-override` naming lexicon's own settings files, then

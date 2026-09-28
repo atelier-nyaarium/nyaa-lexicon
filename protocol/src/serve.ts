@@ -5,8 +5,9 @@
 
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 import type { z } from "zod";
-import type { METHOD_SCHEMAS, ProviderMethod, ProviderNotification } from "./methods.js";
-import { NOTIFICATION_SCHEMAS, PROVIDER_METHODS, PROVIDER_NOTIFICATIONS } from "./methods.js";
+import { defined } from "./defined.js";
+import type { METHOD_SCHEMAS, ProviderEvent, ProviderMethod, ProviderNotification, ProviderPhase } from "./methods.js";
+import { EVENT_SCHEMAS, NOTIFICATION_SCHEMAS, PROVIDER_METHODS, PROVIDER_NOTIFICATIONS } from "./methods.js";
 import type { MoveEditsResponse } from "./move.js";
 import { withOccurrences } from "./occurrences.js";
 import type { FileFacts, ImportResolution } from "./project.js";
@@ -35,12 +36,41 @@ export type ProviderNotificationHandlers = {
 	[N in ProviderNotification]?: (params: z.infer<(typeof NOTIFICATION_SCHEMAS)[N]>) => void;
 };
 
+/**
+ * What a provider tells core unasked. Fire-and-forget: callable from any turn, a timer's included,
+ * and silent once core is gone.
+ */
+export interface ProviderEvents {
+	providerPhase(phase: ProviderPhase["phase"], label?: string): void;
+}
+
+////////////////////////////////
+//  Constants
+
+/** Who hears the sender once a handler table is served; the kit registers its store here. */
+const servedHooks = new WeakMap<object, (events: ProviderEvents) => void>();
+
 ////////////////////////////////
 //  Functions & Helpers
 
 /** A parse answer shaped enough to settle; anything else is left for the schema to refuse. */
 function hasDeclarations(answer: unknown): answer is FileFacts {
 	return typeof answer === "object" && answer !== null && Array.isArray((answer as FileFacts).declarations);
+}
+
+/** Hands `handlers`' owner the sender once `serveProvider` serves them, before any request. */
+export function whenServed(handlers: object, hook: (events: ProviderEvents) => void): void {
+	servedHooks.set(handlers, hook);
+}
+
+function eventsOver(connection: Connection): ProviderEvents {
+	const send = (event: ProviderEvent, params: unknown) => {
+		try {
+			// A closed connection means core is gone, and nobody is left to tell.
+			connection.sendNotification(event, EVENT_SCHEMAS[event].parse(params)).catch(() => {});
+		} catch {}
+	};
+	return { providerPhase: (phase, label) => send("providerPhase", defined({ phase, label })) };
 }
 
 /** Bad request, before any handler. */
@@ -55,8 +85,14 @@ function refuseUnrepresentable(params: unknown): void {
 /**
  * Handlers run one at a time, in arrival order, async ones included. A probe's restore therefore
  * lands before anything sent after it, even a request the daemon sent once the probe timed out.
+ * Answers the provider's sender, which a hook registered through `whenServed` also receives.
  */
-export function serveProvider(connection: Connection, handlers: ProviderHandlers & ProviderNotificationHandlers): void {
+export function serveProvider(
+	connection: Connection,
+	handlers: ProviderHandlers & ProviderNotificationHandlers,
+): ProviderEvents {
+	const events = eventsOver(connection);
+	servedHooks.get(handlers)?.(events);
 	let tail: Promise<unknown> = Promise.resolve();
 	const inTurn = <T>(work: () => T | Promise<T>): Promise<T> => {
 		const turn = tail.then(work);
@@ -95,16 +131,18 @@ export function serveProvider(connection: Connection, handlers: ProviderHandlers
 			}),
 		);
 	}
+	return events;
 }
 
-export function runProviderOnStdio(handlers: ProviderHandlers & ProviderNotificationHandlers): void {
+export function runProviderOnStdio(handlers: ProviderHandlers & ProviderNotificationHandlers): ProviderEvents {
 	const connection = createMessageConnection(
 		new StreamMessageReader(process.stdin),
 		new StreamMessageWriter(process.stdout),
 	);
-	serveProvider(connection, handlers);
+	const events = serveProvider(connection, handlers);
 	exitWhenClosed(process.stdin);
 	connection.listen();
+	return events;
 }
 
 /**

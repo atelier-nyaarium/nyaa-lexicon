@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashContent } from "@nyaa-lexicon/protocol";
 import type { MethodRequest, ProviderPort } from "../providerPort";
+import { journaledStep } from "../refactorStep";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
+import { TransactionManager } from "../transactions";
 import type { WorkspaceGate } from "../workspaceGate";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
@@ -219,5 +221,92 @@ describe("every indexing road takes the workspace gate", () => {
 		await held.holding;
 		await scanning;
 		expect(asked).toHaveLength(3);
+	});
+});
+
+describe("what a status says the index is doing", () => {
+	// Read while the work runs, since a status bar tells a busy index from an idle one.
+	it("names a scan and a batch with their counts, a refactor step by its kind, and nothing once idle", async () => {
+		put("a.fake", OLD);
+		put("b.fake", OLD);
+		const asked: string[] = [];
+		const park = { ...deferred(), holds: (request: MethodRequest<"parseFile">) => request.module === "b.fake" };
+		const service = serviceOver(recording(["a.fake", "b.fake"], asked, park));
+		const doing = () => service.indexStatus().activity;
+
+		const scanning = service.indexWorkspace();
+		await settle(() => asked.includes("full b.fake"));
+		const scan = doing();
+		park.release();
+		await scanning;
+		await service.upgradeRemaining();
+		const idle = doing();
+
+		Object.assign(park, deferred());
+		put("b.fake", NEW);
+		const batching = service.gate.exclusive(() =>
+			service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b-new" }]),
+		);
+		await settle(() => asked.filter((entry) => entry === "full b.fake").length === 2);
+		const batch = doing();
+		park.release();
+		await batching;
+
+		const planning = deferred();
+		const stepping = journaledStep<string>(
+			{
+				service,
+				transactions: new TransactionManager(store, root),
+				write: (work) => service.gate.exclusive(async () => work()),
+			},
+			{
+				kind: "rename",
+				hold: "joinOrOwn",
+				refuse: () => "refused",
+				succeed: () => "written",
+				plan: async () => {
+					await planning.promise;
+					return { done: "planned" };
+				},
+			},
+		);
+		await turns();
+		const step = doing();
+		planning.release();
+		await stepping;
+
+		expect({ scan, idle, batch, step, after: doing() }).toEqual({
+			scan: { kind: "scan", done: 1, total: 2 },
+			idle: null,
+			batch: { kind: "batch", done: 0, total: 1 },
+			step: { kind: "refactor", label: "rename" },
+			after: null,
+		});
+	});
+
+	// One edited file can hold the gate for minutes over the roots it brings, which a file count hides.
+	it("names and counts a batch's re-parse of many modules beyond its own files", async () => {
+		put(".gitignore", "gen/\n");
+		put("a.fake", OLD);
+		const generated = Array.from({ length: 12 }, (_, at) => `gen/f${String(at).padStart(2, "0")}.fake`);
+		for (const module of generated) put(module, OLD);
+		const asked: string[] = [];
+		const park = {
+			...deferred(),
+			holds: (request: MethodRequest<"parseFile">) => request.module === "gen/f05.fake",
+		};
+		const service = serviceOver(recording(["a.fake"], asked, park));
+		await service.indexWorkspace();
+
+		put(".gitignore", "");
+		const batching = service.gate.exclusive(() =>
+			service.applyBatch([{ kind: "changed", module: ".gitignore", contentHash: hashContent("") }]),
+		);
+		await settle(() => asked.includes("full gen/f05.fake"));
+		const batch = service.indexStatus().activity;
+		park.release();
+		await batching;
+
+		expect(batch).toEqual({ kind: "batch", label: "re-parsing modules", done: 5, total: 12 });
 	});
 });

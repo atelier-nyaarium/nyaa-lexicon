@@ -6,11 +6,25 @@ import type { Clock, TimerHandle } from "./clock.js";
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Rejects, naming `what`, when `work` has not settled within `ms`. */
-export function withTimeout<T>(clock: Clock, work: Promise<T>, ms: number, what: string): Promise<T> {
+/**
+ * Rejects, naming `what`, when `work` has not settled within `ms`. Each time the budget runs out,
+ * `extend` may grant more milliseconds, or name the error to reject with instead.
+ */
+export function withTimeout<T>(
+	clock: Clock,
+	work: Promise<T>,
+	ms: number,
+	what: string,
+	extend: () => number | Error | null = () => null,
+): Promise<T> {
 	let timer: TimerHandle;
 	const bounded = new Promise<T>((_, reject) => {
-		timer = clock.setTimer(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+		const expire = () => {
+			const more = extend();
+			if (typeof more === "number") timer = clock.setTimer(expire, more);
+			else reject(more ?? new Error(`${what} timed out after ${ms}ms`));
+		};
+		timer = clock.setTimer(expire, ms);
 	});
 	return Promise.race([work, bounded]).finally(() => clock.clearTimer(timer));
 }

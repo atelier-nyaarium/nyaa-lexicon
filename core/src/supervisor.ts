@@ -8,14 +8,17 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { Writable } from "node:stream";
 import {
 	defined,
+	EVENT_SCHEMAS,
 	type FileFacts,
 	isCompatibleProtocol,
 	METHOD_SCHEMAS,
 	type ModuleAdmission,
 	type NOTIFICATION_SCHEMAS,
 	PROTOCOL_VERSION,
+	type ProviderEvent,
 	type ProviderMethod,
 	type ProviderNotification,
+	type ProviderStatus,
 	type ProviderTiers,
 	type ProviderWords,
 } from "@nyaa-lexicon/protocol";
@@ -61,6 +64,17 @@ export interface ProviderExit {
 	signal: string | null;
 }
 
+/** A provider's phase, written by the supervisor and by the provider's own `providerPhase`. */
+interface PhaseState {
+	phase: ProviderStatus["phase"];
+	/** The name the provider last gave with a phase. */
+	label?: string;
+	/** When it last said it is initializing. */
+	initializingSince?: number;
+	/** When it last left initializing, so a request the warmup held gets a whole budget after. */
+	warmedAt?: number;
+}
+
 interface RunningProvider {
 	claims: ProviderClaims;
 	tiers: ProviderTiers;
@@ -68,6 +82,8 @@ interface RunningProvider {
 	child: ChildProcess;
 	connection: MessageConnection;
 	queue: RequestQueue;
+	/** Shared with the process's notification handler, which updates it in place. */
+	status: PhaseState;
 	spec: ProviderSpec;
 	workspaceRoot: string;
 	/** This PROCESS, not this provider: a restart under the same id mints a new one. */
@@ -79,7 +95,7 @@ interface RunningProvider {
 }
 
 /** Spawned, not yet registered. */
-type StartingProcess = Pick<RunningProvider, "child" | "connection" | "queue">;
+type StartingProcess = Pick<RunningProvider, "child" | "connection" | "queue" | "status">;
 
 /** A provider outage is not a file parse failure. */
 export class ProviderUnavailableError extends Error {}
@@ -94,6 +110,9 @@ const MAX_RESPAWNS = 3;
 
 const RESPAWN_DELAY_MS = 500;
 
+/** How long a provider may stay initializing before its held requests read it as wedged. */
+export const INITIALIZING_CEILING_MS = 10 * 60_000;
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -104,6 +123,11 @@ function initializeParams(workspaceRoot: string): {
 	deny: string[];
 } {
 	return { workspaceRoot, protocolVersion: PROTOCOL_VERSION, deny: readScopeConfig(workspaceRoot).deny ?? [] };
+}
+
+/** An answered initialize makes a starting provider ready, unless it already said it is warming. */
+function answeredInitialize(status: PhaseState): void {
+	if (status.phase === "starting") status.phase = "ready";
 }
 
 /** A signal death has no code, and "code null" hides which signal it was. */
@@ -198,6 +222,7 @@ export class ProviderSupervisor implements ProviderPort {
 				running.connection.sendRequest("initialize", initializeParams(workspaceRoot)),
 				timeout,
 				"initialize",
+				() => this.warmingGrace(running, timeout, "initialize"),
 			);
 		} catch (error) {
 			// A child that answered nothing must not outlive its failed handshake as a zombie.
@@ -254,6 +279,7 @@ export class ProviderSupervisor implements ProviderPort {
 			deaths: 0,
 			stopping: false,
 		};
+		answeredInitialize(entry.status);
 		this.providers.set(claims.providerId, entry);
 		this.watchForExit(entry);
 		return claims;
@@ -285,9 +311,11 @@ export class ProviderSupervisor implements ProviderPort {
 			this.announceExit({ providerId: entry.claims.providerId, pid: entry.child.pid ?? null, code, signal });
 			current.deaths += 1;
 			if (current.deaths > MAX_RESPAWNS) {
+				current.status.phase = "down";
 				console.log(`provider ${entry.claims.providerId} died ${current.deaths} times; staying dead`);
 				return;
 			}
+			current.status.phase = "restarting";
 			console.log(
 				`provider ${entry.claims.providerId} ${describeExit(code, signal)}; respawning (${current.deaths} of ${MAX_RESPAWNS})`,
 			);
@@ -298,6 +326,28 @@ export class ProviderSupervisor implements ProviderPort {
 		if (entry.child.exitCode !== null || entry.child.signalCode !== null) {
 			onExit(entry.child.exitCode, entry.child.signalCode);
 		} else entry.child.once("exit", onExit);
+	}
+
+	/**
+	 * More time for a request whose budget ran out. A warming provider holds every request behind
+	 * its warmup, so the budget waits it out and starts over once it is ready. Past the ceiling the
+	 * provider is wedged: killed, so it respawns as any death does.
+	 */
+	private warmingGrace(
+		provider: Pick<RunningProvider, "status" | "child">,
+		budget: number,
+		what: string,
+	): number | Error | null {
+		const now = this.clock.now();
+		const { status } = provider;
+		if (status.phase === "initializing") {
+			const warming = now - (status.initializingSince ?? now);
+			if (warming < INITIALIZING_CEILING_MS) return Math.min(budget, INITIALIZING_CEILING_MS - warming);
+			provider.child.kill("SIGKILL");
+			return new ProviderUnavailableError(`${what}: provider initializing for over ${INITIALIZING_CEILING_MS}ms`);
+		}
+		const warmed = status.warmedAt === undefined ? budget : now - status.warmedAt;
+		return warmed < budget ? budget - warmed : null;
 	}
 
 	/** A respawn abandoned by teardown must never publish a child a stopped daemon cannot reap. */
@@ -312,12 +362,16 @@ export class ProviderSupervisor implements ProviderPort {
 		try {
 			running = this.spawnProcess(previous.spec, previous.workspaceRoot);
 			this.starting.add(running);
+			// The registered entry answers for the provider until the new process does.
+			previous.status.phase = "starting";
 			const timeout = previous.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+			const spawned = running;
 			const info = await withTimeout(
 				this.clock,
-				running.connection.sendRequest("initialize", initializeParams(previous.workspaceRoot)),
+				spawned.connection.sendRequest("initialize", initializeParams(previous.workspaceRoot)),
 				timeout,
 				"initialize",
+				() => this.warmingGrace(spawned, timeout, "initialize"),
 			);
 			words = METHOD_SCHEMAS.initialize.response.parse(info).words;
 		} catch (error) {
@@ -341,8 +395,9 @@ export class ProviderSupervisor implements ProviderPort {
 			);
 			previous.deaths += 1;
 			if (this.stillWanted(previous) && previous.deaths <= MAX_RESPAWNS) {
+				previous.status.phase = "restarting";
 				this.clock.setTimer(() => void this.respawn(previous), RESPAWN_DELAY_MS);
-			}
+			} else previous.status.phase = "down";
 			return;
 		}
 		// Re-checked across the handshake await: a stop that landed meanwhile owns the teardown.
@@ -352,6 +407,7 @@ export class ProviderSupervisor implements ProviderPort {
 			return;
 		}
 		const entry: RunningProvider = { ...previous, ...running, words, incarnation: this.incarnations++ };
+		answeredInitialize(entry.status);
 		this.providers.set(previous.claims.providerId, entry);
 		this.watchForExit(entry);
 		console.log(`provider ${previous.claims.providerId} respawned`);
@@ -368,6 +424,17 @@ export class ProviderSupervisor implements ProviderPort {
 			new StreamMessageReader(child.stdout),
 			new StreamMessageWriter(absorbingWrites(child.stdin)),
 		);
+		const status: PhaseState = { phase: "starting" };
+		// Told unasked; a shape this core cannot read is ignored.
+		connection.onNotification("providerPhase" satisfies ProviderEvent, (params: unknown) => {
+			const told = EVENT_SCHEMAS.providerPhase.safeParse(params);
+			if (!told.success) return;
+			const warming = status.phase === "initializing";
+			if (told.data.phase === "initializing" && !warming) status.initializingSince = this.clock.now();
+			if (told.data.phase === "ready" && warming) status.warmedAt = this.clock.now();
+			status.phase = told.data.phase;
+			if (told.data.label !== undefined) status.label = told.data.label;
+		});
 		connection.listen();
 
 		const queue = new RequestQueue();
@@ -380,7 +447,7 @@ export class ProviderSupervisor implements ProviderPort {
 		// process emits after it, so it can never again be an uncaught crash of the daemon.
 		child.on("error", (error) => die(new ProviderUnavailableError(`provider errored: ${error.message}`)));
 
-		return { child, connection, queue };
+		return { child, connection, queue, status };
 	}
 
 	////////////////////////////////
@@ -476,7 +543,13 @@ export class ProviderSupervisor implements ProviderPort {
 			let raw: unknown;
 			try {
 				// A death mid-request fails this caller through the queue, typed.
-				raw = await withTimeout(this.clock, provider.connection.sendRequest(method, params), timeout, method);
+				raw = await withTimeout(
+					this.clock,
+					provider.connection.sendRequest(method, params),
+					timeout,
+					method,
+					() => this.warmingGrace(provider, timeout, method),
+				);
 			} catch (error) {
 				// A transport write error can beat the exit event; a dead child retypes it so the
 				// failure never reads as the file's.
@@ -577,5 +650,18 @@ export class ProviderSupervisor implements ProviderPort {
 
 	running(): ProviderClaims[] {
 		return [...this.providers.values()].map((p) => p.claims);
+	}
+
+	providerStatuses(): ProviderStatus[] {
+		return [...this.providers.values()].map((provider) => {
+			const queued = provider.queue.stats();
+			return {
+				id: provider.claims.providerId,
+				language: provider.claims.language,
+				phase: provider.status.phase,
+				...defined({ label: provider.status.label }),
+				pending: queued.pending + (queued.running ? 1 : 0),
+			};
+		});
 	}
 }

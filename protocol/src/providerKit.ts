@@ -7,7 +7,7 @@ import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
 import { type ModuleValue, type StoreProvider, storeHandlersFor } from "./moduleStore.js";
 import type { ProjectModel } from "./project.js";
 import { type ReadPolicy, readPolicy } from "./readPolicy.js";
-import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
+import { type ProviderEvents, type ProviderHandlers, type ProviderNotificationHandlers, whenServed } from "./serve.js";
 import { shebangInterpreter } from "./shebang.js";
 import { readWorkspaceHead } from "./sourceFile.js";
 import type { Descriptor } from "./symbolId.js";
@@ -33,6 +33,8 @@ export interface ProviderMethods {
 	renameEdits(params: Request<"renameEdits">): Response<"renameEdits">;
 	moveEdits(params: Request<"moveEdits">): Response<"moveEdits">;
 	shutdown?(): void;
+	/** The sender for what the provider tells core unasked, once it is served. */
+	connected?(events: ProviderEvents): void;
 }
 
 export interface WalkOptions {
@@ -76,7 +78,7 @@ export function handlersFor<V extends ModuleValue, P, E>(
 	provider: ProviderMethods | StoreProvider<V, P, E>,
 ): ProviderHandlers & ProviderNotificationHandlers {
 	if ("store" in provider) return storeHandlersFor(provider);
-	return {
+	const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 		initialize: (params) =>
 			provider.initialize(params.workspaceRoot, readPolicy(params.workspaceRoot, params.deny)),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
@@ -92,6 +94,8 @@ export function handlersFor<V extends ModuleValue, P, E>(
 			return {};
 		},
 	};
+	whenServed(handlers, (events) => provider.connected?.(events));
+	return handlers;
 }
 
 export function projectDiagnostic(root: string, message: string): ProjectModel {

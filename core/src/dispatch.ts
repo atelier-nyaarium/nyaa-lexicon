@@ -35,7 +35,7 @@ export type { InsertOutcome, MoveOutcome, RenameStepOutcome, ReplaceOutcome } fr
 ////////////////////////////////
 //  Interfaces & Types
 
-type Effect = "read" | "write" | "staged";
+type Effect = "read" | "write" | "staged" | "status";
 
 type Run<M extends DaemonMethod> = (params: RequestOf<M>, gate: Gate) => Promise<ResponseOf<M>> | ResponseOf<M>;
 
@@ -64,6 +64,13 @@ const write = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("write",
 
 /** Takes the gate itself, in parts, through the one it is handed: for work that plans outside and writes inside. */
 const staged = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("staged", run);
+
+/**
+ * Takes no gate, so a status answer never waits behind a batch or a step. Its reads are one
+ * synchronous span, so they agree with each other; mid-batch they see a partial batch, as a shared
+ * read already sees a partial scan.
+ */
+const status = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("status", run);
 
 /** The service's gate in the two halves a handler takes, so no caller can supply a second one. */
 export function gateOf(gate: WorkspaceGate): Gate {
@@ -219,9 +226,9 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			(params) => service.usesFrom(params.symbolId, params.limit),
 		),
 		resolveImport: read((params) => service.resolveImport(params.fromModule, params.specifier)),
-		indexStatus: read((params) => service.indexStatus(params.concerning)),
+		indexStatus: status((params) => service.indexStatus(params.concerning)),
 		// Trigger lifecycle starts warming before this status answer.
-		indexWorkspace: read(() => service.indexStatus()),
+		indexWorkspace: status(() => service.indexStatus()),
 		findLiterals: read(({ limit, exclude, ...query }) => service.findLiterals(query, limit, exclude)),
 		findComments: read(({ limit, exclude, ...query }) => service.findComments(query, limit, exclude)),
 		findDocs: read(({ limit, exclude, ...query }) => service.findDocs(query, limit, exclude)),
@@ -229,7 +236,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		cycles: read((params) => service.cycles(params.limit)),
 		mostReferenced: read((params) => service.mostReferenced(params.limit)),
 		hubs: read((params) => service.mostReferenced(params.limit)),
-		cacheStats: read(() => service.cacheStats()),
+		cacheStats: status(() => service.cacheStats()),
 		searchSymbols: read((params) => service.searchSymbols(params.text, params)),
 		outlineModule: read((params) => service.outline(params.module)),
 		fileNotes: read((params) => service.fileNotes(params.module)),
@@ -300,7 +307,8 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		indexFile: write((params) => service.indexFile(params.module)),
 		symbolSource: read((params) => service.symbolSource(params)),
 		refactorStart: write(() => transactions().start()),
-		refactorStatus: read(() => transactions().status()),
+		// A step mid-write can read as drift here; revert and commit check again under the gate.
+		refactorStatus: status(() => transactions().status()),
 		refactorTrack: write((params) => transactions().track(params.module)),
 		refactorNoteWrite: write((params) =>
 			transactions().noteWrite(
@@ -311,7 +319,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		refactorBeforeImage: read((params) =>
 			transactions().beforeImage(params.module, params.id, params.content !== false),
 		),
-		refactorSettlements: read((params) => transactions().settlements(params.after, params.limit)),
+		refactorSettlements: status((params) => transactions().settlements(params.after, params.limit)),
 		refactorSettledImage: read((params) => transactions().settledImage(params.seq, params.module, params.side)),
 		refactorWriteFile: write(async ({ module, content, expect, refactor }) => {
 			const bytes =

@@ -4,7 +4,7 @@
 // The record only points. Its root is trusted no further than the version file found under it,
 // so a checkout that moved is reported rather than spawned from.
 
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
 	type InstallRecord,
@@ -12,7 +12,7 @@ import {
 	type InstallVersion,
 	InstallVersionSchema,
 } from "@nyaa-lexicon/protocol";
-import { bundleFiles } from "./discover.js";
+import { bundleWrittenAt } from "./discover.js";
 import { isRelease, newerBuild } from "./lock.js";
 import { canonicalRoot, currentHost, type PlatformEnv, stateRoot } from "./paths.js";
 
@@ -75,13 +75,8 @@ export function readInstallVersion(root: string): InstallVersion | null {
 
 /** Every bundle under `root` has sat unmodified since `settledBefore`, epoch milliseconds. */
 export function bundlesSettled(root: string, settledBefore: number): boolean {
-	const files = bundleFiles(root);
-	if (files === null) return false;
-	try {
-		return Math.max(...files.map((file) => statSync(file).mtimeMs)) <= settledBefore;
-	} catch {
-		return false;
-	}
+	const written = bundleWrittenAt(root);
+	return written !== null && written <= settledBefore;
 }
 
 /** The version a root's own manifest claims, or null when it does not say. */

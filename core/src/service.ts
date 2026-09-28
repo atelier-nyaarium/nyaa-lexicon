@@ -35,7 +35,7 @@ import {
 	readHistory,
 } from "./history.js";
 import { ImportResolver } from "./imports.js";
-import { type IndexCaches, WorkspaceIndexer } from "./indexer.js";
+import { type Doing, type IndexCaches, WorkspaceIndexer } from "./indexer.js";
 import {
 	type CallHierarchy,
 	type CommentsResult,
@@ -232,6 +232,11 @@ export class LexiconService {
 
 	upgradeRemaining(): Promise<void> {
 		return this.indexer.upgradeRemaining();
+	}
+
+	/** Runs `work` as work a status answer names, such as a refactor step. */
+	during<T>(doing: Doing, work: () => Promise<T>): Promise<T> {
+		return this.indexer.during(doing, work);
 	}
 
 	/** Upgrades a symbol's module and direct imports before graph queries. */

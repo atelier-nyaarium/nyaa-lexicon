@@ -201,6 +201,45 @@ describe("reaching a daemon", () => {
 			rmSync(cache, { recursive: true, force: true });
 		}
 	});
+
+	// A release and a dev snapshot share a build; only the bundle written later retires the other's daemon.
+	it("rides a same-build daemon whose bundle was written after the install's, and retires one written before", async () => {
+		writeInstallRecord(install, host);
+		const fake = await fakeDaemon({ token: TOKEN, answer: serving });
+		fakes.push(fake);
+		const paths = workspacePaths(host, workspace);
+		mkdirSync(paths.dir, { recursive: true });
+		const lockWritten = (bundleWrittenAt: number) =>
+			writeFileSync(
+				paths.lockFile,
+				JSON.stringify({
+					...ownLock({
+						port: fake.port,
+						token: TOKEN,
+						workspaceRoot: canonicalRoot(workspace),
+						buildVersion: BUILD,
+						bundleStamp: "1:another-install",
+					}),
+					bundleWrittenAt,
+				}),
+			);
+
+		lockWritten(Date.now() + 60_000);
+		const riding = await open({ workspaceRoot: workspace });
+		await riding.cacheStats({});
+		const ridden = [...fake.asked];
+		lockWritten(1);
+		// The fake daemon cannot say whether a refactor is open, so the retirement stops at asking.
+		await connect({ workspaceRoot: workspace }).then(
+			(session) => sessions.push(session),
+			() => {},
+		);
+
+		expect({ ridden, retiring: fake.asked.slice(ridden.length) }).toEqual({
+			ridden: ["cacheStats"],
+			retiring: ["refactorStatus"],
+		});
+	});
 });
 
 // A consumer finding no install still reaches a daemon another consumer started, and never spawns

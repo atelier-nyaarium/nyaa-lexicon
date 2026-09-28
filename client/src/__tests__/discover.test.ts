@@ -110,6 +110,29 @@ describe("finding a daemon on disk", () => {
 		});
 	});
 
+	// Two installs of one build, such as a release and a dev snapshot, meet in one workspace.
+	it("judges a same-build bundle by the write time the source carries", () => {
+		const state = scratch("lexicon-find-");
+		const workspace = scratch("lexicon-work-");
+		const host: PlatformEnv = { platform: "linux", env: { XDG_STATE_HOME: state }, home: state };
+		const paths = workspacePaths(host, workspace);
+		mkdirSync(paths.dir, { recursive: true });
+		writeFileSync(
+			paths.lockFile,
+			JSON.stringify({
+				...ownLock(canonicalRoot(workspace), "1.10.2"),
+				bundleStamp: "1:aa",
+				bundleWrittenAt: 1_000,
+			}),
+		);
+		const other = { buildVersion: "1.10.2", bundleStamp: "1:bb" };
+
+		expect({
+			later: findDaemon(workspace, { ...other, bundleWrittenAt: 2_000 }, host).action,
+			earlier: findDaemon(workspace, { ...other, bundleWrittenAt: 500 }, host).action,
+		}).toEqual({ later: "replace", earlier: "connect" });
+	});
+
 	// A custom directory is the store's identity: the lock is read there and nowhere else.
 	it("reads the lock from a caller's own state directory when one is given", () => {
 		const state = scratch("lexicon-find-");

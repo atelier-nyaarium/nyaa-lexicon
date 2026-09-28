@@ -28,6 +28,7 @@ protocolVersion  what the daemon speaks
 oldestClientMajor the oldest protocol major whose table it still serves; absent reads as its own
 buildVersion     which release it runs, which decides its method table
 bundleStamp      a digest of every bundle's bytes under dist/, so a rebuild inside one version is noticed and two copies of one release agree
+bundleWrittenAt  epoch milliseconds the newest bundle was written, which orders two bundles of one build
 workspaceRoot    the canonical root it serves
 startedAt        epoch milliseconds
 role             "daemon" or "delete"; absent reads as "daemon"
@@ -476,6 +477,18 @@ A found answer is `{ found: true, symbolId, via, contentHash }`, `via` being `re
 `indexStatus.generation` changes on stored fact or knowledge writes and daemon restarts. Equal
 values mean the indexed facts and knowledge have not changed. Counting demand does not advance it.
 
+`indexStatus.providers` lists each running provider as `{ id, language, phase, label?, pending }`.
+`phase` is `starting` (spawned, initialize unanswered), `initializing` (the provider said it is
+warming), `ready`, `restarting` (died, respawning) or `down` (dead past the respawn cap). `label` is
+the phrase the provider gave with its last phase, such as "building the TypeScript program", and
+`pending` counts requests queued or running on it. `indexStatus.activity` names what the index is
+doing, `{ kind, done?, total?, label? }`, or null when idle: `scan` and `upgrade` count as the status
+does, `batch` counts the files of a watcher batch decided, `rebind` counts nothing, and `refactor`
+names the step kind in `label`. A batch re-parsing ten or more modules beyond its own files names
+that work in `label`, "re-parsing modules", and counts it in `done` and `total` instead. Of works
+that overlap, the first of refactor, batch, scan, rebind and upgrade is named. Status reads take no
+gate.
+
 `describe.moduleRole` is present when the module's provider reported a role. `overview.entryPoints`
 is present when any file in scope has one, lists at most 50 entries, and `moreEntryPoints` counts
 the rest. Each `main` entry carries its declaration's `symbolId`; `guardedMain` and `topLevel`
@@ -534,7 +547,10 @@ that no longer serves this client. The rules, in the order they are applied:
   serves this client's whole table, and two builds retiring each other would rebuild the index on
   every flip.
 - The same build but a different bundle stamp, when this side has a bundle to compare: replace,
-  cause `build`. A rebuild inside one version leaves a daemon serving older code.
+  cause `build`, when this side's bundle was written after the daemon's `bundleWrittenAt` or the
+  lock has none; otherwise connect. A rebuild inside one version leaves a daemon serving older
+  code, and two installs of one build, such as a release and a dev snapshot, would otherwise
+  retire each other's daemon on every start.
 - Otherwise connect.
 
 **Clients ride forward and retire backward.** Riding forward is why removing or renaming a method
@@ -559,4 +575,6 @@ is still reported as that.
 
 The daemon keeps itself current from the other side. Between answered requests it notices a newer
 bundle in the checkout it was started from, and with nothing in flight and no transaction open it
-releases its lock and socket and spawns its successor with `--warm`, so nobody notices the swap.
+releases its lock and socket and spawns its successor with `--warm`, so nobody notices the swap. A
+checkout rebuilt as an older build is not a successor: the daemon stays, and that checkout's
+clients ride it.

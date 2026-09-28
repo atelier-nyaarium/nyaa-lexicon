@@ -20,7 +20,7 @@ import { awaitIndexed, type IndexedAnswer } from "./awaitIndexed.js";
 import { type ChainAnswer, resolveChain } from "./chain.js";
 import { daemonChannel } from "./channel.js";
 import type { DaemonRef } from "./daemonRef.js";
-import { bundleStamp, type DaemonSource, findDaemon } from "./discover.js";
+import { bundleStamp, bundleWrittenAt, type DaemonSource, findDaemon } from "./discover.js";
 import { ensureDaemon, ensureFailure } from "./ensure.js";
 import { DaemonError, Incompatible, NotInstalled } from "./errors.js";
 import { INSTALL_SETTLE_MS, newestInstallBeside, readInstallRecord, readInstallVersion } from "./install.js";
@@ -136,6 +136,7 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 			root: current.root,
 			buildVersion: current.version.buildVersion,
 			bundleStamp: bundleStamp(current.root),
+			bundleWrittenAt: bundleWrittenAt(current.root),
 		};
 	};
 	const known = (): DaemonSource | null => {

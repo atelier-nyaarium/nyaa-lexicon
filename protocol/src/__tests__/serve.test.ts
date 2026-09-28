@@ -1,8 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { PassThrough } from "node:stream";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
+import { moduleStore, type StoreProvider } from "../moduleStore";
 import { handlersFor, type ProviderMethods } from "../providerKit";
-import { exitWhenClosed, type ProviderHandlers, type ProviderNotificationHandlers, serveProvider } from "../serve";
+import {
+	exitWhenClosed,
+	type ProviderEvents,
+	type ProviderHandlers,
+	type ProviderNotificationHandlers,
+	serveProvider,
+} from "../serve";
 
 describe("the shared server, before any handler", () => {
 	it("refuses a module no symbol id can name, and lets a workspace-relative one through", async () => {
@@ -126,6 +133,39 @@ describe("a notification", () => {
 		expect(settled).toEqual(["src/a.kt:admitted"]);
 		handled.provider.dispose();
 		handled.daemon.dispose();
+	});
+
+	// A provider's warmup is news no request asks for, so the provider sends it unasked.
+	it("carries a provider's phase to core from its store or its hook once served, and nothing before", async () => {
+		const store = moduleStore<{ diagnostics: [] }>({ read: () => ({ diagnostics: [] }) });
+		store.announcePhase("initializing", "before serving");
+		let hooked: ProviderEvents | undefined;
+		const stateless = { connected: (events: ProviderEvents) => (hooked = events) } as unknown as ProviderMethods;
+		const served = [
+			pair(handlersFor({ store } as unknown as StoreProvider<{ diagnostics: [] }, null, never>)),
+			pair(handlersFor(stateless)),
+		];
+		const told = served.map(({ daemon }) => {
+			const heard: unknown[] = [];
+			daemon.onNotification("providerPhase", (params: unknown) => {
+				heard.push(params);
+			});
+			return heard;
+		});
+
+		store.announcePhase("initializing", "program");
+		store.announcePhase("ready");
+		hooked?.providerPhase("ready", "stateless");
+		await Bun.sleep(20);
+
+		expect(told).toEqual([
+			[{ phase: "initializing", label: "program" }, { phase: "ready" }],
+			[{ phase: "ready", label: "stateless" }],
+		]);
+		for (const { provider, daemon } of served) {
+			provider.dispose();
+			daemon.dispose();
+		}
 	});
 
 	// A daemon that gave up on a slow probe sends on; the probe's restore must still land first.

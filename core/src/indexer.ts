@@ -9,6 +9,7 @@ import type {
 	AdmittedModule,
 	Import,
 	ImportResolution,
+	IndexActivity,
 	IndexCause,
 	IndexDepth,
 	IndexOutcome,
@@ -73,6 +74,24 @@ type WarmCoverage =
 /** The indexer's own failure, in one wording, so the record and the verdict read alike. */
 function indexerFault(error: unknown): string {
 	return `the indexer failed on this file: ${error instanceof Error ? error.message : String(error)}`;
+}
+
+/** A piece of work a status answer names while it runs. Counts are read when asked. */
+export interface Doing {
+	kind: IndexActivity["kind"];
+	label?: string;
+	counts?: () => { done: number; total: number };
+}
+
+/** How many parses beyond its own files a batch makes before a status names them. */
+const REPARSES_NAMED = 10;
+
+/** Of overlapping works, the one a status names first: each holds or waits out those after it. */
+const ACTIVITY_ORDER: ReadonlyArray<IndexActivity["kind"]> = ["refactor", "batch", "scan", "rebind", "upgrade"];
+
+/** The depth a pass ends at: an outline floor is a first read the pump carries to full. */
+function settledDepth(depth: IndexDepth | undefined): IndexDepth | undefined {
+	return depth === "outline" ? "full" : depth;
 }
 
 /** A synchronous scope read reached before any admission ever ran. A caller ordering bug, not a user's. */
@@ -213,6 +232,8 @@ export class WorkspaceIndexer {
 	private orders: Array<{ modules: string[]; resolve: () => void; reject: (error: unknown) => void }> = [];
 	private pumping: Promise<void> | null = null;
 	private upgradeWanted = false;
+	/** What is running now, for a status answer. */
+	private readonly doing = new Set<Doing>();
 
 	/** Modules a single-file road wrote, whose dependents the pump asks after once that road lets go. */
 	private readonly unasked = new Set<string>();
@@ -545,7 +566,33 @@ export class WorkspaceIndexer {
 	 * flooding it would only trade a readable progress order for the same wall clock.
 	 */
 	async indexWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		return this.scanWorkspace("full", onProgress);
+		return this.during(this.scanning(), () => this.scanWorkspace("full", onProgress));
+	}
+
+	/** Runs `work` as `doing`, which a status answer names while it runs. */
+	async during<T>(doing: Doing, work: () => Promise<T>): Promise<T> {
+		this.doing.add(doing);
+		try {
+			return await work();
+		} finally {
+			this.doing.delete(doing);
+		}
+	}
+
+	/** A scan counts as its status does. */
+	private scanning(): Doing {
+		return { kind: "scan", counts: () => ({ done: this.status.done, total: this.status.total }) };
+	}
+
+	/** The work a status answer names, or null when idle. */
+	private activity(): IndexActivity | null {
+		let named: Doing | undefined;
+		for (const doing of this.doing) {
+			if (named === undefined || ACTIVITY_ORDER.indexOf(doing.kind) < ACTIVITY_ORDER.indexOf(named.kind))
+				named = doing;
+		}
+		if (named === undefined) return null;
+		return { kind: named.kind, ...named.counts?.(), ...defined({ label: named.label }) };
 	}
 
 	/** A warm was asked for: `discovering` from now, not once its scope is computed. */
@@ -555,7 +602,7 @@ export class WorkspaceIndexer {
 
 	/** Stores declarations and imports before full facts. */
 	async warmupWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		return this.scanWorkspace("outline", onProgress);
+		return this.during(this.scanning(), () => this.scanWorkspace("outline", onProgress));
 	}
 
 	private async scanWorkspace(
@@ -812,7 +859,7 @@ export class WorkspaceIndexer {
 					for (const module of order.modules) {
 						// Cheap skip before the hold; `upgradeOne` re-reads it inside.
 						if (this.store.depthOf(module) !== "outline") continue;
-						await this.upgradeOne(module);
+						await this.during({ kind: "upgrade" }, () => this.upgradeOne(module));
 					}
 					order.resolve();
 				} catch (error) {
@@ -821,7 +868,7 @@ export class WorkspaceIndexer {
 				continue;
 			}
 
-			if (await this.rebindStep()) continue;
+			if (await this.during({ kind: "rebind" }, () => this.rebindStep())) continue;
 
 			if (!this.upgradeWanted) return;
 			const backlog = this.store.outlineModules().filter((module) => !this.upgradeFailed.has(module));
@@ -836,7 +883,10 @@ export class WorkspaceIndexer {
 				done: Math.max(0, this.status.total - backlog.length),
 				total: Math.max(this.status.total, backlog.length),
 			};
-			await this.upgradeOne(next);
+			await this.during(
+				{ kind: "upgrade", counts: () => ({ done: this.status.done, total: this.status.total }) },
+				() => this.upgradeOne(next),
+			);
 		}
 	}
 
@@ -1026,7 +1076,7 @@ export class WorkspaceIndexer {
 				if (
 					!indexExisting &&
 					this.store.contentHashOf(module) !== null &&
-					previousDepths.get(module) === this.depths.get(module)
+					settledDepth(previousDepths.get(module)) === settledDepth(this.depths.get(module))
 				)
 					continue;
 				outcomes.push(
@@ -1434,6 +1484,8 @@ export class WorkspaceIndexer {
 			outlineFiles: depths.outline,
 			// Fact and knowledge writes advance generation.
 			generation: `${this.epoch}.${this.caches.facts.stats().generation}.${this.store.knowledgeGeneration()}`,
+			providers: this.supervisor.providerStatuses(),
+			activity: this.activity(),
 		};
 	}
 
@@ -1495,166 +1547,190 @@ export class WorkspaceIndexer {
 	 * since its stored hash no longer matches.
 	 */
 	async applyBatch(events: FileEvent[], shouldAbandon?: () => boolean): Promise<IndexOutcome[]> {
-		// A batch under a running outline pass would race its loop over the same roots.
-		if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
-			throw new Error("live indexing cannot run under the warmup pass");
-		}
-		const decisions = events.map((event) =>
-			decideInvalidation(event, {
-				route: (module) => this.supervisor.route(module),
-				indexedHash: (module) => this.store.contentHashOf(module),
-			}),
-		);
-		// A module whose refusal holds its debt waits on its own event, and bytes restored to what the
-		// index holds are one: the debt is paid by the pump, since the batch has nothing to parse.
-		const unchanged = decisions.filter(
-			(decision) => decision.action === "ignore" && decision.reason === UNCHANGED_REASON,
-		);
-		const restored = this.store.refusalBlocked(unchanged.map((decision) => decision.module));
-		if (restored.length > 0) {
-			this.store.unblockRebinds(restored);
-			this.queueRebinds();
-		}
-		// Decided before admission: a save that changed nothing asks neither git nor a provider.
-		if (unchanged.length === decisions.length) {
-			return decisions.map((decision) => this.outcome(decision.module, "current", UNCHANGED_REASON));
-		}
-		this.newInPass = new Set();
-		const outcomes: IndexOutcome[] = [];
-		const previousRoots = this.roots;
-		const previousDepths = this.depths;
-		const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
-		const deleted = events.filter((event) => event.kind === "deleted").map((event) => event.module);
-		for (const files of this.discovered.values()) for (const module of deleted) files.delete(module);
-		// Asked of the config files as providers named them before this batch: a restated project
-		// may stop naming the very file that restated it.
-		const touchedConfig = decisions.some((decision) => this.configFiles.has(decision.module));
-		// A provider whose config the batch touched states its project, and its files, before
-		// anything is read under it or the roots are counted.
-		const restated = await this.restatements(decisions.map((decision) => decision.module));
-		const roots = await this.rootModules(changed, deleted);
-		this.roots = roots;
-		this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
-		// A provider resolves against the files on DISK, not against what this index holds, so only a
-		// file arriving or leaving, or a config restating the rules, moves where a specifier lands.
-		// Editing a body moves none of them, which is the ordinary batch. Asked of the roots the scope
-		// just decided, so a write the workspace does not admit retires nothing.
-		const moved =
-			touchedConfig ||
-			restated.length > 0 ||
-			decisions.some(
-				(decision) =>
-					decision.action === "forget" ||
-					this.configFiles.has(decision.module) ||
-					(roots.has(decision.module) && this.store.contentHashOf(decision.module) === null),
+		const progress = { done: 0, total: events.length };
+		const doing: Doing = { kind: "batch", counts: () => progress };
+		// Many parses beyond the batch's own files are named and counted, so a long hold reads as what it is.
+		const reparsing = (count: number): boolean => {
+			if (count < REPARSES_NAMED) return false;
+			doing.label = "re-parsing modules";
+			progress.done = 0;
+			progress.total = count;
+			return true;
+		};
+		this.doing.add(doing);
+		try {
+			// A batch under a running outline pass would race its loop over the same roots.
+			if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
+				throw new Error("live indexing cannot run under the warmup pass");
+			}
+			const decisions = events.map((event) =>
+				decideInvalidation(event, {
+					route: (module) => this.supervisor.route(module),
+					indexedHash: (module) => this.store.contentHashOf(module),
+				}),
 			);
-		if (moved) this.caches.resolutions.invalidate();
-		// Persisted here too, or a watcher batch leaves overview describing the previous scan.
-		this.writeScanSummary();
-		const attempted = new Set<string>();
-		// Only roots new to this batch owe an attempt; an earlier root with no row already failed one.
-		const pending = new Set(
-			[...roots].filter((module) => !previousRoots.has(module) && this.store.depthOf(module) === null),
-		);
-
-		let abandoned = false;
-		for (const decision of decisions) {
-			if (shouldAbandon?.() === true) {
-				abandoned = true;
-				break;
+			// A module whose refusal holds its debt waits on its own event, and bytes restored to what the
+			// index holds are one: the debt is paid by the pump, since the batch has nothing to parse.
+			const unchanged = decisions.filter(
+				(decision) => decision.action === "ignore" && decision.reason === UNCHANGED_REASON,
+			);
+			const restored = this.store.refusalBlocked(unchanged.map((decision) => decision.module));
+			if (restored.length > 0) {
+				this.store.unblockRebinds(restored);
+				this.queueRebinds();
 			}
-			if (decision.action === "forget") {
-				pending.delete(decision.module);
-				outcomes.push(this.outcome(decision.module, "missing", undefined, this.forgetFile(decision.module)));
-				continue;
+			// Decided before admission: a save that changed nothing asks neither git nor a provider.
+			if (unchanged.length === decisions.length) {
+				return decisions.map((decision) => this.outcome(decision.module, "current", UNCHANGED_REASON));
 			}
-			if (decision.action === "ignore") {
-				pending.delete(decision.module);
-				const cause = decision.reason === UNCHANGED_REASON ? "current" : "unclaimed";
-				outcomes.push(this.outcome(decision.module, cause, decision.reason));
-				continue;
-			}
-			if (!roots.has(decision.module) && this.store.contentHashOf(decision.module) === null) {
-				pending.delete(decision.module);
-				outcomes.push(this.outcome(decision.module, "unclaimed", "outside roots and reachability"));
-				continue;
-			}
-			attempted.add(decision.module);
-			pending.delete(decision.module);
-			try {
-				const outcome = await this.parseAndStore(
-					decision.module,
-					this.depths.get(decision.module) ?? this.rootDepth(decision.module),
+			this.newInPass = new Set();
+			const outcomes: IndexOutcome[] = [];
+			const previousRoots = this.roots;
+			const previousDepths = this.depths;
+			const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
+			const deleted = events.filter((event) => event.kind === "deleted").map((event) => event.module);
+			for (const files of this.discovered.values()) for (const module of deleted) files.delete(module);
+			// Asked of the config files as providers named them before this batch: a restated project
+			// may stop naming the very file that restated it.
+			const touchedConfig = decisions.some((decision) => this.configFiles.has(decision.module));
+			// A provider whose config the batch touched states its project, and its files, before
+			// anything is read under it or the roots are counted.
+			const restated = await this.restatements(decisions.map((decision) => decision.module));
+			const roots = await this.rootModules(changed, deleted);
+			this.roots = roots;
+			this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
+			// A provider resolves against the files on DISK, not against what this index holds, so only a
+			// file arriving or leaving, or a config restating the rules, moves where a specifier lands.
+			// Editing a body moves none of them, which is the ordinary batch. Asked of the roots the scope
+			// just decided, so a write the workspace does not admit retires nothing.
+			const moved =
+				touchedConfig ||
+				restated.length > 0 ||
+				decisions.some(
+					(decision) =>
+						decision.action === "forget" ||
+						this.configFiles.has(decision.module) ||
+						(roots.has(decision.module) && this.store.contentHashOf(decision.module) === null),
 				);
-				outcomes.push(outcome);
-				if (outcome.action === "forgotten") roots.delete(decision.module);
-			} catch (error) {
-				outcomes.push(this.faultOutcome(decision.module, error));
-			}
-		}
+			if (moved) this.caches.resolutions.invalidate();
+			// Persisted here too, or a watcher batch leaves overview describing the previous scan.
+			this.writeScanSummary();
+			const attempted = new Set<string>();
+			// Only roots new to this batch owe an attempt; an earlier root with no row already failed one.
+			const pending = new Set(
+				[...roots].filter((module) => !previousRoots.has(module) && this.store.depthOf(module) === null),
+			);
 
-		if (!abandoned) {
-			for (const module of roots) {
+			let abandoned = false;
+			for (const [decided, decision] of decisions.entries()) {
+				progress.done = decided;
 				if (shouldAbandon?.() === true) {
 					abandoned = true;
 					break;
 				}
-				// A parse failure is about the file's own bytes, so only its own event can mean they moved.
-				const refused = previousRoots.has(module) && this.store.parseFailureOf(module) !== null;
-				if (
-					attempted.has(module) ||
-					refused ||
-					(this.store.contentHashOf(module) !== null &&
-						previousRoots.has(module) &&
-						previousDepths.get(module) === this.depths.get(module))
-				)
+				if (decision.action === "forget") {
+					pending.delete(decision.module);
+					outcomes.push(
+						this.outcome(decision.module, "missing", undefined, this.forgetFile(decision.module)),
+					);
 					continue;
+				}
+				if (decision.action === "ignore") {
+					pending.delete(decision.module);
+					const cause = decision.reason === UNCHANGED_REASON ? "current" : "unclaimed";
+					outcomes.push(this.outcome(decision.module, cause, decision.reason));
+					continue;
+				}
+				if (!roots.has(decision.module) && this.store.contentHashOf(decision.module) === null) {
+					pending.delete(decision.module);
+					outcomes.push(this.outcome(decision.module, "unclaimed", "outside roots and reachability"));
+					continue;
+				}
+				attempted.add(decision.module);
+				pending.delete(decision.module);
 				try {
-					pending.delete(module);
-					const outcome = await this.indexOne(module);
+					const outcome = await this.parseAndStore(
+						decision.module,
+						this.depths.get(decision.module) ?? this.rootDepth(decision.module),
+					);
 					outcomes.push(outcome);
-					if (outcome.action === "forgotten") roots.delete(module);
+					if (outcome.action === "forgotten") roots.delete(decision.module);
 				} catch (error) {
-					outcomes.push(this.faultOutcome(module, error));
+					outcomes.push(this.faultOutcome(decision.module, error));
 				}
 			}
-		}
 
-		// Cut short at a file boundary: nothing further here runs against a batch that stopped
-		// partway, and the abandoned roots stay pending for the next daemon's warm scan to pick up.
-		if (abandoned) return outcomes;
-		for (const { providerId, fingerprint, written } of restated) {
-			for (const module of written) {
-				if (attempted.has(module)) continue;
-				attempted.add(module);
-				try {
-					outcomes.push(await this.indexOne(module, this.store.depthOf(module) ?? undefined));
-				} catch (error) {
-					outcomes.push(this.faultOutcome(module, error));
+			if (!abandoned) {
+				progress.done = decisions.length;
+				const reread = [...roots].filter((module) => {
+					// A parse failure is about the file's own bytes, so only its own event can mean they moved.
+					const refused = previousRoots.has(module) && this.store.parseFailureOf(module) !== null;
+					const current =
+						this.store.contentHashOf(module) !== null &&
+						previousRoots.has(module) &&
+						settledDepth(previousDepths.get(module)) === settledDepth(this.depths.get(module));
+					return !attempted.has(module) && !refused && !current;
+				});
+				const counted = reparsing(reread.length);
+				for (const module of reread) {
+					if (shouldAbandon?.() === true) {
+						abandoned = true;
+						break;
+					}
+					try {
+						pending.delete(module);
+						const outcome = await this.indexOne(module);
+						outcomes.push(outcome);
+						if (outcome.action === "forgotten") roots.delete(module);
+					} catch (error) {
+						outcomes.push(this.faultOutcome(module, error));
+					}
+					if (counted) progress.done++;
 				}
 			}
-			// Recorded once every module it reads took a parse under it; otherwise the next warm scan
-			// restates it again.
-			if (this.readAllUnder(providerId, outcomes, new Set(written)))
-				this.store.recordProjectFingerprint(providerId, fingerprint);
-		}
 
-		const seen = new Set(roots);
-		outcomes.push(...(await this.followImports(seen, { indexExisting: false, previousDepths, step: held })));
-		// A file the batch left unread takes the verdict its admission reached, a .gitattributes edit included.
-		this.store.syncGenerated(this.generated);
-		outcomes.push(...this.prune(seen));
-		this.sweepAfterPrune(seen);
-		outcomes.push(...(await this.rebindDependents(outcomes, shouldAbandon)));
-		if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);
-		if (this.coverage.state !== "failed") this.coverage = { state: "covered" };
-		// A module created or deleted by this batch renews the evidence snapshot with what the batch
-		// actually settled on, not the admission taken before its per-file forgets and import closure ran.
-		if (this.lastAdmitted !== null) {
-			const created = [...seen].some((module) => !previousRoots.has(module));
-			const removed = [...previousRoots].some((module) => !seen.has(module));
-			if (created || removed) this.lastAdmitted = { ...this.lastAdmitted, reachable: [...seen] };
+			// Cut short at a file boundary: nothing further here runs against a batch that stopped
+			// partway, and the abandoned roots stay pending for the next daemon's warm scan to pick up.
+			if (abandoned) return outcomes;
+			const restating = reparsing(
+				new Set(restated.flatMap(({ written }) => written.filter((module) => !attempted.has(module)))).size,
+			);
+			for (const { providerId, fingerprint, written } of restated) {
+				for (const module of written) {
+					if (attempted.has(module)) continue;
+					attempted.add(module);
+					try {
+						outcomes.push(await this.indexOne(module, this.store.depthOf(module) ?? undefined));
+					} catch (error) {
+						outcomes.push(this.faultOutcome(module, error));
+					}
+					if (restating) progress.done++;
+				}
+				// Recorded once every module it reads took a parse under it; otherwise the next warm scan
+				// restates it again.
+				if (this.readAllUnder(providerId, outcomes, new Set(written)))
+					this.store.recordProjectFingerprint(providerId, fingerprint);
+			}
+
+			const seen = new Set(roots);
+			outcomes.push(...(await this.followImports(seen, { indexExisting: false, previousDepths, step: held })));
+			// A file the batch left unread takes the verdict its admission reached, a .gitattributes edit included.
+			this.store.syncGenerated(this.generated);
+			outcomes.push(...this.prune(seen));
+			this.sweepAfterPrune(seen);
+			outcomes.push(...(await this.rebindDependents(outcomes, shouldAbandon)));
+			if (pending.size !== 0) throw new Error(`live indexing left ${pending.size} root(s) unattempted`);
+			if (this.coverage.state !== "failed") this.coverage = { state: "covered" };
+			// A module created or deleted by this batch renews the evidence snapshot with what the batch
+			// actually settled on, not the admission taken before its per-file forgets and import closure ran.
+			if (this.lastAdmitted !== null) {
+				const created = [...seen].some((module) => !previousRoots.has(module));
+				const removed = [...previousRoots].some((module) => !seen.has(module));
+				if (created || removed) this.lastAdmitted = { ...this.lastAdmitted, reachable: [...seen] };
+			}
+			return outcomes;
+		} finally {
+			this.doing.delete(doing);
 		}
-		return outcomes;
 	}
 }

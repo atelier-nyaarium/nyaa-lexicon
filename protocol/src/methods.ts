@@ -199,6 +199,16 @@ export const ModuleAdmissionNotificationSchema = z
 
 export type ModuleAdmission = z.infer<typeof ModuleAdmissionNotificationSchema>;
 
+/**
+ * A provider's own warmup, sent unasked: `initializing` before heavy setup such as a compiler
+ * program build, `ready` after. `label` says what it is doing, for a status line.
+ */
+export const ProviderPhaseNotificationSchema = z
+	.object({ phase: z.enum(["initializing", "ready"]), label: z.string().min(1).optional() })
+	.meta({ id: "ProviderPhaseNotification" });
+
+export type ProviderPhase = z.infer<typeof ProviderPhaseNotificationSchema>;
+
 /** A provider-level failure, distinct from an Unknown answer. The request could not be served. */
 export const ProviderErrorSchema = z
 	.object({ reason: UnknownReasonSchema, detail: z.string().min(1) })
@@ -254,6 +264,15 @@ export const NOTIFICATION_SCHEMAS = {
 	releaseModule: ReleaseModuleNotificationSchema,
 	moduleAdmission: ModuleAdmissionNotificationSchema,
 } as const satisfies Record<ProviderNotification, z.ZodType>;
+
+/** Told by a provider, never asked of one: an older core ignores them. */
+export const PROVIDER_EVENTS = ["providerPhase"] as const;
+
+export type ProviderEvent = (typeof PROVIDER_EVENTS)[number];
+
+export const EVENT_SCHEMAS = {
+	providerPhase: ProviderPhaseNotificationSchema,
+} as const satisfies Record<ProviderEvent, z.ZodType>;
 
 ////////////////////////////////
 //  Functions & Helpers

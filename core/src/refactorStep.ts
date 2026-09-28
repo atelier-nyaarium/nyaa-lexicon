@@ -117,7 +117,12 @@ function policyRefusal(policy: StepPolicy, open: { id: string } | null): { reaso
 	return { reason: refactorOpenForCommittedStep(open.id), why: { openRefactor: { id: open.id } } };
 }
 
+/** Plans, then writes under the gate; a status answer names the step while it runs. */
 export async function journaledStep<Outcome>(deps: StepDeps, shape: StepShape<Outcome>): Promise<Outcome> {
+	return deps.service.during({ kind: "refactor", label: shape.kind }, () => runStep(deps, shape));
+}
+
+async function runStep<Outcome>(deps: StepDeps, shape: StepShape<Outcome>): Promise<Outcome> {
 	const { service, transactions, write } = deps;
 	const early = policyRefusal(shape.hold, transactions.openTransaction());
 	if (early !== null) return shape.refuse(early.reason, [], early.why);

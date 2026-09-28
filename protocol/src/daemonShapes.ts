@@ -978,6 +978,40 @@ export type ModuleDeclarations = z.infer<typeof ModuleDeclarationsSchema>;
 
 const failedFile = z.object({ module: z.string(), reason: z.string() });
 
+/**
+ * One language provider as the supervisor sees it. `starting`: spawned, initialize not yet
+ * answered. `initializing`: the provider said it is warming. `restarting`: died, being respawned.
+ * `down`: dead past the respawn cap. `language` is the provider's language id, and `label` the
+ * phrase it gave with its last phase. `pending` counts requests queued or running on it.
+ */
+export const ProviderStatusSchema = z
+	.object({
+		id: z.string(),
+		language: z.string(),
+		phase: z.enum(["starting", "initializing", "ready", "restarting", "down"]),
+		label: z.string().optional(),
+		pending: z.number().int().nonnegative(),
+	})
+	.meta({ id: "ProviderStatus" });
+
+export type ProviderStatus = z.infer<typeof ProviderStatusSchema>;
+
+/**
+ * What the index is doing now. `done` and `total` count files where the work has a count; a scan's
+ * and an upgrade's are the status's own. `label` names a refactor step's kind, or a batch's re-parse
+ * of many modules beyond its own files, which it then counts.
+ */
+export const IndexActivitySchema = z
+	.object({
+		kind: z.enum(["scan", "batch", "upgrade", "rebind", "refactor"]),
+		done: z.number().int().nonnegative().optional(),
+		total: z.number().int().nonnegative().optional(),
+		label: z.string().optional(),
+	})
+	.meta({ id: "IndexActivity" });
+
+export type IndexActivity = z.infer<typeof IndexActivitySchema>;
+
 /** How complete the index is. `state`, `done` and `total` are this process's scan; `stored` is the index on disk. */
 export const IndexStatusSchema = z
 	.object({
@@ -997,6 +1031,10 @@ export const IndexStatusSchema = z
 		outlineFiles: z.number(),
 		/** Fact and answer writes change it. Equal values mean indexed reads still hold. */
 		generation: z.string().optional(),
+		/** Every provider the daemon runs; an older daemon omits it. */
+		providers: z.array(ProviderStatusSchema).optional(),
+		/** Null when idle; an older daemon omits it. */
+		activity: IndexActivitySchema.nullable().optional(),
 	})
 	.meta({ id: "IndexStatus" });
 

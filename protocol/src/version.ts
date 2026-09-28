@@ -88,7 +88,12 @@ export type Compatibility =
 // `typeOnly` is a flag on imported names, origins and sites, composing with any form; the
 // `typeOnly` import kind is gone, and `require` names an import-equals. `ProjectModel.fingerprint`:
 // when it moves, core parses every module the provider owns again.
-export const PROTOCOL_VERSION = "3.20.0" as const;
+// 3.21.0: `bundleWrittenAt` on the lock, when the daemon's bundle was last written. Of two bundles
+// of one build, a client replaces only a daemon whose bundle was written before its own; an older
+// daemon omits it and is replaced on a stamp mismatch alone. The `providerPhase` notification, sent
+// by a provider unasked, which an older core ignores. `indexStatus.providers` and
+// `indexStatus.activity`, which an older daemon omits.
+export const PROTOCOL_VERSION = "3.21.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 3;

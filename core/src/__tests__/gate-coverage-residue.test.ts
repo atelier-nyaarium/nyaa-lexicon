@@ -16,8 +16,8 @@ import ts from "typescript";
  */
 const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
 
-/** The three effects a handler may declare. Only `staged` has to gate its writes itself. */
-const EFFECTS = new Set(["read", "write", "staged"]);
+/** The effects a handler may declare. Only `staged` has to gate its writes itself; `status` takes no gate. */
+const EFFECTS = new Set(["read", "write", "staged", "status"]);
 
 /** Service calls that touch disk or replace stored facts. Add a method here when you add one. */
 const WRITING_CALLS = ["service.indexFile", "transactions().start", "transactions().track", "transactions().noteWrite"];

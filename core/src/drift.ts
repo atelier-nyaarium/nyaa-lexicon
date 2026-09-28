@@ -12,6 +12,7 @@ import {
 	INSTALL_SETTLE_MS,
 	newerBuild,
 	newestInstallBeside,
+	readInstallVersion,
 } from "@nyaa-lexicon/client";
 import { type Clock, systemClock } from "./clock.js";
 
@@ -69,9 +70,16 @@ export async function driftedTo(options: DriftOptions): Promise<DriftSight | nul
 		options.stampAtStart !== null &&
 		now !== null &&
 		now !== options.stampAtStart &&
-		bundlesSettled(options.root, settledBefore(options))
+		bundlesSettled(options.root, settledBefore(options)) &&
+		!olderOnDisk(options)
 	) {
 		return { root: options.root, why: "the bundle changed on disk since this daemon started" };
 	}
 	return null;
+}
+
+/** A root put back to an older build: handing over would downgrade, and its clients ride this one. */
+function olderOnDisk(options: DriftOptions): boolean {
+	const installed = readInstallVersion(options.root);
+	return installed !== null && newerBuild(options.version, installed.buildVersion);
 }

@@ -179,20 +179,39 @@ describe("ordering two build versions", () => {
 // rebuilds used to leave a daemon serving code the checkout no longer had, and it cost a probe run
 // that reported success against the previous bundle.
 describe("a rebuild at one version is noticed too", () => {
-	const stamped = (bundleStamp: string | undefined, ourStamp: string | null | undefined) =>
+	const stamped = (
+		bundleStamp: string | undefined,
+		ourStamp: string | null | undefined,
+		written: { theirs?: number; ours?: number | null } = {},
+	) =>
 		decideFromLock({
-			raw: JSON.stringify({ ...LOCK, ...(bundleStamp === undefined ? {} : { bundleStamp }) }),
+			raw: JSON.stringify({
+				...LOCK,
+				...(bundleStamp === undefined ? {} : { bundleStamp }),
+				...(written.theirs === undefined ? {} : { bundleWrittenAt: written.theirs }),
+			}),
 			isAlive: () => true,
 			ourProtocolVersion: "0.2.0",
 			ourBuildVersion: "1.10.2",
 			...(ourStamp === undefined ? {} : { ourBundleStamp: ourStamp }),
+			...(written.ours === undefined ? {} : { ourBundleWrittenAt: written.ours }),
 			workspaceRoot: "/home/me/proj",
 		});
 
-	it("replaces a daemon running a different bundle of the same version", () => {
-		const decision = stamped("4000:111", "4100:222");
-		expect(decision.action).toBe("replace");
-		expect(decision.action === "replace" && decision.reason).toMatch(/rebuilt since it started/);
+	it("replaces a daemon running a different bundle of the same version that its lock cannot date", () => {
+		expect(stamped("4000:111", "4100:222", { ours: 2_000 })).toMatchObject({ action: "replace", cause: "build" });
+	});
+
+	// A dev snapshot and a release share a version; unordered, each side's client retired the other's daemon.
+	it("replaces only a bundle of the same version written before ours, and rides one written after", () => {
+		const release = { stamp: "4000:111", at: 1_000 };
+		const snapshot = { stamp: "4100:222", at: 2_000 };
+
+		expect({
+			newer: stamped(release.stamp, snapshot.stamp, { theirs: release.at, ours: snapshot.at }).action,
+			older: stamped(snapshot.stamp, release.stamp, { theirs: snapshot.at, ours: release.at }).action,
+			undated: stamped(snapshot.stamp, release.stamp, { theirs: snapshot.at, ours: null }).action,
+		}).toEqual({ newer: "replace", older: "connect", undated: "connect" });
 	});
 
 	it("connects when the bundle is the same one", () => {

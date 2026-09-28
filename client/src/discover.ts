@@ -47,6 +47,8 @@ export interface DaemonSource {
 	root: string;
 	buildVersion: string;
 	bundleStamp: string | null;
+	/** When the bundle was last written, which orders two bundles of one build; absent or null when unknown. */
+	bundleWrittenAt?: number | null;
 }
 
 /** How the spawned daemon died, if it has, so a lock that never appears can name the exit instead. */
@@ -116,7 +118,7 @@ export function lockHolderAlive(holder: { pid: number; pidStart?: string | undef
  */
 export function findDaemon(
 	workspaceRoot: string,
-	source: Pick<DaemonSource, "buildVersion" | "bundleStamp"> | null,
+	source: Pick<DaemonSource, "buildVersion" | "bundleStamp" | "bundleWrittenAt"> | null,
 	host: PlatformEnv = currentHost(),
 	stateDir?: string,
 ): LockDecision {
@@ -134,6 +136,7 @@ export function findDaemon(
 		ourProtocolVersion: PROTOCOL_VERSION,
 		ourBuildVersion: source?.buildVersion ?? CLIENT_BUILD_VERSION,
 		ourBundleStamp: source?.bundleStamp ?? null,
+		ourBundleWrittenAt: source?.bundleWrittenAt ?? null,
 		// The lock holds the real path, so a root reached through a link compares as itself.
 		workspaceRoot: canonicalRoot(workspaceRoot),
 	});
@@ -213,6 +216,17 @@ export function bundleStamp(root: string): string | null {
 			digest.update("\0");
 		}
 		return `${files.length}:${digest.digest("hex").slice(0, 16)}`;
+	} catch {
+		return null;
+	}
+}
+
+/** When the newest bundle under `root` was written, epoch milliseconds; null when unbuilt or unreadable. */
+export function bundleWrittenAt(root: string): number | null {
+	const files = bundleFiles(root);
+	if (files === null) return null;
+	try {
+		return Math.max(...files.map((file) => statSync(file).mtimeMs));
 	} catch {
 		return null;
 	}

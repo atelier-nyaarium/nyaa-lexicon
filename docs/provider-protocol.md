@@ -50,6 +50,16 @@ to another provider. A header claimed by C moves to C++ once a C++ source appear
 former owner still reads the module as a dependency, so a store-backed provider drops what the index
 admitted and fills it from disk.
 
+A provider tells core one thing unasked: `providerPhase(phase, label?)`, `initializing` before heavy
+setup such as a compiler's program build and `ready` after, so a status line can show it warming.
+`label` says what it is doing, such as "building the TypeScript program", and core keeps the last
+one given. A store-backed provider calls `store.announcePhase(phase, label?)`; any other gets the
+sender from `ProviderMethods.connected` or from what `runProviderOnStdio` returns. It is
+fire-and-forget from any turn, a timer's included, and sends nothing before the provider is served.
+An older core ignores it. While a provider is initializing, core holds its requests past their
+timeout and gives each a whole budget once it is ready. A provider initializing for ten minutes is
+taken as wedged: core kills it, and it respawns as after any death.
+
 ## What the index admitted
 
 **Answering a parse is not the same as having it stored.** The core decides afterwards, and once it

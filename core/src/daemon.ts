@@ -153,6 +153,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 		oldestClientMajor: OLDEST_CLIENT_MAJOR,
 		buildVersion: source.buildVersion,
 		...(source.bundleStamp === null ? {} : { bundleStamp: source.bundleStamp }),
+		...(source.bundleWrittenAt == null ? {} : { bundleWrittenAt: source.bundleWrittenAt }),
 		workspaceRoot: canonicalRoot(options.workspaceRoot),
 		startedAt: clock.now(),
 		role: "daemon",

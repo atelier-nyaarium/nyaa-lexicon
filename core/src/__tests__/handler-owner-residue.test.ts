@@ -6,8 +6,9 @@ import ts from "typescript";
 import { TREE_FIRST } from "./dispatchTiers";
 
 /**
- * Only the three constructors mint a daemon handler, and the methods that take the gate in parts are
- * named here: the type cannot see a staged handler ignore its gate, so adding one is a reviewed edit.
+ * Only the four constructors mint a daemon handler, and the methods that take the gate in parts or not
+ * at all are named here: the type cannot see a staged handler ignore its gate, or a status handler
+ * reach a write, so adding one is a reviewed edit.
  */
 const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
 
@@ -27,6 +28,9 @@ const STAGED = [
 
 /** The background upgrade ungated, then the answer shared. */
 const UPGRADED = ["prepareRename", "renameEdits", "planMove", "previewMove", "previewInsert"];
+
+/** Answered with no gate, so no batch or step holding it delays them. */
+const STATUS = ["indexStatus", "indexWorkspace", "cacheStats", "refactorStatus", "refactorSettlements"];
 
 function parsed(code: string): ts.SourceFile {
 	return parseSource("probe.ts", code).source;
@@ -73,18 +77,19 @@ describe("one place mints a daemon handler", () => {
 		]);
 	});
 
-	it("casts to the handler brand once and calls mint three times, one per effect", () => {
+	it("casts to the handler brand once and calls mint four times, one per effect", () => {
 		const text = readSwept(DISPATCH);
 		expect(text).not.toBeNull();
 		const source = parsed(text as string);
 		expect(casts(source)).toHaveLength(1);
-		expect(callsTo(source, "mint")).toHaveLength(3);
+		expect(callsTo(source, "mint")).toHaveLength(4);
 	});
 
-	it("names every method that takes the gate in parts", () => {
+	it("names every method that takes the gate in parts or not at all", () => {
 		const source = parsed(readSwept(DISPATCH) as string);
 		expect(entries(source, "staged")).toEqual([...STAGED].sort());
 		expect(entries(source, "treeFirst")).toEqual([...TREE_FIRST].sort());
 		expect(entries(source, "upgradedRead")).toEqual([...UPGRADED].sort());
+		expect(entries(source, "status")).toEqual([...STATUS].sort());
 	});
 });

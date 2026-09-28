@@ -233,6 +233,8 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 			// Parsed as the wire parses it, so no suite asserts on a verdict a provider cannot receive.
 			options.admissions?.push({ providerId, verdict: NOTIFICATION_SCHEMAS.moduleAdmission.parse(verdict) });
 		},
+		providerStatuses: () =>
+			claims.map((claim) => ({ id: claim.providerId, language: claim.language, phase: "ready", pending: 0 })),
 	};
 	return port;
 }

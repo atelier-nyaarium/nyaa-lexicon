@@ -585,6 +585,28 @@ describe("warmup pass", () => {
 		expect(seen.length).toBe(parses);
 	});
 
+	// A warm pass keeps the full rows it finds current, so its outline floor is no depth a batch must redo.
+	it("parses only what a batch changed after a warm restart over a current store", async () => {
+		await initGit();
+		put(".gitignore", "gen.fake\n");
+		put("a.fake", "export class A {}\n");
+		put("b.fake", 'import "./gen.fake";\nexport class B {}\n');
+		put("gen.fake", "export class Gen {}\n");
+		const seen: ParseSeen[] = [];
+		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, seen));
+		await service.warmupWorkspace();
+		await service.upgradeRemaining();
+
+		const restarted = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, seen));
+		await restarted.warmupWorkspace();
+		await restarted.upgradeRemaining();
+		seen.length = 0;
+		put("a.fake", "export class A { edited }\n");
+		await restarted.applyBatch([{ kind: "changed", module: "a.fake", contentHash: "a-2" }]);
+
+		expect(seen).toEqual([{ module: "a.fake" }]);
+	});
+
 	it("serves a requestFull order before the background backlog", async () => {
 		await initGit();
 		const modules = ["a.fake", "b.fake", "c.fake", "d.fake", "z.fake"];

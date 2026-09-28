@@ -88,6 +88,14 @@ describe("starting and publishing", () => {
 		expect(findDaemon(WORKSPACE, ownSource(), host)).toMatchObject({ action: "connect" });
 	});
 
+	// Of two installs of one build, a client rides the daemon whose bundle was written later.
+	it("dates its bundle in the lock, so an older bundle of its build rides it", async () => {
+		daemon = await launch();
+		const older = { ...ownSource(), bundleStamp: "1:another-install", bundleWrittenAt: 0 };
+
+		expect(findDaemon(WORKSPACE, older, host)).toMatchObject({ action: "connect" });
+	});
+
 	it("removes the lock on stop, so nobody connects to a dead port", async () => {
 		daemon = await launch();
 		const lockFile = workspacePaths(host, WORKSPACE).lockFile;

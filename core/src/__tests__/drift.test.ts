@@ -129,6 +129,27 @@ describe("noticing a rebuild under the running daemon", () => {
 		expect((await sight(root, stampAtStart))?.root).toBe(root);
 	});
 
+	// A pin moved back, or an older build checked out, rebuilds the root as an older release.
+	it("hands over to a rebuild of its own build or newer, never to an older one", async () => {
+		const parent = installDir();
+		const root = checkout(parent, "checkout");
+		const stampAtStart = bundleStamp(root);
+		const rebuilt = async (version: string, bundle: string) => {
+			writeFileSync(
+				path.join(root, "dist", "version.json"),
+				JSON.stringify({ buildVersion: version, protocolVersion: PROTOCOL_VERSION }),
+			);
+			writeFileSync(path.join(root, "dist", "daemon.js"), bundle);
+			backdate(path.join(root, "dist", "daemon.js"));
+			return (await sight(root, stampAtStart))?.root ?? null;
+		};
+
+		expect({
+			older: await rebuilt("1.12.0", "// 1.12.0\n"),
+			same: await rebuilt("1.13.0", "// 1.13.0, rebuilt\n"),
+		}).toEqual({ older: null, same: root });
+	});
+
 	it("waits while the rebuilt bundle is still fresh enough to be mid-write", async () => {
 		const parent = installDir();
 		const root = checkout(parent, "checkout");

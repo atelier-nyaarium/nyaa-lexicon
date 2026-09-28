@@ -7,7 +7,14 @@ import { Writable } from "node:stream";
 import { processesMatching } from "@nyaa-lexicon/client";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { type NotificationMessage, StreamMessageWriter } from "vscode-jsonrpc/node";
-import { absorbingWrites, type ProviderExit, ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
+import {
+	absorbingWrites,
+	INITIALIZING_CEILING_MS,
+	type ProviderExit,
+	ProviderSupervisor,
+	ProviderUnavailableError,
+} from "../supervisor";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -33,6 +40,8 @@ const HEADER = path.join(import.meta.dirname, "fixtures", "headerProvider.ts");
 const UNDECLARED = path.join(import.meta.dirname, "fixtures", "undeclaredCommentsProvider.ts");
 
 const FORGETTING = path.join(import.meta.dirname, "fixtures", "forgettingProvider.ts");
+
+const PHASED = path.join(import.meta.dirname, "fixtures", "phasedProvider.ts");
 
 function start(script = REFERENCE) {
 	supervisor = new ProviderSupervisor();
@@ -375,6 +384,94 @@ describe("when a provider dies", () => {
 		process.kill(pid, "SIGKILL");
 		expect(() => supervisor.forget("a.ref")).not.toThrow();
 		await new Promise((resolve) => setTimeout(resolve, 700));
+	}, 30_000);
+});
+
+describe("what a provider's status says", () => {
+	const status = () => {
+		const [only] = supervisor.providerStatuses();
+		return only === undefined ? undefined : { phase: only.phase, label: only.label, pending: only.pending };
+	};
+	const until = async (done: () => boolean) => {
+		for (const deadline = Date.now() + 20_000; !done() && Date.now() < deadline; ) await Bun.sleep(10);
+	};
+
+	// A status bar tells a warming provider from a busy one, and both from one that is gone.
+	it("follows the provider's own warmup and its requests in flight, then its restarts until it stays dead", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-phased-"));
+		supervisor = new ProviderSupervisor();
+		await supervisor.start({ command: [process.execPath, "run", PHASED], timeoutMs: 15_000 }, root);
+		const started = supervisor.providerStatuses();
+
+		const parse = supervisor.askProvider("phased-provider", "parseFile", {
+			module: "a.phase",
+			contentHash: "h",
+			text: "",
+		});
+		await until(() => status()?.phase === "initializing");
+		const warming = status();
+		await parse;
+		await until(() => status()?.phase === "ready");
+		const warmed = status();
+		process.kill(supervisor.pidOf("phased-provider") as number, "SIGKILL");
+		const seen: string[] = [];
+		await until(() => {
+			const phase = status()?.phase ?? "gone";
+			if (seen.at(-1) !== phase) seen.push(phase);
+			return phase === "down";
+		});
+
+		expect({ started, warming, warmed, restarted: seen.includes("restarting"), last: seen.at(-1) }).toEqual({
+			started: [{ id: "phased-provider", language: "phased", phase: "ready", pending: 0 }],
+			warming: { phase: "initializing", label: "phased program", pending: 1 },
+			warmed: { phase: "ready", label: "phased program", pending: 0 },
+			restarted: true,
+			last: "down",
+		});
+		rmSync(root, { recursive: true, force: true });
+	}, 30_000);
+
+	// A compiler building its program holds every request behind the build; that is no hang, up to a point.
+	it("holds a request to a warming provider past its budget, then gives it a whole one, and kills a provider warming past the ceiling", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-phased-"));
+		const clock = fakeClock();
+		supervisor = new ProviderSupervisor(clock);
+		await supervisor.start({ command: [process.execPath, "run", PHASED], timeoutMs: 1_000 }, root);
+		const firstPid = supervisor.pidOf("phased-provider");
+		const settled = (module: string) => {
+			const outcome: { value: unknown } = { value: "pending" };
+			void supervisor.askProvider("phased-provider", "parseFile", { module, contentHash: "h", text: "" }).then(
+				() => {
+					outcome.value = "answered";
+				},
+				(error) => {
+					outcome.value = error;
+				},
+			);
+			return outcome;
+		};
+
+		const warm = settled("a.phase");
+		await until(() => status()?.phase === "initializing");
+		clock.advance(5_500);
+		await until(() => status()?.phase === "ready");
+		// Its budget comes due half a budget after the warmup ended, and the answer is still on its way.
+		clock.advance(600);
+		await until(() => warm.value !== "pending");
+		const hung = settled("hang.phase");
+		await until(() => status()?.phase === "initializing");
+		clock.advance(60_000);
+		await Bun.sleep(50);
+		const held = { outcome: hung.value, pid: supervisor.pidOf("phased-provider"), phase: status()?.phase };
+		clock.advance(INITIALIZING_CEILING_MS);
+		await until(() => hung.value !== "pending" && status()?.phase === "restarting");
+
+		expect({ warm: warm.value, held, killed: hung.value instanceof ProviderUnavailableError }).toEqual({
+			warm: "answered",
+			held: { outcome: "pending", pid: firstPid, phase: "initializing" },
+			killed: true,
+		});
+		rmSync(root, { recursive: true, force: true });
 	}, 30_000);
 });
 

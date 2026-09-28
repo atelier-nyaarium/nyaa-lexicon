@@ -44,6 +44,8 @@ export interface LockContext {
 	ourBuildVersion: string;
 	/** This build's bundle stamp, or null where there is no bundle to stamp. */
 	ourBundleStamp?: string | null;
+	/** When this build's bundle was last written, or null where that is unknown. */
+	ourBundleWrittenAt?: number | null;
 	workspaceRoot: string;
 }
 
@@ -75,6 +77,12 @@ export function newerBuild(candidate: string, current: string): boolean {
 		if ((a[i] as number) !== (b[i] as number)) return (a[i] as number) > (b[i] as number);
 	}
 	return false;
+}
+
+/** Ours was written after theirs. A lock with no time predates the field; no time of ours is no evidence. */
+function writtenAfter(ours: number | null | undefined, theirs: number | undefined): boolean {
+	if (theirs === undefined) return true;
+	return ours != null && ours > theirs;
 }
 
 /**
@@ -142,14 +150,15 @@ export function decideFromLock(context: LockContext): LockDecision {
 		};
 	}
 
-	// Same version, different bundle: a rebuild. Only checked when we HAVE a stamp to compare, so a
-	// checkout with no bundle still connects instead of replacing a daemon on no evidence.
+	// Same version, different bundle: a rebuild, or another install such as a dev snapshot. Only
+	// checked when we HAVE a stamp, so a checkout with no bundle never replaces on no evidence. Only
+	// a bundle written after the daemon's replaces it, or two installs retire each other on every start.
 	const ours = context.ourBundleStamp;
-	if (ours != null && lock.bundleStamp !== ours) {
+	if (ours != null && lock.bundleStamp !== ours && writtenAfter(context.ourBundleWrittenAt, lock.bundleWrittenAt)) {
 		return {
 			action: "replace",
 			lock,
-			reason: `the daemon runs a different bundle of ${context.ourBuildVersion}, so it was rebuilt since it started`,
+			reason: `the daemon runs an older or undated bundle of ${context.ourBuildVersion}`,
 			cause: "build",
 		};
 	}

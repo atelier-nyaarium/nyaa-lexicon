@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { DAEMON_METHODS, type DaemonMethod } from "@nyaa-lexicon/protocol";
 import { createDispatch } from "../dispatch";
 import type { CommentQuery, LiteralQuery } from "../indexReads";
 import type { LexiconService } from "../service";
@@ -91,6 +92,60 @@ describe("gating daemon mutations", () => {
 	it("refuses a malformed answer instead of shipping it", async () => {
 		const dispatch = createDispatch(asService({ cacheStats: () => ({ hits: "many", misses: 0, entries: 0 }) }));
 		await expect(dispatch("cacheStats", {})).rejects.toThrow(/hits/);
+	});
+});
+
+describe("status reads", () => {
+	// A batch or a step holds the gate for its whole run, far longer than a status caller waits.
+	it("answers every status-budget method while a write holds the gate", async () => {
+		const ledger = { id: "ledger", latest: 0 };
+		const service = asService({
+			indexStatus: () => ({
+				state: "indexing",
+				done: 0,
+				total: 1,
+				failures: 0,
+				failed: [],
+				stored: 0,
+				fullFiles: 0,
+				outlineFiles: 0,
+			}),
+			cacheStats: () => ({ hits: 0, misses: 0, entries: 0, generation: 0 }),
+		});
+		const transactions = {
+			status: () => ({ open: false, steps: [], tracked: [], drifted: [], edited: [], issues: [], ledger }),
+			settlements: () => ({ ledger, oldest: null, settlements: [] }),
+			stepOutcome: () => ({ status: "unknown" }),
+			cancelStep: () => ({ cancelled: false, outcome: { status: "unknown" } }),
+		} as unknown as TransactionManager;
+		const dispatch = createDispatch(service, { transactions });
+		const params: Partial<Record<DaemonMethod, unknown>> = {
+			refactorSettlements: { after: 0 },
+			refactorStepOutcome: { stepId: "step" },
+			refactorStepCancel: { stepId: "step" },
+		};
+		const methods = (Object.keys(DAEMON_METHODS) as DaemonMethod[]).filter(
+			(method) => DAEMON_METHODS[method].budget === "status",
+		);
+		let release = () => {};
+		const held = service.gate.exclusive(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+
+		const answered: string[] = [];
+		const answers = methods.map((method) =>
+			dispatch(method, params[method] ?? {}).then(() => answered.push(method)),
+		);
+		for (let turn = 0; turn < 10; turn++) await tick();
+		const underHold = [...answered].sort();
+		release();
+		await Promise.all([held, ...answers]);
+
+		expect(methods).toContain("indexStatus");
+		expect(underHold).toEqual([...methods].sort());
 	});
 });
 

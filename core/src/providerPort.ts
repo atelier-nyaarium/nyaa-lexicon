@@ -5,6 +5,7 @@ import type {
 	METHOD_SCHEMAS,
 	ModuleAdmission,
 	ProviderMethod,
+	ProviderStatus,
 	ProviderTiers,
 	ProviderWords,
 } from "@nyaa-lexicon/protocol";
@@ -48,6 +49,8 @@ export interface ProviderPort {
 	 * under the same id meanwhile is not told about a parse its fresh ledger never staged.
 	 */
 	admission(providerId: string, incarnation: number | null, verdict: ModuleAdmission): void;
+	/** Each provider's phase and the requests it has in flight, for a status answer. */
+	providerStatuses(): ProviderStatus[];
 }
 
 /** What starts a provider, for the one caller that does. */

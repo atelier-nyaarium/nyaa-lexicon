@@ -58,6 +58,7 @@ function hashOf(module: string): string | null {
 /** Only what the executor asks of the service. */
 const service = {
 	upgradeRemaining: async () => {},
+	during: (_doing: unknown, work: () => Promise<unknown>) => work(),
 	indexFile: async (module: string) => {
 		if (module === failReindexOf) throw new Error("provider gone");
 		reindexed.push(module);

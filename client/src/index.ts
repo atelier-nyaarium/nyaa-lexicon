@@ -12,6 +12,7 @@ export { beforeDeadline, unlessAborted } from "./deadline.js";
 export {
 	bundleFiles,
 	bundleStamp,
+	bundleWrittenAt,
 	callDaemon,
 	type DaemonSource,
 	daemonCommand,

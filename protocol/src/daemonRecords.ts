@@ -30,6 +30,8 @@ export const DaemonLockSchema = z
 		buildVersion: z.string().min(1).optional(),
 		/** Which BUNDLE, so a rebuild inside one version is noticed too. */
 		bundleStamp: z.string().min(1).optional(),
+		/** When that bundle was last written, epoch milliseconds, so two bundles of one build are ordered. */
+		bundleWrittenAt: z.number().nonnegative().optional(),
 		workspaceRoot: z.string().min(1),
 		startedAt: z.number().int().nonnegative(),
 		role: LockRoleSchema.optional(),

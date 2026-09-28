@@ -63,10 +63,13 @@ A bundle's identity is its bytes. `bundleFiles` in the client is the one invento
 bundles (every regular `.js` under `dist/`); `bundleStamp` digests their contents into the
 daemon's lock, so two copies of one release agree whatever their mtimes (two plugin hosts install
 the same release side by side) and any rebuild, a provider's alone included, retires the daemon
-serving the old copy. `core/src/drift.ts` asks the same inventory whether the newest bundle has
-settled before the daemon hands over to a rebuild under it. Which release beside another is the
-newest has one owner, `newestInstallBeside` in `client/src/install.ts`: the daemon's drift asks it
-for a sibling to hand over to, and `connect` asks it where the install record's release now is.
+serving the old copy. `bundleWrittenAt` dates the newest of them in the lock, so of two bundles of
+one build, such as a release and a dev snapshot, only the one written later retires the other's
+daemon. `core/src/drift.ts` asks the same inventory whether the newest bundle has settled before
+the daemon hands over to a rebuild under it, and never hands over to a rebuild of an older build.
+Which release beside another is the newest has one owner, `newestInstallBeside` in
+`client/src/install.ts`: the daemon's drift asks it for a sibling to hand over to, and `connect`
+asks it where the install record's release now is.
 
 ## Storage
 
@@ -124,7 +127,12 @@ file, so there is one derivation and every reader asks it.
 once per id, and its first answer for each stands for the rest of that read. What keeps a read on
 one generation of the index is the daemon's gate: `core/src/dispatch.ts` runs a query's answer
 under the shared gate, alongside other readers and never inside a write, whether the handler is
-tagged `read` or reaches the answer through `treeFirst` or `upgradedRead`.
+tagged `read` or reaches the answer through `treeFirst` or `upgradedRead`. A handler tagged
+`status` (`indexStatus`, `indexWorkspace`, `cacheStats`, `refactorStatus`, `refactorSettlements`)
+takes no gate, so a status caller never waits behind a batch or a step that holds it for minutes.
+It reads memory and the store in one synchronous span, so it sees the state between two commits of
+a held batch, as a query already sees the state between two files of a scan. A step mid-write can
+read as drift in `refactorStatus`; revert and commit check again inside the gate.
 
 **A replace or insert plan's context is read outside the gate, so it stamps what it read.** At the
 first touch of a module, by id or by its rows, the context records the store's `stampOf` for it:

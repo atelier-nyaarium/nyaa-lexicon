@@ -4,10 +4,10 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { z } from "zod";
 import { hashContent } from "./hash.js";
-import type { METHOD_SCHEMAS, ModuleAdmission, ProviderMethod } from "./methods.js";
+import type { METHOD_SCHEMAS, ModuleAdmission, ProviderMethod, ProviderPhase } from "./methods.js";
 import type { IndexDepth } from "./project.js";
 import { OPEN_READ_POLICY, type ReadPolicy, readPolicy } from "./readPolicy.js";
-import type { ProviderHandlers, ProviderNotificationHandlers } from "./serve.js";
+import { type ProviderEvents, type ProviderHandlers, type ProviderNotificationHandlers, whenServed } from "./serve.js";
 import { readWorkspaceFile } from "./sourceFile.js";
 import type { Diagnostic } from "./symbols.js";
 
@@ -76,6 +76,11 @@ interface StoreReads<P> {
 	modules(): readonly string[];
 	/** Cached once per key and generation. */
 	memo<R>(key: string, compute: () => R): R;
+	/**
+	 * Tells core the provider is warming (`initializing`, before heavy setup) or done (`ready`).
+	 * Fire-and-forget from any turn; nothing is sent before the provider is served.
+	 */
+	announcePhase(phase: ProviderPhase["phase"], label?: string): void;
 }
 
 /** Provider API with transient writes only. */
@@ -213,6 +218,8 @@ class Kit<V extends ModuleValue, P, E> {
 	private memoGeneration = -1;
 	private readonly filling = new Map<string, Promise<void>>();
 	private transientOpen = false;
+	/** Set once served; kept across resets, since the connection outlives a workspace. */
+	private events: ProviderEvents | null = null;
 
 	constructor(
 		private readonly spec: {
@@ -236,6 +243,14 @@ class Kit<V extends ModuleValue, P, E> {
 
 	previousProject(): P | undefined {
 		return this.discovery?.project;
+	}
+
+	connect(events: ProviderEvents): void {
+		this.events = events;
+	}
+
+	announcePhase(phase: ProviderPhase["phase"], label?: string): void {
+		this.events?.providerPhase(phase, label);
 	}
 
 	////////////////////////////////
@@ -664,6 +679,7 @@ function readSide<V extends ModuleValue, P, E, S extends object>(kit: Kit<V, P, 
 			modules: () => kit.modules(),
 			memo: <R>(key: string, compute: () => R) => kit.memo(key, compute),
 			peek: (module: string) => kit.peek(module),
+			announcePhase: (phase: ProviderPhase["phase"], label?: string) => kit.announcePhase(phase, label),
 		},
 		reads,
 	);
@@ -752,6 +768,7 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 			return {};
 		},
 	};
+	whenServed(handlers, (events) => kit.connect(events));
 	// The server awaits promise results.
 	return handlers as unknown as ProviderHandlers & ProviderNotificationHandlers;
 }
