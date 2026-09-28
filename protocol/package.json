@@ -7,6 +7,7 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./ast": "./src/astResidue.ts",
+		"./noteRefs": "./src/noteRefs.ts",
 		"./toy": "./src/conformance/toyLexer.ts"
 	},
 	"dependencies": {

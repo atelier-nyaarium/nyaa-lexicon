@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { findRefs, formatRef, parseRef } from "../noteRefs";
+import { findRefLinks, findRefs, formatRef, parseRef } from "../noteRefs";
 
 describe("finding refs in a note", () => {
 	it("finds written links anywhere in prose, and nothing in code or bare text", () => {
@@ -28,6 +28,21 @@ describe("finding refs in a note", () => {
 				["ref://a.ref:Cart"],
 			);
 		}
+	});
+
+	it("spans each written link whole, bracketed and escaped labels included, and no mermaid click", () => {
+		const text = [
+			'See [string[]](ref://a.ts:S), [a [b] c](<ref://a.ts:A> "t") and [x \\] y](ref://a.ts:X).',
+			"`[z](ref://a.ts:Z)`",
+			"```mermaid",
+			'  click A "ref://a.ts:M"',
+			"```",
+		].join("\n");
+		expect(findRefLinks(text).map((link) => [text.slice(link.from, link.to), link.label, link.ref])).toEqual([
+			["[string[]](ref://a.ts:S)", "string[]", "ref://a.ts:S"],
+			['[a [b] c](<ref://a.ts:A> "t")', "a [b] c", "ref://a.ts:A"],
+			["[x \\] y](ref://a.ts:X)", "x \\] y", "ref://a.ts:X"],
+		]);
 	});
 
 	it("finds a mermaid click line and points at the ref itself", () => {

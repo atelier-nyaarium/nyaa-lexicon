@@ -11,6 +11,13 @@ export interface FoundRef {
 	index: number;
 }
 
+/** A written link: its opening `[` through its closing `)`. */
+export interface RefLink extends FoundRef {
+	from: number;
+	to: number;
+	label: string;
+}
+
 /** A module path and the chain inside it; no chain names the module itself. */
 export interface ParsedRef {
 	module: string;
@@ -45,24 +52,25 @@ function escapedAt(text: string, at: number): boolean {
 	return slashes % 2 === 1;
 }
 
-/** Whether the `]` at `close` ends a label whose `[` is written and unescaped. */
-function labelled(text: string, close: number): boolean {
-	if (escapedAt(text, close)) return false;
+/** The unescaped `[` opening the label that the `]` at `close` ends, or -1. */
+function labelStart(text: string, close: number): number {
+	if (escapedAt(text, close)) return -1;
 	let depth = 0;
 	for (let i = close - 1; i >= 0 && text[i] !== "\n"; i--) {
 		if (escapedAt(text, i)) continue;
 		if (text[i] === "]") depth++;
 		else if (text[i] === "[") {
-			if (depth === 0) return true;
+			if (depth === 0) return i;
 			depth--;
 		}
 	}
-	return false;
+	return -1;
 }
 
-/** Every `ref://` link in markdown, in order, outside code; `index` is where the ref itself starts. */
-export function findRefs(text: string): FoundRef[] {
-	const found: FoundRef[] = [];
+/** Written links and mermaid clicks outside code. */
+function scan(text: string): { links: RefLink[]; clicks: FoundRef[] } {
+	const links: RefLink[] = [];
+	const clicks: FoundRef[] = [];
 	const shown: string[] = [];
 	let fence: { marker: string; mermaid: boolean } | null = null;
 	let offset = 0;
@@ -79,7 +87,7 @@ export function findRefs(text: string): FoundRef[] {
 			if (closes) fence = null;
 			else if (fence.mermaid) {
 				const click = MERMAID_CLICK.exec(line);
-				if (click?.[1] !== undefined) found.push({ ref: click[1], index: offset + line.indexOf(click[1]) });
+				if (click?.[1] !== undefined) clicks.push({ ref: click[1], index: offset + line.indexOf(click[1]) });
 			}
 		} else if (opened?.[1] !== undefined) {
 			fence = { marker: opened[1], mermaid: (opened[2] ?? "").toLowerCase() === "mermaid" };
@@ -92,12 +100,30 @@ export function findRefs(text: string): FoundRef[] {
 	const plain = shown.join("\n").replace(CODE_SPAN, (span) => span.replace(/[^\n]/g, " "));
 	for (const match of plain.matchAll(LINK_DESTINATION)) {
 		const at = match.index ?? 0;
-		if (!labelled(plain, at)) continue;
+		const from = labelStart(plain, at);
+		if (from < 0) continue;
 		const raw = match[1] ?? "";
 		const angled = raw.startsWith("<");
-		found.push({ ref: angled ? raw.slice(1, -1) : raw, index: at + match[0].indexOf(raw) + (angled ? 1 : 0) });
+		links.push({
+			ref: angled ? raw.slice(1, -1) : raw,
+			index: at + match[0].indexOf(raw) + (angled ? 1 : 0),
+			from,
+			to: at + match[0].length,
+			label: text.slice(from + 1, at),
+		});
 	}
-	return found.sort((a, b) => a.index - b.index);
+	return { links, clicks };
+}
+
+/** Every `ref://` link in markdown, in order, outside code; `index` is where the ref itself starts. */
+export function findRefs(text: string): FoundRef[] {
+	const { links, clicks } = scan(text);
+	return [...links.map(({ ref, index }) => ({ ref, index })), ...clicks].sort((a, b) => a.index - b.index);
+}
+
+/** Each written `[label](ref://...)` outside code, in order, with the span it covers. */
+export function findRefLinks(text: string): RefLink[] {
+	return scan(text).links;
 }
 
 /** Splits on single colons; `::` stays inside a segment as a qualifier. */

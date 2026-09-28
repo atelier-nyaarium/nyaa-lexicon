@@ -458,7 +458,17 @@ export {
 	type MoveRefusal,
 	MoveRefusalSchema,
 } from "./move.js";
-export { type FoundRef, findRefs, formatRef, type ParsedRef, parseRef, REF_SCHEME, type RefParse } from "./noteRefs.js";
+export {
+	type FoundRef,
+	findRefLinks,
+	findRefs,
+	formatRef,
+	type ParsedRef,
+	parseRef,
+	REF_SCHEME,
+	type RefLink,
+	type RefParse,
+} from "./noteRefs.js";
 export {
 	ConfirmNoteRequestSchema,
 	DoubtNoteRequestSchema,
