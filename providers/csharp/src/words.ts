@@ -151,6 +151,107 @@ export const BUILTIN_TYPES: ReadonlySet<string> = new Set([
 	"var",
 ]);
 
+/** Never a name. */
+export const RESERVED_WORDS: ReadonlySet<string> = new Set([
+	"abstract",
+	"as",
+	"base",
+	"bool",
+	"break",
+	"byte",
+	"case",
+	"catch",
+	"char",
+	"checked",
+	"class",
+	"const",
+	"continue",
+	"decimal",
+	"default",
+	"delegate",
+	"do",
+	"double",
+	"else",
+	"enum",
+	"event",
+	"explicit",
+	"extern",
+	"false",
+	"finally",
+	"fixed",
+	"float",
+	"for",
+	"foreach",
+	"goto",
+	"if",
+	"implicit",
+	"in",
+	"int",
+	"interface",
+	"internal",
+	"is",
+	"lock",
+	"long",
+	"namespace",
+	"new",
+	"null",
+	"object",
+	"operator",
+	"out",
+	"override",
+	"params",
+	"private",
+	"protected",
+	"public",
+	"readonly",
+	"ref",
+	"return",
+	"sbyte",
+	"sealed",
+	"short",
+	"sizeof",
+	"stackalloc",
+	"static",
+	"string",
+	"struct",
+	"switch",
+	"this",
+	"throw",
+	"true",
+	"try",
+	"typeof",
+	"uint",
+	"ulong",
+	"unchecked",
+	"unsafe",
+	"ushort",
+	"using",
+	"virtual",
+	"void",
+	"volatile",
+	"while",
+]);
+
+/** Reserved words that name a type. */
+export const PREDEFINED_TYPES: ReadonlySet<string> = new Set([
+	"bool",
+	"byte",
+	"char",
+	"decimal",
+	"double",
+	"float",
+	"int",
+	"long",
+	"object",
+	"sbyte",
+	"short",
+	"string",
+	"uint",
+	"ulong",
+	"ushort",
+	"void",
+]);
+
 /** May precede a type. */
 export const TYPE_PREFIXES: ReadonlySet<string> = new Set([...MODIFIERS, "this", "params", "checked"]);
 
@@ -254,6 +355,8 @@ export function isIdentifier(token: Token | undefined): token is Token {
 	return token?.kind === "identifier";
 }
 
+/** What the token is to the grammar; an `@` identifier keeps its `@`, so it matches no keyword. */
 export function syntaxValue(token: Token | undefined): string | undefined {
-	return token?.kind === "identifier" || token?.kind === "punctuation" ? token.value : undefined;
+	if (token?.kind !== "identifier" && token?.kind !== "punctuation") return undefined;
+	return token.verbatim === true ? `@${token.value}` : token.value;
 }

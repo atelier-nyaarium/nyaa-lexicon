@@ -80,8 +80,11 @@ describe("C# comment spans", () => {
 		expect(facts.comments.map((comment) => comment.text)).toEqual(["/* one */", "/* two */", "// real"]);
 		expect(facts.literals.map((literal) => literal.value)).toEqual([
 			"x {F(/* one */ 1)} y",
+			"1",
 			"{not a hole /* text */} {{G(/* two */ 2)}}",
+			"2",
 			'{H("""quoted // text""")} z',
+			"quoted // text",
 		]);
 	});
 
@@ -91,13 +94,19 @@ describe("C# comment spans", () => {
 			'\tpublic string Date = $"{when:yyyy//MM}";',
 			'\tpublic string Raw = $"""{when:dd/*x*/}""";',
 			'\tpublic string Grouped = $"{(a ? b : c) /* code */:N0}";',
+			'\tpublic string Global = $"{global::System.Math.PI /* after alias */:F2}";',
+			'\tpublic string Nested = $"{M(x: global::A.B) /* nested */}";',
 			"}",
 			"",
 		].join("\n");
 		const facts = parseCsharp("Formats.cs", text);
 
 		expect(facts.diagnostics).toEqual([]);
-		expect(facts.comments.map((comment) => comment.text)).toEqual(["/* code */"]);
+		expect(facts.comments.map((comment) => comment.text)).toEqual([
+			"/* code */",
+			"/* after alias */",
+			"/* nested */",
+		]);
 	});
 
 	test("drops a hole's comment with the conditional branch that drops its string", () => {
@@ -119,7 +128,7 @@ describe("C# comment spans", () => {
 			"#define TRACE // why",
 			'#line 5 "C:/gen//file.cs" // mapped',
 			"#pragma warning disable CS0649 // never assigned",
-			"#if DEBUG // build only",
+			"#if TRACE // build only",
 			"public class Debugged { }",
 			"#endif",
 			"",
@@ -213,6 +222,7 @@ describe("C# comment spans", () => {
 describe("C# comment trivia and blank lines", () => {
 	test("says whether code shares a comment's first line before it and its last line after it", () => {
 		const text = [
+			"#define DEBUG",
 			"// own line",
 			"public class Trivia { // trailing",
 			"\tint a = /* inline */ 1;",

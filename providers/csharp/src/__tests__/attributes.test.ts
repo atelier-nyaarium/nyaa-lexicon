@@ -169,7 +169,7 @@ describe("C# attributes", () => {
 				"",
 			].join("\n"),
 		);
-		expect(uses(facts, "Marker").map((item) => item.from)).toEqual(["this", "Method", "Method"]);
+		expect(uses(facts, "Marker").map((item) => item.from)).toEqual(["this", "Local", "a"]);
 		expect(uses(facts, "Marker").every((item) => item.role === "typeUse")).toBe(true);
 	});
 
@@ -210,7 +210,7 @@ describe("C# attributes", () => {
 			].join("\n"),
 		);
 		expect(uses(facts, "Marker").map((item) => ({ role: item.role, from: item.from }))).toEqual([
-			{ role: "typeUse", from: "Value" },
+			{ role: "typeUse", from: "Local" },
 		]);
 	});
 

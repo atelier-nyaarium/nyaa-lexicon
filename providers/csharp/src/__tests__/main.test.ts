@@ -170,10 +170,10 @@ describe("C# facts", () => {
 		const text = [
 			"namespace N {",
 			"public class Values {",
-			"public int Count = 1;",
+			"public int Count = 1, Total = 3;",
 			'public string Label = "ready\\nnow";',
 			"public bool Enabled = true;",
-			"public void Run() { var local = 2; }",
+			"public void Run() { var local = 2; int other = 4, last = 5; }",
 			"}",
 			"}",
 		].join("\n");
@@ -181,28 +181,33 @@ describe("C# facts", () => {
 		startProvider(provider);
 		const facts = parseThroughKit(provider, { module: "values.cs", contentHash: "hash", text });
 		const count = declaration(facts, "Count", "field");
+		const total = declaration(facts, "Total", "field");
 		const label = declaration(facts, "Label", "field");
 		const enabled = declaration(facts, "Enabled", "field");
 		const local = declaration(facts, "local", "variable");
-		expect(facts.literals).toEqual(
-			expect.arrayContaining([
-				{ kind: "number", value: "1", number: 1, range: expect.any(Object), containerId: count.symbolId },
-				{ kind: "string", value: "ready\nnow", range: expect.any(Object), containerId: label.symbolId },
-				{ kind: "boolean", value: "true", range: expect.any(Object), containerId: enabled.symbolId },
-				{ kind: "number", value: "2", number: 2, range: expect.any(Object), containerId: local.symbolId },
-			]),
-		);
+		const other = declaration(facts, "other", "variable");
+		const last = declaration(facts, "last", "variable");
+		expect(facts.literals).toEqual([
+			{ kind: "number", value: "1", number: 1, range: expect.any(Object), containerId: count.symbolId },
+			{ kind: "number", value: "3", number: 3, range: expect.any(Object), containerId: total.symbolId },
+			{ kind: "string", value: "ready\nnow", range: expect.any(Object), containerId: label.symbolId },
+			{ kind: "boolean", value: "true", range: expect.any(Object), containerId: enabled.symbolId },
+			{ kind: "number", value: "2", number: 2, range: expect.any(Object), containerId: local.symbolId },
+			{ kind: "number", value: "4", number: 4, range: expect.any(Object), containerId: other.symbolId },
+			{ kind: "number", value: "5", number: 5, range: expect.any(Object), containerId: last.symbolId },
+		]);
 		expect(provider.typeOf({ symbolId: count.symbolId })).toMatchObject({ status: "known", display: "int" });
 		expect(provider.typeOf({ symbolId: local.symbolId })).toMatchObject({ status: "inferred", display: "int" });
 		TypeInfoSchema.parse(provider.typeOf({ symbolId: local.symbolId }));
 	});
 
-	it("binds same-file calls, fields, and parameters", () => {
+	it("binds same-file calls, fields, and parameters, a parameter hiding a field but never a member access", () => {
 		const text = [
 			"public class C {",
 			"public int Value;",
 			"public void Add(int amount) { Value = amount; }",
 			"public void Run() { Add(Value); }",
+			"public C(int Value) { this.Value = Value; }",
 			"}",
 		].join("\n");
 		const provider = new CsharpProvider();
@@ -218,6 +223,14 @@ describe("C# facts", () => {
 		expect(valueWrite.binding.status).toBe("bound");
 		expect(amountRead.binding.status).toBe("bound");
 		expect(provider.bind({ module: "c.cs", name: "Add", range: call.range })).toEqual(call.binding);
+		const kinds = (line: number) =>
+			facts.references
+				.filter((item) => item.name === "Value" && item.range.start.line === line)
+				.map((item) => {
+					const target = item.binding.status === "bound" ? item.binding.symbolId : "";
+					return facts.declarations.find((found) => found.symbolId === target)?.languageKind;
+				});
+		expect(kinds(4)).toEqual(["field", "parameter"]);
 		for (const reference of facts.references) BindingSchema.parse(reference.binding);
 	});
 
@@ -233,16 +246,16 @@ describe("C# facts", () => {
 });
 
 describe("C# workspace resolution", () => {
-	it("resolves using namespaces to a workspace file and binds imported types", () => {
+	it("resolves using namespaces to a workspace file and binds imported types, never a nested namespace's", () => {
 		const root = workspace({
-			"src/item.cs": "namespace Demo.Items { public class Item {} }\n",
+			"src/item.cs": "namespace Demo.Items { public class Item {} namespace Deep { public class Buried {} } }\n",
 			"src/cart.cs":
-				"using Demo.Items; namespace Demo { public class Cart { public Item Make() { return new Item(); } } }\n",
+				"using Demo.Items; namespace Demo { public class Cart { public Item Make() { return new Item(); } Buried b; } }\n",
 		});
 		const provider = new CsharpProvider();
 		startProvider(provider, root);
 		const text =
-			"using Demo.Items; namespace Demo { public class Cart { public Item Make() { return new Item(); } } }\n";
+			"using Demo.Items; namespace Demo { public class Cart { public Item Make() { return new Item(); } Buried b; } }\n";
 		const facts = parseThroughKit(provider, { module: "src/cart.cs", contentHash: "hash", text });
 		expect(provider.resolveImport({ fromModule: "src/cart.cs", specifier: "Demo.Items" })).toEqual({
 			status: "resolved",
@@ -251,6 +264,7 @@ describe("C# workspace resolution", () => {
 		const itemUse = facts.references.find((item) => item.name === "Item" && item.role === "instantiate");
 		if (itemUse === undefined) throw new Error("imported type reference missing");
 		expect(itemUse.binding.status).toBe("bound");
+		expect(facts.references.find((item) => item.name === "Buried")?.binding.status).toBe("unbound");
 		expect(provider.store.peek("src/item.cs")?.namespaceNames).toContain("Demo.Items");
 		expect(provider.store.peek("src/item.cs")?.metadata.size).toBeGreaterThan(0);
 		expect(provider.store.text("src/item.cs")?.depth).toBe("outline");
@@ -284,7 +298,160 @@ describe("C# workspace resolution", () => {
 		});
 	});
 
-	it("reports partial-type member lookup as ambiguous when another file is required", () => {
+	it("finds a type in its namespace's other files, then each enclosing namespace, the global one, an alias, then usings", () => {
+		const files: Record<string, string> = {
+			"lib/json.cs":
+				"namespace Lib { public static class JsonConvert { public static string Write(object value) => null; } public class Shared {} }\n",
+			"lib/tests.cs": "namespace Lib.Tests { public class Shared {} }\n",
+			"root.cs": "public class Root {}\n",
+			"other.cs":
+				"namespace Other { public class Root {} public class Imported {} namespace Inner { public class Deep {} } }\n",
+			"usings.cs": "global using Other.Inner;\n",
+			"use.cs": [
+				"using Other;",
+				"using Alias = Other.Imported;",
+				"namespace Lib.Tests.Unit {",
+				"  class Use {",
+				"    Shared shared; Root root; Imported imported; Alias alias; Deep deep; global::Other.Inner.Deep qualified;",
+				"    void M() { JsonConvert.Write(null); global::System.Console.WriteLine(); }",
+				"  }",
+				"}",
+			].join("\n"),
+		};
+		const provider = new CsharpProvider();
+		startProvider(provider, workspace(files));
+		const facts = parseThroughKit(provider, {
+			module: "use.cs",
+			contentHash: "hash",
+			text: files["use.cs"] as string,
+		});
+		const targets = facts.references
+			.filter((item) => item.role === "typeUse" || item.name === "Write")
+			.map((item) => [item.name, item.binding.status === "bound" ? item.binding.symbolId : item.binding.status]);
+		expect(targets).toEqual([
+			["Shared", "lexicon csharp lib/tests.cs `Lib.Tests`/Shared#"],
+			["Root", "lexicon csharp root.cs Root#"],
+			["Imported", "lexicon csharp other.cs Other/Imported#"],
+			["Alias", "lexicon csharp other.cs Other/Imported#"],
+			["Deep", "lexicon csharp other.cs Other/Inner/Deep#"],
+			["Other", "unbound"],
+			["Inner", "unbound"],
+			["Deep", "lexicon csharp other.cs Other/Inner/Deep#"],
+			["Write", "lexicon csharp lib/json.cs Lib/JsonConvert#Write()."],
+		]);
+		// Right of `global::`, a namespace outside the workspace.
+		expect(facts.references.find((item) => item.name === "System")?.binding).toMatchObject({
+			status: "unbound",
+			reason: "ExternalDependency",
+		});
+	});
+
+	it("follows a base chain into other files alike through outline and full reads, and lets a value hide its type unless of it", () => {
+		const files: Record<string, string> = {
+			"base.cs": [
+				"namespace N {",
+				"  public class Base { public int Count; public void Run() {} public enum State { Start } public Mode Mode; public Helper Tool; }",
+				"  public enum Mode { Fast }",
+				"  public class Helper {}",
+				"  public class Tool { public static void Go() {} }",
+				"}",
+			].join("\n"),
+			"mid.cs": "namespace N { public class Mid : Base {} }\n",
+			"leaf.cs":
+				"namespace N { class Leaf : Mid { void M() { Run(); Count = 1; State state = State.Start; var mode = Mode.Fast; Tool.Go(); } } }\n",
+		};
+		const provider = new CsharpProvider();
+		startProvider(provider, workspace(files));
+		const bindings = (contentHash: string) =>
+			parseThroughKit(provider, { module: "leaf.cs", contentHash, text: files["leaf.cs"] as string })
+				.references.filter((item) => ["Run", "Count", "State", "Start", "Fast", "Go"].includes(item.name))
+				.map((item) => [
+					item.name,
+					item.role,
+					item.binding.status === "bound" ? item.binding.symbolId : item.binding.status,
+				]);
+		const throughOutline = bindings("outline");
+		expect(throughOutline).toEqual([
+			["Run", "call", "lexicon csharp base.cs N/Base#Run()."],
+			["Count", "write", "lexicon csharp base.cs N/Base#Count."],
+			["State", "typeUse", "lexicon csharp base.cs N/Base#State#"],
+			["State", "read", "lexicon csharp base.cs N/Base#State#"],
+			["Start", "read", "lexicon csharp base.cs N/Base#State#Start."],
+			["Fast", "read", "lexicon csharp base.cs N/Mode#Fast."],
+			["Go", "call", "unbound"],
+		]);
+		parseThroughKit(provider, { module: "mid.cs", contentHash: "mid", text: files["mid.cs"] as string });
+		expect(bindings("full")).toEqual(throughOutline);
+	});
+
+	it("reads namesake types, partial parts and global usings per project, the referring project's own first", () => {
+		const project = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n';
+		const files: Record<string, string> = {
+			"a/A.csproj": project,
+			"a/helper.cs": "namespace App { public class Helper {} }\n",
+			"a/use.cs": "namespace App { class Use { Helper helper; } }\n",
+			"a/part.cs": "namespace App { public partial class Split { public void Use() { Other(); } } }\n",
+			"a/imports.cs": "global using Pick = App.PickA;\n",
+			"a/pick.cs": "namespace App { public class PickA {} }\n",
+			"b/B.csproj": project,
+			"b/helper.cs": "namespace App { public class Helper {} }\n",
+			"b/part.cs": "namespace App { public partial class Split { public void Other() {} } }\n",
+			"b/imports.cs": "global using Pick = App.PickB;\n",
+			"b/pick.cs": "namespace App { public class PickB {} class PickUse { Pick value; } }\n",
+			"loose/one.cs": "namespace App { public class Twin {} class Use { Twin twin; } }\n",
+			"loose/two.cs": "namespace App { public class Twin {} }\n",
+		};
+		const provider = new CsharpProvider();
+		startProvider(provider, workspace(files));
+		const target = (module: string, name: string) =>
+			parseThroughKit(provider, { module, contentHash: module, text: files[module] as string }).references.find(
+				(item) => item.name === name,
+			)?.binding;
+		expect(target("a/use.cs", "Helper")).toMatchObject({
+			status: "bound",
+			symbolId: "lexicon csharp a/helper.cs App/Helper#",
+		});
+		expect(target("loose/one.cs", "Twin")).toMatchObject({
+			status: "bound",
+			symbolId: "lexicon csharp loose/one.cs App/Twin#",
+		});
+		// Partial parts in two projects are two types.
+		expect(target("a/part.cs", "Other")).toMatchObject({ status: "unbound" });
+		expect(target("b/pick.cs", "Pick")).toMatchObject({
+			status: "bound",
+			symbolId: "lexicon csharp b/pick.cs App/PickB#",
+		});
+	});
+
+	it("reads an alias or `using static` target from the namespace holding it, its first name settling there, or from the global one after `global::`", () => {
+		const files: Record<string, string> = {
+			"root.cs":
+				"namespace N { public class Target {} public class C {} public class Outer { public class Inner {} public class Inner<T> {} } }\n",
+			"shadow.cs": "namespace Q.N { public class Target {} public class D {} }\n",
+			"use.cs":
+				"namespace Q { using Rooted = global::N.Target; using Dotted = N.C; class Use { Rooted rooted; Dotted dotted; } }\n",
+			"nested.cs": "using static N.Outer; class Nested { Inner plain; Inner<int> generic; }\n",
+		};
+		const provider = new CsharpProvider();
+		startProvider(provider, workspace(files));
+		const bindings = (module: string) =>
+			parseThroughKit(provider, { module, contentHash: module, text: files[module] as string }).references.map(
+				(item) => [item.name, item.binding.status === "bound" ? item.binding.symbolId : item.binding.status],
+			);
+		expect(bindings("use.cs")).toEqual([
+			["N.Target", "lexicon csharp root.cs N/Target#"],
+			["N.C", "unbound"],
+			["Rooted", "lexicon csharp root.cs N/Target#"],
+			["Dotted", "unbound"],
+		]);
+		expect(bindings("nested.cs")).toEqual([
+			["N.Outer", "lexicon csharp root.cs N/Outer#"],
+			["Inner", "lexicon csharp root.cs N/Outer#Inner#"],
+			["Inner", "lexicon csharp root.cs N/Outer#Inner(1)#"],
+		]);
+	});
+
+	it("reads a partial type's overloads in another file as ambiguous", () => {
 		const root = workspace({
 			"a.cs": "namespace N { public partial class C { public void Use() { Other(); } } }\n",
 			"b.cs": "namespace N { public partial class C { public void Other() {} public void Other(int value) {} } }\n",
@@ -298,7 +465,23 @@ describe("C# workspace resolution", () => {
 		expect(reference.binding).toMatchObject({ status: "ambiguous" });
 	});
 
-	it("does not scan other files for an unresolved member in a non-partial type", () => {
+	it("never offers another partial file's locals or parameters", () => {
+		const root = workspace({
+			"a.cs": "namespace N { public partial class C { public void Use() { Run(count); } } }\n",
+			"b.cs": "namespace N { public partial class C { void M(int count) { var total = count; } } }\n",
+		});
+		const provider = new CsharpProvider();
+		startProvider(provider, root);
+		const text = "namespace N { public partial class C { public void Use() { Run(count, total); } } }\n";
+		const facts = parseThroughKit(provider, { module: "a.cs", contentHash: "hash", text });
+		const reads = facts.references.filter((item) => item.role === "read");
+		expect(reads.map((item) => [item.name, item.binding.status])).toEqual([
+			["count", "unbound"],
+			["total", "unbound"],
+		]);
+	});
+
+	it("never binds an unresolved member of a non-partial type to another file's type of its name", () => {
 		const root = workspace({
 			"a.cs": "namespace N { public class C { public void Use() { Other(); } } }\n",
 			"b.cs": "namespace N { public class Other { public void Run() {} } }\n",
@@ -312,12 +495,7 @@ describe("C# workspace resolution", () => {
 		});
 		const reference = facts.references.find((item) => item.name === "Other" && item.role === "call");
 		if (reference === undefined) throw new Error("unresolved member reference missing");
-		expect(reference.binding).toEqual({
-			status: "unbound",
-			reason: "NotIndexed",
-			detail: "no declaration matches this C# reference",
-		});
-		expect(provider.store.peek("b.cs")).toBeUndefined();
+		expect(reference.binding).toMatchObject({ status: "unbound", reason: "NotIndexed" });
 	});
 });
 
@@ -424,6 +602,10 @@ describe("a using directive resolves to what the index holds", () => {
 });
 
 describe("C# protocol behavior", () => {
+	it("holds no state beside its store and the index over it, in any of its layers", () => {
+		expect(Object.keys(new CsharpProvider()).sort()).toEqual(["index", "store"]);
+	});
+
 	it("reports syntax errors and keeps the declarations under attributes", () => {
 		const provider = new CsharpProvider();
 		startProvider(provider);
@@ -476,7 +658,7 @@ describe("C# protocol behavior", () => {
 			"obj/ignored.cs": "public class Ignored {}",
 			"src/project.csproj": "<Project />",
 		});
-		const model = new CsharpProvider().discoverProject(root, null).model;
+		const model = new CsharpProvider().discoverProject(root, undefined).model;
 		expect(model.files).toEqual(["src/a.cs"]);
 		expect(model.configFiles).toEqual(["src/project.csproj"]);
 	});

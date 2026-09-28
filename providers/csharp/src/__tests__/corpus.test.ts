@@ -22,6 +22,8 @@ describe("Newtonsoft.Json corpus", () => {
 			// A span whose range does not cut its own text back out attaches to the wrong symbol,
 			// and only real source has the string forms that break that.
 			const strayed: string[] = [];
+			// Two declarations on one id overwrite each other's facts.
+			const repeated: string[] = [];
 			let spans = 0;
 			for (const module of model.files) {
 				// Yields, so the timeout can fire.
@@ -32,6 +34,11 @@ describe("Newtonsoft.Json corpus", () => {
 					.filter((item) => item.severity === "error")
 					.map((item) => item.message);
 				if (messages.length > 0) failures.push({ module, messages });
+				const ids = new Set<string>();
+				for (const declaration of facts.declarations) {
+					if (ids.has(declaration.symbolId)) repeated.push(declaration.symbolId);
+					ids.add(declaration.symbolId);
+				}
 
 				const coordinates = coordinatesOf(text);
 				for (const comment of facts.comments ?? []) {
@@ -46,6 +53,7 @@ describe("Newtonsoft.Json corpus", () => {
 			);
 			expect(failures).toEqual([]);
 			expect(strayed).toEqual([]);
+			expect(repeated).toEqual([]);
 			expect(spans).toBeGreaterThan(0);
 		},
 		120_000,

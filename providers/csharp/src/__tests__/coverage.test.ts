@@ -77,10 +77,12 @@ afterEach(() => {
 });
 
 describe("C# import-driven type answers", () => {
-	it("resolves plain, aliased generic, and static imports independently", () => {
+	it("resolves plain, constructed generic alias, and constructed static imports to the generic namesake", () => {
 		const files = {
 			"src/box.cs": [
 				"namespace Lib {",
+				"public class Arg {}",
+				"public class Box { public static int Count; public static void Touch() {} }",
 				"public class Box<T> {",
 				"public static int Count;",
 				"public static void Touch() {}",
@@ -88,9 +90,9 @@ describe("C# import-driven type answers", () => {
 				"}",
 			].join("\n"),
 			"src/plain.cs": "using Lib; public class PlainUse { public Box<int> Value; }\n",
-			"src/alias.cs": "using Alias = Lib.Box; public class AliasUse { public Alias<int> Value; }\n",
+			"src/alias.cs": "using Alias = Lib.Box<int>; public class AliasUse { public Alias Value; }\n",
 			"src/static.cs":
-				"using static Lib.Box; public class StaticUse { public int Read() { return Count; } public void Call() { Touch(); } }\n",
+				"using static Lib.Box<Lib.Arg>; public class StaticUse { public int Read() { return Count; } public void Call() { Touch(); } }\n",
 		};
 		const { provider, facts: plainFacts } = indexed(files, "src/plain.cs");
 		const aliasFacts = parseThroughKit(provider, {
@@ -108,9 +110,17 @@ describe("C# import-driven type answers", () => {
 			contentHash: "coverage",
 			text: files["src/box.cs"],
 		});
-		const box = declaration(boxFacts, "Box");
-		const count = declaration(boxFacts, "Count");
-		const touch = declaration(boxFacts, "Touch");
+		const generic = (name: string) =>
+			one(
+				boxFacts.declarations.filter((item) => item.name === name && item.symbolId.includes("Box(1)#")),
+				`generic ${name} missing`,
+			);
+		const box = one(
+			boxFacts.declarations.filter((item) => item.symbolId.endsWith("Box(1)#")),
+			"generic Box missing",
+		);
+		const count = generic("Count");
+		const touch = generic("Touch");
 		expect(provider.resolveImport({ fromModule: "src/plain.cs", specifier: "Lib" })).toEqual({
 			status: "resolved",
 			module: "src/box.cs",
@@ -136,9 +146,25 @@ describe("C# import-driven type answers", () => {
 		});
 		expect(provider.typeOf({ symbolId: aliasValue.symbolId })).toMatchObject({
 			status: "known",
-			display: "Alias<int>",
+			display: "Alias",
 			symbolId: box.symbolId,
 		});
+		// The constructed targets' type arguments are type uses.
+		expect(aliasFacts.references.map((item) => [item.name, item.role])).toEqual([
+			["Lib.Box", "import"],
+			["Alias", "typeUse"],
+		]);
+		const arg = declaration(boxFacts, "Arg");
+		expect(
+			staticFacts.references
+				.filter((item) => item.role !== "import")
+				.map((item) => [item.name, item.role, item.binding.status === "bound" ? item.binding.symbolId : "-"]),
+		).toEqual([
+			["Lib", "typeUse", "-"],
+			["Arg", "typeUse", arg.symbolId],
+			["Count", "read", count.symbolId],
+			["Touch", "call", touch.symbolId],
+		]);
 		for (const facts of [plainFacts, aliasFacts, staticFacts, boxFacts]) FileFactsSchema.parse(facts);
 	});
 
@@ -172,19 +198,21 @@ describe("C# import-driven type answers", () => {
 		BindingSchema.parse(aliasType.binding);
 	});
 
-	it("reports ambiguous namespace resolution instead of choosing a file", () => {
+	it("reads a namespace several files declare as one, though no single module answers its import", () => {
 		const files = {
 			"src/one.cs": "namespace Shared { public class One {} }\n",
 			"src/two.cs": "namespace Shared { public class Two {} }\n",
-			"src/use.cs": "using Shared; public class Use { public One Value; }\n",
+			"src/use.cs": "using Shared; public class Use { public One Value; public Two Other; }\n",
 		};
 		const { provider, facts } = indexed(files, "src/use.cs");
 		const resolution = provider.resolveImport({ fromModule: "src/use.cs", specifier: "Shared" });
-		const use = reference(facts, "One", "typeUse");
 		ImportResolutionSchema.parse(resolution);
 		expect(resolution).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
-		expect(use.binding).toMatchObject({ status: "unbound", reason: "Ambiguous" });
-		BindingSchema.parse(use.binding);
+		expect(["One", "Two"].map((name) => reference(facts, name, "typeUse").binding)).toEqual([
+			{ status: "bound", symbolId: "lexicon csharp src/one.cs Shared/One#", provenance: "bound" },
+			{ status: "bound", symbolId: "lexicon csharp src/two.cs Shared/Two#", provenance: "bound" },
+		]);
+		BindingSchema.parse(reference(facts, "One", "typeUse").binding);
 	});
 });
 
@@ -234,6 +262,24 @@ describe("C# role-specific binding", () => {
 			provenance: "bound",
 		});
 		for (const item of facts.references) BindingSchema.parse(item.binding);
+	});
+
+	it("resolves an alias of a nested type through the arity of the type around it", () => {
+		const files = {
+			"src/generic.cs": "namespace N { public class Outer<T> { public class Inner { } } }\n",
+			"src/plain.cs": "namespace N { public class Outer { public class Inner { } } }\n",
+			"src/use.cs": "using Alias = N.Outer<int>.Inner; public class Use { public Alias Value; }\n",
+		};
+		const { provider, facts } = indexed(files, "src/use.cs");
+		expect(provider.resolveImport({ fromModule: "src/use.cs", specifier: "N.Outer.Inner" })).toEqual({
+			status: "resolved",
+			module: "src/generic.cs",
+		});
+		expect(reference(facts, "Alias", "typeUse").binding).toEqual({
+			status: "bound",
+			symbolId: "lexicon csharp src/generic.cs N/Outer(1)#Inner#",
+			provenance: "bound",
+		});
 	});
 
 	it("binds types imported from a nested namespace", () => {
@@ -305,6 +351,41 @@ describe("C# control-flow metrics", () => {
 		expect(facts.diagnostics).toEqual([]);
 	});
 
+	it("counts a conditional expression as a decision, never a nullable type's question mark", () => {
+		const text = [
+			"public class T {",
+			"public int? Run(int? a, bool b) {",
+			"int? c = b ? 1 : 2;",
+			"var d = (int?)a;",
+			"List<int?> e = null;",
+			"return a ?? (b ? c : d);",
+			"}",
+			"}",
+		].join("\n");
+		expect(declaration(parse(text).facts, "Run").metrics).toMatchObject({ branches: 4 });
+	});
+
+	it("counts an inner body's blocks and decisions in every body around it", () => {
+		const text = [
+			"public class Outer {",
+			"public void Run(bool a) {",
+			"if (a) { }",
+			"int Local(int? b) {",
+			"if (b > 0 && a) { { } }",
+			"return b ?? 0;",
+			"}",
+			"{ }",
+			"}",
+			"}",
+		].join("\n");
+		const { facts } = parse(text);
+		expect(["Outer", "Run", "Local"].map((name) => declaration(facts, name).metrics)).toMatchObject([
+			{ nesting: 4, branches: 5 },
+			{ nesting: 3, branches: 5 },
+			{ nesting: 2, branches: 4 },
+		]);
+	});
+
 	it("leaves metrics absent where a declaration has no body", () => {
 		const text = "public interface I { void Run(int value); int Value { get; set; } }";
 		const { facts } = parse(text);
@@ -318,6 +399,14 @@ describe("C# control-flow metrics", () => {
 });
 
 describe("C# syntax diagnostics", () => {
+	it("diagnoses an accessor with neither a body nor a semicolon, and reads on past it", () => {
+		const { facts } = parse("class C { int P { get } int Q; }");
+		expect(facts.diagnostics.map((item) => [item.severity, item.range?.start])).toEqual([
+			["error", { line: 0, character: 18 }],
+		]);
+		expect(facts.declarations.map((item) => item.name)).toEqual(["C", "P", "Q"]);
+	});
+
 	it("diagnoses missing type, delegate, using, member, and attribute delimiters", () => {
 		const cases = [
 			{

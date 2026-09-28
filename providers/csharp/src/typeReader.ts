@@ -1,7 +1,7 @@
 // Type syntax: shapes, tuples, and which angle brackets open type argument lists.
 
-import { type HeaderFold, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
-import type { AnglePairs, BracketWalk, HeaderSkip, LeadingType, TypeShape, TypeSpan } from "./model.js";
+import { defined, type HeaderFold, type OffsetRange } from "@nyaa-lexicon/protocol";
+import type { AnglePairs, BracketWalk, HeaderSkip, LeadingType, TypeFacts, TypeShape, TypeSpan } from "./model.js";
 import { CsharpTokenStream } from "./tokenStream.js";
 import type { Token } from "./tokens.js";
 import {
@@ -76,11 +76,6 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		return -1;
 	}
 
-	protected isLocalNameFollower(index: number): boolean {
-		const value = this.value(index);
-		return value === "=" || value === ";" || value === "," || value === "[";
-	}
-
 	protected spanBeforeName(start: number, nameIndex: number): TypeSpan | undefined {
 		let first = this.nextSignificant(start, nameIndex);
 		while (first >= 0 && first < nameIndex && MODIFIERS.has(this.value(first) ?? "")) {
@@ -94,7 +89,14 @@ export class CsharpTypeReader extends CsharpTokenStream {
 	/** Undefined when no type starts here. */
 	protected typeShape(start: number, end: number, depth = 0): TypeShape | undefined {
 		if (depth > MAX_TYPE_DEPTH) return undefined;
-		const shape: TypeShape = { end: -1, name: undefined, elementNames: [] };
+		const shape: TypeShape = {
+			end: -1,
+			name: undefined,
+			segments: [],
+			qualifier: undefined,
+			arity: 0,
+			elementNames: [],
+		};
 		let current = this.nextSignificant(start, end);
 		let expectName = true;
 		let qualifiable = false;
@@ -105,13 +107,21 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			if (expectName) {
 				if (isIdentifier(item)) {
 					shape.name = item;
+					shape.arity = 0;
+					// An alias left of `::` opens a name; it names nothing itself.
+					const opens =
+						shape.segments.length === 0 &&
+						shape.qualifier === undefined &&
+						this.value(this.nextSignificant(next, end)) === "::";
+					if (opens) shape.qualifier = item.value;
+					else shape.segments.push({ name: item.value, arity: 0 });
 					qualifiable = true;
 				} else if (value === "(" && shape.end < 0) {
 					next = this.tupleClose(current, end, shape.elementNames, depth + 1) + 1;
 					if (next <= 0) return undefined;
 				} else break;
 				expectName = false;
-			} else if (value === "*" && shape.name?.value === "delegate") {
+			} else if (value === "*" && syntaxValue(shape.name) === "delegate") {
 				// Function pointer signature.
 				const open = this.findTopLevelValue(next, end, "<");
 				const pairs = open < 0 ? EMPTY_MAP : this.listWalk(open, end, depth + 1);
@@ -129,6 +139,9 @@ export class CsharpTypeReader extends CsharpTokenStream {
 					shape.end = end;
 					break;
 				}
+				shape.arity = this.commaSegments(current + 1, close, pairs).length;
+				const named = shape.segments.at(-1);
+				if (named !== undefined) named.arity = shape.arity;
 				next = close + 1;
 			} else if ((value === "." || value === "::") && qualifiable) {
 				expectName = true;
@@ -182,21 +195,23 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		return shape === undefined ? undefined : { first, shape };
 	}
 
-	protected declaredType(span: TypeSpan | undefined): { typeText?: string; typeName?: string } {
-		if (this.outline || span === undefined) return {};
+	protected declaredType(span: TypeSpan | undefined): TypeFacts {
+		if (span === undefined) return {};
 		return this.typeFacts(this.leadingType(span));
 	}
 
 	/** `var` declares neither. */
-	protected typeFacts(leading: LeadingType | undefined): { typeText?: string; typeName?: string } {
+	protected typeFacts(leading: LeadingType | undefined): TypeFacts {
 		if (leading === undefined) return {};
 		const first = this.token(leading.first) as Token;
 		const last = this.token(this.previousSignificant(leading.shape.end, leading.first)) as Token;
-		if (first === last && first.value === "var") return {};
-		const name = leading.shape.name?.value;
+		if (first === last && syntaxValue(first) === "var") return {};
+		const { name, segments, qualifier } = leading.shape;
 		return {
 			typeText: this.sourceSpan(first, last),
-			...(name === undefined || BUILTIN_TYPES.has(name) ? {} : { typeName: name }),
+			...(name === undefined || BUILTIN_TYPES.has(syntaxValue(name) ?? "") || segments.length === 0
+				? {}
+				: { typeSegments: segments, ...defined({ typeQualifier: qualifier }) }),
 		};
 	}
 
@@ -205,15 +220,6 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		const type = this.typeShape(start, end);
 		const name = type === undefined ? -1 : this.findDeclaratorName(type.end, end, angles);
 		return name >= 0 ? name : this.findDeclaratorName(start, end, angles);
-	}
-
-	/** A tuple-typed local's name, or -1. */
-	protected tupleLocalName(start: number, end: number): number {
-		if (this.value(start) !== "(") return -1;
-		const type = this.typeShape(start, end);
-		const name = type === undefined ? -1 : this.nextSignificant(type.end, end);
-		if (!isIdentifier(this.token(name))) return -1;
-		return this.isLocalNameFollower(this.nextSignificant(name + 1, end)) ? name : -1;
 	}
 
 	/** Token `first` through the last significant token before `end`, on one line. */
@@ -249,6 +255,18 @@ export class CsharpTypeReader extends CsharpTokenStream {
 				continue;
 			}
 			if (item.kind === "newline") continue;
+			const whole = item.kind === "string" ? this.lexed.interpolated.get(item.startOffset) : undefined;
+			if (whole !== undefined) {
+				// An interpolated string reads as written, its holes' groups never walked.
+				verbatim.push({ start: whole.startOffset, end: whole.endOffset });
+				while (index < last && (this.tokens[index + 1] as Token).startOffset < whole.endOffset) {
+					index++;
+					if (this.value(index) === "{") folded.set(index, this.matching(index, "{", "}", last + 1));
+				}
+				previous = this.tokens[index] as Token;
+				before = index;
+				continue;
+			}
 			if (item.kind === "string" || item.kind === "character")
 				verbatim.push({ start: item.startOffset, end: item.endOffset });
 			const close = this.valueContainerEnd(index, before, last);
@@ -261,7 +279,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			}
 			before = index;
 		}
-		return renderHeader(this.text, {
+		return this.render({
 			...(lead === undefined ? {} : { lead }),
 			start,
 			end: tail.endOffset,
@@ -376,8 +394,15 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		const before = this.token(previous);
 		if (!typed) return isIdentifier(before) && this.expressionTypeArguments(open, end, depth);
 		if (isIdentifier(before)) return true;
-		// Function pointer.
-		return syntaxValue(before) === "*" && this.value(this.previousSignificant(previous)) === "delegate";
+		// A function pointer, `delegate*` or `delegate* unmanaged[...]`.
+		let star = previous;
+		if (syntaxValue(before) === "]") {
+			const bracket = this.opener(previous, "[", "]");
+			const convention = bracket < 0 ? -1 : this.previousSignificant(bracket);
+			if (this.value(convention) !== "unmanaged") return false;
+			star = this.previousSignificant(convention);
+		}
+		return this.value(star) === "*" && this.value(this.previousSignificant(star)) === "delegate";
 	}
 
 	/** Types only, then a follower that keeps the list. */
@@ -425,7 +450,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		if (value !== "(") return -1;
 		if (opener === "(" && TYPE_OPERATORS.has(this.value(this.previousSignificant(before)) ?? "")) return -1;
 		const close = this.matching(index, "(", ")", last + 1);
-		if (close < 0 || this.findTopLevelValue(index + 1, close, ",") < 0) return -1;
+		if (close < 0 || this.firstComma(index) < 0) return -1;
 		// The comma may sit inside type arguments.
 		if (this.commaSegments(index + 1, close, this.typeAngles(index + 1, close, true)).length < 2) return -1;
 		const after = this.value(this.nextSignificant(close + 1, last + 1)) ?? "";
@@ -435,7 +460,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 	/** A name or type after `close` makes the brackets an attribute or a tuple type. */
 	private declaresAfter(close: number, last: number): boolean {
 		const next = this.token(this.nextSignificant(close + 1, last + 1));
-		if (isIdentifier(next)) return !VALUE_FOLLOWERS.has(next.value);
+		if (isIdentifier(next)) return !VALUE_FOLLOWERS.has(syntaxValue(next) as string);
 		const value = syntaxValue(next);
 		return value === "(" || value === "[" || value === "?";
 	}

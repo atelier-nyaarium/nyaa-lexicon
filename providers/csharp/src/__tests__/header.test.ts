@@ -261,10 +261,16 @@ describe("C# signatures are whole headers on one line", () => {
 		});
 	});
 
-	test("renders a statement of many declarators in time linear in their count", () => {
+	test.each([
+		[
+			"many declarators",
+			(count: number) =>
+				`private int ${Array.from({ length: count }, (_, index) => `a${index} = ${index}`).join(", ")};`,
+		],
+		["deeply nested parentheses", (count: number) => `private int a = ${"(".repeat(count)}1${")".repeat(count)};`],
+	])("renders a statement of %s in time linear in their count", (_label, member) => {
 		const timed = (count: number) => {
-			const names = Array.from({ length: count }, (_, index) => `a${index} = ${index}`);
-			const text = `class C\n{\n    private int ${names.join(", ")};\n}\n`;
+			const text = `class C\n{\n    ${member(count)}\n}\n`;
 			let best = Number.POSITIVE_INFINITY;
 			for (let round = 0; round < 3; round++) {
 				const started = performance.now();
@@ -274,7 +280,7 @@ describe("C# signatures are whole headers on one line", () => {
 			}
 			return best;
 		};
-		// Linear reads 8x; a walk of every sibling per declarator read 64x.
+		// Linear reads 8x; a walk of every sibling or inner group read 64x.
 		expect(timed(4_000) / timed(500)).toBeLessThan(24);
 	});
 });
