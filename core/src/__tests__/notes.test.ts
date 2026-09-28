@@ -260,6 +260,23 @@ describe("whose words an agent may replace", () => {
 	});
 });
 
+describe("searching for a ref", () => {
+	it("lists source before tests at the same match, and files after declarations", () => {
+		plant("src/__tests__/cart.test.ref", [
+			{ symbolId: "lexicon reference src/__tests__/cart.test.ref Cart#", name: "Cart", digest: "t1" },
+		]);
+		plant("src/cart.ref", [{ symbolId: "lexicon reference src/cart.ref Cart#", name: "Cart", digest: "s1" }]);
+
+		expect(service.searchRefs("Cart").results.map((entry) => [entry.kind, entry.ref])).toEqual([
+			["class", "ref://a.ref:Cart"],
+			["class", "ref://src/cart.ref:Cart"],
+			["class", "ref://src/__tests__/cart.test.ref:Cart"],
+			["file", "ref://src/cart.ref"],
+			["file", "ref://src/__tests__/cart.test.ref"],
+		]);
+	});
+});
+
 describe("seeding from describe answers", () => {
 	it("seeds a note from each describe answer that says something, once, and clears answer authors", async () => {
 		const cited = (symbolId: string) => [store.declaration(symbolId)?.factId as string];

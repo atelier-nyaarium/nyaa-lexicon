@@ -549,6 +549,10 @@ const LEDGER_KEY = "refactorLedger";
 /** Set once describe answers have seeded notes; carried across rebuilds so a removed note stays removed. */
 const NOTES_SEEDED_KEY = "notesSeeded";
 
+/** 1 for a module under a test directory or named as a test, so a name search lists source first. */
+const TEST_PATH = `(module LIKE '%__tests__/%' OR module LIKE '%.test.%' OR module LIKE '%.spec.%'
+ OR module LIKE 'test/%' OR module LIKE '%/test/%' OR module LIKE 'tests/%' OR module LIKE '%/tests/%')`;
+
 /** Preserve journals needed to recover disk edits. */
 const SALVAGED_JOURNAL: readonly string[] = JOURNAL_TABLE_NAMES.filter((table) => {
 	const entry: JournalTable = JOURNAL_TABLES[table];
@@ -2492,7 +2496,8 @@ export class IndexStore {
 		return this.db
 			.prepare(
 				`SELECT * FROM symbols WHERE name LIKE ? ESCAPE '\\'
-				 ORDER BY (name = ? COLLATE NOCASE) DESC, (name LIKE ? ESCAPE '\\') DESC, length(name), module, startLine
+				 ORDER BY (name = ? COLLATE NOCASE) DESC, (name LIKE ? ESCAPE '\\') DESC, ${TEST_PATH} ASC,
+				 length(name), module, startLine
 				 LIMIT ? OFFSET ?`,
 			)
 			.all(`%${escaped}%`, text, `${escaped}%`, limit, offset)
@@ -2507,7 +2512,7 @@ export class IndexStore {
 			.prepare(
 				`SELECT module FROM files WHERE module LIKE ? ESCAPE '\\'
 				 ORDER BY (substr(module, length(rtrim(module, replace(module, '/', ''))) + 1) LIKE ? ESCAPE '\\') DESC,
-				 length(module), module LIMIT ?`,
+				 ${TEST_PATH} ASC, length(module), module LIMIT ?`,
 			)
 			.all(`%${escaped}%`, `${escaped}%`, limit) as Array<{ module: string }>;
 		return rows.map((row) => row.module);
