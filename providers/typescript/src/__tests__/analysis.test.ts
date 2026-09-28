@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { coordinatesOf, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, type ProjectModel, parseSymbolId } from "@nyaa-lexicon/protocol";
 import { harness } from "./harness.js";
 
 ////////////////////////////////
@@ -227,16 +227,123 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
-	it("roots every discovered source when no tsconfig exists", () => {
+	it("roots every discovered source when no tsconfig exists, and reads one once created", () => {
 		const files = {
 			"src/a.ts": "export const a = 1;\n",
 			"src/nested/b.ts": "export const b = 2;\n",
 		};
+		const root = workspace(files);
 		const provider = harness();
-		provider.initialize(workspace(files));
+		provider.initialize(root);
+		const discover = () => provider.handlers.discoverProject({ workspaceRoot: root }) as ProjectModel;
 		provider.parseFile({ module: "src/a.ts", contentHash: "a", text: files["src/a.ts"] });
 		expect(provider.programStats().rootFiles).toBe(2);
+
+		const walked = discover();
+		expect(walked.configFiles).toEqual(["tsconfig.json"]);
+		writeFileSync(path.join(root, "tsconfig.json"), JSON.stringify({ include: ["src/nested"] }));
+		const configured = discover();
+		expect(configured.fingerprint).not.toBe(walked.fingerprint);
+		expect(configured.files).toEqual(["src/nested/b.ts"]);
 		provider.shutdown();
+	});
+
+	it("moves the project fingerprint only for config that changes how files read, and reads the new config", () => {
+		const config = (compilerOptions: object, included: string[] = []) =>
+			JSON.stringify({
+				extends: "./tsconfig.base.json",
+				include: ["src", "one", "two", ...included],
+				compilerOptions,
+			});
+		const root = workspace({
+			"tsconfig.base.json": JSON.stringify({ compilerOptions: { strict: true } }),
+			"tsconfig.json": config({ paths: { "@lib/*": ["./one/*"] } }),
+			"package.json": JSON.stringify({ name: "app", scripts: { test: "bun test" } }),
+			"src/use.ts": 'import { value } from "@lib/value";\n',
+			"one/value.ts": "export const value = 1;\n",
+			"two/value.ts": "export const value = 2;\n",
+			"types/module.d.ts": "export declare const typed: number;\n",
+			"types/script.d.ts": "declare const BUILD: string;\n",
+			"types/augment.d.ts": "export {};\ndeclare global {\n\tconst FLAG: boolean;\n}\n",
+		});
+		const provider = harness();
+		provider.initialize(root);
+		const discover = () => provider.handlers.discoverProject({ workspaceRoot: root }) as ProjectModel;
+		const lands = () => provider.resolveImport({ fromModule: "src/use.ts", specifier: "@lib/value" });
+
+		const first = discover();
+		expect(first.configFiles.sort()).toEqual(["package.json", "tsconfig.base.json", "tsconfig.json"]);
+		expect(lands()).toMatchObject({ status: "resolved", module: "one/value.ts" });
+		const edits: [string, string, boolean][] = [
+			["tsconfig.json", config({ paths: { "@lib/*": ["./one/*"] }, outDir: "out" }), false],
+			["package.json", JSON.stringify({ name: "app", scripts: { test: "bun test --watch" } }), false],
+			["tsconfig.json", config({ paths: { "@lib/*": ["./two/*"] }, outDir: "out" }), true],
+			["tsconfig.base.json", JSON.stringify({ compilerOptions: { strict: false } }), true],
+			["package.json", JSON.stringify({ name: "app", exports: "./src/use.ts" }), true],
+			// Only a declaration file that declares globals changes what other files read.
+			["tsconfig.json", config({ paths: { "@lib/*": ["./two/*"] } }, ["types/module.d.ts"]), false],
+			["tsconfig.json", config({ paths: { "@lib/*": ["./two/*"] } }, ["types/script.d.ts"]), true],
+			[
+				"tsconfig.json",
+				config({ paths: { "@lib/*": ["./two/*"] } }, ["types/script.d.ts", "types/augment.d.ts"]),
+				true,
+			],
+		];
+		let fingerprint = first.fingerprint;
+		for (const [file, text, moves] of edits) {
+			writeFileSync(path.join(root, file), text);
+			const next = discover().fingerprint;
+			expect(next !== fingerprint, `${file} ${text}`).toBe(moves);
+			fingerprint = next;
+		}
+		expect(lands()).toMatchObject({ status: "resolved", module: "two/value.ts" });
+		provider.shutdown();
+	});
+
+	it("moves the project fingerprint when a package.json resolution reads or probes changes, through a link too", () => {
+		for (const linked of [false, true]) {
+			const real = workspace({
+				"tsconfig.json": JSON.stringify({
+					include: ["src"],
+					compilerOptions: { paths: { "@lib": ["./vendor/lib"], "@new": ["./vendor/new"] } },
+				}),
+				"src/use.ts": 'import { value } from "@lib";\nimport { fresh } from "@new";\n',
+				"vendor/lib/package.json": JSON.stringify({ types: "a.d.ts" }),
+				"vendor/lib/a.d.ts": "export declare const value: 1;\n",
+				"vendor/lib/b.d.ts": "export declare const value: 2;\n",
+				"vendor/new/index.d.ts": "export declare const fresh: 1;\n",
+				"vendor/new/b.d.ts": "export declare const fresh: 2;\n",
+			});
+			const root = linked ? `${real}-link` : real;
+			if (linked) {
+				symlinkSync(real, root, "dir");
+				roots.push(root);
+			}
+			const provider = harness();
+			provider.initialize(root);
+			const discover = () => provider.handlers.discoverProject({ workspaceRoot: root }) as ProjectModel;
+			const lands = (specifier: string) => provider.resolveImport({ fromModule: "src/use.ts", specifier });
+
+			const first = discover();
+			let fingerprint = first.fingerprint;
+			expect(first.configFiles).toEqual(
+				expect.arrayContaining(["vendor/lib/package.json", "vendor/new/package.json"]),
+			);
+			expect(lands("@lib")).toMatchObject({ status: "resolved", module: "vendor/lib/a.d.ts" });
+			expect(lands("@new")).toMatchObject({ status: "resolved", module: "vendor/new/index.d.ts" });
+			// An edited manifest, then one created where resolution found none.
+			for (const [manifest, specifier] of [
+				["vendor/lib", "@lib"],
+				["vendor/new", "@new"],
+			] as const) {
+				writeFileSync(path.join(root, manifest, "package.json"), JSON.stringify({ types: "b.d.ts" }));
+				const next = discover().fingerprint;
+				expect(next, `${manifest} linked=${linked}`).not.toBe(fingerprint);
+				fingerprint = next;
+				expect(lands(specifier)).toMatchObject({ status: "resolved", module: `${manifest}/b.d.ts` });
+			}
+			provider.shutdown();
+		}
 	});
 
 	it("advances the compiler generation when the saved file changes", () => {
@@ -459,6 +566,80 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
+	it("binds a union's property to the constituents the checker resolves, and a parameter's or element's member", () => {
+		const text = [
+			"export type Result = { ok: true; file: string } | { ok: false; failure: string; items: { id: string }[] };",
+			"export function use(result: Result, opts: { path: string }) {",
+			"  if (result.ok) return result.file + opts.path;",
+			"  return result.failure + result.items[0]?.id;",
+			"}",
+			"",
+		].join("\n");
+		const root = workspace({ "union.ts": text });
+		const provider = harness();
+		provider.initialize(root);
+		const facts = provider.parseFile({ module: "union.ts", contentHash: "union", text });
+		const idOf = (name: string) =>
+			facts.declarations
+				.filter((declaration) => declaration.name === name)
+				.map((declaration) => declaration.symbolId);
+		const bindingOf = (name: string) => facts.references.find((reference) => reference.name === name)?.binding;
+
+		expect(bindingOf("ok")).toEqual({ status: "ambiguous", candidates: idOf("ok").sort(), provenance: "bound" });
+		for (const name of ["file", "failure", "path", "id"]) {
+			const [symbolId] = idOf(name);
+			expect(bindingOf(name), name).toEqual({
+				status: "bound",
+				symbolId: symbolId as string,
+				provenance: "bound",
+			});
+		}
+		provider.shutdown();
+	});
+
+	it("binds each name shared by several syntactic roles to its one declaration", () => {
+		const text = [
+			"export class Box {",
+			"\tconstructor(private readonly side: number) { console.log(side); }",
+			"\tget area(): number { return this.side * this.side; }",
+			"\tset area(value: number) {}",
+			"\tgrow() { this.area = this.area + 1; }",
+			"}",
+			"function measure() { return { width: 1, depth: 2 }; }",
+			"export const { width, depth: deep } = measure();",
+			"export const total = width + deep;",
+			"",
+		].join("\n");
+		const root = workspace({ "shared.ts": text });
+		const provider = harness();
+		provider.initialize(root);
+		const facts = provider.parseFile({ module: "shared.ts", contentHash: "shared", text });
+		const idOf = (name: string) =>
+			facts.declarations
+				.filter((declaration) => declaration.name === name)
+				.map((declaration) => declaration.symbolId);
+		const targetsOf = (name: string) =>
+			facts.references
+				.filter((reference) => reference.name === name)
+				.map((reference) =>
+					reference.binding.status === "bound" ? reference.binding.symbolId : reference.binding,
+				);
+
+		for (const name of ["side", "width", "deep"]) {
+			const [id] = idOf(name);
+			expect(idOf(name), name).toHaveLength(1);
+			expect(targetsOf(name).length, name).toBeGreaterThan(0);
+			expect(
+				targetsOf(name).every((target) => target === id),
+				name,
+			).toBe(true);
+		}
+		// A getter and its setter are one property, which its first declaration names.
+		const getter = idOf("area")[0] as string;
+		expect(targetsOf("area")).toEqual([getter, getter]);
+		provider.shutdown();
+	});
+
 	it("binds same-file references in an explicitly included JavaScript file", () => {
 		const text =
 			"var _N=Object.create;function fN($,v){return $}class Q4{}class W3 extends Q4{constructor(){super();fN(W3,1)}}";
@@ -565,20 +746,27 @@ describe("checker-backed analysis", () => {
 		const c = declaration("C");
 		const h = declaration("H");
 		const k = declaration("K");
-		const hFromA = referenceFrom("H", a?.symbolId ?? "");
+		// A function-valued property is A's member, and holds its own body's references.
+		const run = declaration("run");
+		const hFromA = referenceFrom("H", run?.symbolId ?? "");
 		const kFromB = referenceFrom("K", b?.symbolId ?? "");
 		const hFromC = referenceFrom("H", c?.symbolId ?? "");
 		if (h === undefined || k === undefined) throw new Error("fan-out declaration missing");
 
+		expect(run?.containerId).toBe(a?.symbolId);
 		expect(hFromA?.binding).toEqual({ status: "bound", symbolId: h.symbolId, provenance: "bound" });
 		expect(kFromB?.binding).toEqual({ status: "bound", symbolId: k.symbolId, provenance: "bound" });
 		expect(hFromC?.binding).toEqual({ status: "bound", symbolId: h.symbolId, provenance: "bound" });
 		const fanOut = new Set(
 			facts.references
-				.filter((reference) => reference.fromId === a?.symbolId && reference.binding.status === "bound")
+				.filter(
+					(reference) =>
+						[a?.symbolId, run?.symbolId].includes(reference.fromId) && reference.binding.status === "bound",
+				)
 				.map((reference) => (reference.binding.status === "bound" ? reference.binding.symbolId : undefined)),
 		);
-		expect(fanOut).toEqual(new Set([h?.symbolId]));
+		const parameter = facts.declarations.find((item) => item.name === "$" && item.containerId === run?.symbolId);
+		expect(fanOut).toEqual(new Set([h?.symbolId, parameter?.symbolId]));
 		expect(
 			facts.references
 				.filter((reference) => reference.fromId !== undefined)
@@ -671,6 +859,7 @@ describe("checker-backed analysis", () => {
 			"  files.push(value);",
 			"  dynamic.missing();",
 			"  for (const local of files) local;",
+			"  (value as unknown as { hidden: string }).hidden;",
 			"  return import.meta;",
 			"}",
 			"",
@@ -689,6 +878,11 @@ describe("checker-backed analysis", () => {
 			provenance: "bound",
 		});
 		expect(reference("local", "read")).toEqual({
+			status: "bound",
+			symbolId: "lexicon typescript cases.ts run().local.",
+			provenance: "bound",
+		});
+		expect(reference("hidden", "read")).toEqual({
 			status: "unbound",
 			reason: "NotIndexed",
 			detail: "the declaration is not in the symbol index",
@@ -1040,25 +1234,48 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
-	it("reports an ambiguous type id when declarations share one index id", () => {
+	it("extracts a parsed file once for its facts and its own bindings", () => {
+		const text = "export function add(value: number) { return value; }\nadd(1);\n";
+		const root = workspace({ "once.ts": text });
+		const provider = harness();
+		provider.initialize(root);
+		const memo = provider.provider.store.memo.bind(provider.provider.store);
+		let extractions = 0;
+		provider.provider.store.memo = <R>(key: string, compute: () => R) =>
+			memo(key, () => {
+				if (key.startsWith("extract:")) extractions += 1;
+				return compute();
+			});
+		const facts = provider.parseFile({ module: "once.ts", contentHash: "once", text });
+
+		expect(facts.references.map((reference) => reference.binding.status)).toEqual(["bound", "bound"]);
+		expect(extractions).toBe(1);
+		provider.shutdown();
+	});
+
+	it("gives same-named locals their own ids, each typed and bound as itself", () => {
 		const text = [
 			"export function run(kind: string) {",
 			'  if (kind === "a") { const value = 1; return value; }',
-			"  { const value = 2; return value; }",
+			'  { const value = "two"; return value; }',
 			"}",
 			"",
 		].join("\n");
-		const root = workspace({ "ambiguous.ts": text });
+		const root = workspace({ "locals.ts": text });
 		const provider = harness();
 		provider.initialize(root);
-		const facts = provider.parseFile({ module: "ambiguous.ts", contentHash: "ambiguous", text });
-		const target = facts.declarations.find((declaration) => declaration.name === "value");
+		const facts = provider.parseFile({ module: "locals.ts", contentHash: "locals", text });
+		const values = facts.declarations.filter((declaration) => declaration.name === "value");
+		const reads = facts.references.filter((reference) => reference.name === "value");
 
-		expect(provider.typeOf({ symbolId: target?.symbolId ?? "" })).toEqual({
-			status: "unknown",
-			reason: "Ambiguous",
-			detail: "the symbol id maps to several declarations",
-		});
+		expect(new Set(values.map((value) => value.symbolId)).size).toBe(2);
+		expect(values.map((value) => provider.typeOf({ symbolId: value.symbolId }))).toMatchObject([
+			{ display: "1" },
+			{ display: '"two"' },
+		]);
+		expect(reads.map((read) => (read.binding.status === "bound" ? read.binding.symbolId : undefined))).toEqual(
+			values.map((value) => value.symbolId),
+		);
 		provider.shutdown();
 	});
 });
@@ -1128,6 +1345,52 @@ describe("source admission", () => {
 			reason: "ParseError",
 		});
 		provider.shutdown();
+	});
+
+	it("types an anonymous default from its node, and answers a static block has no type", () => {
+		const files = {
+			"klass.ts": "export default class { x = 1; static { const y = 2; } }\n",
+			"fn.ts": "export default function (a: number) { return a; }\n",
+		};
+		const provider = harness();
+		provider.initialize(workspace(files));
+		const typeOf = (module: keyof typeof files, pick: (declaration: { name: string; kind: string }) => boolean) => {
+			const facts = provider.parseFile({ module, contentHash: module, text: files[module] });
+			const declaration = facts.declarations.find(pick);
+			return provider.typeOf({ symbolId: declaration?.symbolId ?? "" });
+		};
+
+		expect({
+			klass: typeOf("klass.ts", (declaration) => declaration.kind === "class"),
+			fn: typeOf("fn.ts", (declaration) => declaration.kind === "function"),
+			block: typeOf("klass.ts", (declaration) => declaration.name === "static"),
+		}).toMatchObject({
+			klass: { status: "known", display: "default" },
+			fn: { status: "known", display: "(a: number) => number" },
+			block: { status: "unknown", reason: "DynamicallyTyped" },
+		});
+		provider.shutdown();
+	});
+
+	it("types nothing from a file the scope denies", () => {
+		const files = {
+			"secret.ts": 'export const secret = "hidden";\n',
+			"uses.ts": 'import { secret } from "./secret";\nexport const shown = secret;\n',
+		};
+		const typeOfShown = (deny?: string[]) => {
+			const provider = harness();
+			provider.initialize(workspace(files), deny);
+			const facts = provider.parseFile({ module: "uses.ts", contentHash: "uses", text: files["uses.ts"] });
+			const shown = facts.declarations.find((declaration) => declaration.name === "shown");
+			const type = provider.typeOf({ symbolId: shown?.symbolId ?? "" });
+			provider.shutdown();
+			return JSON.stringify(type).includes("hidden");
+		};
+
+		expect({ open: typeOfShown(), denied: typeOfShown(["secret.ts"]) }).toEqual({
+			open: true,
+			denied: false,
+		});
 	});
 });
 

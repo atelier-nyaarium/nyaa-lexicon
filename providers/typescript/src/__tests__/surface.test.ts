@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { FOLD_MARK } from "@nyaa-lexicon/protocol";
+import { FOLD_MARK, parseSymbolId, withOccurrences } from "@nyaa-lexicon/protocol";
 import { configuredSurfaceCandidates, isLikelyBundle, surfaceGlobMatches } from "../bundle";
 import { extractSurfaceFile } from "../surface";
 import { harness } from "./harness.js";
@@ -94,6 +94,117 @@ describe("runtime bundle surfaces", () => {
 });
 
 describe("registered declaration surfaces", () => {
+	it("binds a use into a declaration surface only to ids that surface admits", () => {
+		const lib = [
+			"export interface Config { server: { port: number } | null; items: { id: string }[] }",
+			"export default class Box {",
+			"  constructor(readonly side: number);",
+			"  get area(): number;",
+			"  set area(value: number);",
+			"  protected hidden(): void;",
+			"  static make(options: { size: number }): Box;",
+			"}",
+			"declare class Local { run(): void }",
+			"export { Local as Alias };",
+			"export declare function load(options: { path: string }): Config;",
+			"export declare enum Direction { Up, Down }",
+			"export declare namespace Log {",
+			"  function write(message: string): void;",
+			"  const level: number;",
+			"  namespace Deep { function dive(): void }",
+			"}",
+			'import fs = require("fs");',
+			"declare global {",
+			"  function shout(): void;",
+			"}",
+			"",
+		].join("\n");
+		// A script: its declarations are global, and its `declare module` is the package's surface.
+		const ambient = [
+			'declare module "pkg" {',
+			'  import path = require("path");',
+			"  export function start(): void;",
+			"}",
+			"declare function greet(name: string): void;",
+			"declare const VERSION: string;",
+			"",
+		].join("\n");
+		const use = [
+			'import Box, { type Config, Alias, load, Direction, Log } from "../types/lib";',
+			'import { start } from "pkg";',
+			"export function run(config: Config, box: Box) {",
+			'  load({ path: "x" });',
+			'  Log.write("x");',
+			"  Log.Deep.dive();",
+			"  greet(VERSION);",
+			"  start();",
+			"  shout();",
+			"  return [config.server?.port, config.items[0]?.id, box.side, box.area, new Alias().run(), Box.make({ size: 1 })];",
+			"}",
+			"export const facing = [Direction.Up, Log.level];",
+			"export class Sub extends Box { peek() { return this.hidden(); } }",
+			"",
+		].join("\n");
+		const surfaces = { "types/lib.d.ts": lib, "types/ambient.d.ts": ambient };
+		const provider = harness();
+		provider.initialize(workspace({ ...surfaces, "src/use.ts": use }));
+		const parsed = Object.entries(surfaces).map(([module, text]) =>
+			provider.parseFile({ module, contentHash: module, text, depth: "surface" }),
+		);
+		const admitted = new Map(
+			parsed.flatMap((surface) =>
+				withOccurrences(surface).declarations.map(
+					(declaration) => [declaration.symbolId, declaration] as const,
+				),
+			),
+		);
+		const facts = provider.parseFile({ module: "src/use.ts", contentHash: "use", text: use });
+		const intoSurfaces = facts.references.flatMap((reference) => {
+			const binding = reference.binding;
+			const targets =
+				binding.status === "bound"
+					? [binding.symbolId]
+					: binding.status === "ambiguous"
+						? binding.candidates
+						: [];
+			return targets.filter((target) => (parseSymbolId(target)?.module ?? "") in surfaces);
+		});
+
+		expect(intoSurfaces.filter((target) => !admitted.has(target))).toEqual([]);
+		const reached = [
+			...[
+				"Config#server.port.",
+				"Config#items.id.",
+				"Box#side.",
+				"Box#area.",
+				"Box#",
+				"load().",
+				"Alias#",
+				"Alias#run().",
+				"Direction#Up.",
+				"Log/write().",
+				"Log/level.",
+				"Log/Deep/dive().",
+				"global/shout().",
+			].map((id) => `lexicon typescript types/lib.d.ts ${id}`),
+			...["pkg/start().", "greet().", "VERSION."].map((id) => `lexicon typescript types/ambient.d.ts ${id}`),
+		];
+		for (const id of reached) {
+			expect(intoSurfaces, id).toContain(id);
+			// A member leaves its module when its container does.
+			expect(admitted.get(id)?.exported, id).toBe(true);
+		}
+		for (const [index, specifier] of ["fs", "path"].entries()) {
+			expect(parsed[index]?.imports).toContainEqual(
+				expect.objectContaining({
+					specifier,
+					imported: [expect.objectContaining({ local: specifier, kind: "require" })],
+				}),
+			);
+		}
+		provider.shutdown();
+	});
+
 	it("keeps declared signatures and public class members", () => {
 		const text = [
 			"export declare function send(hH: Uint8Array, { data, highWaterMark }: Options): Result;",
@@ -106,6 +217,8 @@ describe("registered declaration surfaces", () => {
 			"  protected hidden(): void;",
 			"  private secret: string;",
 			"}",
+			"export type Shape = { side: number; area(): number };",
+			"export type Result = { ok: true } | { ok: false };",
 		].join("\n");
 		const facts = extractSurfaceFile("types/runtime.d.ts", text);
 		const names = facts.declarations.map((declaration) => declaration.name);
@@ -124,7 +237,18 @@ describe("registered declaration surfaces", () => {
 			"ready",
 			"ready",
 			"value",
+			"Shape",
+			"side",
+			"area",
+			"Result",
+			"ok",
+			"ok",
 		]);
+		expect(
+			facts.declarations
+				.filter((declaration) => declaration.languageKind === "typeAlias")
+				.map((item) => item.name),
+		).toEqual(["Shape", "Result"]);
 		expect(facts.declarations.find((declaration) => declaration.name === "constructor")).toMatchObject({
 			kind: "constructor",
 			signature: "constructor(seed: string)",

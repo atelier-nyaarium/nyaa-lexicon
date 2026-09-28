@@ -5,7 +5,7 @@
 // and none of them are things a syntax tree can answer.
 
 import path from "node:path";
-import { type ImportResolution, normalizeModulePath } from "@nyaa-lexicon/protocol";
+import { hashContent, type ImportResolution, normalizeModulePath, type ReadPolicy } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { configuredSurfaceCandidates, isDeclarationModule, surfaceGlobMatches } from "./bundle.js";
 import { claimsExtension } from "./file-types.js";
@@ -13,26 +13,20 @@ import { claimsExtension } from "./file-types.js";
 ////////////////////////////////
 //  Interfaces & Types
 
-export interface LoadedProject {
+/** What resolution needs: the compiler's options and the disk it may read. */
+export interface CompilerSetup {
 	options: ts.CompilerOptions;
-	files: string[];
-	configFiles: string[];
-	diagnostics: { severity: "error" | "warning"; message: string; path?: string }[];
+	/** Every disk read goes through this. */
+	system: ts.System;
 }
 
-////////////////////////////////
-//  Constants
-
-const HOST: ts.ModuleResolutionHost = {
-	fileExists: ts.sys.fileExists,
-	readFile: ts.sys.readFile,
-	directoryExists: ts.sys.directoryExists,
-	getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
-	getDirectories: ts.sys.getDirectories,
-	// Omitted rather than set undefined: the host declares it optional, and this project forbids
-	// an explicit undefined standing in for an absent one.
-	...(ts.sys.realpath ? { realpath: ts.sys.realpath } : {}),
-};
+export interface LoadedProject extends CompilerSetup {
+	files: string[];
+	configFiles: string[];
+	/** Referenced project paths. */
+	references: string[];
+	diagnostics: { severity: "error" | "warning"; message: string; path?: string }[];
+}
 
 /** Defaults for a workspace with no tsconfig, so an unconfigured repo still answers. */
 const FALLBACK: ts.CompilerOptions = {
@@ -42,8 +36,94 @@ const FALLBACK: ts.CompilerOptions = {
 	allowJs: true,
 };
 
+/** Options that change no binding, type or resolution. */
+const INERT_OPTIONS = new Set([
+	"assumeChangesOnlyAffectDirectDependencies",
+	"charset",
+	"composite",
+	"declaration",
+	"declarationDir",
+	"declarationMap",
+	"diagnostics",
+	"disableReferencedProjectLoad",
+	"disableSizeLimit",
+	"disableSolutionSearching",
+	"disableSourceOfProjectReferenceRedirect",
+	"emitBOM",
+	"emitDeclarationOnly",
+	"emitDecoratorMetadata",
+	"explainFiles",
+	"extendedDiagnostics",
+	"forceConsistentCasingInFileNames",
+	"generateCpuProfile",
+	"generateTrace",
+	"importHelpers",
+	"incremental",
+	"inlineSourceMap",
+	"inlineSources",
+	"isolatedDeclarations",
+	"isolatedModules",
+	"listEmittedFiles",
+	"listFiles",
+	"locale",
+	"mapRoot",
+	"newLine",
+	"noCheck",
+	"noEmit",
+	"noEmitHelpers",
+	"noEmitOnError",
+	"noFallthroughCasesInSwitch",
+	"noImplicitOverride",
+	"noImplicitReturns",
+	"noPropertyAccessFromIndexSignature",
+	"noUnusedLocals",
+	"noUnusedParameters",
+	"out",
+	"outDir",
+	"outFile",
+	"plugins",
+	"preserveConstEnums",
+	"preserveWatchOutput",
+	"pretty",
+	"removeComments",
+	"rootDir",
+	"skipDefaultLibCheck",
+	"skipLibCheck",
+	"sourceMap",
+	"sourceRoot",
+	"stripInternal",
+	"traceResolution",
+	"tsBuildInfoFile",
+	"watch",
+]);
+
+/** The package.json fields module resolution reads. */
+const PACKAGE_FIELDS = ["name", "type", "main", "types", "typings", "typesVersions", "exports", "imports"] as const;
+
 ////////////////////////////////
 //  Functions & Helpers
+
+/** `ts.sys`, reading nothing the policy denies. */
+export function readableSystem(policy: ReadPolicy): ts.System {
+	return {
+		...ts.sys,
+		readFile: (fileName, encoding) => (policy.readable(fileName) ? ts.sys.readFile(fileName, encoding) : undefined),
+		fileExists: (fileName) => policy.readable(fileName) && ts.sys.fileExists(fileName),
+	};
+}
+
+function resolutionHost(system: ts.System): ts.ModuleResolutionHost {
+	return {
+		fileExists: system.fileExists,
+		readFile: system.readFile,
+		directoryExists: system.directoryExists,
+		getCurrentDirectory: () => system.getCurrentDirectory(),
+		getDirectories: system.getDirectories,
+		// Omitted rather than set undefined: the host declares it optional, and this project forbids
+		// an explicit undefined standing in for an absent one.
+		...(system.realpath ? { realpath: system.realpath } : {}),
+	};
+}
 
 /**
  * Load the nearest tsconfig, or fall back.
@@ -51,25 +131,28 @@ const FALLBACK: ts.CompilerOptions = {
  * A missing tsconfig is not an error: plenty of real JavaScript has none, and refusing would make
  * the provider useless exactly where a symbol index helps most.
  */
-export function loadProject(workspaceRoot: string): LoadedProject {
-	const configPath = ts.findConfigFile(workspaceRoot, ts.sys.fileExists, "tsconfig.json");
+export function loadProject(workspaceRoot: string, system: ts.System = ts.sys): LoadedProject {
+	const configPath = ts.findConfigFile(workspaceRoot, system.fileExists, "tsconfig.json");
 	if (configPath === undefined) {
-		return { options: FALLBACK, files: [], configFiles: [], diagnostics: [] };
+		return { options: FALLBACK, system, files: [], configFiles: [], references: [], diagnostics: [] };
 	}
 
-	const read = ts.readConfigFile(configPath, ts.sys.readFile);
-	if (read.error) {
+	const config = parseConfig(configPath, system);
+	if ("error" in config) {
 		return {
 			options: FALLBACK,
+			system,
 			files: [],
 			configFiles: [configPath],
-			diagnostics: [{ severity: "error", message: messageOf(read.error), path: configPath }],
+			references: [],
+			diagnostics: [{ severity: "error", message: messageOf(config.error), path: configPath }],
 		};
 	}
 
-	const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, path.dirname(configPath), undefined, configPath);
-	const configFiles = [configPath];
+	const { parsed } = config;
+	const configFiles = [...config.configFiles];
 	const files = [...parsed.fileNames];
+	const references = (parsed.projectReferences ?? []).map((reference) => reference.path);
 	const diagnostics: LoadedProject["diagnostics"] = parsed.errors.map((error) => ({
 		severity: "error",
 		message: messageOf(error),
@@ -77,8 +160,8 @@ export function loadProject(workspaceRoot: string): LoadedProject {
 
 	// A solution-style tsconfig lists no files of its own, only references. Stopping here would
 	// answer "this monorepo contains nothing", which is the shape most real projects have.
-	for (const reference of parsed.projectReferences ?? []) {
-		const referenced = loadReferenced(reference.path);
+	for (const reference of references) {
+		const referenced = loadReferenced(reference, system);
 		files.push(...referenced.files);
 		configFiles.push(...referenced.configFiles);
 		diagnostics.push(...referenced.diagnostics);
@@ -86,33 +169,170 @@ export function loadProject(workspaceRoot: string): LoadedProject {
 
 	// Reported rather than thrown: one bad config entry should not make the whole project
 	// unanswerable, and the core shows diagnostics beside the facts it did get.
-	return { options: parsed.options, files: dedupe(files), configFiles, diagnostics };
+	return {
+		options: parsed.options,
+		system,
+		files: dedupe(files),
+		configFiles: dedupe(configFiles),
+		references,
+		diagnostics,
+	};
 }
 
 /** One referenced project. Its own references are not followed: one level is what a solution is. */
-function loadReferenced(referencePath: string): Omit<LoadedProject, "options"> {
-	const configPath = ts.sys.directoryExists(referencePath)
+function loadReferenced(
+	referencePath: string,
+	system: ts.System,
+): Pick<LoadedProject, "files" | "configFiles" | "diagnostics"> {
+	const configPath = system.directoryExists(referencePath)
 		? path.join(referencePath, "tsconfig.json")
 		: referencePath;
-	if (!ts.sys.fileExists(configPath)) {
+	if (!system.fileExists(configPath)) {
 		return { files: [], configFiles: [], diagnostics: [{ severity: "warning", message: `missing ${configPath}` }] };
 	}
 
-	const read = ts.readConfigFile(configPath, ts.sys.readFile);
-	if (read.error) {
+	const config = parseConfig(configPath, system);
+	if ("error" in config) {
 		return {
 			files: [],
 			configFiles: [configPath],
-			diagnostics: [{ severity: "error", message: messageOf(read.error), path: configPath }],
+			diagnostics: [{ severity: "error", message: messageOf(config.error), path: configPath }],
 		};
 	}
 
-	const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, path.dirname(configPath), undefined, configPath);
 	return {
-		files: parsed.fileNames,
-		configFiles: [configPath],
-		diagnostics: parsed.errors.map((error) => ({ severity: "error" as const, message: messageOf(error) })),
+		files: config.parsed.fileNames,
+		configFiles: config.configFiles,
+		diagnostics: config.parsed.errors.map((error) => ({ severity: "error" as const, message: messageOf(error) })),
 	};
+}
+
+/** One tsconfig, and the configs it extends. */
+function parseConfig(
+	configPath: string,
+	system: ts.System,
+): { parsed: ts.ParsedCommandLine; configFiles: string[] } | { error: ts.Diagnostic } {
+	const read = ts.readConfigFile(configPath, system.readFile);
+	if (read.error) return { error: read.error };
+	const source = ts.readJsonConfigFile(configPath, system.readFile);
+	const parsed = ts.parseJsonSourceFileConfigFileContent(
+		source,
+		system,
+		path.dirname(configPath),
+		undefined,
+		configPath,
+	);
+	return { parsed, configFiles: [configPath, ...(source.extendedSourceFiles ?? [])] };
+}
+
+/**
+ * What facts depend on beyond file text: the options that shape binding, types and resolution,
+ * the project references, the declaration files that declare globals, and the resolution fields of
+ * each package.json over the files.
+ */
+export function projectFingerprint(
+	root: string,
+	loaded: LoadedProject,
+): { fingerprint: string; packageFiles: string[] } {
+	const options = Object.entries(loaded.options)
+		.filter(([name]) => !INERT_OPTIONS.has(name))
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	const packageFiles = [
+		...new Set([...packageFilesOver(root, loaded.files, loaded.system), ...resolutionPackages(root, loaded)]),
+	].sort();
+	const packages = packageFiles.map((file) => [
+		toPosix(path.relative(root, file)),
+		packageFields(file, loaded.system),
+	]);
+	const references = [...loaded.references].sort();
+	const ambient = globalDeclarations(root, loaded.files, loaded.system);
+	return { fingerprint: hashContent(JSON.stringify({ options, references, ambient, packages })), packageFiles };
+}
+
+/** Program `.d.ts` files whose declarations reach every file unimported. */
+function globalDeclarations(root: string, files: readonly string[], system: ts.System): string[] {
+	const found: string[] = [];
+	for (const file of files) {
+		if (!file.endsWith(".d.ts")) continue;
+		const text = system.readFile(file);
+		if (text === undefined) continue;
+		const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+		const global =
+			!ts.isExternalModule(source) ||
+			source.statements.some((statement) => (statement.flags & ts.NodeFlags.GlobalAugmentation) !== 0);
+		if (global) found.push(toPosix(path.relative(root, file)));
+	}
+	return found.sort();
+}
+
+/** Each workspace package.json from a file's directory up to the root. */
+function packageFilesOver(root: string, files: readonly string[], system: ts.System): string[] {
+	const visited = new Set<string>();
+	const found: string[] = [];
+	for (const file of files) {
+		let directory = path.dirname(file);
+		while (!visited.has(directory) && (directory === root || directory.startsWith(`${root}${path.sep}`))) {
+			visited.add(directory);
+			const candidate = path.join(directory, "package.json");
+			if (!directory.split(path.sep).includes("node_modules") && system.fileExists(candidate)) {
+				found.push(candidate);
+			}
+			if (directory === root) break;
+			directory = path.dirname(directory);
+		}
+	}
+	return found.sort();
+}
+
+/**
+ * Workspace package.json files that resolving the project's imports reads, through `paths` or a
+ * linked workspace package: each specifier resolved once, recording what the host reads.
+ */
+function resolutionPackages(root: string, loaded: LoadedProject): string[] {
+	const { system, options } = loaded;
+	// Probed, found or not: creating one moves resolution as much as editing one.
+	const probed = new Set<string>();
+	const host: ts.ModuleResolutionHost = {
+		...resolutionHost(system),
+		fileExists: (fileName) => {
+			if (path.basename(fileName) === "package.json") probed.add(fileName);
+			return system.fileExists(fileName);
+		},
+		readFile: (fileName) => {
+			if (path.basename(fileName) === "package.json") probed.add(fileName);
+			return system.readFile(fileName);
+		},
+	};
+	const canonical = (fileName: string) => (system.useCaseSensitiveFileNames ? fileName : fileName.toLowerCase());
+	const cache = ts.createModuleResolutionCache(root, canonical, options);
+	for (const file of loaded.files) {
+		const text = system.readFile(file);
+		if (text === undefined) continue;
+		for (const imported of ts.preProcessFile(text, true, true).importedFiles) {
+			ts.resolveModuleName(imported.fileName, file, options, host, cache);
+		}
+	}
+	// Through links, so a linked package or a root opened through a link still counts.
+	const real = (fileName: string) => path.resolve(system.realpath?.(fileName) ?? fileName);
+	const realRoot = real(root);
+	const found = new Set<string>();
+	for (const probe of probed) {
+		const resolved = system.fileExists(probe) ? real(probe) : path.join(real(path.dirname(probe)), "package.json");
+		const relative = path.relative(realRoot, resolved);
+		const inside = !relative.startsWith("..") && !path.isAbsolute(relative);
+		if (inside && !relative.split(path.sep).includes("node_modules")) found.add(path.join(root, relative));
+	}
+	return [...found];
+}
+
+function packageFields(file: string, system: ts.System): unknown {
+	try {
+		const value = JSON.parse(system.readFile(file) ?? "null") as Record<string, unknown> | null;
+		if (value === null || typeof value !== "object") return null;
+		return PACKAGE_FIELDS.map((field) => value[field] ?? null);
+	} catch {
+		return null;
+	}
 }
 
 function dedupe(files: string[]): string[] {
@@ -121,6 +341,20 @@ function dedupe(files: string[]): string[] {
 
 function messageOf(diagnostic: ts.Diagnostic): string {
 	return ts.flattenDiagnosticMessageText(diagnostic.messageText, " ");
+}
+
+/** Whether a file runs as an ECMAScript module, where `import x = require()` is an error. */
+export function runsAsEsm(fileName: string, setup: CompilerSetup): boolean {
+	const kind = setup.options.module;
+	if (kind === ts.ModuleKind.Preserve) return false;
+	if (/\.m[tj]s$/.test(fileName)) return true;
+	if (kind === undefined || /\.c[tj]s$/.test(fileName)) return false;
+	if (kind >= ts.ModuleKind.Node16 && kind <= ts.ModuleKind.NodeNext) {
+		const host = resolutionHost(setup.system);
+		return ts.getImpliedNodeFormatForFile(fileName, undefined, host, setup.options) === ts.ModuleKind.ESNext;
+	}
+	// A tsconfig's ECMAScript module kind; the fallback's only guesses.
+	return setup.options !== FALLBACK && kind >= ts.ModuleKind.ES2015 && kind <= ts.ModuleKind.ESNext;
 }
 
 /** Workspace-relative and POSIX, matching the id grammar. Null when it escapes the workspace. */
@@ -146,22 +380,20 @@ export function resolveSpecifier(
 	workspaceRoot: string,
 	fromModule: string,
 	specifier: string,
-	options: ts.CompilerOptions,
+	setup: CompilerSetup,
 	surfaceGlobs: string[] = [],
 	lookupSurface: (module: string, fileName: string) => boolean = () => false,
 ): ImportResolution {
 	const containing = path.join(workspaceRoot, fromModule);
-	const resolved = ts.resolveModuleName(specifier, containing, options, HOST).resolvedModule;
+	const resolved = ts.resolveModuleName(
+		specifier,
+		containing,
+		setup.options,
+		resolutionHost(setup.system),
+	).resolvedModule;
 
 	if (resolved === undefined) {
-		const runtime = resolveRuntimeSurface(
-			workspaceRoot,
-			containing,
-			specifier,
-			options,
-			surfaceGlobs,
-			lookupSurface,
-		);
+		const runtime = resolveRuntimeSurface(workspaceRoot, containing, specifier, setup, surfaceGlobs, lookupSurface);
 		if (runtime !== null) return runtime;
 		// A bare specifier that resolves to nothing is still named as a package, since that is what
 		// the author wrote and what a reader needs to go look up.
@@ -200,12 +432,21 @@ export type SpecifierRenderer = (
 	preferredSpecifier?: string,
 ) => SpecifierRenderResult;
 
+/** The workspace module a specifier lands on, when it lands on one. */
+export type ModuleResolver = (fromModule: string, specifier: string) => string | undefined;
+
+/** A resolution's module, a package's surface included. */
+export function landingOf(resolution: ImportResolution): string | undefined {
+	if (resolution.status === "resolved") return resolution.module;
+	return resolution.status === "external" ? resolution.surface?.module : undefined;
+}
+
 /** Render a module specifier that the existing resolver can send back to the target module. */
 export function renderSpecifier(
 	workspaceRoot: string,
 	fromModule: string,
 	targetModule: string,
-	options: ts.CompilerOptions,
+	setup: CompilerSetup,
 	preferredSpecifier?: string,
 	lookupSurface: (module: string, fileName: string) => boolean = () => false,
 ): SpecifierRenderResult {
@@ -216,14 +457,15 @@ export function renderSpecifier(
 		return { reason: "NoImportPath", detail: "the importing or target module is not a TypeScript module" };
 	}
 
-	const targetExists = ts.sys.fileExists(target);
+	const { options } = setup;
+	const targetExists = setup.system.fileExists(target);
 	const candidates = dedupeCandidates([
 		{
 			specifier: relativeSpecifier(fromModule, targetModule, options, preferredSpecifier),
 			kind: "relative" as const,
 		},
 		...pathAliasCandidates(root, target, options),
-		...packageCandidates(root, fromModule, target, targetModule, options, lookupSurface),
+		...packageCandidates(root, fromModule, target, targetModule, setup, lookupSurface),
 	]);
 	const preferredKind = preferredSpecifier === undefined ? undefined : candidateKind(preferredSpecifier, options);
 	const preferred =
@@ -231,7 +473,7 @@ export function renderSpecifier(
 	const considered = preferred.length > 0 ? preferred : candidates;
 	const valid = targetExists
 		? considered.filter((candidate) =>
-				resolvesToTarget(root, fromModule, candidate.specifier, targetModule, options, lookupSurface),
+				resolvesToTarget(root, fromModule, candidate.specifier, targetModule, setup, lookupSurface),
 			)
 		: considered;
 
@@ -352,25 +594,29 @@ function packageCandidates(
 	fromModule: string,
 	target: string,
 	targetModule: string,
-	options: ts.CompilerOptions,
+	setup: CompilerSetup,
 	lookupSurface: (module: string, fileName: string) => boolean,
 ): RenderCandidate[] {
-	const packageInfo = nearestPackage(target, root);
+	const packageInfo = nearestPackage(target, root, setup.system);
 	if (packageInfo === undefined || packageInfo.exports === false) return [];
 	const relative = stripModuleExtension(toPosix(path.relative(packageInfo.root, target)));
 	if (relative.startsWith("..")) return [];
 	const suffix = relative === "index" ? "" : `/${relative}`;
 	const specifier = `${packageInfo.name}${suffix}`;
-	return resolvesToTarget(root, fromModule, specifier, targetModule, options, lookupSurface)
+	return resolvesToTarget(root, fromModule, specifier, targetModule, setup, lookupSurface)
 		? [{ specifier, kind: "package" }]
 		: [];
 }
 
-function nearestPackage(target: string, root: string): { name: string; root: string; exports: boolean } | undefined {
+function nearestPackage(
+	target: string,
+	root: string,
+	system: ts.System,
+): { name: string; root: string; exports: boolean } | undefined {
 	let directory = path.dirname(target);
 	while (directory === root || directory.startsWith(`${root}${path.sep}`)) {
 		const packagePath = path.join(directory, "package.json");
-		const text = ts.sys.readFile(packagePath);
+		const text = system.readFile(packagePath);
 		if (text !== undefined) {
 			try {
 				const value = JSON.parse(text) as { name?: unknown; exports?: unknown };
@@ -404,10 +650,10 @@ function resolvesToTarget(
 	fromModule: string,
 	specifier: string,
 	targetModule: string,
-	options: ts.CompilerOptions,
+	setup: CompilerSetup,
 	lookupSurface: (module: string, fileName: string) => boolean,
 ): boolean {
-	const result = resolveSpecifier(root, fromModule, specifier, options, [], lookupSurface);
+	const result = resolveSpecifier(root, fromModule, specifier, setup, [], lookupSurface);
 	if (result.status === "resolved") return result.module === targetModule;
 	return result.status === "external" && result.surface?.module === targetModule;
 }
@@ -444,7 +690,7 @@ function resolveRuntimeSurface(
 	workspaceRoot: string,
 	containing: string,
 	specifier: string,
-	options: ts.CompilerOptions,
+	setup: CompilerSetup,
 	surfaceGlobs: string[],
 	lookupSurface: (module: string, fileName: string) => boolean,
 ): ImportResolution | null {
@@ -456,14 +702,14 @@ function resolveRuntimeSurface(
 
 	const existing = [...candidates].filter((module) => {
 		const file = path.join(workspaceRoot, module);
-		if (!ts.sys.fileExists(file)) return false;
+		if (!setup.system.fileExists(file)) return false;
 		if (surfaceGlobs.some((glob) => surfaceGlobMatches(glob, module))) return true;
 		return lookupSurface(module, file);
 	});
 	if (existing.length !== 1) return null;
 
 	const runtime = path.join(workspaceRoot, existing[0] as string);
-	const typed = ts.resolveModuleName(runtime, containing, options, HOST).resolvedModule;
+	const typed = ts.resolveModuleName(runtime, containing, setup.options, resolutionHost(setup.system)).resolvedModule;
 	const fileName = typed?.resolvedFileName ?? runtime;
 	const module = toModule(workspaceRoot, fileName);
 	return module === null ? null : { status: "resolved", module, depth: "surface" };

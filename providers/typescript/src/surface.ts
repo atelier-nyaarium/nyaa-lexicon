@@ -7,13 +7,15 @@ import {
 	defined,
 	type FileRole,
 	type Import,
-	type ImportedName,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { isDeclarationModule } from "./bundle.js";
-import { fileRoleOf, LANGUAGE } from "./extract.js";
+import { LANGUAGE } from "./extract.js";
+import { fileRoleOf } from "./file-role.js";
 import { scriptKindOf } from "./file-types.js";
 import { headerOf } from "./header.js";
+import { importOf } from "./imports.js";
+import { ownedTypeLiterals } from "./members.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -32,6 +34,14 @@ interface ExportedNode {
 	name: string;
 	node: ts.Node;
 	selection: ts.Node | undefined;
+}
+
+/** A declaration its members sit under. */
+interface Owner {
+	symbolId: string;
+	descriptors: Descriptor[];
+	/** Its members leave the module. */
+	exported: boolean;
 }
 
 type SurfaceCallable = ts.FunctionLikeDeclaration | ts.MethodSignature;
@@ -72,7 +82,7 @@ function runtimeSurface(module: string, source: ts.SourceFile): Declaration[] {
 function declarationSurface(module: string, source: ts.SourceFile): Declaration[] {
 	const declarations: Declaration[] = [];
 	const occurrences = new Map<string, number>();
-	for (const item of exportedNodes(source, true)) {
+	for (const item of [...exportedNodes(source, true), ...ambientNodes(source)]) {
 		const callable = callableOf(item.node);
 		if (callable !== undefined) {
 			recordFunction(module, source, declarations, occurrences, item.name, callable, item.selection, item.node);
@@ -97,9 +107,10 @@ function exportedNodes(source: ts.SourceFile, declarations: boolean): ExportedNo
 	for (const statement of source.statements) {
 		const direct = directlyExported(statement);
 		for (const node of direct) {
+			// A named default keeps its name, as the full extractor and the checker name it.
 			const localName = nodeName(node);
-			const name = hasModifier(statement, ts.SyntaxKind.DefaultKeyword) ? "default" : localName;
-			if (name !== null) add(name, node, name === "default" ? defaultToken(statement, source) : nameNode(node));
+			const name = localName ?? (hasModifier(statement, ts.SyntaxKind.DefaultKeyword) ? "default" : null);
+			if (name !== null) add(name, node, localName === null ? defaultToken(statement, source) : nameNode(node));
 		}
 
 		if (ts.isExportDeclaration(statement) && statement.moduleSpecifier === undefined) {
@@ -125,9 +136,31 @@ function exportedNodes(source: ts.SourceFile, declarations: boolean): ExportedNo
 	return exported;
 }
 
+/** What other files see without importing: a script's declarations, and `declare global` or `declare module` blocks. */
+function ambientNodes(source: ts.SourceFile): ExportedNode[] {
+	const script = !ts.isExternalModule(source);
+	const found: ExportedNode[] = [];
+	for (const statement of source.statements) {
+		const ambient =
+			ts.isModuleDeclaration(statement) &&
+			(ts.isStringLiteral(statement.name) || (statement.flags & ts.NodeFlags.GlobalAugmentation) !== 0);
+		if (!script && !ambient) continue;
+		const nodes = ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : [statement];
+		for (const node of nodes) {
+			const name = nodeName(node);
+			if (name !== null) found.push({ name, node, selection: nameNode(node) });
+		}
+	}
+	return found;
+}
+
 function localNodes(source: ts.SourceFile): Map<string, ts.Node[]> {
 	const found = new Map<string, ts.Node[]>();
-	const add = (name: string, node: ts.Node) => found.set(name, [...(found.get(name) ?? []), node]);
+	const add = (name: string, node: ts.Node) => {
+		const nodes = found.get(name);
+		if (nodes === undefined) found.set(name, [node]);
+		else nodes.push(node);
+	};
 	for (const statement of source.statements) {
 		if (ts.isVariableStatement(statement)) {
 			for (const declaration of statement.declarationList.declarations) {
@@ -235,7 +268,7 @@ function recordFunction(
 	selection: ts.Node | undefined,
 	/** The exported node; its header is the signature. */
 	exported: ts.Node,
-	container?: { symbolId: string; descriptors: Descriptor[] },
+	container?: Owner,
 	kind: SurfaceCallableKind = container === undefined ? "function" : "method",
 ): void {
 	const descriptors = [
@@ -253,12 +286,14 @@ function recordFunction(
 		range,
 		...(named === undefined ? {} : { selectionRange: rangeOf(named, source) }),
 		visibility: "public",
-		exported: container === undefined,
+		exported: container?.exported ?? true,
 		metrics: { lines: range.end.line - range.start.line + 1, parameters: callable.parameters.length },
 		...defined({ signature: headerOf(holderOf(exported), source) }),
 		...(container === undefined ? {} : { containerId: container.symbolId }),
 	});
-	recordParameters(module, source, declarations, occurrences, callable.parameters, symbolId, descriptors);
+	const owner = { symbolId, descriptors, exported: false };
+	const properties = kind === "constructor" ? container : undefined;
+	recordParameters(module, source, declarations, occurrences, callable.parameters, owner, properties);
 }
 
 function recordDeclaration(
@@ -267,13 +302,16 @@ function recordDeclaration(
 	declarations: Declaration[],
 	occurrences: Map<string, number>,
 	item: ExportedNode,
+	container?: Owner,
 ): void {
 	const classified = declarationKind(item.node);
 	if (classified === null) return;
-	const descriptors = [descriptor(occurrences, [], classified.descriptor, item.name)];
+	const parents = container?.descriptors ?? [];
+	const descriptors = [...parents, descriptor(occurrences, parents, classified.descriptor, item.name)];
 	const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
 	const range = rangeOf(item.node, source);
 	const named = item.selection ?? nameNode(item.node);
+	const exported = container?.exported ?? true;
 	declarations.push({
 		symbolId,
 		kind: classified.kind,
@@ -281,12 +319,100 @@ function recordDeclaration(
 		range,
 		...(named === undefined ? {} : { selectionRange: rangeOf(named, source) }),
 		visibility: "public",
-		exported: true,
+		exported,
 		metrics: { lines: range.end.line - range.start.line + 1 },
-		...defined({ signature: headerOf(item.node, source) }),
+		...defined({ languageKind: classified.languageKind, signature: headerOf(item.node, source) }),
+		...(container === undefined ? {} : { containerId: container.symbolId }),
 	});
-	if (ts.isClassDeclaration(item.node) || ts.isInterfaceDeclaration(item.node)) {
-		recordMembers(module, source, declarations, occurrences, item.node.members, symbolId, descriptors);
+	const owner = { symbolId, descriptors, exported };
+	if (ts.isEnumDeclaration(item.node)) {
+		recordEnumMembers(module, source, declarations, occurrences, item.node, owner);
+		return;
+	}
+	if (ts.isModuleDeclaration(item.node)) {
+		recordNamespaceBody(module, source, declarations, occurrences, item.node, owner);
+		return;
+	}
+	const bodies =
+		ts.isClassDeclaration(item.node) || ts.isInterfaceDeclaration(item.node)
+			? [item.node.members]
+			: ownedTypeLiterals(item.node).map((literal) => literal.members);
+	for (const members of bodies) recordMembers(module, source, declarations, occurrences, members, owner);
+}
+
+function recordEnumMembers(
+	module: string,
+	source: ts.SourceFile,
+	declarations: Declaration[],
+	occurrences: Map<string, number>,
+	node: ts.EnumDeclaration,
+	owner: Owner,
+): void {
+	for (const member of node.members) {
+		const name = propertyNameText(member.name as ts.PropertyName);
+		if (name === null) continue;
+		const descriptors = [...owner.descriptors, descriptor(occurrences, owner.descriptors, "term", name)];
+		const range = rangeOf(member, source);
+		declarations.push({
+			symbolId: composeSymbolId({ language: LANGUAGE, module, descriptors }),
+			kind: "constant",
+			name,
+			range,
+			selectionRange: rangeOf(member.name, source),
+			visibility: "public",
+			exported: owner.exported,
+			containerId: owner.symbolId,
+			metrics: { lines: range.end.line - range.start.line + 1 },
+			...defined({ signature: headerOf(member, source) }),
+		});
+	}
+}
+
+/** What a namespace exports: every member, unless it names its exports. */
+function recordNamespaceBody(
+	module: string,
+	source: ts.SourceFile,
+	declarations: Declaration[],
+	occurrences: Map<string, number>,
+	node: ts.ModuleDeclaration,
+	owner: Owner,
+): void {
+	const body = node.body;
+	// `namespace A.B` nests B in A.
+	if (body !== undefined && ts.isModuleDeclaration(body)) {
+		const item = { name: body.name.text, node: body, selection: body.name };
+		recordDeclaration(module, source, declarations, occurrences, item, owner);
+		return;
+	}
+	if (body === undefined || !ts.isModuleBlock(body)) return;
+	const implicit = !body.statements.some(
+		(statement) => ts.isExportDeclaration(statement) || ts.isExportAssignment(statement),
+	);
+	for (const statement of body.statements) {
+		if (!implicit && !hasModifier(statement, ts.SyntaxKind.ExportKeyword)) continue;
+		const members = ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : [statement];
+		for (const member of members) {
+			const name = nodeName(member);
+			if (name === null) continue;
+			const selection = nameNode(member);
+			const callable = callableOf(member);
+			if (callable === undefined) {
+				recordDeclaration(module, source, declarations, occurrences, { name, node: member, selection }, owner);
+				continue;
+			}
+			recordFunction(
+				module,
+				source,
+				declarations,
+				occurrences,
+				name,
+				callable,
+				selection,
+				member,
+				owner,
+				"function",
+			);
+		}
 	}
 }
 
@@ -296,12 +422,12 @@ function recordMembers(
 	declarations: Declaration[],
 	occurrences: Map<string, number>,
 	members: ts.NodeArray<ts.ClassElement | ts.TypeElement>,
-	containerId: string,
-	containerDescriptors: Descriptor[],
+	owner: Owner,
 ): void {
 	for (const member of members) {
 		if (!isPublicMember(member)) continue;
 		if (ts.isConstructorDeclaration(member)) {
+			const token = constructorToken(member, source);
 			recordFunction(
 				module,
 				source,
@@ -309,9 +435,9 @@ function recordMembers(
 				occurrences,
 				"constructor",
 				member,
-				constructorToken(member, source),
+				token,
 				member,
-				{ symbolId: containerId, descriptors: containerDescriptors },
+				owner,
 				"constructor",
 			);
 			continue;
@@ -319,10 +445,7 @@ function recordMembers(
 		if (ts.isMethodDeclaration(member) || ts.isMethodSignature(member)) {
 			const name = propertyNameText(member.name);
 			if (name !== null) {
-				recordFunction(module, source, declarations, occurrences, name, member, member.name, member, {
-					symbolId: containerId,
-					descriptors: containerDescriptors,
-				});
+				recordFunction(module, source, declarations, occurrences, name, member, member.name, member, owner);
 			}
 			continue;
 		}
@@ -335,52 +458,85 @@ function recordMembers(
 			continue;
 		const name = propertyNameText(member.name);
 		if (name === null) continue;
-		const descriptors = [...containerDescriptors, descriptor(occurrences, containerDescriptors, "term", name)];
-		const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
-		const range = rangeOf(member, source);
-		declarations.push({
-			symbolId,
-			kind: "property",
-			name,
-			range,
-			selectionRange: rangeOf(member.name, source),
-			visibility: "public",
-			exported: false,
-			containerId,
-			metrics: { lines: range.end.line - range.start.line + 1 },
-			...defined({ signature: headerOf(member, source) }),
-		});
+		const property = recordProperty(module, source, declarations, occurrences, member, name, member.name, owner);
 		if (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
-			recordParameters(module, source, declarations, occurrences, member.parameters, symbolId, descriptors);
+			recordParameters(module, source, declarations, occurrences, member.parameters, property);
 		}
 	}
 }
 
+/** A property, and the members of its own object types beneath it, as the full extractor holds them. */
+function recordProperty(
+	module: string,
+	source: ts.SourceFile,
+	declarations: Declaration[],
+	occurrences: Map<string, number>,
+	node: ts.Node,
+	name: string,
+	nameNode: ts.Node,
+	owner: Owner,
+): Owner {
+	const descriptors = [...owner.descriptors, descriptor(occurrences, owner.descriptors, "term", name)];
+	const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
+	const range = rangeOf(node, source);
+	declarations.push({
+		symbolId,
+		kind: "property",
+		name,
+		range,
+		selectionRange: rangeOf(nameNode, source),
+		visibility: "public",
+		exported: owner.exported,
+		containerId: owner.symbolId,
+		metrics: { lines: range.end.line - range.start.line + 1 },
+		...defined({ signature: headerOf(node, source) }),
+	});
+	const property = { symbolId, descriptors, exported: owner.exported };
+	for (const literal of ownedTypeLiterals(node)) {
+		recordMembers(module, source, declarations, occurrences, literal.members, property);
+	}
+	return property;
+}
+
+/** A constructor's parameter property is its class's property, which `properties` holds. */
 function recordParameters(
 	module: string,
 	source: ts.SourceFile,
 	declarations: Declaration[],
 	occurrences: Map<string, number>,
 	parameters: ts.NodeArray<ts.ParameterDeclaration>,
-	containerId: string,
-	containerDescriptors: Descriptor[],
+	owner: Owner,
+	properties?: Owner,
 ): void {
 	for (const parameter of parameters) {
+		if (properties !== undefined && ts.isParameterPropertyDeclaration(parameter, parameter.parent)) {
+			if (isPublicMember(parameter) && ts.isIdentifier(parameter.name)) {
+				const name = parameter.name.text;
+				recordProperty(module, source, declarations, occurrences, parameter, name, parameter.name, properties);
+			}
+			continue;
+		}
 		for (const binding of parameterBindings(parameter.name)) {
 			const descriptors = [
-				...containerDescriptors,
-				descriptor(occurrences, containerDescriptors, "term", binding.text, "parameter"),
+				...owner.descriptors,
+				descriptor(occurrences, owner.descriptors, "term", binding.text, "parameter"),
 			];
+			const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
 			declarations.push({
-				symbolId: composeSymbolId({ language: LANGUAGE, module, descriptors }),
+				symbolId,
 				kind: "variable",
 				name: binding.text,
 				range: rangeOf(parameter, source),
 				selectionRange: rangeOf(binding, source),
 				visibility: "local",
 				exported: false,
-				containerId,
+				containerId: owner.symbolId,
 			});
+			if (binding !== parameter.name) continue;
+			const local = { symbolId, descriptors, exported: false };
+			for (const literal of ownedTypeLiterals(parameter)) {
+				recordMembers(module, source, declarations, occurrences, literal.members, local);
+			}
 		}
 	}
 }
@@ -395,9 +551,9 @@ function parameterBindings(name: ts.BindingName): ts.Identifier[] {
 function descriptor(
 	occurrences: Map<string, number>,
 	parents: Descriptor[],
-	kind: "type" | "method" | "term",
+	kind: "type" | "method" | "term" | "namespace",
 	name: string,
-	descriptorKind: "type" | "method" | "term" | "parameter" = kind,
+	descriptorKind: "type" | "method" | "term" | "namespace" | "parameter" = kind,
 ): Descriptor {
 	if (descriptorKind !== "method") return { kind: descriptorKind, name };
 	const key = `${parents.map((item) => `${item.kind}:${item.name}`).join("/")}/${descriptorKind}:${name}`;
@@ -408,13 +564,16 @@ function descriptor(
 		: { kind: descriptorKind, name, disambiguator: String(ordinal) };
 }
 
-function declarationKind(node: ts.Node): { kind: Declaration["kind"]; descriptor: "type" | "method" | "term" } | null {
+function declarationKind(
+	node: ts.Node,
+): { kind: Declaration["kind"]; descriptor: "type" | "method" | "term" | "namespace"; languageKind?: string } | null {
 	if (ts.isClassDeclaration(node)) return { kind: "class", descriptor: "type" };
-	if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) {
-		return { kind: "interface", descriptor: "type" };
-	}
+	if (ts.isInterfaceDeclaration(node)) return { kind: "interface", descriptor: "type" };
+	if (ts.isTypeAliasDeclaration(node)) return { kind: "interface", descriptor: "type", languageKind: "typeAlias" };
 	if (ts.isEnumDeclaration(node)) return { kind: "enum", descriptor: "type" };
-	if (ts.isModuleDeclaration(node)) return { kind: "namespace", descriptor: "type" };
+	if (ts.isModuleDeclaration(node)) {
+		return { kind: ts.isStringLiteral(node.name) ? "module" : "namespace", descriptor: "namespace" };
+	}
 	if (ts.isVariableDeclaration(node)) {
 		const list = node.parent;
 		return {
@@ -444,55 +603,28 @@ function holderOf(node: ts.Node): ts.Node {
 	return node;
 }
 
+/** The file's imports, and those inside its namespace and `declare module` bodies. */
 function declarationImports(source: ts.SourceFile): Import[] {
 	const imports: Import[] = [];
-	for (const statement of source.statements) {
-		if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
-		const specifier = statement.moduleSpecifier;
-		if (specifier === undefined || !ts.isStringLiteral(specifier)) continue;
-		const imported: ImportedName[] = [];
-		if (ts.isImportDeclaration(statement)) {
-			const clause = statement.importClause;
-			if (clause?.name !== undefined) imported.push(importedName(source, undefined, clause.name));
-			if (clause?.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
-				for (const element of clause.namedBindings.elements) {
-					imported.push(
-						importedName(
-							source,
-							element.propertyName ?? element.name,
-							element.propertyName ? element.name : undefined,
-						),
-					);
-				}
+	const visit = (statements: readonly ts.Statement[]): void => {
+		for (const statement of statements) {
+			if (ts.isModuleDeclaration(statement)) {
+				let body = statement.body;
+				while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
+				if (body !== undefined && ts.isModuleBlock(body)) visit(body.statements);
+				continue;
 			}
-			if (clause?.namedBindings !== undefined && ts.isNamespaceImport(clause.namedBindings)) {
-				imported.push(importedName(source, undefined, clause.namedBindings.name));
-			}
-		} else if (statement.exportClause !== undefined && ts.isNamedExports(statement.exportClause)) {
-			for (const element of statement.exportClause.elements) {
-				imported.push(
-					importedName(
-						source,
-						element.propertyName ?? element.name,
-						element.propertyName ? element.name : undefined,
-					),
-				);
-			}
+			const importing =
+				ts.isImportDeclaration(statement) ||
+				ts.isExportDeclaration(statement) ||
+				ts.isImportEqualsDeclaration(statement);
+			if (!importing) continue;
+			const read = importOf(statement, source);
+			if (read !== undefined) imports.push(read);
 		}
-		imports.push({ specifier: specifier.text, imported, reExport: ts.isExportDeclaration(statement) });
-	}
-	return imports;
-}
-
-function importedName(
-	source: ts.SourceFile,
-	name: ts.Identifier | ts.StringLiteral | undefined,
-	local: ts.Identifier | ts.StringLiteral | undefined,
-): ImportedName {
-	return {
-		...(name === undefined ? {} : { name: name.text, range: rangeOf(name, source) }),
-		...(local === undefined ? {} : { local: local.text, localRange: rangeOf(local, source) }),
 	};
+	visit(source.statements);
+	return imports;
 }
 
 function syntaxDiagnostics(module: string, source: ts.SourceFile): Diagnostic[] {

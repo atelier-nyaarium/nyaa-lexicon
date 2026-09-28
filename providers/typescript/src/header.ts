@@ -1,6 +1,6 @@
 // A declaration's header spans, handed to the protocol's one renderer.
 
-import { type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { type OffsetRange, renderHeader, SourceCursor } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 
 ////////////////////////////////
@@ -9,12 +9,33 @@ import ts from "typescript";
 interface Cuts {
 	folds: OffsetRange[];
 	omit: OffsetRange[];
+	splices: OffsetRange[];
 	verbatim: OffsetRange[];
 	angles: number[];
 }
 
 ////////////////////////////////
+//  Constants
+
+const LINE_TERMINATORS = new Set(["\n", "\r", String.fromCodePoint(0x2028), String.fromCodePoint(0x2029)]);
+
+////////////////////////////////
 //  Functions & Helpers
+
+/** A string or template's backslash line breaks, which join its lines. */
+function continuationsIn(literal: OffsetRange, source: ts.SourceFile): OffsetRange[] {
+	const cursor = new SourceCursor(source.text.slice(literal.start, literal.end));
+	const found: OffsetRange[] = [];
+	while (cursor.good()) {
+		if (cursor.next() !== "\\") continue;
+		const start = cursor.offset - 1;
+		const escaped = cursor.next();
+		if (escaped === "\r") cursor.take("\n");
+		if (LINE_TERMINATORS.has(escaped))
+			found.push({ start: literal.start + start, end: literal.start + cursor.offset });
+	}
+	return found;
+}
 
 function openBrace(node: ts.Node, source: ts.SourceFile): number | undefined {
 	return node
@@ -31,7 +52,8 @@ function bodyStart(node: ts.Node, source: ts.SourceFile): number | undefined {
 		ts.isConstructorDeclaration(node) ||
 		ts.isGetAccessorDeclaration(node) ||
 		ts.isSetAccessorDeclaration(node) ||
-		ts.isFunctionExpression(node)
+		ts.isFunctionExpression(node) ||
+		ts.isClassStaticBlockDeclaration(node)
 	) {
 		return node.body?.getStart(source);
 	}
@@ -118,7 +140,11 @@ function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: t
 		for (const range of ranges) {
 			if (range.pos >= span.start && range.end <= span.end) cuts.omit.push({ start: range.pos, end: range.end });
 		}
-		if (isLiteral(node)) cuts.verbatim.push({ start: node.getStart(source), end: node.getEnd() });
+		if (isLiteral(node)) {
+			const literal = { start: node.getStart(source), end: node.getEnd() };
+			cuts.verbatim.push(literal);
+			if (!ts.isRegularExpressionLiteral(node)) cuts.splices.push(...continuationsIn(literal, source));
+		}
 		return;
 	}
 	const from = foldedFrom(node, source);
@@ -134,14 +160,16 @@ function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: t
 
 /**
  * Header on one line, from the first token (decorators included) to the body.
- * A variable leads with its statement's `export const`, then its own declarator alone.
+ * A variable leads with its statement's `export const`, or a loop head's `const`, then its own
+ * declarator alone.
  */
 export function headerOf(node: ts.Node, source: ts.SourceFile): string | undefined {
-	const cuts: Cuts = { folds: [], omit: [], verbatim: [], angles: [] };
+	const cuts: Cuts = { folds: [], omit: [], splices: [], verbatim: [], angles: [] };
 	if (ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent)) {
-		const lead = { start: node.parent.parent.getStart(source), end: node.parent.declarations.pos };
+		const holder = ts.isVariableStatement(node.parent.parent) ? node.parent.parent : node.parent;
+		const lead = { start: holder.getStart(source), end: node.parent.declarations.pos };
 		const own = { start: node.getStart(source), end: node.getEnd() };
-		collectCuts(node.parent.parent, false, lead, source, cuts);
+		collectCuts(holder, false, lead, source, cuts);
 		collectCuts(node, true, own, source, cuts);
 		return renderHeader(source.text, { lead, ...own, ...cuts });
 	}

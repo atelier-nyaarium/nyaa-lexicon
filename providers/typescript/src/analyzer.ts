@@ -1,7 +1,10 @@
 import path from "node:path";
 import {
 	type Binding,
+	composeSymbolId,
 	coordinatesOf,
+	type Declaration,
+	type Descriptor,
 	type Diagnostic,
 	defined,
 	type MoveEditsRequest,
@@ -11,15 +14,18 @@ import {
 	type RenameEditsResponse,
 	type TypeInfo,
 	type UnknownReason,
+	withOccurrences,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { contextualPropertySymbol, type Extracted, extractFile, extractFileWithNodes, LANGUAGE } from "./extract.js";
+import { type Extracted, extractFile, extractFileWithNodes, LANGUAGE } from "./extract.js";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
 import type { TypeScriptProject, TypeScriptStore } from "./module.js";
 import { makeMoveEdits } from "./move.js";
-import type { SpecifierRenderer } from "./project.js";
-import { toModule } from "./project.js";
+import type { ModuleResolver, SpecifierRenderer } from "./project.js";
+import { runsAsEsm, toModule } from "./project.js";
+import { contextualPropertySymbol } from "./references.js";
 import { makeRenameEdits } from "./rename.js";
+import { extractSurfaceFile } from "./surface.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -114,13 +120,13 @@ export class TypeScriptAnalyzer {
 				return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
 			},
 			getScriptVersion: (fileName) => this.scriptVersion(fileName),
-			fileExists: (fileName) => this.hostText(fileName) !== undefined || ts.sys.fileExists(fileName),
-			readFile: (fileName) => this.hostText(fileName) ?? ts.sys.readFile(fileName),
-			readDirectory: ts.sys.readDirectory,
-			directoryExists: ts.sys.directoryExists,
-			getDirectories: ts.sys.getDirectories,
-			...(ts.sys.realpath ? { realpath: ts.sys.realpath } : {}),
-			useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+			fileExists: (fileName) => this.hostText(fileName) !== undefined || compiler.system.fileExists(fileName),
+			readFile: (fileName) => this.hostText(fileName) ?? compiler.system.readFile(fileName),
+			readDirectory: compiler.system.readDirectory,
+			directoryExists: compiler.system.directoryExists,
+			getDirectories: compiler.system.getDirectories,
+			...(compiler.system.realpath ? { realpath: compiler.system.realpath } : {}),
+			useCaseSensitiveFileNames: () => compiler.system.useCaseSensitiveFileNames,
 		};
 		host.resolveModuleNames = (names, containingFile) =>
 			names.map((name) => ts.resolveModuleName(name, containingFile, compiler.options, host).resolvedModule);
@@ -132,12 +138,13 @@ export class TypeScriptAnalyzer {
 		return isSourceFailure(context) ? undefined : context.source;
 	}
 
-	extract(module: string, source: ts.SourceFile, contentHash?: string): Extracted {
-		const key = `extract:${module}:${contentHash ?? hashText(source.text)}`;
+	/** Keyed by the script version the Program parsed, so every reader of one parse shares it. */
+	extract(module: string, source: ts.SourceFile): Extracted {
 		const context = this.sourceContext(module);
-		const activeSource = isSourceFailure(context) ? source : context.source;
-		return this.store.memo(key, () =>
-			extractFile(module, activeSource, isSourceFailure(context) ? undefined : context.checker),
+		if (isSourceFailure(context)) return extractFile(module, source);
+		const version = this.scriptVersion(context.source.fileName);
+		return this.store.memo(`extract:${module}:${version}`, () =>
+			extractFile(module, context.source, context.checker),
 		);
 	}
 
@@ -201,7 +208,11 @@ export class TypeScriptAnalyzer {
 		return makeRenameEdits(params, context.source, context.checker);
 	}
 
-	moveEdits(params: MoveEditsRequest, renderSpecifier: SpecifierRenderer): MoveEditsResponse {
+	moveEdits(
+		params: MoveEditsRequest,
+		renderSpecifier: SpecifierRenderer,
+		resolveModule: ModuleResolver,
+	): MoveEditsResponse {
 		const source = ts.createSourceFile(
 			this.fileName(params.module),
 			params.text,
@@ -219,7 +230,8 @@ export class TypeScriptAnalyzer {
 			if (!isSourceFailure(context)) checker = context.checker;
 		}
 
-		return makeMoveEdits(params, source, checker, renderSpecifier);
+		const esm = runsAsEsm(this.fileName(params.module), this.project.loaded);
+		return makeMoveEdits(params, source, checker, renderSpecifier, resolveModule, esm);
 	}
 
 	programStats(): {
@@ -246,17 +258,17 @@ export class TypeScriptAnalyzer {
 		if (isSourceFailure(context)) return unknownType(context.reason, context.detail);
 		const extracted = extractFileWithNodes(parsed.module, context.source, context.checker);
 		const matches = [...extracted.declarationNodes.entries()].filter(([, id]) => id === symbolId);
-		if (matches.length === 0) return unknownType("ParseError", "the symbol id has no declaration");
+		if (matches.length === 0) return unknownType("NotIndexed", "the symbol id has no declaration");
 		if (matches.length > 1) return unknownType("Ambiguous", "the symbol id maps to several declarations");
 
 		const [node] = matches[0] as [ts.Node, string];
 		const declaration = asDeclaration(node);
-		if (declaration === undefined) return unknownType("ParseError", "the symbol id is not a declaration");
+		if (declaration === undefined) return unknownType("NotIndexed", "the symbol id is not a declaration");
 		if (ts.isConstructorDeclaration(declaration)) {
 			return typeOfConstructor(context.checker, declaration);
 		}
 		const symbol = symbolAtDeclaration(context.checker, declaration);
-		if (symbol === undefined) return unknownType("ParseError", "the checker found no declaration symbol");
+		if (symbol === undefined) return typeOfUnnamed(context.checker, declaration);
 		return this.typeOfSymbol(context.checker, symbol, declaration);
 	}
 
@@ -357,7 +369,11 @@ export class TypeScriptAnalyzer {
 			return unknownBinding(failure.reason, failure.detail);
 		}
 		const mapped = this.mapDeclarations(declarations);
-		const candidates = mapped.flatMap((item) => (item.id === undefined ? [] : [item.id])).sort();
+		const ids = mapped.flatMap((item) => (item.id === undefined ? [] : [item.id]));
+		// A union's property stands for each constituent's; a merge or an accessor pair is one symbol.
+		const synthetic = (target.flags & ts.SymbolFlags.Transient) !== 0;
+		const resolved = (synthetic ? [...new Set(ids)] : firstOfOnePath(ids)).sort();
+		const candidates = resolved.length > 0 ? resolved : this.exportAliasIds(checker, symbol);
 		if (candidates.length > 1) return { status: "ambiguous", candidates, provenance: "bound" };
 		if (candidates.length === 1) return { status: "bound", symbolId: candidates[0] as string, provenance: "bound" };
 		if (mapped.some((item) => item.external)) {
@@ -367,6 +383,23 @@ export class TypeScriptAnalyzer {
 			return unknownBinding("NotIndexed", "the declaring module is not in the symbol index");
 		}
 		return unknownBinding("NotIndexed", "the declaration is not in the symbol index");
+	}
+
+	/**
+	 * The ids of the export specifiers an alias passes through. A surface admits `export { Local as
+	 * Alias }` as Alias, while the checker resolves through it to Local, which the surface omits.
+	 */
+	private exportAliasIds(checker: ts.TypeChecker, symbol: ts.Symbol): string[] {
+		const specifiers: ts.Declaration[] = [];
+		const seen = new Set<ts.Symbol>();
+		let current: ts.Symbol | undefined = symbol;
+		while (current !== undefined && (current.flags & ts.SymbolFlags.Alias) !== 0 && !seen.has(current)) {
+			seen.add(current);
+			specifiers.push(...declarationsOf(current).filter((declaration) => ts.isExportSpecifier(declaration)));
+			current = checker.getImmediateAliasedSymbol(current);
+		}
+		const ids = this.mapDeclarations(specifiers).flatMap((item) => (item.id === undefined ? [] : [item.id]));
+		return firstOfOnePath(ids).sort();
 	}
 
 	private symbolFailure(checker: ts.TypeChecker, node: ts.Node): SourceFailure {
@@ -474,15 +507,15 @@ export class TypeScriptAnalyzer {
 	private fallbackProgram(fileName: string): ts.Program | undefined {
 		const options: ts.CompilerOptions = { ...this.project.loaded.options, allowJs: true, noResolve: true };
 		const host = ts.createCompilerHost(options, true);
-		const defaultGetSourceFile = host.getSourceFile.bind(host);
-		host.readFile = (name) => this.hostText(name) ?? ts.sys.readFile(name);
-		host.fileExists = (name) => this.hostText(name) !== undefined || ts.sys.fileExists(name);
-		host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) => {
-			const text = this.hostText(name) ?? ts.sys.readFile(name);
-			if (text !== undefined) {
-				return ts.createSourceFile(name, text, languageVersion, true, scriptKindOf(name));
-			}
-			return defaultGetSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
+		const { system } = this.project.loaded;
+		host.readFile = (name) => this.hostText(name);
+		host.fileExists = (name) => this.hostText(name) !== undefined || system.fileExists(name);
+		// No default read: it would bypass the policy.
+		host.getSourceFile = (name, languageVersion) => {
+			const text = this.hostText(name);
+			return text === undefined
+				? undefined
+				: ts.createSourceFile(name, text, languageVersion, true, scriptKindOf(name));
 		};
 		return ts.createProgram([fileName], options, host);
 	}
@@ -510,19 +543,34 @@ export class TypeScriptAnalyzer {
 			if (this.isExternal(source.fileName)) return { id: undefined, external: true, withheld: false, node };
 			const module = this.toModule(source.fileName);
 			if (module === null) return { id: undefined, external: true, withheld: false, node };
-			if (this.store.peek(module) === undefined) return { id: undefined, external: false, withheld: true, node };
+			const held = this.store.peek(module);
+			if (held === undefined) return { id: undefined, external: false, withheld: true, node };
 			let ids = idsByFile.get(source.fileName);
 			if (ids === undefined) {
 				ids = new Map<string, string[]>();
-				for (const declaration of this.extract(module, source).declarations) {
+				const declarations = held.surface
+					? this.surfaceDeclarations(module, source)
+					: this.extract(module, source).declarations;
+				for (const declaration of declarations) {
 					// Extracted names occur in source.
 					const key = positionKey(declaration.selectionRange ?? declaration.range);
-					ids.set(key, [...(ids.get(key) ?? []), declaration.symbolId]);
+					const same = ids.get(key);
+					if (same === undefined) ids.set(key, [declaration.symbolId]);
+					else same.push(declaration.symbolId);
 				}
 				idsByFile.set(source.fileName, ids);
 			}
 			const matches = ids.get(selectionKeyOf(node, source));
 			return { id: matches?.length === 1 ? matches[0] : undefined, external: false, withheld: false, node };
+		});
+	}
+
+	/** A surface module binds only to the ids its surface facts admit, settled as the wire settles them. */
+	private surfaceDeclarations(module: string, source: ts.SourceFile): Declaration[] {
+		const version = this.scriptVersion(source.fileName);
+		return this.store.memo(`surface:${module}:${version}`, () => {
+			const facts = extractSurfaceFile(module, source.text);
+			return withOccurrences({ module, contentHash: version, ...facts }).declarations;
 		});
 	}
 
@@ -532,8 +580,9 @@ export class TypeScriptAnalyzer {
 
 	private hostText(fileName: string): string | undefined {
 		const module = this.toModule(fileName);
-		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return ts.sys.readFile(fileName);
-		return this.store.text(module)?.text ?? ts.sys.readFile(fileName);
+		const { system } = this.project.loaded;
+		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return system.readFile(fileName);
+		return this.store.text(module)?.text ?? system.readFile(fileName);
 	}
 
 	private scriptVersion(fileName: string): string {
@@ -640,17 +689,27 @@ function asDeclaration(node: ts.Node): ts.Declaration | undefined {
 	return node as ts.Declaration;
 }
 
-function positionKey(range: { start: Position; end: Position }): string {
-	return `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
+/** An accessor pair or a merge is one symbol declared on one name path; its first occurrence names it. */
+function firstOfOnePath(ids: readonly string[]): string[] {
+	const unique = [...new Set(ids)];
+	const ranked = unique.map((id) => {
+		const parsed = parseSymbolId(id);
+		const last = parsed?.descriptors.at(-1);
+		if (parsed === null || parsed === undefined || last === undefined) return { id, path: id, occurrence: 1 };
+		const bare: Descriptor = {
+			kind: last.kind,
+			name: last.name,
+			...defined({ disambiguator: last.disambiguator }),
+		};
+		const path = composeSymbolId({ ...parsed, descriptors: [...parsed.descriptors.slice(0, -1), bare] });
+		return { id, path, occurrence: last.occurrence ?? 1 };
+	});
+	if (new Set(ranked.map((entry) => entry.path)).size !== 1) return unique;
+	return [ranked.reduce((best, entry) => (entry.occurrence < best.occurrence ? entry : best)).id];
 }
 
-function hashText(text: string): string {
-	let hash = 2166136261;
-	for (let index = 0; index < text.length; index += 1) {
-		hash ^= text.charCodeAt(index);
-		hash = Math.imul(hash, 16777619);
-	}
-	return String(hash >>> 0);
+function positionKey(range: { start: Position; end: Position }): string {
+	return `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
 }
 
 function selectionKeyOf(node: ts.Declaration, source: ts.SourceFile): string {
@@ -678,6 +737,20 @@ function selectionNodeOf(node: ts.Declaration, source: ts.SourceFile): ts.Node {
 function symbolAtDeclaration(checker: ts.TypeChecker, declaration: ts.Declaration): ts.Symbol | undefined {
 	const name = (declaration as { name?: ts.Node }).name;
 	return checker.getSymbolAtLocation(name ?? declaration);
+}
+
+/** An anonymous default class or function types from its node; a static block has no type. */
+function typeOfUnnamed(checker: ts.TypeChecker, declaration: ts.Declaration): TypeInfo {
+	if (!ts.isClassLike(declaration) && !ts.isFunctionLike(declaration)) {
+		return unknownType("DynamicallyTyped", "the declaration has no type");
+	}
+	const display = checker.typeToString(
+		checker.getTypeAtLocation(declaration),
+		declaration,
+		ts.TypeFormatFlags.NoTruncation,
+	);
+	if (display === "") return unknownType("RecursionLimit", "the checker produced no display type");
+	return { status: "known", display, provenance: "declared" };
 }
 
 function typeOfConstructor(checker: ts.TypeChecker, declaration: ts.ConstructorDeclaration): TypeInfo {

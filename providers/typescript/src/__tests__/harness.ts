@@ -12,8 +12,12 @@ export function harness() {
 	const wire = handlers as ProviderHandlers & ProviderNotificationHandlers;
 
 	return {
-		initialize(workspaceRoot: string) {
-			const answer = handlers.initialize({ workspaceRoot, protocolVersion: PROTOCOL_VERSION });
+		initialize(workspaceRoot: string, deny?: string[]) {
+			const answer = handlers.initialize({
+				workspaceRoot,
+				protocolVersion: PROTOCOL_VERSION,
+				...(deny === undefined ? {} : { deny }),
+			});
 			handlers.discoverProject({ workspaceRoot });
 			return answer;
 		},

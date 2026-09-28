@@ -29,7 +29,16 @@ import {
 	type TypeScriptValue,
 } from "./module.js";
 import { isValidTargetModule } from "./move.js";
-import { type LoadedProject, loadProject, renderSpecifier, resolveSpecifier, toModule } from "./project.js";
+import {
+	type LoadedProject,
+	landingOf,
+	loadProject,
+	projectFingerprint,
+	readableSystem,
+	renderSpecifier,
+	resolveSpecifier,
+	toModule,
+} from "./project.js";
 import { extractSurfaceFile } from "./surface.js";
 
 ////////////////////////////////
@@ -177,9 +186,7 @@ export class TypeScriptProvider {
 		previous: TypeScriptProject | undefined,
 	): { model: ProjectModel; project: TypeScriptProject } {
 		const root = path.resolve(workspaceRoot);
-		const sameRoot = previous?.root === root;
-		if (!sameRoot) previous?.analyzer?.dispose();
-		const loaded = sameRoot && previous !== undefined ? previous.loaded : loadProject(root);
+		const loaded = loadProject(root, readableSystem(this.store.policy));
 		const discovered =
 			loaded.configFiles.length === 0
 				? discoverByWalk(root, { extensions: EXTENSIONS })
@@ -194,19 +201,30 @@ export class TypeScriptProvider {
 			...loaded,
 			files: discovered.files.map((module) => path.resolve(root, module)),
 		};
-		const project = sameRoot && previous !== undefined ? previous : createTypeScriptProject(root, projectLoaded);
-		if (sameRoot) {
-			project.loaded.files = projectLoaded.files;
-			project.roots.clear();
-			for (const file of projectLoaded.files) project.roots.add(path.resolve(file));
+		const { fingerprint, packageFiles } = projectFingerprint(root, projectLoaded);
+		// The warm analyzer stays while reading is unchanged.
+		const kept = previous?.root === root && previous.fingerprint === fingerprint ? previous : undefined;
+		if (kept === undefined) previous?.analyzer?.dispose();
+		const project = kept ?? createTypeScriptProject(root, projectLoaded, fingerprint);
+		if (kept !== undefined) {
+			kept.loaded.files = projectLoaded.files;
+			kept.roots.clear();
+			for (const file of projectLoaded.files) kept.roots.add(path.resolve(file));
 		}
+		const configFiles = [
+			...discovered.configFiles,
+			...packageFiles.map((file) => toModule(root, file) ?? file),
+			// Probed even when absent.
+			"tsconfig.json",
+		];
 
 		return {
 			model: {
 				files: discovered.files,
 				externalRoots: [],
-				configFiles: discovered.configFiles,
+				configFiles: [...new Set(configFiles)],
 				diagnostics: discovered.diagnostics,
+				fingerprint,
 			},
 			project,
 		};
@@ -256,7 +274,7 @@ export class TypeScriptProvider {
 		const source =
 			analyzer.sourceFile(params.module) ??
 			ts.createSourceFile(params.module, params.text, ts.ScriptTarget.ESNext, true, scriptKindOf(params.module));
-		const extracted = analyzer.extract(params.module, source, params.contentHash);
+		const extracted = analyzer.extract(params.module, source);
 		const references = extracted.references.map((reference) => ({
 			...reference,
 			binding: analyzer.bindReference(params.module, reference.name, {
@@ -287,7 +305,7 @@ export class TypeScriptProvider {
 			this.store.root,
 			params.fromModule,
 			params.specifier,
-			this.store.project.loaded.options,
+			this.store.project.loaded,
 			params.surfaceGlobs,
 			(module) => this.runtimeSurface(module),
 		);
@@ -352,11 +370,14 @@ export class TypeScriptProvider {
 				detail: `the target is not a TypeScript module: ${params.toModule}`,
 			};
 		}
-		const options = this.store.project.loaded.options;
-		return this.analyzed().moveEdits(params, (fromModule, targetModule, preferredSpecifier) =>
-			renderSpecifier(this.store.root, fromModule, targetModule, options, preferredSpecifier, (module) =>
-				this.runtimeSurface(module),
-			),
+		const setup = this.store.project.loaded;
+		const surface = (module: string) => this.runtimeSurface(module);
+		return this.analyzed().moveEdits(
+			params,
+			(fromModule, targetModule, preferredSpecifier) =>
+				renderSpecifier(this.store.root, fromModule, targetModule, setup, preferredSpecifier, surface),
+			(fromModule, specifier) =>
+				landingOf(resolveSpecifier(this.store.root, fromModule, specifier, setup, [], surface)),
 		);
 	}
 

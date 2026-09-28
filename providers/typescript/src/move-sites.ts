@@ -1,0 +1,345 @@
+// Repointing the import statements that name a moved symbol.
+
+import type {
+	MoveBlockedSite,
+	MoveEditsRequest,
+	MoveImportSite,
+	TextCoordinates,
+	TextEdit,
+} from "@nyaa-lexicon/protocol";
+import ts from "typescript";
+import { append, blockedSite, type PlannedImport, quoted, type WorkMeter } from "./move-imports.js";
+import type { SpecifierRenderer } from "./project.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+export interface ImportSiteNode {
+	node: ts.ImportDeclaration | ts.ExportDeclaration | ts.ImportEqualsDeclaration;
+	literal: ts.StringLiteral;
+}
+
+/** One name an import or re-export statement binds. */
+type StatementBinding =
+	| { form: "default"; node: ts.Identifier }
+	| { form: "namespace"; node: ts.NamespaceImport }
+	| { form: "named"; node: ts.ImportSpecifier | ts.ExportSpecifier };
+
+/** What repointing the moved names of one statement does to it. */
+export interface SiteRewrite {
+	blocked: MoveBlockedSite[];
+	/** The statement without its moved names, when others stay. */
+	edit?: TextEdit;
+	/** The moved names, imported from their new home. */
+	planned: PlannedImport[];
+	/** Every name moves: repoint the statement, or drop it once each name joins another import. */
+	whole?: { rewrite: TextEdit; removal?: TextEdit };
+}
+
+////////////////////////////////
+//  Site Rewriting
+
+/** The import statement a site names, or why it cannot be rewritten. */
+export function locateImportSite(
+	source: ts.SourceFile,
+	coordinates: TextCoordinates,
+	site: MoveImportSite,
+	statements: ImportSiteNode[],
+): { statement?: ImportSiteNode; blocked?: MoveBlockedSite } {
+	// These kinds bind every export of the source, so repointing them repoints symbols that did not move.
+	if (site.importKind === "namespace" || site.importKind === "wildcard" || site.importKind === "sideEffect") {
+		return {
+			blocked: blockedSite(
+				site.range,
+				"NotImplemented",
+				`a ${site.importKind} ${site.reExport ? "re-export" : "import"} binds the whole module, and splitting it is not implemented`,
+			),
+		};
+	}
+
+	const offsets = coordinates.offsetsForRange(site.range);
+	if (offsets === undefined)
+		return { blocked: blockedSite(site.range, "ParseError", "the import range is outside the module") };
+
+	const statement = statementAt(statements, offsets.start, source);
+	if (statement === undefined || statement.literal.text !== site.specifier) {
+		return {
+			blocked: blockedSite(site.range, "ParseError", "the range does not name the requested import"),
+		};
+	}
+	if (ts.isImportEqualsDeclaration(statement.node)) {
+		return {
+			blocked: blockedSite(
+				site.range,
+				"NotImplemented",
+				"`import x = require()` binds the whole module, and splitting it is not implemented",
+			),
+		};
+	}
+	return { statement };
+}
+
+/**
+ * Moves the statement's moved names to their new home. Names that stay keep the statement; the
+ * moved ones leave it in their own form, and a re-export of them follows it.
+ */
+export function rewriteImportSites(
+	source: ts.SourceFile,
+	coordinates: TextCoordinates,
+	statement: ImportSiteNode,
+	sites: readonly MoveImportSite[],
+	request: MoveEditsRequest,
+	renderSpecifier: SpecifierRenderer,
+	meter?: WorkMeter,
+): SiteRewrite {
+	const node = statement.node as ts.ImportDeclaration | ts.ExportDeclaration;
+	const rendered = renderSpecifier(request.module, request.toModule, statement.literal.text);
+	if ("reason" in rendered) {
+		return { blocked: sites.map((site) => blockedSite(site.range, rendered.reason, rendered.detail)), planned: [] };
+	}
+	if (rendered.specifier === statement.literal.text) return { blocked: [], planned: [] };
+
+	const bound = statementBindings(node);
+	const named = bindingFinder(source, bound, request.name, meter);
+	const moved = new Set<ts.Node>();
+	for (const site of sites) {
+		const match = named(site, coordinates.offsetsForRange(site.range)?.start ?? -1);
+		if (match === undefined) {
+			return {
+				blocked: [blockedSite(site.range, "ParseError", "the range does not name the requested import")],
+				planned: [],
+			};
+		}
+		moved.add(match.node);
+	}
+
+	const quote = statement.literal.getText(source).startsWith("'") ? "'" : '"';
+	const specifier = quoted(rendered.specifier, quote);
+	const planned = ts.isImportDeclaration(node)
+		? bound.flatMap((binding) => (moved.has(binding.node) ? plannedFor(node, binding, rendered.specifier) : []))
+		: [];
+	const start = node.getStart(source);
+	const range = coordinates.rangeAt(start, node.getEnd());
+	const literalStart = statement.literal.getStart(source) - start;
+	if (range === undefined || literalStart < 0) {
+		return {
+			blocked: sites.map((site) =>
+				blockedSite(site.range, "ParseError", "the import range does not contain its specifier"),
+			),
+			planned: [],
+		};
+	}
+	const raw = source.text.slice(start, node.getEnd());
+
+	if (bound.every((binding) => moved.has(binding.node))) {
+		const literalEnd = statement.literal.getEnd() - start;
+		const rewrite = { range, newText: `${raw.slice(0, literalStart)}${specifier}${raw.slice(literalEnd)}` };
+		const removal = ts.isImportDeclaration(node) ? statementRemoval(source, coordinates, node) : undefined;
+		return { blocked: [], planned, whole: removal === undefined ? { rewrite } : { rewrite, removal } };
+	}
+
+	let kept = "";
+	let cursor = 0;
+	for (const span of removedSpans(source, node, moved)) {
+		kept += raw.slice(cursor, span.start - start);
+		cursor = span.end - start;
+	}
+	kept += raw.slice(cursor);
+	if (ts.isExportDeclaration(node)) {
+		const names = bound.flatMap((binding) => (moved.has(binding.node) ? [binding.node.getText(source)] : []));
+		kept += `\nexport ${node.isTypeOnly ? "type " : ""}{ ${names.join(", ")} } from ${specifier};`;
+	}
+	return { blocked: [], planned, edit: { range, newText: kept } };
+}
+
+function statementBindings(node: ts.ImportDeclaration | ts.ExportDeclaration): StatementBinding[] {
+	const bound: StatementBinding[] = [];
+	if (ts.isExportDeclaration(node)) {
+		if (node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
+			for (const element of node.exportClause.elements) bound.push({ form: "named", node: element });
+		}
+		return bound;
+	}
+	const clause = node.importClause;
+	if (clause?.name !== undefined) bound.push({ form: "default", node: clause.name });
+	const named = clause?.namedBindings;
+	if (named !== undefined && ts.isNamespaceImport(named)) bound.push({ form: "namespace", node: named });
+	if (named !== undefined && ts.isNamedImports(named)) {
+		for (const element of named.elements) bound.push({ form: "named", node: element });
+	}
+	return bound;
+}
+
+/** The binding a site names: the one at its position, else the first by name, indexed once. */
+function bindingFinder(
+	source: ts.SourceFile,
+	bound: readonly StatementBinding[],
+	name: string,
+	meter?: WorkMeter,
+): (site: MoveImportSite, at: number) => StatementBinding | undefined {
+	const byName = new Map<string, StatementBinding[]>();
+	for (const binding of bound) {
+		if (binding.form === "default") append(byName, `default\0${binding.node.text}`, binding);
+		if (binding.form !== "named") continue;
+		const imported = (binding.node.propertyName ?? binding.node.name).text;
+		append(byName, `named\0${imported}`, binding);
+		append(byName, `named\0${imported}\0${binding.node.name.text}`, binding);
+	}
+	return (site, at) => {
+		let low = 0;
+		let high = bound.length - 1;
+		while (low <= high) {
+			if (meter !== undefined) meter.steps++;
+			const middle = (low + high) >> 1;
+			const binding = bound[middle] as StatementBinding;
+			if (at < binding.node.getStart(source)) high = middle - 1;
+			else if (at >= binding.node.getEnd()) low = middle + 1;
+			else if (namesSite(binding, site, name)) return binding;
+			else break;
+		}
+		const imported = site.importedName ?? name;
+		const key =
+			site.importKind === "default"
+				? `default\0${site.localName ?? name}`
+				: site.localName === undefined
+					? `named\0${imported}`
+					: `named\0${imported}\0${site.localName}`;
+		if (meter !== undefined) meter.steps++;
+		return byName.get(key)?.[0];
+	};
+}
+
+function namesSite(binding: StatementBinding, site: MoveImportSite, name: string): boolean {
+	if (binding.form === "namespace") return false;
+	if (binding.form === "default")
+		return site.importKind === "default" && binding.node.text === (site.localName ?? name);
+	const element = binding.node;
+	const imported = (element.propertyName ?? element.name).text;
+	return (
+		imported === (site.importedName ?? name) &&
+		(site.localName === undefined || element.name.text === site.localName)
+	);
+}
+
+function plannedFor(node: ts.ImportDeclaration, binding: StatementBinding, specifier: string): PlannedImport[] {
+	const typeOnly = node.importClause?.isTypeOnly === true;
+	if (binding.form === "default") return [{ clause: "default", typeOnly, specifier, localName: binding.node.text }];
+	if (binding.form === "namespace" || !ts.isImportSpecifier(binding.node)) return [];
+	const element = binding.node;
+	return [
+		{
+			clause: "named",
+			typeOnly: typeOnly || element.isTypeOnly,
+			specifier,
+			importedName: (element.propertyName ?? element.name).text,
+			localName: element.name.text,
+		},
+	];
+}
+
+/**
+ * Moved names with the separators that go with them; some name always stays. A comment before a
+ * name's separator is that name's, and one after it belongs to the next name.
+ */
+function removedSpans(
+	source: ts.SourceFile,
+	node: ts.ImportDeclaration | ts.ExportDeclaration,
+	moved: ReadonlySet<ts.Node>,
+): { start: number; end: number }[] {
+	const spans: { start: number; end: number }[] = [];
+	const clause = ts.isImportDeclaration(node) ? node.importClause : undefined;
+	const list = ts.isImportDeclaration(node) ? clause?.namedBindings : node.exportClause;
+	if (clause?.name !== undefined && moved.has(clause.name) && list !== undefined) {
+		spans.push({ start: clause.name.getStart(source), end: afterSeparator(source, clause.name.getEnd()) });
+	}
+	if (list === undefined || ts.isNamespaceImport(list) || ts.isNamespaceExport(list)) return spans;
+	const elements: readonly (ts.ImportSpecifier | ts.ExportSpecifier)[] = list.elements;
+	const lastKept = elements.findLastIndex((element) => !moved.has(element));
+	if (lastKept === -1) {
+		// Only the default stays.
+		if (clause?.name !== undefined && elements.length > 0) {
+			spans.push({ start: separatorAt(source, clause.name.getEnd()), end: list.getEnd() });
+		}
+		return spans;
+	}
+	// Each run of moved names before a kept one goes with the separator after it.
+	let run: number | undefined;
+	for (let position = 0; position < lastKept; position++) {
+		const element = elements[position] as ts.Node;
+		if (!moved.has(element)) continue;
+		run ??= element.getStart(source);
+		if (!moved.has(elements[position + 1] as ts.Node)) {
+			spans.push({ start: run, end: afterSeparator(source, element.getEnd()) });
+			run = undefined;
+		}
+	}
+	const last = elements.at(-1);
+	if (last !== undefined && lastKept < elements.length - 1) {
+		spans.push({ start: separatorAt(source, (elements[lastKept] as ts.Node).getEnd()), end: last.getEnd() });
+	}
+	return spans;
+}
+
+/** Where the comma after `offset` starts, past whitespace and comments. */
+function separatorAt(source: ts.SourceFile, offset: number): number {
+	const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, source.languageVariant, source.text);
+	scanner.resetTokenState(offset);
+	return scanner.scan() === ts.SyntaxKind.CommaToken ? scanner.getTokenStart() : offset;
+}
+
+/** Past the comma after `offset` and the whitespace after that. */
+function afterSeparator(source: ts.SourceFile, offset: number): number {
+	const separator = separatorAt(source, offset);
+	if (separator === offset && source.text[offset] !== ",") return offset;
+	let end = separator + 1;
+	while (end < source.text.length && /\s/.test(source.text[end] as string)) end++;
+	return end;
+}
+
+/** The statement and its line break. */
+function statementRemoval(
+	source: ts.SourceFile,
+	coordinates: TextCoordinates,
+	node: ts.Statement,
+): TextEdit | undefined {
+	let end = node.getEnd();
+	if (source.text.startsWith("\r\n", end)) end += 2;
+	else if (source.text[end] === "\n") end += 1;
+	const range = coordinates.rangeAt(node.getStart(source), end);
+	return range === undefined ? undefined : { range, newText: "" };
+}
+
+/** The import statement holding `offset`; statements are in source order. */
+function statementAt(statements: readonly ImportSiteNode[], offset: number, source: ts.SourceFile) {
+	let low = 0;
+	let high = statements.length - 1;
+	while (low <= high) {
+		const middle = (low + high) >> 1;
+		const candidate = statements[middle] as ImportSiteNode;
+		if (offset < candidate.node.getStart(source)) high = middle - 1;
+		else if (offset >= candidate.node.getEnd()) low = middle + 1;
+		else return candidate;
+	}
+	return undefined;
+}
+
+export function importSiteNode(statement: ts.Statement): ImportSiteNode | undefined {
+	if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+		return { node: statement, literal: statement.moduleSpecifier };
+	}
+	const moduleSpecifier = ts.isExportDeclaration(statement) ? statement.moduleSpecifier : undefined;
+	if (ts.isExportDeclaration(statement) && moduleSpecifier !== undefined && ts.isStringLiteral(moduleSpecifier)) {
+		return { node: statement, literal: moduleSpecifier };
+	}
+	if (ts.isImportEqualsDeclaration(statement)) {
+		const reference = statement.moduleReference;
+		if (
+			ts.isExternalModuleReference(reference) &&
+			reference.expression !== undefined &&
+			ts.isStringLiteral(reference.expression)
+		) {
+			return { node: statement, literal: reference.expression };
+		}
+	}
+	return undefined;
+}

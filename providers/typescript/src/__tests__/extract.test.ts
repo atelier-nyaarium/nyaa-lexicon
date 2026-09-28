@@ -187,6 +187,15 @@ export enum Color { Red }
 		expect(found.references).toEqual([expect.objectContaining({ name: "X", role: "instantiate" })]);
 	});
 
+	it("names what `export =` exports as the checker does, and owns its members", () => {
+		const found = extract("export = class {\n\trun() {}\n};\n").declarations;
+		expect(found.map((declaration) => [descriptorsOf(declaration.symbolId).join("/"), declaration.kind])).toEqual([
+			["type:export=", "class"],
+			["type:export=/method:run", "method"],
+		]);
+		expect(found[0]).toMatchObject({ name: "export=", exported: true });
+	});
+
 	it("does not mint a second declaration for a named default class", () => {
 		const found = extract("export default class Foo { run() {} }");
 		const defaults = found.declarations.filter((declaration) => declaration.name === "default");
@@ -211,7 +220,7 @@ export enum Color { Red }
 
 		expect(found.declarations).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ name: "Alias", kind: "interface" }),
+				expect.objectContaining({ name: "Alias", kind: "interface", languageKind: "typeAlias" }),
 				expect.objectContaining({ name: "AbstractBox", kind: "class" }),
 				expect.objectContaining({ name: "Box", kind: "class" }),
 				expect.objectContaining({ name: "Names", kind: "namespace" }),
@@ -220,6 +229,172 @@ export enum Color { Red }
 			]),
 		);
 		expect(found.declarations.some((declaration) => declaration.name === "T")).toBe(false);
+	});
+
+	it("lists members only in a declaration's own object type, and never reads their names as uses", () => {
+		const source = [
+			"export type Shape = { side: number; area(): number };",
+			"export type Result = { ok: true; value: string } | { ok: false; reason: string };",
+			"export type Handler = (event: { kind: string }) => void;",
+			"export type Tagged = Shape & { tag: string };",
+			"export type Paren = ({ inner: string });",
+			"export interface Config {",
+			"  server: { port: number } | null;",
+			"  items: { id: string }[];",
+			"  frozen: (readonly { key: string }[]) | null;",
+			"  generic: Array<{ skipped: string }>;",
+			"}",
+			"export function load(options: { path: string }): { text: string } { return { text: options.path }; }",
+			'export const parsed = JSON.parse("{}") as { field: number };',
+		].join("\n");
+		const found = extract(source);
+		const members = found.declarations
+			.filter((declaration) => declaration.containerId !== undefined)
+			.map((declaration) => {
+				const own = parseSymbolId(declaration.symbolId)?.descriptors.at(-1);
+				const occurrence = own?.occurrence === undefined ? "" : `[${own.occurrence}]`;
+				return [`${own?.kind}:${own?.name}${occurrence}`, declaration.exported];
+			});
+
+		// A union or intersection constituent, or an array element, is the declaration's own type; a
+		// repeat takes an occurrence.
+		expect(members).toEqual([
+			["term:side", true],
+			["method:area", true],
+			["term:ok", true],
+			["term:value", true],
+			["term:ok[2]", true],
+			["term:reason", true],
+			["term:tag", true],
+			["term:inner", true],
+			["term:server", true],
+			["term:port", true],
+			["term:items", true],
+			["term:id", true],
+			["term:frozen", true],
+			["term:key", true],
+			["term:generic", true],
+			["parameter:options", false],
+			["term:path", false],
+		]);
+		expect(descriptorsOf(found.declarations.find((item) => item.name === "path")?.symbolId ?? "")).toEqual([
+			"method:load",
+			"parameter:options",
+			"term:path",
+		]);
+		expect(found.declarations.filter((declaration) => declaration.languageKind === "typeAlias").length).toBe(5);
+		expect(found.declarations.find((declaration) => declaration.name === "Config")?.languageKind).toBeUndefined();
+		expect(found.references.map((reference) => reference.name)).toEqual([
+			"Shape",
+			"Array",
+			"options",
+			"path",
+			"JSON",
+			"parse",
+		]);
+	});
+
+	it("declares every name a destructuring binds", () => {
+		const source = [
+			"export const { alpha, beta: renamed, nested: { deep = () => { const inner = 1; return inner; } } } = source;",
+			"let [first, , ...rest] = list;",
+			"function body() { const { a } = obj; return a; }",
+		].join("\n");
+		const found = extract(source).declarations;
+
+		expect(
+			found.map((declaration) => [
+				descriptorsOf(declaration.symbolId).join("/"),
+				declaration.kind,
+				declaration.visibility,
+				textAt(source, declaration.selectionRange ?? declaration.range),
+			]),
+		).toEqual([
+			["term:alpha", "constant", "public", "alpha"],
+			["term:renamed", "constant", "public", "renamed"],
+			["term:deep", "constant", "public", "deep"],
+			["term:deep/term:inner", "constant", "local", "inner"],
+			["term:first", "variable", "fileLocal", "first"],
+			["term:rest", "variable", "fileLocal", "rest"],
+			["method:body", "function", "fileLocal", "body"],
+			["method:body/term:a", "constant", "local", "a"],
+		]);
+		expect(found.find((declaration) => declaration.name === "deep")?.contains).toBe("locals");
+		expect(textAt(source, found[0]?.range ?? rangeForText(source, "alpha"))).toBe(source.split("\n")[0] as string);
+	});
+
+	it("declares loop and catch variables as locals of their body", () => {
+		const source = [
+			"function run(rows: { item: number }[], xs: number[], o: object) {",
+			"  for (const { item } of rows) use(item);",
+			"  for (let i = 0, j = 1; i < j; i++) use(i);",
+			"  for (const k in o) use(k);",
+			"  try { use(xs); } catch (error) { use(error); }",
+			"}",
+		].join("\n");
+		const found = extract(source).declarations.filter((declaration) => declaration.visibility === "local");
+
+		expect(
+			found
+				.filter((declaration) => !descriptorsOf(declaration.symbolId).at(-1)?.startsWith("parameter:"))
+				.map((declaration) => [
+					descriptorsOf(declaration.symbolId).join("/"),
+					declaration.kind,
+					declaration.signature,
+					textAt(source, declaration.range),
+				]),
+		).toEqual([
+			["method:run/term:item", "constant", "const { item }", "const { item }"],
+			["method:run/term:i", "variable", "let i = 0", "let i = 0, j = 1"],
+			["method:run/term:j", "variable", "let j = 1", "let i = 0, j = 1"],
+			["method:run/term:k", "constant", "const k", "const k"],
+			["method:run/term:error", "variable", "error", "error"],
+		]);
+	});
+
+	it("nests an object's members and function bodies under the property holding them", () => {
+		const source = [
+			"export const a = {",
+			"  b: { m() {}, deep: { n() {} } as const },",
+			"  f: (x: number) => { const y = x; return y; },",
+			"  c: 1,",
+			"};",
+		].join("\n");
+		const found = extract(source).declarations;
+		expect(
+			found.map((declaration) => [descriptorsOf(declaration.symbolId).join("/"), declaration.contains]),
+		).toEqual([
+			["term:a", undefined],
+			["term:a/term:b", undefined],
+			["term:a/term:b/method:m", undefined],
+			["term:a/term:b/term:deep", undefined],
+			["term:a/term:b/term:deep/method:n", undefined],
+			["term:a/term:f", "locals"],
+			["term:a/term:f/parameter:x", undefined],
+			["term:a/term:f/term:y", undefined],
+		]);
+	});
+
+	it("gives a static block its own declaration, holding its locals", () => {
+		const source = "export class Box {\n\tstatic {\n\t\tconst init = 1;\n\t}\n\tinit = 2;\n}\n";
+		const found = extract(source).declarations;
+
+		expect(
+			found.map((declaration) => [
+				descriptorsOf(declaration.symbolId).join("/"),
+				declaration.kind,
+				declaration.languageKind,
+				declaration.visibility,
+			]),
+		).toEqual([
+			["type:Box", "class", undefined, "public"],
+			["type:Box/method:static", "constructor", "staticBlock", "public"],
+			["type:Box/method:static/term:init", "constant", undefined, "local"],
+			["type:Box/term:init", "property", undefined, "public"],
+		]);
+		const block = found[1];
+		expect(block?.signature).toBe("static");
+		expect(textAt(source, block?.selectionRange ?? rangeForText(source, "Box"))).toBe("static");
 	});
 
 	it("separates const from let, since a consumer reads the kind to know what can be reassigned", () => {
@@ -347,21 +522,27 @@ export enum Color { Red }
 		]);
 	});
 
-	it("keeps a literal's spacing as written, its line breaks escaped, and collapses only around it", () => {
+	it("keeps a literal's spacing as written, its line breaks escaped, its continuations joined", () => {
 		const found = extract(
 			[
 				'@tag("x  y")',
 				"export class Box {}",
 				"export const T = `first",
-				"  second ${Box}  third`;",
+				"  second $" + "{Box}  third`;",
 				"export const R = /a  b/,   S = 'c  d';",
+				"export const U = 'one \\",
+				"two', V = `three \\\\",
+				"four \\",
+				"five`;",
 			].join("\n"),
 		);
 		expect(found.declarations.map((declaration) => [declaration.name, declaration.signature])).toEqual([
 			["Box", '@tag("x  y") export class Box'],
-			["T", "export const T = `first\\n  second ${Box}  third`"],
+			["T", "export const T = `first\\n  second $" + "{Box}  third`"],
 			["R", "export const R = /a  b/"],
 			["S", "export const S = 'c  d'"],
+			["U", "export const U = 'one two'"],
+			["V", "export const V = `three \\\\\\nfour five`"],
 		]);
 	});
 
@@ -378,6 +559,21 @@ export enum Color { Red }
 		};
 		// Linear reads 8x; a walk of every sibling per declarator read 64x.
 		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+	});
+
+	it("reads a wide union's members in time linear in its constituents", () => {
+		const timed = (count: number) => {
+			const text = `export type Wide = ${Array.from({ length: count }, (_, index) => `{ k${index}: ${index} }`).join(" | ")};\n`;
+			let best = Number.POSITIVE_INFINITY;
+			for (let round = 0; round < 3; round++) {
+				const started = performance.now();
+				expect(extract(text).declarations).toHaveLength(count + 1);
+				best = Math.min(best, performance.now() - started);
+			}
+			return best;
+		};
+		// Linear reads 8x; reading every constituent per member read over 40x.
+		expect(timed(8_000) / timed(1_000)).toBeLessThan(32);
 	});
 
 	it("marks what a running body declares local, however deep the body sits in an initializer", () => {
@@ -451,23 +647,23 @@ export enum Color { Red }
 		expect(found?.range.start.line).toBe(2);
 	});
 
-	// Leading trivia runs back to the previous token, so the naive read of it hands a move the
-	// file's section banner to carry into the destination.
-	// Overloads are separate symbols and must stay separable; merged declarations are ONE symbol in
-	// TypeScript, so numbering them minted an ordinal the composer could not render and dropped.
-	it("numbers overloads and leaves a merged interface and class sharing one id", () => {
+	// Overloads number by disambiguator; a merge repeats one name path, so each later one takes an occurrence.
+	it("gives every overload and every merged declaration its own id", () => {
 		const overloads = extract(
 			["export function f(x: string): string;", "export function f(x: number): number;"].join("\n"),
 		).declarations.filter((declaration) => declaration.name === "f");
 		expect(new Set(overloads.map((declaration) => declaration.symbolId)).size).toBe(overloads.length);
 
-		const merged = extract(["export interface Box {}", "export class Box {}"].join("\n")).declarations.filter(
-			(declaration) => declaration.name === "Box",
-		);
-		expect(merged.length).toBeGreaterThan(1);
-		expect(new Set(merged.map((declaration) => declaration.symbolId)).size).toBe(1);
+		const [box, a, second, b] = extract(
+			["export interface Box { a: number }", "export class Box { b = 1 }"].join("\n"),
+		).declarations;
+		expect(box?.symbolId).not.toBe(second?.symbolId);
+		expect(parseSymbolId(second?.symbolId ?? "")?.descriptors.at(-1)?.occurrence).toBe(2);
+		expect([a?.containerId, b?.containerId]).toEqual([box?.symbolId, second?.symbolId]);
 	});
 
+	// Leading trivia runs back to the previous token, so the naive read of it hands a move the
+	// file's section banner to carry into the destination.
 	it("stops the range at a blank line, leaving a section banner with the file", () => {
 		const source = [
 			"////////////////////////////////",
@@ -582,6 +778,7 @@ export enum Color { Red }
 			"export function destructured({ retries: count = 1, nested: { deep } }: Options) {}",
 			"export class Box { constructor(public value: number = 1) {} method(argument: string) {} }",
 			"export const arrow = (value: number, ...items: string[]) => value;",
+			"export const Made = class { constructor(private made: number) {} };",
 		].join("\n");
 		const found = extract(source).declarations;
 		const parameterDeclarations = found.filter((declaration) =>
@@ -596,7 +793,7 @@ export enum Color { Red }
 			);
 		};
 
-		expect(parameterDeclarations).toHaveLength(10);
+		expect(parameterDeclarations).toHaveLength(9);
 		for (const [ownerName, name, rangeText] of [
 			["use", "this", "this: Options"],
 			["use", "required", "required: string"],
@@ -604,7 +801,6 @@ export enum Color { Red }
 			["use", "rest", "...rest: boolean[]"],
 			["destructured", "count", "retries: count"],
 			["destructured", "deep", "deep"],
-			["constructor", "value", "public value: number"],
 			["method", "argument", "argument: string"],
 			["arrow", "value", "value: number"],
 			["arrow", "items", "...items: string[]"],
@@ -624,6 +820,29 @@ export enum Color { Red }
 				`parameter:${name}`,
 			]);
 		}
+
+		// A parameter property is the class's member, one declaration for both of its names.
+		const box = found.find((declaration) => declaration.name === "Box");
+		const creator = found.find((declaration) => declaration.containerId === box?.symbolId);
+		const value = found.filter(
+			(declaration) =>
+				declaration.name === "value" && [box?.symbolId, creator?.symbolId].includes(declaration.containerId),
+		);
+		expect(value).toEqual([
+			expect.objectContaining({
+				kind: "property",
+				visibility: "public",
+				exported: true,
+				containerId: box?.symbolId,
+				range: rangeForText(source, "public value: number"),
+				signature: "public value: number = 1",
+			}),
+		]);
+		expect(descriptorsOf(value[0]?.symbolId ?? "")).toEqual(["type:Box", "term:value"]);
+		expect(descriptorsOf(found.find((declaration) => declaration.name === "made")?.symbolId ?? "")).toEqual([
+			"term:Made",
+			"term:made",
+		]);
 	});
 
 	it("keeps reference ranges on the identifier and out of leading trivia", () => {
@@ -861,15 +1080,75 @@ describe("member insertion", () => {
 describe("visibility and reach", () => {
 	it("separates exported from file-local", () => {
 		expect(named("export function a() {}", "a")?.exported).toBe(true);
-		expect(named("function a() {}", "a")?.exported).toBe(false);
-		expect(named("function a() {}", "a")?.visibility).toBe("fileLocal");
+		expect(named("function a() {}\nexport {};", "a")?.exported).toBe(false);
+		expect(named("function a() {}\nexport {};", "a")?.visibility).toBe("fileLocal");
 	});
 
-	it("reads an access modifier rather than guessing from the name", () => {
-		const source = "export class C {\n  private secret = 1;\n  protected shared = 2;\n  public open = 3;\n}";
-		expect(named(source, "secret")?.visibility).toBe("private");
-		expect(named(source, "shared")?.visibility).toBe("protected");
-		expect(named(source, "open")?.visibility).toBe("public");
+	it("reaches other files from a script's top level and from `declare global` and `declare module` blocks", () => {
+		const reach = (text: string, module?: string) =>
+			Object.fromEntries(
+				extract(text, module).declarations.map((declaration) => [
+					declaration.name,
+					[declaration.visibility, declaration.exported],
+				]),
+			);
+		const script = ["function greet() {}", "const version = 1;", "interface Window { mark: number }"].join("\n");
+		expect(reach(script)).toEqual({
+			greet: ["public", true],
+			version: ["public", true],
+			Window: ["public", true],
+			mark: ["public", true],
+		});
+		const blocks = [
+			'declare module "pkg" {',
+			"\tfunction run(): void;",
+			"}",
+			"declare global {",
+			"\tfunction shout(): void;",
+			"}",
+			"function local() {}",
+			"export {};",
+		].join("\n");
+		expect(reach(blocks)).toEqual({
+			pkg: ["public", true],
+			run: ["public", true],
+			global: ["public", true],
+			shout: ["public", true],
+			local: ["fileLocal", false],
+		});
+		// CommonJS and module extensions keep a file's declarations home.
+		expect(reach('const fs = require("fs");\nfunction local() {}\n', "src/a.js")).toEqual({
+			fs: ["fileLocal", false],
+			local: ["fileLocal", false],
+		});
+		expect(reach("function local() {}", "src/a.mts")).toEqual({ local: ["fileLocal", false] });
+	});
+
+	it("reads an access modifier rather than guessing from the name, and keeps a non-public member home", () => {
+		const source = [
+			"export class C {",
+			"  private secret: { token: string };",
+			"  protected shared: { key: string };",
+			"  public open: { value: string };",
+			"  #hidden = 4;",
+			"}",
+		].join("\n");
+		const reach = Object.fromEntries(
+			extract(source).declarations.map((declaration) => [
+				declaration.name,
+				[declaration.visibility, declaration.exported],
+			]),
+		);
+		expect(reach).toEqual({
+			C: ["public", true],
+			secret: ["private", false],
+			token: ["fileLocal", false],
+			shared: ["protected", false],
+			key: ["fileLocal", false],
+			open: ["public", true],
+			value: ["public", true],
+			"#hidden": ["private", false],
+		});
 	});
 
 	it("treats a hash-private field as private, and keeps the hash as part of its real name", () => {
@@ -881,12 +1160,43 @@ describe("visibility and reach", () => {
 
 	it("counts a member of an exported class as reachable", () => {
 		expect(named("export class C {\n  method() {}\n}", "method")?.exported).toBe(true);
-		expect(named("class C {\n  method() {}\n}", "method")?.exported).toBe(false);
+		expect(named("class C {\n  method() {}\n}\nexport {};", "method")?.exported).toBe(false);
+	});
+
+	it("exports an ambient namespace's members unless it names its exports", () => {
+		const source = [
+			"declare namespace Lib {",
+			"\tfunction call(): void;",
+			"\tconst version: string;",
+			"\tnamespace Inner { interface Shape {} }",
+			"}",
+			"declare namespace Named {",
+			"\tfunction hidden(): void;",
+			"\texport function shown(): void;",
+			"\texport {};",
+			"}",
+			"namespace Plain { function local() {} }",
+			"export {};",
+		].join("\n");
+		const found = extract(source).declarations;
+
+		expect(Object.fromEntries(found.map((declaration) => [declaration.name, declaration.exported]))).toEqual({
+			Lib: false,
+			call: true,
+			version: true,
+			Inner: true,
+			Shape: true,
+			Named: false,
+			hidden: false,
+			shown: true,
+			Plain: false,
+			local: false,
+		});
 	});
 });
 
 describe("imports", () => {
-	it("records source and local spans for every named import and export form", () => {
+	it("records source and local spans, and every form but a plain named one, for each import and export", () => {
 		const source = [
 			'import { foo } from "./named";',
 			'import { original as renamed } from "./aliased";',
@@ -900,6 +1210,9 @@ describe("imports", () => {
 			'export * as namespaceExport from "./namespace-export";',
 			'export * from "./all";',
 			'import "./side-effect";',
+			'import type TypeDefault from "./type-default";',
+			'export type { Shape } from "./type-reexport";',
+			'import type * as TypeSpace from "./type-namespace";',
 		].join("\n");
 		const span = (value: string, from: string) => rangeForText(source, value, source.indexOf(from));
 
@@ -923,17 +1236,21 @@ describe("imports", () => {
 			},
 			{
 				specifier: "./default",
-				imported: [{ local: "defaultThing", localRange: span("defaultThing", "import defaultThing") }],
+				imported: [
+					{ local: "defaultThing", localRange: span("defaultThing", "import defaultThing"), kind: "default" },
+				],
 				reExport: false,
 			},
 			{
 				specifier: "./namespace",
-				imported: [{ local: "namespace", localRange: span("namespace", "import * as namespace") }],
+				imported: [
+					{ local: "namespace", localRange: span("namespace", "import * as namespace"), kind: "namespace" },
+				],
 				reExport: false,
 			},
 			{
 				specifier: "./type-only",
-				imported: [{ name: "TypeOnly", range: span("TypeOnly", "import type { TypeOnly") }],
+				imported: [{ name: "TypeOnly", range: span("TypeOnly", "import type { TypeOnly"), typeOnly: true }],
 				reExport: false,
 			},
 			{
@@ -944,6 +1261,7 @@ describe("imports", () => {
 						range: span("InlineType", "import { type InlineType"),
 						local: "LocalInline",
 						localRange: span("LocalInline", "import { type InlineType"),
+						typeOnly: true,
 					},
 				],
 				reExport: false,
@@ -973,12 +1291,45 @@ describe("imports", () => {
 			{
 				specifier: "./namespace-export",
 				imported: [
-					{ local: "namespaceExport", localRange: span("namespaceExport", "export * as namespaceExport") },
+					{
+						local: "namespaceExport",
+						localRange: span("namespaceExport", "export * as namespaceExport"),
+						kind: "namespace",
+					},
 				],
 				reExport: true,
 			},
 			{ specifier: "./all", imported: [], reExport: true },
 			{ specifier: "./side-effect", imported: [], reExport: false },
+			{
+				specifier: "./type-default",
+				imported: [
+					{
+						local: "TypeDefault",
+						localRange: span("TypeDefault", "import type TypeDefault"),
+						kind: "default",
+						typeOnly: true,
+					},
+				],
+				reExport: false,
+			},
+			{
+				specifier: "./type-reexport",
+				imported: [{ name: "Shape", range: span("Shape", "export type { Shape"), typeOnly: true }],
+				reExport: true,
+			},
+			{
+				specifier: "./type-namespace",
+				imported: [
+					{
+						local: "TypeSpace",
+						localRange: span("TypeSpace", "import type * as TypeSpace"),
+						kind: "namespace",
+						typeOnly: true,
+					},
+				],
+				reExport: false,
+			},
 		]);
 	});
 
@@ -999,13 +1350,23 @@ describe("imports", () => {
 			'import { item } from "node:fs";',
 			'export { item } from "./item";',
 			'import "side-effect";',
+			'import equals = require("equals-spec");',
 			'const ordinary = "node:fs";',
 			'const loaded = import("lazy");',
 			'const required = require("require-spec");',
 		].join("\n");
 		const found = extract(source);
 
-		expect(found.imports.map((entry) => entry.specifier)).toEqual(["node:fs", "./item", "side-effect", "lazy"]);
+		expect(found.imports.map((entry) => entry.specifier)).toEqual([
+			"node:fs",
+			"./item",
+			"side-effect",
+			"equals-spec",
+			"lazy",
+		]);
+		expect(found.imports[3]?.imported).toEqual([
+			{ local: "equals", localRange: rangeForText(source, "equals"), kind: "require" },
+		]);
 		expect(found.literals.map((literal) => literal.value)).toEqual(["node:fs", "require-spec"]);
 	});
 });

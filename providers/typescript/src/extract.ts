@@ -9,19 +9,51 @@ import {
 	type Descriptor,
 	defined,
 	type FileRole,
-	type ImportedName,
+	type Import,
 	type Literal,
-	type Metrics,
 	type Reference,
 	RUNNING_KINDS,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import {
+	anonymousDefaultExportOf,
+	boundNames,
+	type Classified,
+	classify,
+	exportsImplicitly,
+	isExported,
+	isGlobalBlock,
+	isRunningBody,
+	loopHeadOf,
+	nameOf,
+	visibilityOf,
+} from "./declarations.js";
+import { fileRoleOf } from "./file-role.js";
 import { headerOf } from "./header.js";
+import { importOf, isDynamicImport } from "./imports.js";
+import { literalOf } from "./literals.js";
+import { memberBodyOf, memberInsertLineOf, ownedTypeLiterals, partsOf, passesReach, unwrapped } from "./members.js";
+import { metricsOf } from "./metrics.js";
+import { declarationRangeOf, defaultSelectionRange, nameRange, parameterRangeOf, rangeOf } from "./ranges.js";
+import {
+	isConstAssertionType,
+	isContextualPropertyReference,
+	isDeclarationName,
+	isQualifiedReference,
+	isReferenceNode,
+	type ReferenceNode,
+	type ReferenceRole,
+	referenceTarget,
+	rolesForIdentifier,
+} from "./references.js";
 
 ////////////////////////////////
 //  Constants
 
 export const LANGUAGE = "typescript";
+
+/** The checker's name for what `export =` exports. */
+export const EXPORT_EQUALS = "export=";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -29,7 +61,7 @@ export const LANGUAGE = "typescript";
 export interface Extracted {
 	declarations: Declaration[];
 	references: Reference[];
-	imports: { specifier: string; imported: ImportedName[]; reExport: boolean }[];
+	imports: Import[];
 	literals: Literal[];
 	role: FileRole;
 }
@@ -37,9 +69,6 @@ export interface Extracted {
 export interface ExtractedWithNodes extends Extracted {
 	declarationNodes: Map<ts.Node, string>;
 }
-
-type ReferenceRole = Reference["role"];
-type ReferenceNode = ts.Identifier | ts.PrivateIdentifier | ts.StringLiteral | ts.NumericLiteral;
 
 /** A declaration's own descriptor plus the chain it sits under, so ids nest correctly. */
 interface Scope {
@@ -49,661 +78,8 @@ interface Scope {
 	runs?: true;
 }
 
-interface MetricsFunctionLike {
-	parameters: readonly ts.ParameterDeclaration[];
-	body: ts.ConciseBody | undefined;
-}
-
-interface ParameterBinding {
-	name: ts.Identifier;
-	rangeNode: ts.ParameterDeclaration | ts.BindingElement;
-}
-
 ////////////////////////////////
 //  Functions & Helpers
-
-function rangeOf(node: ts.Node, source: ts.SourceFile) {
-	const start = source.getLineAndCharacterOfPosition(node.getStart(source));
-	const end = source.getLineAndCharacterOfPosition(node.getEnd());
-	return { start, end };
-}
-
-function parameterRangeOf(node: ts.ParameterDeclaration | ts.BindingElement, source: ts.SourceFile) {
-	let end = node.getEnd();
-	if (node.initializer !== undefined) {
-		const endNode = ts.isParameter(node) ? (node.type ?? node.questionToken ?? node.name) : node.name;
-		end = endNode.getEnd();
-	}
-	return {
-		start: source.getLineAndCharacterOfPosition(node.getStart(source)),
-		end: source.getLineAndCharacterOfPosition(end),
-	};
-}
-
-/**
- * Only the comment block touching the declaration, because leading trivia runs back to the
- * PREVIOUS token: taking its first comment swallows section banners and file headers, which a
- * move would then carry into the destination file.
- */
-function declarationRangeOf(node: ts.Node, source: ts.SourceFile) {
-	const comments = ts.getLeadingCommentRanges(source.text, node.pos) ?? [];
-	const declarationStart = docCommentStart(source, comments, node.getStart(source));
-	const start = source.getLineAndCharacterOfPosition(declarationStart);
-	const end = source.getLineAndCharacterOfPosition(node.getEnd());
-	return { start, end };
-}
-
-/** A blank line ends the block, so what sits above one is the file's rather than the symbol's. */
-function docCommentStart(source: ts.SourceFile, comments: readonly ts.CommentRange[], nodeStart: number): number {
-	const lineOf = (offset: number) => source.getLineAndCharacterOfPosition(offset).line;
-	let start = nodeStart;
-	for (let i = comments.length - 1; i >= 0; i--) {
-		const comment = comments[i] as ts.CommentRange;
-		// Only whitespace lies between, so a skipped line is blank.
-		if (lineOf(start) - lineOf(comment.end) > 1) break;
-		start = comment.pos;
-	}
-	return start;
-}
-
-function nameRange(node: ts.Node, source: ts.SourceFile, name: ts.Node | undefined) {
-	if (name) return rangeOf(name, source);
-	if (ts.isConstructorDeclaration(node)) {
-		const keyword = node.getChildren(source).find((child) => child.kind === ts.SyntaxKind.ConstructorKeyword);
-		if (keyword) return rangeOf(keyword, source);
-	}
-	return rangeOf(node, source);
-}
-
-function functionLikeForMetrics(node: ts.Node): MetricsFunctionLike | undefined {
-	if (ts.isMethodSignature(node)) return { parameters: node.parameters, body: undefined };
-	if (
-		ts.isFunctionDeclaration(node) ||
-		ts.isMethodDeclaration(node) ||
-		ts.isConstructorDeclaration(node) ||
-		ts.isGetAccessorDeclaration(node) ||
-		ts.isSetAccessorDeclaration(node)
-	) {
-		return { parameters: node.parameters, body: node.body };
-	}
-	if (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) {
-		const initializer = node.initializer;
-		if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
-			return { parameters: initializer.parameters, body: initializer.body };
-		}
-	}
-	return undefined;
-}
-
-function isControlNestingNode(node: ts.Node): boolean {
-	return (
-		ts.isIfStatement(node) ||
-		ts.isForStatement(node) ||
-		ts.isForInStatement(node) ||
-		ts.isForOfStatement(node) ||
-		ts.isWhileStatement(node) ||
-		ts.isDoStatement(node) ||
-		ts.isSwitchStatement(node) ||
-		ts.isTryStatement(node) ||
-		ts.isCatchClause(node) ||
-		ts.isWithStatement(node) ||
-		ts.isConditionalExpression(node)
-	);
-}
-
-function isDecisionNode(node: ts.Node): boolean {
-	if (
-		ts.isIfStatement(node) ||
-		ts.isForStatement(node) ||
-		ts.isForInStatement(node) ||
-		ts.isForOfStatement(node) ||
-		ts.isWhileStatement(node) ||
-		ts.isDoStatement(node) ||
-		ts.isConditionalExpression(node) ||
-		ts.isCatchClause(node)
-	) {
-		return true;
-	}
-	if (ts.isCaseClause(node)) return true;
-	return (
-		ts.isBinaryExpression(node) &&
-		(node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
-			node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-			node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
-	);
-}
-
-function isNestedFunction(node: ts.Node): boolean {
-	return (
-		ts.isFunctionDeclaration(node) ||
-		ts.isFunctionExpression(node) ||
-		ts.isArrowFunction(node) ||
-		ts.isMethodDeclaration(node) ||
-		ts.isGetAccessorDeclaration(node) ||
-		ts.isSetAccessorDeclaration(node) ||
-		ts.isConstructorDeclaration(node)
-	);
-}
-
-function bodyMetrics(body: ts.Node): Pick<Metrics, "nesting" | "branches"> {
-	let nesting = 0;
-	let branches = 0;
-
-	function walk(node: ts.Node, depth: number): void {
-		if (isNestedFunction(node)) return;
-		const nextDepth = isControlNestingNode(node) ? depth + 1 : depth;
-		nesting = Math.max(nesting, nextDepth);
-		if (isDecisionNode(node)) branches += 1;
-		ts.forEachChild(node, (child) => walk(child, nextDepth));
-	}
-
-	walk(body, 0);
-	return { nesting, branches: branches + 1 };
-}
-
-function metricsOf(node: ts.Node, range: ReturnType<typeof declarationRangeOf>): Metrics {
-	const metrics: Metrics = { lines: range.end.line - range.start.line + 1 };
-	const functionLike = functionLikeForMetrics(node);
-	if (functionLike === undefined) return metrics;
-	metrics.parameters = functionLike.parameters.length;
-	if (functionLike.body === undefined) return metrics;
-	Object.assign(metrics, bodyMetrics(functionLike.body));
-	return metrics;
-}
-
-function containerIdOf(node: ts.Node, declarationNodes: Map<ts.Node, string>): string | undefined {
-	let current: ts.Node | undefined = node;
-	while (current !== undefined) {
-		const id = declarationNodes.get(current);
-		if (id !== undefined) return id;
-		current = current.parent;
-	}
-	return undefined;
-}
-
-function isDynamicImport(node: ts.CallExpression): boolean {
-	return node.expression.kind === ts.SyntaxKind.ImportKeyword;
-}
-
-function unwrapParentheses(expression: ts.Expression): ts.Expression {
-	let current = expression;
-	while (ts.isParenthesizedExpression(current)) current = current.expression;
-	return current;
-}
-
-function isRequireMainGuard(expression: ts.Expression): boolean {
-	const condition = unwrapParentheses(expression);
-	if (!ts.isBinaryExpression(condition) || condition.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) {
-		return false;
-	}
-	const isRequireMain = (node: ts.Expression) => {
-		const value = unwrapParentheses(node);
-		return (
-			ts.isPropertyAccessExpression(value) &&
-			ts.isIdentifier(value.expression) &&
-			value.expression.text === "require" &&
-			value.name.text === "main"
-		);
-	};
-	const isModule = (node: ts.Expression) => {
-		const value = unwrapParentheses(node);
-		return ts.isIdentifier(value) && value.text === "module";
-	};
-	return (
-		(isRequireMain(condition.left) && isModule(condition.right)) ||
-		(isModule(condition.left) && isRequireMain(condition.right))
-	);
-}
-
-function isImportMetaMainGuard(expression: ts.Expression): boolean {
-	const condition = unwrapParentheses(expression);
-	if (!ts.isPropertyAccessExpression(condition) || condition.name.text !== "main") return false;
-	const meta = condition.expression;
-	return ts.isMetaProperty(meta) && meta.keywordToken === ts.SyntaxKind.ImportKeyword && meta.name.text === "meta";
-}
-
-function isRunAsProgramGuard(condition: ts.Expression): boolean {
-	return isImportMetaMainGuard(condition) || isRequireMainGuard(condition);
-}
-
-function runsOnLoad(statement: ts.Statement): boolean {
-	return (
-		ts.isExpressionStatement(statement) ||
-		ts.isIfStatement(statement) ||
-		ts.isForStatement(statement) ||
-		ts.isForInStatement(statement) ||
-		ts.isForOfStatement(statement) ||
-		ts.isWhileStatement(statement) ||
-		ts.isDoStatement(statement) ||
-		ts.isTryStatement(statement) ||
-		ts.isSwitchStatement(statement) ||
-		ts.isBlock(statement) ||
-		ts.isWithStatement(statement) ||
-		ts.isThrowStatement(statement) ||
-		ts.isLabeledStatement(statement) ||
-		ts.isDebuggerStatement(statement)
-	);
-}
-
-/** Effects on load, weakest first. A file takes its strongest. */
-const LoadEffect = { Declares: 0, Guarded: 1, Runs: 2 } as const;
-
-function strongest(statements: readonly (ts.Statement | undefined)[]): number {
-	let effect: number = LoadEffect.Declares;
-	for (const statement of statements) {
-		if (statement !== undefined) effect = Math.max(effect, loadEffect(statement));
-	}
-	return effect;
-}
-
-function loadEffect(statement: ts.Statement): number {
-	if (!runsOnLoad(statement)) return LoadEffect.Declares;
-	if (ts.isExpressionStatement(statement)) {
-		const expression = unwrapParentheses(statement.expression);
-		return ts.isBinaryExpression(expression) && isAssignmentOperator(expression.operatorToken.kind)
-			? LoadEffect.Declares
-			: LoadEffect.Runs;
-	}
-	if (ts.isIfStatement(statement)) {
-		// A guard's branch is the program; its else still runs on import.
-		if (isRunAsProgramGuard(statement.expression)) {
-			return Math.max(LoadEffect.Guarded, strongest([statement.elseStatement]));
-		}
-		return strongest([statement.thenStatement, statement.elseStatement]);
-	}
-	if (ts.isTryStatement(statement)) {
-		return strongest([statement.tryBlock, statement.catchClause?.block, statement.finallyBlock]);
-	}
-	if (ts.isBlock(statement)) return strongest(statement.statements);
-	if (ts.isLabeledStatement(statement)) return loadEffect(statement.statement);
-	return LoadEffect.Runs;
-}
-
-export function fileRoleOf(source: ts.SourceFile): FileRole {
-	switch (strongest(source.statements)) {
-		case LoadEffect.Runs:
-			return { kind: "entry", how: "topLevel" };
-		case LoadEffect.Guarded:
-			return { kind: "entry", how: "guardedMain" };
-		default:
-			return { kind: "library" };
-	}
-}
-
-function isImportSpecifier(node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral): boolean {
-	const parent = node.parent;
-	if ((ts.isImportDeclaration(parent) || ts.isExportDeclaration(parent)) && parent.moduleSpecifier === node) {
-		return true;
-	}
-	return ts.isCallExpression(parent) && isDynamicImport(parent) && parent.arguments[0] === node;
-}
-
-function literalOf(node: ts.Node, source: ts.SourceFile, declarationNodes: Map<ts.Node, string>): Literal | undefined {
-	let literal: Literal | undefined;
-	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-		if (isImportSpecifier(node)) return undefined;
-		literal = { kind: "string", value: node.text, range: rangeOf(node, source) };
-	} else if (ts.isTemplateHead(node) || ts.isTemplateMiddleOrTemplateTail(node)) {
-		// A template's text parts, one literal each; the substitutions between them are not text.
-		literal = { kind: "string", value: node.text, range: rangeOf(node, source) };
-	} else if (ts.isNumericLiteral(node)) {
-		const value = node.getText(source);
-		literal = { kind: "number", value, number: Number(value.replaceAll("_", "")), range: rangeOf(node, source) };
-	} else if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
-		literal = {
-			kind: "boolean",
-			value: node.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false",
-			range: rangeOf(node, source),
-		};
-	}
-	if (literal === undefined) return undefined;
-	const containerId = containerIdOf(node, declarationNodes);
-	return containerId === undefined ? literal : { ...literal, containerId };
-}
-
-/** Reach, mapped onto the protocol's vocabulary rather than TypeScript's keywords. */
-function visibilityOf(node: ts.Node, exported: boolean): Declaration["visibility"] {
-	const modifiers = ts.canHaveModifiers(node) ? (ts.getModifiers(node) ?? []) : [];
-	for (const modifier of modifiers) {
-		if (modifier.kind === ts.SyntaxKind.PrivateKeyword) return "private";
-		if (modifier.kind === ts.SyntaxKind.ProtectedKeyword) return "protected";
-	}
-	// A `#field` is private by syntax rather than by modifier.
-	const name = (node as { name?: ts.Node }).name;
-	if (name && ts.isPrivateIdentifier(name)) return "private";
-	return exported ? "public" : "fileLocal";
-}
-
-function isExported(node: ts.Node): boolean {
-	const modifiers = ts.canHaveModifiers(node) ? (ts.getModifiers(node) ?? []) : [];
-	return modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
-}
-
-function isDeclarationName(node: ts.Node): boolean {
-	const parent = node.parent;
-	if (
-		ts.isBindingElement(parent) ||
-		ts.isVariableDeclaration(parent) ||
-		ts.isParameter(parent) ||
-		ts.isTypeParameterDeclaration(parent) ||
-		ts.isNamedTupleMember(parent)
-	) {
-		return parent.name === node;
-	}
-	if (
-		ts.isClassDeclaration(parent) ||
-		ts.isClassExpression(parent) ||
-		ts.isInterfaceDeclaration(parent) ||
-		ts.isTypeAliasDeclaration(parent) ||
-		ts.isEnumDeclaration(parent) ||
-		ts.isModuleDeclaration(parent) ||
-		ts.isFunctionDeclaration(parent) ||
-		ts.isFunctionExpression(parent) ||
-		ts.isMethodDeclaration(parent) ||
-		ts.isMethodSignature(parent) ||
-		ts.isPropertyDeclaration(parent) ||
-		ts.isPropertySignature(parent) ||
-		ts.isEnumMember(parent) ||
-		ts.isGetAccessorDeclaration(parent) ||
-		ts.isSetAccessorDeclaration(parent) ||
-		ts.isImportEqualsDeclaration(parent)
-	) {
-		return (parent as { name?: ts.Node }).name === node;
-	}
-	return false;
-}
-
-function isReferenceNode(node: ts.Node): node is ReferenceNode {
-	return (
-		ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)
-	);
-}
-
-function staticPropertyName(node: ts.PropertyName): string | undefined {
-	if (
-		ts.isIdentifier(node) ||
-		ts.isPrivateIdentifier(node) ||
-		ts.isStringLiteral(node) ||
-		ts.isNumericLiteral(node)
-	) {
-		return node.text;
-	}
-	return undefined;
-}
-
-export function contextualPropertySymbol(checker: ts.TypeChecker, node: ts.PropertyAssignment): ts.Symbol | undefined {
-	const name = staticPropertyName(node.name);
-	if (name === undefined) return undefined;
-	const contextualType = checker.getContextualType(node.parent);
-	return contextualType === undefined ? undefined : checker.getPropertyOfType(contextualType, name);
-}
-
-function isContextualPropertyReference(node: ts.Node, checker: ts.TypeChecker): node is ReferenceNode {
-	const parent = node.parent;
-	return (
-		isReferenceNode(node) &&
-		ts.isPropertyAssignment(parent) &&
-		parent.name === node &&
-		contextualPropertySymbol(checker, parent) !== undefined
-	);
-}
-
-function isNonReferenceName(node: ts.Node): boolean {
-	const parent = node.parent;
-	return (
-		(ts.isPropertyAssignment(parent) && parent.name === node) ||
-		(ts.isLabeledStatement(parent) && parent.label === node) ||
-		((ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) && parent.label === node) ||
-		(ts.isJsxAttribute(parent) && parent.name === node)
-	);
-}
-
-function isConstAssertionType(node: ts.Node): boolean {
-	return (
-		ts.isIdentifier(node) &&
-		node.text === "const" &&
-		ts.isTypeReferenceNode(node.parent) &&
-		ts.isAsExpression(node.parent.parent) &&
-		node.parent.parent.type === node.parent
-	);
-}
-
-function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
-	return (
-		kind === ts.SyntaxKind.EqualsToken ||
-		kind === ts.SyntaxKind.PlusEqualsToken ||
-		kind === ts.SyntaxKind.MinusEqualsToken ||
-		kind === ts.SyntaxKind.AsteriskEqualsToken ||
-		kind === ts.SyntaxKind.AsteriskAsteriskEqualsToken ||
-		kind === ts.SyntaxKind.SlashEqualsToken ||
-		kind === ts.SyntaxKind.PercentEqualsToken ||
-		kind === ts.SyntaxKind.LessThanLessThanEqualsToken ||
-		kind === ts.SyntaxKind.GreaterThanGreaterThanEqualsToken ||
-		kind === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken ||
-		kind === ts.SyntaxKind.AmpersandEqualsToken ||
-		kind === ts.SyntaxKind.BarEqualsToken ||
-		kind === ts.SyntaxKind.BarBarEqualsToken ||
-		kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
-		kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
-		kind === ts.SyntaxKind.CaretEqualsToken
-	);
-}
-
-function isAssignmentTarget(node: ts.Node): boolean {
-	let current = node;
-	while (ts.isParenthesizedExpression(current)) current = current.parent;
-	const parent = current.parent;
-	return ts.isBinaryExpression(parent) && parent.left === current && isAssignmentOperator(parent.operatorToken.kind);
-}
-
-function rolesForValue(node: ts.Node): ReferenceRole[] {
-	const parent = node.parent;
-	if (ts.isBinaryExpression(parent) && parent.left === node && isAssignmentOperator(parent.operatorToken.kind)) {
-		return parent.operatorToken.kind === ts.SyntaxKind.EqualsToken ? ["write"] : ["read", "write"];
-	}
-	if (
-		(ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
-		(parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken)
-	) {
-		return ["read", "write"];
-	}
-	if ((ts.isForInStatement(parent) || ts.isForOfStatement(parent)) && parent.initializer === node) {
-		return ["write"];
-	}
-	if (ts.isShorthandPropertyAssignment(parent) && parent.name === node && isAssignmentTarget(parent.parent)) {
-		return rolesForValue(parent.parent);
-	}
-	if (ts.isPropertyAssignment(parent) && parent.initializer === node && isAssignmentTarget(parent.parent)) {
-		return rolesForValue(parent.parent);
-	}
-	if ((ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent)) && isAssignmentTarget(parent)) {
-		return rolesForValue(parent);
-	}
-	return ["read"];
-}
-
-function rolesForIdentifier(node: ts.Identifier | ts.PrivateIdentifier): ReferenceRole[] {
-	if (isDeclarationName(node) || isNonReferenceName(node)) return [];
-	const parent = node.parent;
-	if (ts.isPropertyAccessExpression(parent)) {
-		if (parent.expression === node) return ["read"];
-		if (parent.name === node) {
-			const container = parent.parent;
-			if (ts.isCallExpression(container) && container.expression === parent) return ["call"];
-			if (ts.isNewExpression(container) && container.expression === parent) return ["instantiate"];
-			return rolesForValue(parent);
-		}
-	}
-	if (ts.isCallExpression(parent) && parent.expression === node) return ["call"];
-	if (ts.isNewExpression(parent) && parent.expression === node) return ["instantiate"];
-	return rolesForValue(node);
-}
-
-function referenceTarget(expression: ts.Expression): ts.Identifier | ts.PrivateIdentifier | undefined {
-	if (ts.isIdentifier(expression) || ts.isPrivateIdentifier(expression)) return expression;
-	if (ts.isPropertyAccessExpression(expression)) return expression.name;
-	return undefined;
-}
-
-/** Reached through a receiver or path. */
-function isQualifiedReference(node: ReferenceNode): boolean {
-	const parent = node.parent;
-	if (ts.isPropertyAccessExpression(parent) || ts.isMetaProperty(parent) || ts.isJsxNamespacedName(parent)) {
-		return parent.name === node;
-	}
-	if (ts.isQualifiedName(parent) && parent.right === node) return true;
-	return isImportTypeQualifier(node);
-}
-
-/** Every segment of `import("m").a.B`. */
-function isImportTypeQualifier(node: ts.Node): boolean {
-	let path = node;
-	while (ts.isQualifiedName(path.parent)) path = path.parent;
-	return ts.isImportTypeNode(path.parent) && path.parent.qualifier === path;
-}
-
-////////////////////////////////
-//  Declarations
-
-/** What kind a node is, and which descriptor its id carries. Null means we do not report it. */
-function classify(node: ts.Node): { kind: Declaration["kind"]; descriptor: Descriptor["kind"] } | null {
-	if (ts.isClassDeclaration(node)) return { kind: "class", descriptor: "type" };
-	if (ts.isInterfaceDeclaration(node)) return { kind: "interface", descriptor: "type" };
-	if (ts.isTypeAliasDeclaration(node)) return { kind: "interface", descriptor: "type" };
-	if (ts.isEnumDeclaration(node)) return { kind: "enum", descriptor: "type" };
-	if (ts.isModuleDeclaration(node)) {
-		return { kind: ts.isStringLiteral(node.name) ? "module" : "namespace", descriptor: "namespace" };
-	}
-	if (ts.isFunctionDeclaration(node)) return { kind: "function", descriptor: "method" };
-	if (ts.isMethodDeclaration(node) || ts.isMethodSignature(node)) return { kind: "method", descriptor: "method" };
-	if (ts.isConstructorDeclaration(node)) return { kind: "constructor", descriptor: "method" };
-	if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
-		return { kind: "property", descriptor: "term" };
-	}
-	if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node)) return { kind: "property", descriptor: "term" };
-	if (ts.isEnumMember(node)) return { kind: "constant", descriptor: "term" };
-	return null;
-}
-
-function anonymousDefaultExportOf(
-	node: ts.Node,
-): { kind: Declaration["kind"]; descriptor: Descriptor["kind"] } | undefined {
-	if (ts.isClassDeclaration(node) && node.name === undefined && hasDefaultModifier(node)) {
-		return { kind: "class", descriptor: "type" };
-	}
-	if (ts.isFunctionDeclaration(node) && node.name === undefined && hasDefaultModifier(node)) {
-		return { kind: "function", descriptor: "method" };
-	}
-	if (ts.isExportAssignment(node) && !node.isExportEquals) {
-		if (ts.isClassExpression(node.expression)) return { kind: "class", descriptor: "type" };
-		if (ts.isFunctionExpression(node.expression)) return { kind: "function", descriptor: "method" };
-		return { kind: "variable", descriptor: "term" };
-	}
-	return undefined;
-}
-
-/** Through parentheses and type-only wrappers. */
-function unwrapped(expression: ts.Expression): ts.Expression {
-	let current = expression;
-	while (
-		ts.isParenthesizedExpression(current) ||
-		ts.isAsExpression(current) ||
-		ts.isTypeAssertionExpression(current) ||
-		ts.isSatisfiesExpression(current) ||
-		ts.isNonNullExpression(current)
-	) {
-		current = current.expression;
-	}
-	return current;
-}
-
-/** The node's member braces, if any. */
-function memberBodyOf(node: ts.Node): ts.Node | undefined {
-	if (ts.isClassLike(node) || ts.isInterfaceDeclaration(node) || ts.isEnumDeclaration(node)) return node;
-	if (ts.isModuleDeclaration(node)) {
-		return node.body !== undefined && ts.isModuleBlock(node.body) ? node.body : undefined;
-	}
-	if (ts.isTypeAliasDeclaration(node)) return ts.isTypeLiteralNode(node.type) ? node.type : undefined;
-	const value =
-		ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)
-			? node.initializer
-			: ts.isExportAssignment(node)
-				? node.expression
-				: undefined;
-	const inner = value === undefined ? undefined : unwrapped(value);
-	return inner !== undefined && (ts.isClassExpression(inner) || ts.isObjectLiteralExpression(inner))
-		? inner
-		: undefined;
-}
-
-/** The closing brace's line when only indentation precedes it; otherwise undefined. */
-function memberInsertLineOf(node: ts.Node, source: ts.SourceFile): number | undefined {
-	const closer = memberBodyOf(node)?.getChildren(source).at(-1);
-	if (closer === undefined || closer.kind !== ts.SyntaxKind.CloseBraceToken || closer.pos === closer.end) {
-		return undefined;
-	}
-	const lineOf = (offset: number) => source.getLineAndCharacterOfPosition(offset).line;
-	// Its `pos` is the previous token's end, and its trivia holds any comment before it.
-	const comments = [
-		...(ts.getTrailingCommentRanges(source.text, closer.pos) ?? []),
-		...(ts.getLeadingCommentRanges(source.text, closer.pos) ?? []),
-	];
-	const before = Math.max(closer.pos, ...comments.map((comment) => comment.end));
-	const line = lineOf(closer.getStart(source));
-	return lineOf(before - 1) < line ? line : undefined;
-}
-
-/** Excludes bodyless signatures and function types. */
-function isRunningBody(node: ts.Node): boolean {
-	return (
-		(ts.isArrowFunction(node) ||
-			ts.isFunctionExpression(node) ||
-			ts.isFunctionDeclaration(node) ||
-			ts.isMethodDeclaration(node) ||
-			ts.isConstructorDeclaration(node) ||
-			ts.isGetAccessorDeclaration(node) ||
-			ts.isSetAccessorDeclaration(node)) &&
-		node.body !== undefined
-	);
-}
-
-function hasDefaultModifier(node: ts.Node): boolean {
-	return ts.canHaveModifiers(node)
-		? (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
-		: false;
-}
-
-/** The `default` keyword is the written name; without one there is no name span to claim. */
-function defaultSelectionRange(node: ts.Node, source: ts.SourceFile) {
-	const modifier = ts.canHaveModifiers(node)
-		? (ts.getModifiers(node) ?? []).find((child) => child.kind === ts.SyntaxKind.DefaultKeyword)
-		: undefined;
-	const defaultKeyword =
-		modifier ?? node.getChildren(source).find((child) => child.kind === ts.SyntaxKind.DefaultKeyword);
-	return defaultKeyword === undefined ? undefined : rangeOf(defaultKeyword, source);
-}
-
-function nameOf(node: ts.Node): string | null {
-	const name = (node as { name?: ts.Node }).name;
-	if (name === undefined) return ts.isConstructorDeclaration(node) ? "constructor" : null;
-	if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name)) return name.text;
-	return null;
-}
-
-function parameterBindings(parameter: ts.ParameterDeclaration): ParameterBinding[] {
-	const bindings: ParameterBinding[] = [];
-	function visit(name: ts.BindingName, rangeNode: ts.ParameterDeclaration | ts.BindingElement): void {
-		if (ts.isIdentifier(name)) {
-			bindings.push({ name, rangeNode });
-			return;
-		}
-		for (const element of name.elements) {
-			if (ts.isBindingElement(element)) visit(element.name, element);
-		}
-	}
-	visit(parameter.name, parameter);
-	return bindings;
-}
 
 /**
  * Walk a file into declarations and references.
@@ -733,13 +109,64 @@ export function extractFileWithNodes(
 	const literals: Literal[] = [];
 	const declarationNodes = new Map<ts.Node, string>();
 	const declarationScopes = new Map<ts.Node, Scope>();
-	const occurrences = new Map<string, number>();
+	const ordinals = new Map<string, number>();
+	/** Declarations per name path, keyed by the first one's id. */
+	const minted = new Map<string, number>();
 	const referenceRoles = new Map<ts.Node, ReferenceRole[]>();
 	/** Containers with something declared while running. */
 	const running = new Set<string>();
+	/** Where each constructor sits, which is where its parameter properties sit. */
+	const constructorHomes = new Map<ts.Node, Scope>();
+	/** A named parameter's declared type, whose object members sit under the parameter. */
+	const typeScopes = new Map<ts.Node, Scope>();
+	/** Each declaration's own object types, read once however many members ask. */
+	const ownedLiterals = new Map<ts.Node, Set<ts.Node>>();
+
+	/** Whether each declared node leaves its module, which its members inherit. */
+	const reach = new Map<ts.Node, boolean>();
+
+	function declare(node: ts.Node, declaration: Declaration): void {
+		declarationNodes.set(node, declaration.symbolId);
+		reach.set(node, declaration.exported === true);
+		declarations.push(declaration);
+	}
 
 	function noteDeclaredIn(scope: Scope): void {
 		if (scope.runs === true && scope.containerId !== undefined) running.add(scope.containerId);
+	}
+
+	/** A type literal's member counts only in a recorded declaration's own object type. */
+	function isOwnedMember(node: ts.Node): boolean {
+		const literal = node.parent;
+		if (!ts.isTypeLiteralNode(literal)) return true;
+		let owner = literal.parent;
+		while (partsOf(owner) !== undefined) owner = owner.parent;
+		if (!declarationNodes.has(owner)) return false;
+		let owned = ownedLiterals.get(owner);
+		if (owned === undefined) {
+			owned = new Set(ownedTypeLiterals(owner));
+			ownedLiterals.set(owner, owned);
+		}
+		return owned.has(literal);
+	}
+
+	/** A property holding members or a body, in an object a declaration owns: `b` in `{ b: { m() {} } }`. */
+	function isObjectMember(node: ts.Node): boolean {
+		if (!ts.isPropertyAssignment(node)) return false;
+		const held = unwrapped(node.initializer);
+		const runs = ts.isArrowFunction(held) || ts.isFunctionExpression(held);
+		if (!runs && memberBodyOf(node) === undefined) return false;
+		let value: ts.Node = node.parent;
+		while (
+			ts.isParenthesizedExpression(value.parent) ||
+			ts.isAsExpression(value.parent) ||
+			ts.isTypeAssertionExpression(value.parent) ||
+			ts.isSatisfiesExpression(value.parent) ||
+			ts.isNonNullExpression(value.parent)
+		) {
+			value = value.parent;
+		}
+		return declarationNodes.has(value.parent) && memberBodyOf(value.parent) === node.parent;
 	}
 
 	function markReference(node: ts.Node, role: ReferenceRole): void {
@@ -766,7 +193,7 @@ export function extractFileWithNodes(
 			return;
 		}
 		if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) {
-			if (isConstAssertionType(node)) return;
+			if (isConstAssertionType(node) || isDeclarationName(node)) return;
 			const roles: ReferenceRole[] = inType ? ["typeUse"] : rolesForIdentifier(node);
 			for (const role of roles) markReference(node, role);
 			return;
@@ -775,16 +202,25 @@ export function extractFileWithNodes(
 		ts.forEachChild(node, (child) => classifyReferenceTree(child, childInType));
 	}
 
-	// Only a method can carry a disambiguator, because only a method renders one. Counting other
-	// kinds produced an ordinal the composer silently dropped, which reads like disambiguation and
-	// is not. Two same-named types in one scope MERGE in TypeScript, so one id is the right answer.
+	// Only a method renders a disambiguator, so only methods count overloads.
 	function descriptorFor(scope: Scope, descriptor: Descriptor): Descriptor {
 		if (descriptor.kind !== "method") return descriptor;
 		const prefix = scope.descriptors.map((item) => `${item.kind}:${item.name}`).join("/");
 		const key = `${prefix}/${descriptor.kind}:${descriptor.name}`;
-		const ordinal = occurrences.get(key) ?? 0;
-		occurrences.set(key, ordinal + 1);
+		const ordinal = ordinals.get(key) ?? 0;
+		ordinals.set(key, ordinal + 1);
 		return ordinal === 0 ? descriptor : { ...descriptor, disambiguator: String(ordinal) };
+	}
+
+	/** A repeated name path takes its next occurrence here, so its members and bindings name it. */
+	function mint(scope: Scope, descriptor: Descriptor): { descriptors: Descriptor[]; symbolId: string } {
+		const own = descriptorFor(scope, descriptor);
+		const first = composeSymbolId({ language: LANGUAGE, module, descriptors: [...scope.descriptors, own] });
+		const seen = minted.get(first) ?? 0;
+		minted.set(first, seen + 1);
+		if (seen === 0) return { descriptors: [...scope.descriptors, own], symbolId: first };
+		const descriptors = [...scope.descriptors, { ...own, occurrence: seen + 1 }];
+		return { descriptors, symbolId: composeSymbolId({ language: LANGUAGE, module, descriptors }) };
 	}
 
 	function ownerScopeOfParameter(parameter: ts.ParameterDeclaration): Scope | undefined {
@@ -809,7 +245,9 @@ export function extractFileWithNodes(
 				continue;
 			}
 			if (
-				(ts.isVariableDeclaration(enclosing) || ts.isPropertyDeclaration(enclosing)) &&
+				(ts.isVariableDeclaration(enclosing) ||
+					ts.isPropertyDeclaration(enclosing) ||
+					ts.isPropertyAssignment(enclosing)) &&
 				(enclosing.initializer === expression || enclosing.initializer === current)
 			) {
 				return declarationScopes.get(enclosing);
@@ -819,18 +257,16 @@ export function extractFileWithNodes(
 	}
 
 	function recordParameters(parameter: ts.ParameterDeclaration, owner: Scope): void {
-		for (const binding of parameterBindings(parameter)) {
-			const descriptors = [
-				...owner.descriptors,
-				descriptorFor(owner, { kind: "parameter", name: binding.name.text }),
-			];
-			const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
-			declarationNodes.set(binding.rangeNode, symbolId);
-			declarations.push({
+		for (const binding of boundNames(parameter)) {
+			const { descriptors, symbolId } = mint(owner, { kind: "parameter", name: binding.name.text });
+			if (binding.node === parameter && parameter.type !== undefined) {
+				typeScopes.set(parameter.type, { descriptors, containerId: symbolId });
+			}
+			declare(binding.node, {
 				symbolId,
 				kind: "variable",
 				name: binding.name.text,
-				range: parameterRangeOf(binding.rangeNode, source),
+				range: parameterRangeOf(binding.node, source),
 				selectionRange: rangeOf(binding.name, source),
 				visibility: "local",
 				exported: false,
@@ -839,30 +275,55 @@ export function extractFileWithNodes(
 		}
 	}
 
+	/** One declaration, the class's property, for both of `constructor(private x)`'s names. */
+	function recordParameterProperty(
+		parameter: ts.ParameterPropertyDeclaration,
+		home: Scope,
+		reachable: boolean,
+	): void {
+		if (!ts.isIdentifier(parameter.name)) return;
+		const name = parameter.name.text;
+		const { descriptors, symbolId } = mint(home, { kind: "term", name });
+		if (parameter.type !== undefined) typeScopes.set(parameter.type, { descriptors, containerId: symbolId });
+		const range = parameterRangeOf(parameter, source);
+		const visibility = home.runs === true ? "local" : visibilityOf(parameter, reachable);
+		noteDeclaredIn(home);
+		declare(parameter, {
+			symbolId,
+			kind: "property",
+			name,
+			range,
+			selectionRange: rangeOf(parameter.name, source),
+			visibility,
+			exported: visibility === "public",
+			metrics: { lines: range.end.line - range.start.line + 1 },
+			...defined({ signature: headerOf(parameter, source), containerId: home.containerId }),
+		});
+	}
+
 	function record(node: ts.Node, scope: Scope, exportedByParent: boolean): Scope {
 		if (ts.isParameter(node)) {
 			const owner = ownerScopeOfParameter(node);
 			if (owner === undefined) return scope;
-			recordParameters(node, owner);
+			const home = constructorHomes.get(node.parent);
+			if (home !== undefined && ts.isParameterPropertyDeclaration(node, node.parent)) {
+				recordParameterProperty(node, home, exportedByParent);
+			} else recordParameters(node, owner);
 			return owner;
 		}
 		const anonymousDefault = anonymousDefaultExportOf(node);
 		if (anonymousDefault !== undefined) {
-			const descriptors: Descriptor[] = [
-				...scope.descriptors,
-				descriptorFor(scope, { kind: anonymousDefault.descriptor, name: "default" }),
-			];
-			const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
-			declarationNodes.set(node, symbolId);
+			const name = ts.isExportAssignment(node) && node.isExportEquals ? EXPORT_EQUALS : "default";
+			const { descriptors, symbolId } = mint(scope, { kind: anonymousDefault.descriptor, name });
 			const range = declarationRangeOf(node, source);
 			const signature = headerOf(node, source);
 			const defaultSpan = defaultSelectionRange(node, source);
 
 			noteDeclaredIn(scope);
-			declarations.push({
+			declare(node, {
 				symbolId,
 				kind: anonymousDefault.kind,
-				name: "default",
+				name,
 				range,
 				...(defaultSpan === undefined ? {} : { selectionRange: defaultSpan }),
 				visibility: "public",
@@ -879,31 +340,30 @@ export function extractFileWithNodes(
 			declarationScopes.set(node, inner);
 			return inner;
 		}
-		const classified = classify(node);
+		const classified: Classified | null =
+			classify(node) ?? (isObjectMember(node) ? { kind: "property", descriptor: "term" } : null);
 		const name = classified ? nameOf(node) : null;
-		if (!classified || name === null) return scope;
+		if (!classified || name === null || !isOwnedMember(node)) return scope;
 
 		const local = scope.runs === true;
-		const exported = !local && (exportedByParent || isExported(node));
-		const descriptors: Descriptor[] = [
-			...scope.descriptors,
-			descriptorFor(scope, { kind: classified.descriptor, name }),
-		];
-		const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
-		declarationNodes.set(node, symbolId);
+		const reachable = exportedByParent || isExported(node) || isGlobalBlock(node);
+		const visibility = local ? "local" : visibilityOf(node, reachable);
+		const { descriptors, symbolId } = mint(scope, { kind: classified.descriptor, name });
 		const range = declarationRangeOf(node, source);
 
 		noteDeclaredIn(scope);
-		declarations.push({
+		declare(node, {
 			symbolId,
 			kind: classified.kind,
 			name,
 			range,
 			selectionRange: nameRange(node, source, (node as { name?: ts.Node }).name),
-			visibility: local ? "local" : visibilityOf(node, exported),
-			exported,
+			visibility,
+			// A private or protected member stays in its module.
+			exported: visibility === "public",
 			metrics: metricsOf(node, range),
 			...defined({
+				languageKind: classified.languageKind,
 				signature: headerOf(node, source),
 				containerId: scope.containerId,
 				memberInsertLine: memberInsertLineOf(node, source),
@@ -912,91 +372,51 @@ export function extractFileWithNodes(
 
 		const inner = { descriptors, containerId: symbolId };
 		declarationScopes.set(node, inner);
+		if (ts.isConstructorDeclaration(node)) constructorHomes.set(node, scope);
 		return inner;
 	}
 
-	function recordVariables(statement: ts.VariableStatement, scope: Scope): void {
+	/** Every name the declarations bind, each ranged as its whole `holder`. */
+	function recordVariables(
+		declarations: readonly ts.VariableDeclaration[],
+		holder: ts.Node,
+		scope: Scope,
+		reachable: boolean,
+	): void {
 		const local = scope.runs === true;
-		const exported = !local && isExported(statement);
+		const exported = !local && reachable;
 		// `const` is a different kind from `let`, and a consumer deciding whether something can be
 		// reassigned reads the kind rather than re-parsing the declaration.
-		const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+		const list = declarations[0]?.parent;
+		const isConst =
+			list !== undefined && ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0;
+		const range = declarationRangeOf(holder, source);
 
-		for (const declaration of statement.declarationList.declarations) {
-			if (!ts.isIdentifier(declaration.name)) continue;
-			const name = declaration.name.text;
-			const descriptors: Descriptor[] = [...scope.descriptors, descriptorFor(scope, { kind: "term", name })];
-			const symbolId = composeSymbolId({ language: LANGUAGE, module, descriptors });
-			declarationNodes.set(declaration, symbolId);
-			declarationScopes.set(declaration, { descriptors, containerId: symbolId });
-			const range = declarationRangeOf(statement, source);
+		for (const declaration of declarations) {
 			const signature = headerOf(declaration, source);
+			for (const binding of boundNames(declaration)) {
+				const name = binding.name.text;
+				const { descriptors, symbolId } = mint(scope, { kind: "term", name });
+				declarationScopes.set(binding.node, { descriptors, containerId: symbolId });
 
-			noteDeclaredIn(scope);
-			declarations.push({
-				symbolId,
-				kind: isConst ? "constant" : "variable",
-				name,
-				range,
-				selectionRange: rangeOf(declaration.name, source),
-				visibility: local ? "local" : exported ? "public" : "fileLocal",
-				exported,
-				metrics: metricsOf(declaration, range),
-				...defined({
-					signature,
-					containerId: scope.containerId,
-					memberInsertLine: memberInsertLineOf(declaration, source),
-				}),
-			});
-		}
-	}
-
-	function importedNameOf(
-		name: ts.Identifier | ts.StringLiteral | undefined,
-		local: ts.Identifier | ts.StringLiteral | undefined = undefined,
-	): ImportedName {
-		const imported: ImportedName = {};
-		if (name !== undefined) {
-			imported.name = name.text;
-			imported.range = rangeOf(name, source);
-		}
-		if (local !== undefined && (name === undefined || local.text !== name.text)) {
-			imported.local = local.text;
-			imported.localRange = rangeOf(local, source);
-		}
-		return imported;
-	}
-
-	function recordImport(node: ts.ImportDeclaration | ts.ExportDeclaration): void {
-		const specifier = node.moduleSpecifier;
-		if (specifier === undefined || !ts.isStringLiteral(specifier)) return;
-
-		const named: ImportedName[] = [];
-		if (ts.isImportDeclaration(node)) {
-			const bindings = node.importClause?.namedBindings;
-			if (node.importClause?.name) named.push(importedNameOf(undefined, node.importClause.name));
-			if (bindings && ts.isNamedImports(bindings))
-				for (const element of bindings.elements) {
-					const name = element.propertyName ?? element.name;
-					named.push(importedNameOf(name, element.propertyName === undefined ? undefined : element.name));
-				}
-			if (bindings && ts.isNamespaceImport(bindings)) named.push(importedNameOf(undefined, bindings.name));
-		} else if (node.exportClause && ts.isNamedExports(node.exportClause)) {
-			for (const element of node.exportClause.elements) {
-				const name = element.propertyName ?? element.name;
-				const local =
-					element.name.text === "default"
-						? undefined
-						: element.propertyName === undefined
-							? undefined
-							: element.name;
-				named.push(importedNameOf(name, local));
+				noteDeclaredIn(scope);
+				declare(binding.node, {
+					symbolId,
+					kind: isConst ? "constant" : "variable",
+					name,
+					range,
+					selectionRange: rangeOf(binding.name, source),
+					visibility: local ? "local" : exported ? "public" : "fileLocal",
+					exported,
+					metrics: metricsOf(binding.node, range),
+					...defined({
+						signature,
+						containerId: scope.containerId,
+						memberInsertLine: memberInsertLineOf(binding.node, source),
+					}),
+				});
 			}
-		} else if (node.exportClause && ts.isNamespaceExport(node.exportClause)) {
-			named.push(importedNameOf(undefined, node.exportClause.name));
 		}
-
-		imports.push({ specifier: specifier.text, imported: named, reExport: ts.isExportDeclaration(node) });
 	}
 
 	function recordDynamicImport(node: ts.CallExpression): void {
@@ -1018,9 +438,20 @@ export function extractFileWithNodes(
 	}
 
 	function walk(node: ts.Node, scope: Scope, exportedByParent: boolean): void {
-		if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) recordImport(node);
+		if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) {
+			const statement = importOf(node, source);
+			if (statement !== undefined) imports.push(statement);
+		}
 		if (ts.isCallExpression(node) && isDynamicImport(node)) recordDynamicImport(node);
-		if (ts.isVariableStatement(node)) recordVariables(node, scope);
+		if (ts.isVariableStatement(node)) {
+			const { declarations } = node.declarationList;
+			recordVariables(declarations, node, scope, exportedByParent || isExported(node));
+		}
+		const head = loopHeadOf(node);
+		if (head !== undefined) recordVariables(head.declarations, head, scope, false);
+		if (ts.isCatchClause(node) && node.variableDeclaration !== undefined) {
+			recordVariables([node.variableDeclaration], node.variableDeclaration, scope, false);
+		}
 		const literal = literalOf(node, source, declarationNodes);
 		if (literal !== undefined) literals.push(literal);
 		if (isReferenceNode(node)) {
@@ -1028,9 +459,13 @@ export function extractFileWithNodes(
 		}
 
 		const recorded = record(node, scope, exportedByParent);
-		const inner = declarationScopes.get(node) ?? recorded;
-		// A member of an exported container is reachable, so its own lack of `export` is not privacy.
-		const childrenExported = inner !== scope && (exportedByParent || isExported(node));
+		const inner = declarationScopes.get(node) ?? typeScopes.get(node) ?? recorded;
+		// A member of a reachable container is reachable, so its own lack of `export` is not privacy.
+		// A declared type passes its owner's reach to the members of its object types.
+		const childrenExported =
+			inner !== scope
+				? (reach.get(node) ?? (exportedByParent || isExported(node)))
+				: exportsImplicitly(node) || (exportedByParent && passesReach(node));
 		// Parameters keep the owner's running flag.
 		const runs = isRunningBody(node) || (ts.isParameter(node) && scope.runs === true);
 		const childScope: Scope = runs ? { ...inner, runs: true } : inner;

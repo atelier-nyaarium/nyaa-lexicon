@@ -39,16 +39,19 @@ export interface TypeScriptProject {
 	readonly root: string;
 	readonly loaded: LoadedProject;
 	readonly roots: Set<string>;
+	/** Digest of what reading depends on beyond text. */
+	readonly fingerprint: string;
 	analyzer: TypeScriptAnalyzer | undefined;
 }
 
 export type TypeScriptStore = ModuleStore<TypeScriptValue, TypeScriptProject, string>;
 
-export function createTypeScriptProject(root: string, loaded: LoadedProject): TypeScriptProject {
+export function createTypeScriptProject(root: string, loaded: LoadedProject, fingerprint: string): TypeScriptProject {
 	return {
 		root: path.resolve(root),
 		loaded,
 		roots: new Set(loaded.files.map((file) => path.resolve(file))),
+		fingerprint,
 		analyzer: undefined,
 	};
 }

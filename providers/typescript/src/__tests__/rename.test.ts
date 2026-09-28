@@ -91,7 +91,8 @@ describe("rename edits", () => {
 	});
 
 	it("applies a rename after an astral character on the same line", () => {
-		const text = 'const marker = "😀"; const oldName = 1;\noldName;\n';
+		const astral = String.fromCodePoint(0x1f600);
+		const text = `const marker = "${astral}"; const oldName = 1;\noldName;\n`;
 		const response = rename(workspace({ "astral.ts": text }), {
 			module: "astral.ts",
 			text,
@@ -103,7 +104,7 @@ describe("rename edits", () => {
 		if (response.status !== "ready") throw new Error("rename was refused");
 		const renamed = applyEdits(text, response.edits);
 		if ("problem" in renamed) throw new Error(renamed.problem);
-		expect(renamed.text).toBe('const marker = "😀"; const newName = 1;\nnewName;\n');
+		expect(renamed.text).toBe(`const marker = "${astral}"; const newName = 1;\nnewName;\n`);
 		expect(syntaxErrors(renamed.text)).toEqual([]);
 	});
 
