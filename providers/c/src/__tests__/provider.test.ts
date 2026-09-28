@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -12,16 +12,19 @@ import {
 	type MoveEditsRequest,
 	PROTOCOL_VERSION,
 	ProjectModelSchema,
+	parseSymbolId,
 	type Range,
 	type RenameEditsRequest,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
-import { Cursor } from "../cursor.js";
 import { CProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { bindingCandidates, parseC } from "../parser.js";
 import { lexC } from "../tokens.js";
 
 const temporaryRoots: string[] = [];
+
+const ASTRAL = String.fromCodePoint(0x1f600);
+const NAIVE = `na${String.fromCodePoint(0xef)}ve`;
 
 function workspace(files: Record<string, string>): string {
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-c-provider-"));
@@ -65,6 +68,19 @@ function verdict(handlers: ReturnType<typeof started>, module: string, contentHa
 	});
 }
 
+/** A `build/compile_commands.json` entry for workspace `file`, built with `args`. */
+function unitEntry(file: string, ...args: string[]) {
+	return { directory: ".", file: `../${file}`, arguments: ["cc", ...args, "-c", `../${file}`] };
+}
+
+/** The module the first non-include reference to `name` binds into, or its binding's status. */
+function homeOf(parsed: Pick<ReturnType<CProvider["parseFile"]>, "references">, name: string) {
+	const binding = parsed.references.find(
+		(reference) => reference.name === name && reference.role !== "import",
+	)?.binding;
+	return binding?.status === "bound" ? parseSymbolId(binding.symbolId)?.module : binding?.status;
+}
+
 function declarationOf(parsed: Pick<ReturnType<CProvider["parseFile"]>, "declarations">, name: string, kind?: string) {
 	return parsed.declarations.find(
 		(declaration) => declaration.name === name && (kind === undefined || declaration.kind === kind),
@@ -99,6 +115,7 @@ describe("C provider protocol", () => {
 			"moveEdits",
 			"parseFile",
 			"probeFile",
+			"releaseModule",
 			"renameEdits",
 			"resolveImport",
 			"shutdown",
@@ -268,7 +285,7 @@ describe("C provider protocol", () => {
 
 describe("C lexical cursor and tokens", () => {
 	test("counts columns in UTF-16 code units", () => {
-		const lexed = lexC("utf16.c", "/* 😀 */ int value;\n");
+		const lexed = lexC("utf16.c", `/* ${ASTRAL} */ int value;\n`);
 		const value = lexed.tokens.find((token) => token.value === "value");
 
 		expect(value?.start).toEqual({ line: 0, character: 13 });
@@ -291,13 +308,65 @@ describe("C lexical cursor and tokens", () => {
 		]);
 	});
 
+	test("reads escapes to the standard's limits and keeps one no character can name", () => {
+		const escapes = [
+			'"\\033[0m"',
+			'"\\1234"',
+			'"\\0x"',
+			'"\\u00e9\\U0001F600"',
+			'"\\u12"',
+			'"\\xFFFFFFFFF"',
+			'"split \\\nline"',
+			'"crlf \\\r\nline"',
+		];
+		const lexed = lexC("escapes.c", escapes.join(" "));
+
+		expect(lexed.diagnostics).toEqual([]);
+		expect(lexed.tokens.filter((token) => token.kind === "string").map((token) => token.value)).toEqual([
+			"\x1b[0m",
+			"S4",
+			"\0x",
+			`${String.fromCodePoint(0xe9)}${ASTRAL}`,
+			"\\u12",
+			"\\xFFFFFFFFF",
+			"split line",
+			"crlf line",
+		]);
+	});
+
+	test("reads three quotes as an empty string and the start of another, never a triple-quoted string", () => {
+		const strings = lexC("quotes.c", 'const char *t = """x""";').tokens.filter((token) => token.kind === "string");
+
+		expect(strings.map((token) => [token.raw, token.value])).toEqual([
+			['""', ""],
+			['"x"', "x"],
+			['""', ""],
+		]);
+	});
+
+	test("reads an encoding prefix as part of its literal, and a lone prefix letter as a name", () => {
+		const text = 'L"wide" u8"narrow" U\'x\' u\'y\' L u8 x"after"';
+		const tokens = lexC("prefixes.c", text).tokens.filter((token) => token.kind !== "newline");
+
+		expect(tokens.map((token) => [token.kind, token.raw, token.value])).toEqual([
+			["string", 'L"wide"', "wide"],
+			["string", 'u8"narrow"', "narrow"],
+			["char", "U'x'", "x"],
+			["char", "u'y'", "y"],
+			["identifier", "L", "L"],
+			["identifier", "u8", "u8"],
+			["identifier", "x", "x"],
+			["string", '"after"', "after"],
+		]);
+	});
+
 	test("keeps doc comments and diagnoses unterminated quoted text", () => {
 		const lexed = lexC("comments.c", '/** API docs */\n/// next docs\nint value;\n"unterminated\n');
 		const comments = lexed.tokens.filter((token) => token.kind === "comment");
 
 		expect(comments.map((token) => token.doc)).toEqual(["API docs", "next docs"]);
 		expect(lexed.diagnostics).toHaveLength(1);
-		expect(lexed.diagnostics[0]?.message).toContain("String literal");
+		expect(lexed.diagnostics[0]?.range?.start).toEqual({ line: 3, character: 0 });
 	});
 
 	test("treats a closed block comment as one token", () => {
@@ -394,12 +463,12 @@ describe("C comment spans", () => {
 
 	test("spans a comment holding astral text in UTF-16 code units", () => {
 		const handlers = started();
-		const text = "int value = 1; /* 😀 */\n";
+		const text = `int value = 1; /* ${ASTRAL} */\n`;
 
 		const parsed = facts(handlers, "utf16.c", text);
 
 		expect(parsed.comments).toEqual([
-			{ range: rangeAt(text, "/* 😀 */"), text: "/* 😀 */", codeBefore: true, codeAfter: false },
+			{ range: rangeAt(text, `/* ${ASTRAL} */`), text: `/* ${ASTRAL} */`, codeBefore: true, codeAfter: false },
 		]);
 	});
 
@@ -410,49 +479,90 @@ describe("C comment spans", () => {
 	});
 });
 
-describe("C cursor boundaries", () => {
-	test("owns character access and can restore a marked position", () => {
-		const cursor = new Cursor("ab😀cd");
-		const start = cursor.mark();
+describe("C token boundaries", () => {
+	test("reads Unicode identifiers and astral symbols without consuming what follows", () => {
+		const tokens = lexC("unicode.c", `${NAIVE}_2+next ${ASTRAL}x`).tokens;
 
-		expect(cursor.peek()).toBe("a");
-		expect(cursor.peek(1)).toBe("b");
-		expect(cursor.next()).toBe("a");
-		expect(cursor.next()).toBe("b");
-		expect(cursor.next()).toBe("😀");
-		expect(cursor.offset).toBe(4);
-		expect(cursor.column).toBe(4);
-		cursor.rewind(start);
-		expect(cursor.offset).toBe(0);
-		expect(cursor.column).toBe(0);
+		expect(tokens.map((token) => [token.kind, token.raw, token.start.character, token.end.character])).toEqual([
+			["identifier", `${NAIVE}_2`, 0, 7],
+			["symbol", "+", 7, 8],
+			["identifier", "next", 8, 12],
+			["symbol", ASTRAL, 13, 15],
+			["identifier", "x", 15, 16],
+		]);
 	});
 
-	test("reads Unicode identifiers without consuming the following symbol", () => {
-		const cursor = new Cursor("naïve_2+next");
-		const identifier = cursor.readIdentifier();
+	test("deletes line splices before tokenizing, so a directive runs on and a split word is one token", () => {
+		const lexed = lexC("splices.c", "#define VALUE(x) \\\n+(x)\nint ab\\\r\ncd = 1\\\n2;\n");
+		const code = lexed.tokens.filter((token) => token.kind !== "newline");
 
-		expect(identifier?.name).toBe("naïve_2");
-		expect(cursor.peek()).toBe("+");
-		expect(cursor.slice(identifier?.start.offset ?? 0, identifier?.end.offset ?? 0)).toBe("naïve_2");
-	});
+		expect(lexed.tokens.filter((token) => token.kind === "newline")).toHaveLength(2);
+		expect(code.map((token) => [token.value, token.start.line, token.end.line])).toEqual([
+			["#", 0, 0],
+			["define", 0, 0],
+			["VALUE", 0, 0],
+			["(", 0, 0],
+			["x", 0, 0],
+			[")", 0, 0],
+			["+", 1, 1],
+			["(", 1, 1],
+			["x", 1, 1],
+			[")", 1, 1],
+			["int", 2, 2],
+			["abcd", 2, 3],
+			["=", 3, 3],
+			["12", 3, 4],
+			[";", 4, 4],
+		]);
+		expect(
+			parseC("splices.c", "#define VALUE(x) \\\n+(x)\nint ab\\\ncd;\n").declarations.map((d) => d.name),
+		).toEqual(["VALUE", "abcd"]);
 
-	test("stops takeWhile at the first delimiter and reaches end exactly", () => {
-		const cursor = new Cursor("123;456");
-
-		expect(cursor.takeWhile((character) => /[0-9]/u.test(character))).toBe("123");
-		expect(cursor.peek()).toBe(";");
-		cursor.next();
-		expect(cursor.takeWhile((character) => /[0-9]/u.test(character))).toBe("456");
-		expect(cursor.good()).toBe(false);
-		expect(cursor.next()).toBe("");
-	});
-
-	test("lexes newline continuations as one preprocessor directive", () => {
-		const lexed = lexC("directives.c", "#define VALUE(x) \\\n+(x)\nint value;\n");
-		const newlines = lexed.tokens.filter((token) => token.kind === "newline");
-
-		expect(newlines).toHaveLength(3);
-		expect(lexed.diagnostics).toEqual([]);
+		// An encoding prefix joins its literal across a splice.
+		const wide = parseC("wide.c", 'void f(void) { (void)L\\\n"wide"; }\n');
+		expect(wide.references.map((reference) => reference.name)).toEqual([]);
+		expect(
+			lexC("wide.c", 'x = L\\\n"wide";\n').tokens.map((token) => [
+				token.kind,
+				token.value,
+				token.start.character,
+			]),
+		).toEqual([
+			["identifier", "x", 0],
+			["symbol", "=", 2],
+			["string", "wide", 4],
+			["symbol", ";", 6],
+			["newline", "\n", 7],
+		]);
+		const joined = lexC("joined.c", "p-\\\n>f && a &\\\n& b; /* x *\\\n/ c; /\\\n* d */ e;\n").tokens;
+		expect(joined.filter((token) => token.kind === "comment")).toHaveLength(2);
+		expect(joined.filter((token) => token.kind !== "comment").map((token) => token.value)).toEqual([
+			"p",
+			"->",
+			"f",
+			"&&",
+			"a",
+			"&&",
+			"b",
+			";",
+			"c",
+			";",
+			"e",
+			";",
+			"\n",
+		]);
+		// A comment is a space, so only a splice leaves the `(` touching the name.
+		const directives = parseC(
+			"directives.c",
+			"#define F\\\n(x) x\n#include <fo\\\no.h>\n#define G /*gap*/ (x)\n#define H/*gap*/(x)\n#define I \\\n(x)\n",
+		);
+		expect(directives.declarations.map((declaration) => [declaration.name, declaration.kind])).toEqual([
+			["F", "function"],
+			["G", "constant"],
+			["H", "constant"],
+			["I", "constant"],
+		]);
+		expect(directives.imports.map((imported) => imported.specifier)).toEqual(["foo.h"]);
 	});
 
 	test("diagnoses an unterminated block comment and still returns tokens before it", () => {
@@ -748,6 +858,246 @@ describe("C declarations", () => {
 		expect(parameters.map((parameter) => parameter.name)).toEqual(["name"]);
 		expect(parsed.declarations.find((declaration) => declaration.name === "callback")?.metrics?.parameters).toBe(3);
 	});
+
+	/** Each declaration as `kind name`, parameters marked. */
+	function kinds(text: string): string[] {
+		return parseC("kinds.c", text).declarations.map(
+			(declaration) =>
+				`${declaration.languageKind === "parameter" ? "parameter" : declaration.kind} ${declaration.name}`,
+		);
+	}
+
+	test("declares every declarator on its own, each function with its own signature", () => {
+		const text = "int *p, *q;\nint f(), g(void);\nint x, h(int), *k(void);\n";
+		const parsed = parseC("declarators.c", text);
+
+		expect(
+			parsed.declarations.map((declaration) => [declaration.kind, declaration.name, declaration.signature]),
+		).toEqual([
+			["variable", "p", "int *p"],
+			["variable", "q", "int *q"],
+			["function", "f", "int f()"],
+			["function", "g", "int g(void)"],
+			["variable", "x", "int x"],
+			["function", "h", "int h(int)"],
+			["function", "k", "int *k(void)"],
+		]);
+		expect(parsed.declarations.find((declaration) => declaration.name === "k")?.selectionRange).toEqual(
+			rangeAt(text, "k", text.indexOf("*k")),
+		);
+	});
+
+	test("reads a function returning a struct, union or enum as a function", () => {
+		const text = [
+			"struct point make_point(int x);",
+			"struct point *find(void) { return 0; }",
+			"union value pick(void);",
+			"enum color paint(int shade) { return shade; }",
+			"struct point { int x; } origin(void);",
+			"static struct tag { int a; } v;",
+		].join("\n");
+		const parsed = parseC("returns.c", text);
+
+		expect(kinds(text)).toEqual([
+			"function make_point",
+			"parameter x",
+			"function find",
+			"function pick",
+			"function paint",
+			"parameter shade",
+			"struct point",
+			"function origin",
+			"field x",
+			"struct tag",
+			"variable v",
+			"field a",
+		]);
+		expect(parsed.declarations.find((declaration) => declaration.name === "find")?.signature).toBe(
+			"struct point *find(void)",
+		);
+		expect(parsed.declarations.find((declaration) => declaration.name === "v")?.visibility).toBe("fileLocal");
+	});
+
+	test("names the declarator past const and macro types, calling conventions, attributes and pointer groupings", () => {
+		expect(
+			kinds(
+				[
+					"const my_t cx;",
+					"UV_EXTERN uv_thread_t uv_thread_self(void);",
+					"PRIVATE_FIELDS UV_EXTERN int uv_shutdown(int req);",
+					"typedef BOOL (PASCAL *LPFN_ACCEPT)(SOCKET s);",
+					"typedef NTSTATUS (NTAPI *sRtlGetVersion)(void *info);",
+					"my_t (*fp)(void);",
+					"my_t (*bare);",
+					"typedef int fn_t(int);",
+					"int take(const buf_t *buf, void *ptr, void (*cb)(int code));",
+					"DECLSPEC(dllexport) int exported;",
+					"API() __attribute__((used)) int kept;",
+					"[[deprecated]] int old;",
+					"void run(void) { [[maybe_unused]] int unused; free(*slot); }",
+				].join("\n"),
+			),
+		).toEqual([
+			"constant cx",
+			"function uv_thread_self",
+			"function uv_shutdown",
+			"parameter req",
+			"class LPFN_ACCEPT",
+			"class sRtlGetVersion",
+			"variable fp",
+			"variable bare",
+			"class fn_t",
+			"function take",
+			"parameter buf",
+			"parameter ptr",
+			"parameter cb",
+			"variable exported",
+			"variable kept",
+			"variable old",
+			"function run",
+			"variable unused",
+		]);
+	});
+
+	test("gives an anonymous body's owner only its braces, and a block's enumerators local visibility", () => {
+		const parsed = parseC(
+			"owners.c",
+			"struct { int values[3]; } item = { .values = { 4 } };\nvoid f(void) { enum E { X }; }\n",
+		);
+		const item = parsed.declarations.find((declaration) => declaration.name === "item")?.symbolId;
+
+		expect(parsed.literals.map((literal) => [literal.value, literal.containerId])).toEqual([
+			["3", item],
+			["4", undefined],
+		]);
+		expect(parsed.declarations.find((declaration) => declaration.name === "X")?.visibility).toBe("local");
+	});
+
+	test("keeps aggregate-typed members as fields, and nests an anonymous body under what declares it", () => {
+		const text = [
+			"struct outer {",
+			"\tstruct node *left;",
+			"\tunion { int a; long b; } u;",
+			"\tunion { int c; };",
+			"\tenum { E1 };",
+			"};",
+			"enum { TOP = 1 };",
+			"struct { int y; } g;",
+			"void run(void) { enum { LOCAL }; }",
+			"typedef struct { int value; } Item, *PItem;",
+		].join("\n");
+		const parsed = parseC("members.c", text);
+		const path = (name: string) => {
+			const declaration = parsed.declarations.find((candidate) => candidate.name === name);
+			return `${declaration?.kind} ${declaration?.symbolId.split(" ").at(-1)}`;
+		};
+
+		expect(["left", "u", "a", "b", "c", "E1", "TOP", "g", "y", "LOCAL", "value"].map(path)).toEqual([
+			"field outer#left.",
+			"field outer#u.",
+			"field outer#u.a.",
+			"field outer#u.b.",
+			"field outer#c.",
+			"constant outer#E1.",
+			"constant TOP.",
+			"variable g.",
+			"field g.y.",
+			"constant run().LOCAL.",
+			"field Item#value.",
+		]);
+		expect(parsed.declarations.find((declaration) => declaration.name === "left")?.visibility).toBe("public");
+	});
+
+	test("reads an object as constant when it is const itself, not what it points to", () => {
+		const parsed = parseC(
+			"constness.c",
+			[
+				"const int a = 1;",
+				"const char *s;",
+				"char *const t = 0;",
+				"const char *const u = 0;",
+				"struct point const cp;",
+				"const int list[2], *each;",
+				"int (*const fp)(void) = 0;",
+			].join("\n"),
+		);
+
+		expect(parsed.declarations.map((declaration) => `${declaration.kind} ${declaration.name}`)).toEqual([
+			"constant a",
+			"variable s",
+			"constant t",
+			"constant u",
+			"constant cp",
+			"constant list",
+			"variable each",
+			"constant fp",
+		]);
+	});
+
+	test("reads old-style definitions, and macros that wrap or stand beside declarations", () => {
+		const text = [
+			"int old(a, b)",
+			"int a;",
+			"char *b;",
+			"{ return a; }",
+			"WRAP(void wrapped(struct heap *heap));",
+			"WRAP(void wrapped(struct heap *heap)) { heap = 0; }",
+			"STATIC_ASSERT(sizeof(int) == 4);",
+			"RB_GENERATE(tree, node, entry, compare)",
+			"static void after(int v);",
+			"TEST_IMPL(ping) { return 0; }",
+		].join("\n");
+		const parsed = facts(started(), "macros.c", text);
+		const old = parsed.declarations.find((declaration) => declaration.name === "old");
+		const parameterA = parsed.declarations.find((declaration) => declaration.name === "a");
+
+		expect(kinds(text)).toEqual([
+			"function old",
+			"parameter a",
+			"parameter b",
+			"function wrapped",
+			"parameter heap",
+			"function after",
+			"parameter v",
+			"function TEST_IMPL",
+		]);
+		expect(old?.signature).toBe("int old(a, b)");
+		expect(old?.metrics?.branches).toBe(1);
+		expect(parsed.references.find((reference) => reference.name === "a")?.binding).toMatchObject({
+			status: "bound",
+			symbolId: parameterA?.symbolId,
+		});
+		expect(
+			parsed.references
+				.filter((reference) => reference.name === "STATIC_ASSERT")
+				.map((reference) => reference.role),
+		).toEqual(["call"]);
+	});
+
+	test("ends a compound statement at its brace, so what follows it is read, and a for header once", () => {
+		const text = [
+			"void run(int a) {",
+			"\tif (a) { int inside; }",
+			"\tint after = 1;",
+			"\tfor (int i = 0; i < 2; i++) { int loop = i; }",
+			"\t{ int block; }",
+			"\tswitch (a) { case 1: { int chosen; } }",
+			"\tdo { int body; } while (a);",
+			"\tint last;",
+			"}",
+		].join("\n");
+
+		expect(kinds(text).filter((kind) => kind.startsWith("variable"))).toEqual([
+			"variable inside",
+			"variable after",
+			"variable i",
+			"variable loop",
+			"variable block",
+			"variable chosen",
+			"variable body",
+			"variable last",
+		]);
+	});
 });
 
 describe("Ghidra C syntax", () => {
@@ -798,6 +1148,45 @@ describe("Ghidra C syntax", () => {
 				.filter((declaration) => declaration.languageKind === "typedef")
 				.map((declaration) => declaration.name),
 		).toEqual(["_IO_marker", "P_IO_marker"]);
+	});
+
+	test("reads a dotted type name as one name, its body and its uses whole", () => {
+		const text = [
+			"typedef union anon_union.conflict14 anon_union.conflict14, *Panon_union.conflict14;",
+			"union anon_union.conflict14 {",
+			"    enum anon_enum_8.conflict2 band;",
+			"    int raw;",
+			"};",
+			"enum anon_enum_8.conflict2 { BAND_2G=0, BAND_5G=1 };",
+			"void run(void) { anon_union.conflict14 local; local.raw = BAND_5G; }",
+		].join("\n");
+		const parsed = facts(started(), "dotted.c", text);
+		const union = parsed.declarations.find(
+			(declaration) => declaration.name === "anon_union.conflict14" && declaration.kind === "struct",
+		);
+
+		expect(parsed.declarations.map((declaration) => `${declaration.kind} ${declaration.name}`)).toEqual([
+			"class anon_union.conflict14",
+			"class Panon_union.conflict14",
+			"struct anon_union.conflict14",
+			"field band",
+			"field raw",
+			"enum anon_enum_8.conflict2",
+			"constant BAND_2G",
+			"constant BAND_5G",
+			"function run",
+			"variable local",
+		]);
+		expect(union?.selectionRange).toEqual(rangeAt(text, "anon_union.conflict14", text.indexOf("\nunion")));
+		expect(
+			parsed.references
+				.filter((reference) => reference.role === "typeUse")
+				.map((reference) => [reference.name, reference.binding.status]),
+		).toEqual([
+			["anon_union.conflict14", "bound"],
+			["anon_enum_8.conflict2", "bound"],
+			["anon_union.conflict14", "bound"],
+		]);
 	});
 
 	test("balances conditional branches and Ghidra warning suffixes", () => {
@@ -882,6 +1271,47 @@ describe("C preprocessor and diagnostics", () => {
 			status: "ambiguous",
 			detail: "conditional compilation supplies both declarations",
 		});
+	});
+
+	test("never takes a directive line's words for a declarator's name", () => {
+		const text = [
+			"unsigned",
+			"#ifdef WIDE",
+			"long",
+			"#else",
+			"int",
+			"#endif",
+			"width;",
+			"struct shape {",
+			"#if defined(HAVE_X)",
+			"\tint x;",
+			"#endif",
+			"\tint y;",
+			"};",
+			"enum mode {",
+			"#define MODE(name) MODE_##name",
+			"#ifdef FAST",
+			"\tMODE_FAST,",
+			"#endif",
+			"\tMODE_SLOW",
+			"};",
+			"int take(",
+			"#ifdef WIDE",
+			"\tlong value",
+			"#else",
+			"\tint value",
+			"#endif",
+			");",
+		].join("\n");
+		const parsed = parseC("directives.c", text);
+		const declared = (name: string) => parsed.declarations.find((declaration) => declaration.name === name);
+
+		expect(
+			parsed.declarations.filter((declaration) => declaration.languageKind !== "macro").map((d) => d.name),
+		).toEqual(["width", "shape", "x", "y", "mode", "MODE_FAST", "MODE_SLOW", "take", "value"]);
+		expect(declared("width")?.signature).toBe("unsigned long int width");
+		expect(declared("x")?.range).toEqual(rangeAt(text, "int x;"));
+		expect(declared("MODE_SLOW")?.range).toEqual(rangeAt(text, "MODE_SLOW"));
 	});
 
 	test("does not expand macro bodies into references", () => {
@@ -1041,6 +1471,61 @@ describe("C literals and references", () => {
 
 		expect(uses.map((reference) => reference.name)).toEqual(["Item", "Count"]);
 	});
+
+	/** Each reference as `role name`. */
+	function roles(text: string): string[] {
+		return parseC("roles.c", text).references.map((reference) => `${reference.role} ${reference.name}`);
+	}
+
+	test("reads nothing in an attribute, and a typeof operand as the expression or type it is", () => {
+		expect(
+			roles(
+				[
+					"int unused;",
+					"typedef int T;",
+					"static int v __attribute__((unused, aligned(8)));",
+					'__attribute__((section("x"), unused)) int w;',
+					"[[deprecated]] int old;",
+					"typeof(unused) a;",
+					"__typeof__(unused + 1) b;",
+					"typeof(T) c;",
+					"typeof(T *) d;",
+					"_Alignas(T) char e;",
+				].join("\n"),
+			),
+		).toEqual(["read unused", "read unused", "typeUse T", "typeUse T", "typeUse T"]);
+	});
+
+	test("reads casts and tags as type uses, case labels as reads, and jumps as nothing", () => {
+		expect(
+			roles(
+				[
+					"typedef int T;",
+					"void run(void *p, int s) {",
+					"\tT *a = (T *)p;",
+					"\tint n = (int)sizeof(struct point) + (s);",
+					"\tswitch (s) { case LIMIT: goto done; default: break; }",
+					"\tn = s ? a->x : n;",
+					"done:",
+					"\treturn;",
+					"}",
+				].join("\n"),
+			),
+		).toEqual([
+			"typeUse T",
+			"typeUse T",
+			"read p",
+			"typeUse point",
+			"read s",
+			"read s",
+			"read LIMIT",
+			"write n",
+			"read s",
+			"read a",
+			"read x",
+			"read n",
+		]);
+	});
 });
 
 describe("C binding and imports", () => {
@@ -1071,6 +1556,161 @@ describe("C binding and imports", () => {
 		expect(typeReference?.binding.status).toBe("bound");
 		expect(callReference?.binding.status).toBe("bound");
 		expect(callReference?.binding.status === "bound" ? callReference.binding.symbolId : "").toContain("add()");
+	});
+
+	test("binds a tag after struct to the struct and a bare name to its typedef", () => {
+		const parsed = facts(
+			started(),
+			"namespaces.c",
+			"typedef struct node node;\nstruct node { node *next; };\nstruct node *head;\n",
+		);
+		const declared = (kind: string) =>
+			parsed.declarations.find((declaration) => declaration.name === "node" && declaration.kind === kind)
+				?.symbolId ?? "missing";
+		const targets = parsed.references
+			.filter((reference) => reference.name === "node")
+			.map((reference) =>
+				reference.binding.status === "bound" ? reference.binding.symbolId : reference.binding.status,
+			);
+
+		expect(targets).toEqual([declared("struct"), declared("class"), declared("struct")]);
+	});
+
+	test("looks a type up through the scopes around its use, a nearer object hiding a typedef", () => {
+		const text = [
+			"typedef int T;",
+			"struct Node { int file; };",
+			"void run(void) {",
+			"\tstruct Node { int value; };",
+			"\tstruct Node *p;",
+			"\tint T;",
+			"\ttypeof(T) shadowed;",
+			"}",
+			"typeof(T) outer;",
+			"int count;",
+			"int use(void) { int T; int x; T * x; return count; int count; }",
+			"typedef struct S { int field; } Pair;",
+			"void inner(void) { typedef Pair Pair; Pair made; made.field; }",
+		].join("\n");
+		const handlers = started();
+		const parsed = facts(handlers, "scopes.c", text);
+		const id = (name: string, container?: string) =>
+			parsed.declarations.find(
+				(declaration) =>
+					declaration.name === name &&
+					(container === undefined || declaration.containerId?.endsWith(container)),
+			)?.symbolId;
+		const at = (line: number, name: string) => {
+			const reference = parsed.references.find(
+				(candidate) => candidate.name === name && candidate.range.start.line === line,
+			);
+			return [reference?.role, reference?.binding.status === "bound" ? reference.binding.symbolId : undefined];
+		};
+
+		expect(at(4, "Node")).toEqual(["typeUse", id("Node", "run().")]);
+		expect(at(6, "T")).toEqual(["read", id("T", "run().")]);
+		expect(at(8, "T")).toEqual(["typeUse", id("T")]);
+		// An object in scope makes `T * x;` a product; a later local does not hide the global yet.
+		expect([at(10, "T"), at(10, "count")]).toEqual([
+			["read", id("T", "use().")],
+			["read", id("count")],
+		]);
+		expect(parsed.declarations.filter((declaration) => declaration.name === "x")).toHaveLength(1);
+		// `typedef Pair Pair;` reads its specifier outside itself.
+		const inner = handlers.typeOf({ symbolId: id("Pair", "inner().") ?? "missing" });
+		expect([at(12, "Pair"), at(12, "field"), inner.status === "known" ? inner.symbolId : undefined]).toEqual([
+			["typeUse", id("Pair")],
+			["read", id("field", "S#")],
+			id("Pair"),
+		]);
+	});
+
+	test("puts a block's name in scope from its declarator to the block's end, the innermost block first", () => {
+		const text = [
+			"int x;",
+			"struct S { int x; } y = { x };",
+			"enum E { A } e = A;",
+			"int p;",
+			"void f(void) { int p[sizeof p]; struct T; struct T *t; struct T { int a; }; t->a; }",
+			"int g(void) { int x = 0; { int x = 1; x++; } for (int x = 2; x; x--) { x; } return x; }",
+			"void h(void) { struct U { int outer; }; { struct U; struct U *p; } struct V *v; struct V { int b; }; v->b; }",
+			"struct S2 { struct N { int n; } n; enum { M } m; }; struct N *nested; int use(void) { return M; }",
+		].join("\n");
+		const parsed = facts(started(), "blocks.c", text);
+		const bound = (line: number, name: string) =>
+			parsed.references
+				.filter(
+					(reference) =>
+						reference.range.start.line === line && reference.name === name && reference.role !== "write",
+				)
+				.map(({ binding }) =>
+					binding.status === "bound" ? binding.symbolId.replace("lexicon c blocks.c ", "") : "none",
+				);
+
+		// An initializer is outside the struct's body; an enumerator is a name of the enum's own scope.
+		expect([...bound(1, "x"), ...bound(2, "A")]).toEqual(["x.", "E#A."]);
+		// A declarator's bound reads the outer name; a forward tag is in scope before its definition.
+		expect([...bound(4, "p"), ...bound(4, "T"), ...bound(4, "a")]).toEqual(["p.", "f().T#", "f().T#a."]);
+		expect(bound(5, "x")).toEqual(["g().`x#1`.", "g().`x#2`.", "g().`x#2`.", "g().`x#2`.", "g().x."]);
+		// An inner block's forward tag is a new tag; an undeclared `struct V *` is completed by the later V.
+		expect([...bound(6, "U"), ...bound(6, "V"), ...bound(6, "b")]).toEqual(["h().`U#1`#", "h().V#", "h().V#b."]);
+		// A tag or an enumerator in a struct's body belongs to the file around it.
+		expect([...bound(7, "N"), ...bound(7, "M")]).toEqual(["S2#N#", "S2#M."]);
+	});
+
+	test("binds a member only to a field of its receiver's type, through typedefs and chains", () => {
+		const text = [
+			"#include <sys/stat.h>",
+			"int x;",
+			"struct heap { int x; struct heap *next; };",
+			"typedef struct heap heap_t;",
+			"typedef struct { int y; } anon_t;",
+			"struct heap make(void);",
+			"void run(struct heap *heap, heap_t *h, anon_t a, struct stat *st) {",
+			"\theap->x = x;",
+			"\th->next->x = a.y;",
+			"\t(*heap).x = st->st_size;",
+			"\t(h->next)->x = heap[1].x + make().x;",
+			"\tstruct heap made = { .x = 1 };",
+			"\tstruct { int y; } first, second;",
+			"\tsecond.y = 0;",
+			"}",
+		].join("\n");
+		const parsed = facts(started(), "members.c", text);
+		const declared = (name: string, kind: string) =>
+			parsed.declarations.find((declaration) => declaration.name === name && declaration.kind === kind)
+				?.symbolId ?? "missing";
+		const field = (name: string) => declared(name, "field");
+		const bindings = parsed.references
+			.filter(
+				(reference) =>
+					["x", "next", "y", "st_size"].includes(reference.name) && reference.range.start.line >= 7,
+			)
+			.map(({ binding }) =>
+				binding.status === "bound"
+					? binding.symbolId
+					: binding.status === "unbound"
+						? binding.reason
+						: "ambiguous",
+			);
+
+		expect(bindings).toEqual([
+			field("x"),
+			declared("x", "variable"),
+			field("next"),
+			field("x"),
+			field("y"),
+			field("x"),
+			"ExternalDependency",
+			field("next"),
+			field("x"),
+			field("x"),
+			"NotImplemented",
+			"NotImplemented",
+			parsed.declarations.find(
+				(declaration) => declaration.name === "y" && declaration.containerId === declared("first", "variable"),
+			)?.symbolId ?? "missing",
+		]);
 	});
 
 	test("resolves quoted includes beside a file and at workspace root", () => {
@@ -1118,19 +1758,312 @@ describe("C binding and imports", () => {
 		});
 	});
 
-	test("binds a declaration reached through a workspace header", () => {
+	test("binds a name a macro of its file also spells to the macro, unless the macro is in another branch", () => {
+		const header = [
+			"#define MAP(XX) XX(one) XX(two)",
+			"typedef enum {",
+			"  OPT_A,",
+			"  OPT_B",
+			"#define OPT_B OPT_B",
+			"#define XX(name) KIND_##name,",
+			"  MAP(XX)",
+			"#undef XX",
+			"} opt_t;",
+			"#ifdef WIDE",
+			"#define OPT_C 3",
+			"#else",
+			"enum { OPT_C };",
+			"#endif",
+			"int in_header(void) { return OPT_B + MAP(XX) + OPT_C; }",
+		].join("\n");
 		const root = workspace({
-			"src/cart.c": '#include "item.h"\nint run(void) { return item; }\n',
-			"src/item.h": "int item;\n",
+			"opt.h": header,
+			"use.c": '#include "opt.h"\nint use(void) { return OPT_B + MAP(XX) + OPT_C; }\n',
 		});
 		const handlers = started(root);
-		const source = readFileSync(path.join(root, "src/cart.c"), "utf8");
-		const parsed = facts(handlers, "src/cart.c", source);
-		const reference = parsed.references.find((candidate) => candidate.name === "item");
+		const bindings = (module: string, text: string) =>
+			facts(handlers, module, text)
+				.references.filter(
+					(reference) =>
+						["OPT_B", "MAP", "OPT_C"].includes(reference.name) &&
+						/ (in_header|use)\(\)\.$/.test(reference.fromId ?? ""),
+				)
+				.map(({ binding }) =>
+					binding.status === "bound" ? binding.symbolId.split(" ").at(-1) : `${binding.status}`,
+				);
+		const expected = ["OPT_B.", "MAP().", "ambiguous"];
 
-		if (reference === undefined) throw new Error("workspace reference is missing");
-		expect(reference.binding).toMatchObject({ status: "bound", provenance: "bound" });
-		expect(reference.binding.status === "bound" ? reference.binding.symbolId : "").toContain("src/item.h");
+		expect(bindings("opt.h", header)).toEqual(expected);
+		expect(bindings("use.c", readFileSync(path.join(root, "use.c"), "utf8"))).toEqual(expected);
+	});
+
+	test("sees an enumerator of an enum nested in a struct from the file around it, here and through an include", () => {
+		const header = [
+			"struct S { enum E {",
+			"#if FEATURE",
+			"  READY,",
+			"#else",
+			"  READY,",
+			"#endif",
+			"} state; };",
+			"int in_header(void) { return READY; }",
+		].join("\n");
+		const root = workspace({ "scope.h": header, "use.c": '#include "scope.h"\nint use(void) { return READY; }\n' });
+		const handlers = started(root);
+		const candidates = (module: string, text: string) => {
+			const binding = facts(handlers, module, text).references.find(
+				(reference) => reference.name === "READY",
+			)?.binding;
+			return binding?.status === "ambiguous" ? binding.candidates.length : binding?.status;
+		};
+
+		// The two exclusive alternatives, in the header and in its includer alike.
+		expect([
+			candidates("scope.h", header),
+			candidates("use.c", readFileSync(path.join(root, "use.c"), "utf8")),
+		]).toEqual([2, 2]);
+	});
+
+	test("searches the includer's directory, then include directories and the root, and sees every header reached", () => {
+		const root = workspace({
+			"include/lib.h": '#include "lib/detail.h"\ntypedef struct box { int size; } box_t;\n',
+			"include/lib/detail.h": '#include "../lib.h"\nint detail_count;\n',
+			"include/config.h": "#define SHARED_ONLY 2\n",
+			"src/config.h": "#define LOCAL_ONLY 1\n",
+			"hidden.h": "int hidden;\n",
+			"src/main.c": [
+				'#include "lib.h"',
+				'#include "config.h"',
+				"#include <config.h>",
+				"int run(box_t *b) { return b->size + detail_count + LOCAL_ONLY + SHARED_ONLY + hidden; }",
+			].join("\n"),
+		});
+		const handlers = started(root);
+		const parsed = facts(handlers, "src/main.c", readFileSync(path.join(root, "src/main.c"), "utf8"));
+		const home = (name: string) => {
+			const binding = parsed.references.find(
+				(reference) => reference.name === name && reference.role !== "import",
+			)?.binding;
+			return binding?.status === "bound" ? parseSymbolId(binding.symbolId)?.module : binding?.status;
+		};
+		const resolve = (specifier: string) => handlers.resolveImport({ fromModule: "src/main.c", specifier });
+
+		expect(["lib.h", '"config.h"', "<config.h>"].map(resolve)).toEqual([
+			{ status: "resolved", module: "include/lib.h" },
+			{ status: "resolved", module: "src/config.h" },
+			{ status: "resolved", module: "include/config.h" },
+		]);
+		// Through lib.h to detail.h, whose include of lib.h again ends the walk; hidden.h is never reached.
+		expect(["box_t", "size", "detail_count", "LOCAL_ONLY", "SHARED_ONLY", "hidden"].map(home)).toEqual([
+			"include/lib.h",
+			"include/lib.h",
+			"include/lib/detail.h",
+			"src/config.h",
+			"include/config.h",
+			"unbound",
+		]);
+	});
+
+	test("searches a unit's database lists, reads its forced includes first, and moves the fingerprint with them", () => {
+		const database = (mode: string, forced: string) =>
+			JSON.stringify([
+				unitEntry("src/app.c", "-I../vendor/api", "-iquote", "../quoted", `-DMODE=${mode}`, "-include", forced),
+			]);
+		const text = '#include "api.h"\n#include "q.h"\n#include <q.h>\nint run(void) { return early + late; }\n';
+		const root = workspace({
+			"build/compile_commands.json": database("1", "early.h"),
+			"build/early.h": "int early;\n",
+			"quoted/late.h": "int late;\n",
+			"vendor/api/api.h": "int api_value;\n",
+			"include/api.h": "int api_value;\n",
+			"quoted/q.h": "int q_value;\n",
+			"src/app.c": text,
+		});
+		const handlers = started(root);
+		const before = facts(handlers, "src/app.c", text);
+		const resolve = (specifier: string) => handlers.resolveImport({ fromModule: "src/app.c", specifier });
+		const rediscover = (mode: string, forced: string) => {
+			writeFileSync(path.join(root, "build/compile_commands.json"), database(mode, forced));
+			return handlers.discoverProject({ workspaceRoot: root });
+		};
+		const first = handlers.discoverProject({ workspaceRoot: root });
+		const defined = rediscover("2", "early.h");
+		// Not in the working directory, so found along the quoted search.
+		const forced = rediscover("2", "late.h");
+		const after = facts(handlers, "src/app.c", `${text}\n`);
+
+		// The database's lists replace the conventional ones; an angle include skips `-iquote`.
+		expect(["api.h", '"q.h"', "<q.h>"].map(resolve)).toEqual([
+			{ status: "resolved", module: "vendor/api/api.h" },
+			{ status: "resolved", module: "quoted/q.h" },
+			{ status: "external", packageName: "q.h" },
+		]);
+		expect([
+			homeOf(before, "early"),
+			homeOf(before, "late"),
+			homeOf(after, "early"),
+			homeOf(after, "late"),
+		]).toEqual(["build/early.h", "unbound", "unbound", "quoted/late.h"]);
+		expect(first.configFiles).toContain("build/compile_commands.json");
+		// Nothing includes a forced header, so discovery names it for core even inside the excluded build/.
+		expect(first.files).toContain("build/early.h");
+		expect(new Set([first.fingerprint, defined.fingerprint, forced.fingerprint]).size).toBe(3);
+	});
+
+	test("reads a POSIX command's quoted path, and binds only where every configuration of a unit agrees", () => {
+		const configured = (...entries: Array<Record<string, unknown>>) =>
+			workspace({
+				"compile_commands.json": JSON.stringify(entries),
+				"vendor api/same.h": "int selected;\n",
+				"wrong/same.h": "int selected;\n",
+				"cfgA/config.h": "int picked;\n",
+				"cfgB/config.h": "int picked;\n",
+				"src/use.c": "#include <same.h>\n#include <config.h>\nint run(void) { return selected + picked; }\n",
+			});
+		const quoted = { directory: ".", file: "src/use.c", command: "cc -I 'vendor api' -I wrong -c src/use.c" };
+		const configA = { ...quoted, command: `${quoted.command} -IcfgA` };
+		const configB = { ...quoted, command: `${quoted.command} -IcfgB` };
+		const read = (root: string) => {
+			const parsed = facts(started(root), "src/use.c", readFileSync(path.join(root, "src/use.c"), "utf8"));
+			return [homeOf(parsed, "selected"), homeOf(parsed, "picked")];
+		};
+
+		expect(read(configured(configA))).toEqual(["vendor api/same.h", "cfgA/config.h"]);
+		expect(read(configured(configA, configB))).toEqual(["vendor api/same.h", "unbound"]);
+		expect(read(configured(configB, configA))).toEqual(["vendor api/same.h", "unbound"]);
+	});
+
+	test("answers a bare include written both ways by what each finds, Ambiguous when they differ", () => {
+		const root = workspace({
+			"src/x.h": "int near;\n",
+			"include/x.h": "int far;\n",
+			"src/main.c": '#include "x.h"\n#include <x.h>\n',
+		});
+		const handlers = started(root);
+		facts(handlers, "src/main.c", readFileSync(path.join(root, "src/main.c"), "utf8"));
+		const resolve = (specifier: string) => handlers.resolveImport({ fromModule: "src/main.c", specifier });
+
+		expect(["x.h", '"x.h"', "<x.h>"].map(resolve)).toEqual([
+			{ status: "unresolved", reason: "Ambiguous", detail: expect.any(String) },
+			{ status: "resolved", module: "src/x.h" },
+			{ status: "resolved", module: "include/x.h" },
+		]);
+	});
+
+	test("never probes an include the scope denies, nor walks a denied directory for include directories", () => {
+		const root = workspace({
+			"secret/include/hidden.h": "int hidden;\n",
+			"src/secret.h": "int secret;\n",
+			"src/main.c": '#include "secret.h"\n#include <hidden.h>\n',
+		});
+		const resolveWith = (deny: string[]) => {
+			const handlers = handlersFor(new CProvider());
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, deny });
+			handlers.discoverProject({ workspaceRoot: root });
+			return ['"secret.h"', "<hidden.h>"].map((specifier) =>
+				handlers.resolveImport({ fromModule: "src/main.c", specifier }),
+			);
+		};
+
+		expect(resolveWith([]).map((resolution) => resolution.status)).toEqual(["resolved", "resolved"]);
+		expect(resolveWith(["src/secret.h", "secret/**"]).map((resolution) => resolution.status)).toEqual([
+			"unresolved",
+			"external",
+		]);
+	});
+
+	test("retries a header that could not be read, and skips a directory that cannot be listed", () => {
+		const root = workspace({
+			"src/api.h": "int answer;\n",
+			"src/use.c": '#include "api.h"\nint run(void) { return answer; }\n',
+			"locked/inner/include/nothing.h": "int nothing;\n",
+		});
+		const header = path.join(root, "src/api.h");
+		const locked = path.join(root, "locked");
+		chmodSync(header, 0o000);
+		chmodSync(locked, 0o000);
+		try {
+			const handlers = started(root);
+			const text = readFileSync(path.join(root, "src/use.c"), "utf8");
+			const parsed = facts(handlers, "src/use.c", text);
+			const reference = parsed.references.find((candidate) => candidate.name === "answer");
+			if (reference === undefined) throw new Error("reference is missing");
+			const bind = () => handlers.bind({ module: "src/use.c", name: "answer", range: reference.range }).status;
+			const before = bind();
+			chmodSync(header, 0o644);
+
+			expect(handlers.discoverProject({ workspaceRoot: root }).files).toContain("src/use.c");
+			expect([before, bind()]).toEqual(["unbound", "bound"]);
+		} finally {
+			chmodSync(header, 0o644);
+			chmodSync(locked, 0o755);
+		}
+	});
+
+	test("reads a header with the lists of the unit that reaches it, and one no unit builds only where every unit agrees", () => {
+		const root = workspace({
+			"build/compile_commands.json": JSON.stringify([
+				unitEntry("src/a.c", "-I../shared", "-I../cfgA"),
+				unitEntry("src/b.c", "-I../shared", "-I../cfgB"),
+			]),
+			"shared/common.h": "#include <config.h>\n",
+			"cfgA/config.h": "int selected;\n",
+			"cfgB/config.h": "int selected;\n",
+			"src/a.c": '#include "common.h"\nint run(void) { return selected; }\n',
+			"src/b.c": '#include "common.h"\nint run(void) { return selected; }\n',
+		});
+		const handlers = started(root);
+		const read = (module: string) => facts(handlers, module, readFileSync(path.join(root, module), "utf8"));
+
+		expect([homeOf(read("src/a.c"), "selected"), homeOf(read("src/b.c"), "selected")]).toEqual([
+			"cfgA/config.h",
+			"cfgB/config.h",
+		]);
+		expect(handlers.resolveImport({ fromModule: "shared/common.h", specifier: "<config.h>" })).toMatchObject({
+			status: "unresolved",
+			reason: "Ambiguous",
+		});
+	});
+
+	test("serves `-I` before `-I-` to quoted includes only, and skips the includer's directory after it", () => {
+		const root = workspace({
+			"build/compile_commands.json": JSON.stringify([unitEntry("src/c.c", "-I../pre", "-I-", "-I../post")]),
+			"pre/a.h": "int a;\n",
+			"src/c.h": "int c;\n",
+			"post/c.h": "int c;\n",
+			"src/c.c": '#include <a.h>\n#include "a.h"\n#include "c.h"\n',
+		});
+		const handlers = started(root);
+		facts(handlers, "src/c.c", readFileSync(path.join(root, "src/c.c"), "utf8"));
+		const resolve = (specifier: string) => handlers.resolveImport({ fromModule: "src/c.c", specifier });
+
+		expect(["<a.h>", '"a.h"', '"c.h"'].map(resolve)).toEqual([
+			{ status: "external", packageName: "a.h" },
+			{ status: "resolved", module: "pre/a.h" },
+			{ status: "resolved", module: "post/c.h" },
+		]);
+	});
+
+	test("looks names up in the headers a file reaches in time linear in their count", () => {
+		const timed = (count: number) => {
+			const headers = Object.fromEntries(
+				Array.from({ length: count }, (_, index) => [`h${index}.h`, `int v${index};\n`]),
+			);
+			const includes = Array.from({ length: count }, (_, index) => `#include "h${index}.h"`).join("\n");
+			const uses = Array.from({ length: count }, (_, index) => `v${index} + u${index}`).join(" + ");
+			const text = `${includes}\nint run(void) { return ${uses}; }\n`;
+			const handlers = started(workspace({ ...headers, "main.c": text }));
+			facts(handlers, "main.c", text);
+			let best = Number.POSITIVE_INFINITY;
+			for (let round = 0; round < 3; round++) {
+				const started = performance.now();
+				handlers.parseFile({ module: "main.c", contentHash: `round${round}`, text });
+				best = Math.min(best, performance.now() - started);
+			}
+			return best;
+		};
+		// Linear reads 8x; a scan of every header per name reads 64x.
+		expect(timed(1_600) / timed(200)).toBeLessThan(24);
 	});
 
 	test("finds same-file candidates through the parsed declaration index", () => {
@@ -1225,6 +2158,46 @@ describe("C type answers", () => {
 
 		expect(answer).toMatchObject({ status: "known", display: "struct Item", provenance: "declared" });
 		expect(answer.status === "known" ? answer.symbolId : "").toContain("Item#");
+	});
+
+	test("links a type answer to the tag or the typedef its type names, not whichever shares the name", () => {
+		const handlers = started();
+		const parsed = facts(
+			handlers,
+			"namespaces.c",
+			"typedef struct N N;\nstruct N { int value; };\nstruct N *p;\nN *q;\n#ifdef A\ntypedef int C;\n#else\ntypedef long C;\n#endif\nC r;\n",
+		);
+		const linked = (name: string) => {
+			const declaration = declarationOf(parsed, name, name === "N" ? "class" : undefined);
+			const answer = declaration === undefined ? undefined : handlers.typeOf({ symbolId: declaration.symbolId });
+			return answer?.status === "known" ? (answer.symbolId ?? answer.display) : undefined;
+		};
+
+		// Alternatives across branches keep the spelling and name no one of them.
+		expect([linked("N"), linked("p"), linked("q"), linked("r")]).toEqual([
+			declarationOf(parsed, "N", "struct")?.symbolId,
+			declarationOf(parsed, "N", "struct")?.symbolId,
+			declarationOf(parsed, "N", "class")?.symbolId,
+			"C",
+		]);
+	});
+
+	test("binds a type spelled through a macro to the macro, here and across an include", () => {
+		const root = workspace({ "types.h": "#define code void\n" });
+		const handlers = started(root);
+		const header = facts(handlers, "types.h", "#define code void\n");
+		const parsed = facts(handlers, "use.c", '#include "types.h"\n#define byte unsigned char\nbyte b;\ncode *fn;\n');
+		const bound = (name: string) => {
+			const binding = parsed.references.find(
+				(reference) => reference.name === name && reference.role === "typeUse",
+			)?.binding;
+			return binding?.status === "bound" ? binding.symbolId : binding?.status;
+		};
+
+		expect([bound("byte"), bound("code")]).toEqual([
+			declarationOf(parsed, "byte")?.symbolId,
+			declarationOf(header, "code")?.symbolId,
+		]);
 	});
 
 	test("spells a declared type from its tokens, never from its rendered text", () => {
@@ -1367,18 +2340,23 @@ describe("C edge coverage", () => {
 		expect(imports[1]?.range.start).toEqual({ line: 1, character: 10 });
 	});
 
-	test("resolves extensionless quoted headers using header and source fallbacks", () => {
+	test("looks an include up by exactly its written name, never a guessed extension", () => {
 		const root = workspace({
-			"src/header-user.c": '#include "item"\n',
+			"src/user.c": '#include "item"\nint run(void) { return item; }\n',
 			"src/item.h": "int item;\n",
+			"include/item": "int item;\n",
 		});
 		const handlers = started(root);
-		facts(handlers, "src/header-user.c", readFileSync(path.join(root, "src/header-user.c"), "utf8"));
+		const parsed = facts(handlers, "src/user.c", readFileSync(path.join(root, "src/user.c"), "utf8"));
+		const binding = parsed.references.find((reference) => reference.role === "read")?.binding;
 
-		expect(handlers.resolveImport({ fromModule: "src/header-user.c", specifier: "item" })).toEqual({
+		expect(handlers.resolveImport({ fromModule: "src/user.c", specifier: "item" })).toEqual({
 			status: "resolved",
-			module: "src/item.h",
+			module: "include/item",
 		});
+		expect(binding?.status === "bound" ? parseSymbolId(binding.symbolId)?.module : binding?.status).toBe(
+			"include/item",
+		);
 	});
 
 	test("treats standard system families as external dependencies", () => {
@@ -1495,6 +2473,44 @@ describe("C edge coverage", () => {
 
 		expect(parsed.declarations.map((declaration) => declaration.name)).toContain("second");
 		expect(parsed.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+	});
+
+	test("parses repeated and nested shapes in time near linear in their size", () => {
+		const shapes: Record<string, (count: number) => string> = {
+			prototypes: (count) =>
+				Array.from({ length: count }, (_, index) => `static int f${index}(int a);`)
+					.concat(Array.from({ length: count }, (_, index) => `static int f${index}(int a) { return a; }`))
+					.join("\n"),
+			blocks: (count) => `void run(void) {\n${"if (x) {\n".repeat(count)}${"}\n".repeat(count)}}\n`,
+			conditionals: (count) => `${"#if X\n".repeat(count)}int a;\n${"#endif\n".repeat(count)}`,
+			arms: (count) =>
+				`#if A0\n${Array.from({ length: count * 4 }, (_, index) => `#elif A${index}\n#if B\nint v${index};\n#endif\n`).join("")}#endif\n`,
+			initializers: (count) =>
+				`int ${Array.from({ length: count * 4 }, (_, index) => `a${index}[1] = {${index}}`).join(", ")};\n`,
+		};
+		const timed = (text: string) => {
+			let best = Number.POSITIVE_INFINITY;
+			for (let round = 0; round < 3; round++) {
+				const started = performance.now();
+				parseC("scale.c", text);
+				best = Math.min(best, performance.now() - started);
+			}
+			return best;
+		};
+		// Linear reads 8x; a rescan per item reads 64x.
+		for (const make of Object.values(shapes)) expect(timed(make(800)) / timed(make(100))).toBeLessThan(24);
+		// Each declarator spans the whole statement: linear reads 16x, a rescan per token 256x.
+		const declarators = (count: number) =>
+			`typedef int ${Array.from({ length: count }, (_, index) => `T${index}`).join(", ")};`;
+		expect(timed(declarators(25_600)) / timed(declarators(1_600))).toBeLessThan(32);
+	});
+
+	test("reports one problem past the nesting limit instead of exhausting the stack", () => {
+		const depth = 20_000;
+		const parsed = parseC("deep.c", `void run(void) {\n${"if (x) {\n".repeat(depth)}${"}\n".repeat(depth)}}\n`);
+
+		expect(parsed.diagnostics).toHaveLength(1);
+		expect(parsed.declarations.map((declaration) => declaration.name)).toEqual(["run"]);
 	});
 });
 

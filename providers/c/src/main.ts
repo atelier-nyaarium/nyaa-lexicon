@@ -1,5 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import type { IncludeSearch } from "@nyaa-lexicon/formats/compile-commands";
 import {
 	type Binding,
 	DEFAULT_EXCLUDED_DIRECTORIES,
@@ -18,6 +20,7 @@ import {
 	parseSymbolId,
 	projectDiagnostic,
 	type Range,
+	type ReadPolicy,
 	type Reference,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
@@ -25,15 +28,60 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
-	workspaceFile,
-	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import type { CDeclaration, CReference, ParsedCFile } from "./model.js";
+import type { CDeclaration, CImportFact, CReference, ParsedCFile, TypeName } from "./model.js";
 import { bindingCandidates, parseC, rangeContains, typeInfoFor } from "./parser.js";
+import {
+	bareProject,
+	type CProject,
+	type CUnit,
+	contextOf,
+	discoverCProject,
+	type Found,
+	findInclude,
+	forcedDirectories,
+	type IncludeKind,
+	type SearchContext,
+	searchDirectories,
+} from "./project.js";
+import { declaredIn, lexicalScope, macrosFirst, oneType, typeCandidates, typeMacros } from "./scopes.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+/** A declaration and the facts of the module that holds it. */
+interface Declared {
+	module: string;
+	facts: ParsedCFile;
+	declaration: CDeclaration;
+}
+
+/** Why a receiver's type has no fields to bind. */
+interface NoOwner {
+	reason: UnknownReason;
+	detail: string;
+}
+
+/** What a module reaches through its includes, and why any include reached none. */
+interface Reach {
+	/** Each name's file-scope declarations, by include depth. */
+	names: Map<string, CDeclaration[][]>;
+	/** An include landed outside the workspace. */
+	external: boolean;
+	/** A header could not be read yet, so the reach is not worth keeping. */
+	incomplete: boolean;
+	reason?: UnknownReason;
+	detail?: string;
+}
 
 ////////////////////////////////
 //  Constants
+
+/** How many members and typedefs a receiver's type is followed through. */
+const MAX_MEMBER_CHAIN = 16;
+
+const TAG_KINDS: ReadonlySet<string> = new Set(["struct", "enum"]);
 
 const LANGUAGE = "c";
 const EXTENSIONS = [".c", ".h"];
@@ -227,6 +275,14 @@ function ordinaryAmbiguity(candidates: CDeclaration[]): Binding {
 	} as Binding;
 }
 
+/** The types among `candidates` a tag, or else an ordinary name, can mean: a typedef before a bare tag. */
+function inNamespace(candidates: CDeclaration[], tag: boolean): CDeclaration[] {
+	const tags = candidates.filter((candidate) => TAG_KINDS.has(candidate.kind));
+	if (tag) return tags;
+	const aliases = candidates.filter((candidate) => candidate.kind === "class");
+	return aliases.length > 0 ? aliases : tags;
+}
+
 function headerName(specifier: string): string {
 	if (
 		(specifier.startsWith("<") && specifier.endsWith(">")) ||
@@ -237,44 +293,46 @@ function headerName(specifier: string): string {
 	return specifier;
 }
 
-function importCandidates(root: string, fromModule: string, specifier: string): string[] {
-	const clean = headerName(specifier).replace(/\\/gu, "/");
-	const fromAbsolute = workspaceFile(root, fromModule);
-	const directories = fromAbsolute === null ? [] : [path.dirname(fromAbsolute), root];
-	const candidates: string[] = [];
-	for (const directory of directories) {
-		const absolute = path.resolve(directory, clean);
-		const module = workspaceModule(root, absolute);
-		if (module === null) continue;
-		candidates.push(module);
-		if (path.extname(clean) === "") {
-			candidates.push(`${module}.h`, `${module}.c`);
-		}
-	}
-	return candidates;
+/** What finding `name`, or not, means for an include of `kind`. */
+function resolutionOf(found: Found | undefined, name: string, kind: IncludeKind | undefined): ImportResolution {
+	if (found !== undefined && "module" in found) return { status: "resolved", module: found.module };
+	if (found !== undefined || kind === "angle") return { status: "external", packageName: name };
+	const common =
+		COMMON_HEADERS.has(name) || name.startsWith("sys/") || name.startsWith("linux/") || name.startsWith("windows/");
+	if (kind === undefined && common) return { status: "external", packageName: name };
+	return { status: "unresolved", reason: "NotIndexed", detail: `no workspace header matches ${name}` };
 }
 
-function hasFile(root: string, module: string): boolean {
-	const absolute = workspaceFile(root, module);
-	return absolute !== null && existsSync(absolute) && statSync(absolute).isFile();
+/** The one answer every reading gives, or Ambiguous when they differ. */
+function agreed(answers: readonly ImportResolution[], detail: string): ImportResolution {
+	const first = answers[0] as ImportResolution;
+	return answers.every((answer) => isDeepStrictEqual(answer, first))
+		? first
+		: { status: "unresolved", reason: "Ambiguous", detail };
 }
 
-function pathForResolution(root: string, candidates: string[]): string | undefined {
-	return candidates.find((candidate) => hasFile(root, candidate));
-}
-
-function discover(root: string): ProjectModel {
-	if (!existsSync(root)) return projectDiagnostic(root, `workspace root does not exist: ${root}`);
+function discover(root: string, policy: ReadPolicy): { model: ProjectModel; project: CProject } {
+	const failed = (message: string) => ({ model: projectDiagnostic(root, message), project: bareProject(root) });
+	if (!existsSync(root)) return failed(`workspace root does not exist: ${root}`);
 	try {
-		if (!statSync(root).isDirectory()) return projectDiagnostic(root, `workspace root is not a directory: ${root}`);
+		if (!statSync(root).isDirectory()) return failed(`workspace root is not a directory: ${root}`);
 		const model = discoverByWalk(root, { extensions: EXTENSIONS, excludedDirectories: EXCLUDED_DIRECTORIES });
-		const configFiles = PROJECT_CONFIGS.filter((name) => existsSync(path.join(root, name)));
-		return model.diagnostics.length === 0 ? { ...model, configFiles } : model;
+		if (model.diagnostics.length > 0) return { model, project: bareProject(root) };
+		const project = discoverCProject(root, EXCLUDED_DIRECTORIES, policy);
+		const configs = PROJECT_CONFIGS.filter((name) => existsSync(path.join(root, name)));
+		return {
+			model: {
+				...model,
+				// A forced header in an excluded directory is reached by no include, so core learns it here.
+				files: [...new Set([...model.files, ...project.forcedHeaders])],
+				configFiles: [...new Set([...configs, ...project.databases])],
+				diagnostics: [...project.diagnostics],
+				fingerprint: project.fingerprint,
+			},
+			project,
+		};
 	} catch (error) {
-		return projectDiagnostic(
-			root,
-			`unable to inspect workspace root: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		return failed(`unable to inspect workspace root: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -283,7 +341,7 @@ function discover(root: string): ProjectModel {
 
 export class CProvider {
 	/** Include lookup uses held facts. */
-	readonly store = moduleStore<ParsedCFile>({ read: (module, text) => parseC(module, text) });
+	readonly store = moduleStore<ParsedCFile, CProject>({ read: (module, text) => parseC(module, text) });
 
 	initialize(_workspaceRoot: string) {
 		return {
@@ -297,8 +355,8 @@ export class CProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string): { model: ProjectModel; project: null } {
-		return { model: discover(path.resolve(workspaceRoot)), project: null };
+	discoverProject(workspaceRoot: string): { model: ProjectModel; project: CProject } {
+		return discover(path.resolve(workspaceRoot), this.store.policy);
 	}
 
 	parseFile(
@@ -332,26 +390,74 @@ export class CProvider {
 
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
 		const clean = headerName(params.specifier);
-		// Use held import kind; infer from "<" otherwise.
-		const written = this.store
-			.peek(params.fromModule)
-			?.imports.find((imported) => imported.specifier === clean || imported.specifier === params.specifier);
-		const kind = written?.kind ?? (params.specifier.startsWith("<") ? "angle" : undefined);
-		if (kind === "angle") return { status: "external", packageName: clean };
-		const root = this.store.root;
-		const resolved = pathForResolution(root, importCandidates(root, params.fromModule, clean));
-		if (resolved !== undefined) return { status: "resolved", module: resolved };
-		if (kind === "quoted")
-			return { status: "unresolved", reason: "NotIndexed", detail: `no workspace header matches ${clean}` };
-		if (
-			COMMON_HEADERS.has(clean) ||
-			clean.startsWith("sys/") ||
-			clean.startsWith("linux/") ||
-			clean.startsWith("windows/")
-		) {
-			return { status: "external", packageName: clean };
-		}
-		return { status: "unresolved", reason: "NotIndexed", detail: `no workspace header matches ${clean}` };
+		const delimited = params.specifier.startsWith("<")
+			? "angle"
+			: params.specifier.startsWith('"')
+				? "quoted"
+				: undefined;
+		const context = contextOf(this.store.project, params.fromModule);
+		if (delimited !== undefined) return this.resolveInclude(context, params.fromModule, clean, delimited);
+		// A bare path takes the kind its held include was written with; written both ways, both must agree.
+		const kinds = new Set(
+			(this.store.peek(params.fromModule)?.imports ?? [])
+				.filter((imported) => imported.specifier === clean)
+				.map((imported) => imported.kind),
+		);
+		const answers = (kinds.size === 0 ? [undefined] : [...kinds]).map((kind) =>
+			this.resolveInclude(context, params.fromModule, clean, kind),
+		);
+		return agreed(answers, `the include of ${clean} is written both ways and each finds a different header`);
+	}
+
+	/**
+	 * `name` included from `fromModule`, searched with each of `context`'s lists: those of the units whose
+	 * reach it is part of. An answer stands only where every list agrees. Searched on disk, so held for
+	 * the store generation.
+	 */
+	private resolveInclude(
+		context: SearchContext,
+		fromModule: string,
+		name: string,
+		kind: IncludeKind | undefined,
+	): ImportResolution {
+		return this.store.memo(
+			`\u0000include\u0000${context}\u0000${fromModule}\u0000${kind ?? ""}\u0000${name}`,
+			() => {
+				const project = this.store.project;
+				const written = name.replace(/\\/gu, "/");
+				const searched = (search: IncludeSearch | undefined) =>
+					resolutionOf(
+						findInclude(
+							project.root,
+							this.store.policy,
+							searchDirectories(project, search, fromModule, kind ?? "quoted"),
+							written,
+						),
+						name,
+						kind,
+					);
+				if (context === "fallback") return searched(undefined);
+				const answers = context.map((search) => searched(project.searches[search]));
+				return agreed(answers, `the units find different headers for ${name}`);
+			},
+		);
+	}
+
+	/** The forced includes every database entry for `module` names and finds alike, in the first entry's order. */
+	private forcedIncludes(module: string): Array<{ written: string; resolution: ImportResolution }> {
+		const entries = (this.store.project.units.get(module) ?? []).map((unit) =>
+			unit.forced.map((written) => ({ written, resolution: this.forcedInclude(unit, written) })),
+		);
+		return (entries[0] ?? []).filter((forced) =>
+			entries.every((entry) => entry.some((other) => isDeepStrictEqual(other, forced))),
+		);
+	}
+
+	/** A unit's forced include, looked for in its working directory, then along its quoted search. */
+	private forcedInclude(unit: CUnit, name: string): ImportResolution {
+		const project = this.store.project;
+		const found = findInclude(project.root, this.store.policy, forcedDirectories(project, unit), name);
+		return resolutionOf(found, name, "quoted");
 	}
 
 	private bindingForReference(
@@ -360,23 +466,9 @@ export class CProvider {
 		reference: CReference,
 		cache: Map<string, Binding>,
 	): Binding {
-		const cacheKey = `${reference.name}\u0000${reference.role}\u0000${reference.fromId ?? ""}`;
-		const cached = cache.get(cacheKey);
-		if (cached !== undefined) return cached;
-		const result = this.bindingForReferenceUncached(module, facts, reference);
-		cache.set(cacheKey, result);
-		return result;
-	}
-
-	private bindingForReferenceUncached(module: string, facts: ParsedCFile, reference: CReference): Binding {
-		if (reference.role === "import") {
-			const resolution = this.resolveImport({ fromModule: module, specifier: reference.name });
-			if (resolution.status === "external")
-				return unknownBinding("ExternalDependency", "the included header is outside the workspace");
-			if (resolution.status === "unresolved")
-				return unknownBinding(resolution.reason, resolution.detail ?? "the included header is unresolved");
-			return unknownBinding("NotIndexed", "an include path does not name a declaration");
-		}
+		if (reference.member === true) return this.memberBinding(module, facts, reference, cache, 0);
+		if (reference.role === "import") return this.includeBinding(module, reference);
+		// Depends on where the reference is, so never cached.
 		const sameFile = bindingCandidates(facts, reference);
 		if (sameFile.length === 1)
 			return { status: "bound", symbolId: (sameFile[0] as CDeclaration).symbolId, provenance: "bound" };
@@ -384,7 +476,112 @@ export class CProvider {
 			const conditional = sameFile.some((candidate) => candidate.conditionalGroup !== "");
 			return conditional ? conditionalAmbiguity(sameFile) : ordinaryAmbiguity(sameFile);
 		}
-		const imported = this.crossFileCandidates(module, facts, reference.name);
+		const cacheKey = `${reference.name}\u0000${reference.role}\u0000${reference.tag === true}`;
+		const cached = cache.get(cacheKey);
+		if (cached !== undefined) return cached;
+		const result = this.includedBinding(module, facts, reference);
+		cache.set(cacheKey, result);
+		return result;
+	}
+
+	/** A member binds to a field of its receiver's type, never to anything else of its name. */
+	private memberBinding(
+		module: string,
+		facts: ParsedCFile,
+		reference: CReference,
+		cache: Map<string, Binding>,
+		depth: number,
+	): Binding {
+		const receiver = reference.receiver === undefined ? undefined : facts.referencesByToken.get(reference.receiver);
+		if (receiver === undefined)
+			return unknownBinding("NotImplemented", "a member of a computed receiver is not resolved");
+		if (depth > MAX_MEMBER_CHAIN) return unknownBinding("RecursionLimit", "the member chain is too long");
+		const binding =
+			receiver.member === true
+				? this.memberBinding(module, facts, receiver, cache, depth + 1)
+				: this.bindingForReference(module, facts, receiver, cache);
+		if (binding.status === "unbound") return binding;
+		if (binding.status === "ambiguous")
+			return unknownBinding("Ambiguous", `the receiver of ${reference.name} has more than one declaration`);
+		const owner = this.memberOwner(this.declared(module, facts, binding.symbolId), 0);
+		if ("reason" in owner) return unknownBinding(owner.reason, owner.detail);
+		const fields = declaredIn(owner.facts, reference.name, owner.declaration.symbolId).filter(
+			(declaration) => declaration.kind === "field",
+		);
+		if (fields.length === 1)
+			return { status: "bound", symbolId: (fields[0] as CDeclaration).symbolId, provenance: "bound" };
+		if (fields.length > 1) {
+			const conditional = fields.some((candidate) => candidate.conditionalGroup !== "");
+			return conditional ? conditionalAmbiguity(fields) : ordinaryAmbiguity(fields);
+		}
+		return unknownBinding("NotIndexed", `the receiver's type has no field ${reference.name}`);
+	}
+
+	/** The declaration `symbolId` names, with the facts that hold it. */
+	private declared(module: string, facts: ParsedCFile, symbolId: string): Declared | undefined {
+		const home = parseSymbolId(symbolId)?.module ?? module;
+		const held = home === module ? facts : this.factsForModule(home);
+		const declaration = held?.declarationsById.get(symbolId);
+		return held === null || declaration === undefined ? undefined : { module: home, facts: held, declaration };
+	}
+
+	/** The declaration whose fields a value of `typed`'s type holds, through typedefs and forward declarations. */
+	private memberOwner(typed: Declared | undefined, depth: number): Declared | NoOwner {
+		if (typed === undefined) return { reason: "NotIndexed", detail: "the receiver has no indexed declaration" };
+		if (depth > MAX_MEMBER_CHAIN)
+			return { reason: "RecursionLimit", detail: "the receiver's type chain is too long" };
+		const { module, facts, declaration } = typed;
+		// An anonymous body's fields sit under what it declared.
+		if ((facts.childrenById.get(declaration.symbolId) ?? []).some((child) => child.kind === "field")) return typed;
+		const answer = declaration.kind === "struct" ? undefined : facts.typeAnswers.get(declaration.symbolId);
+		if (answer?.fieldsOf !== undefined)
+			return this.memberOwner(this.declared(module, facts, answer.fieldsOf), depth + 1);
+		const type: TypeName | undefined =
+			declaration.kind === "struct" ? { name: declaration.name, tag: true } : answer?.typeName;
+		if (type === undefined) return { reason: "NotIndexed", detail: `${declaration.name} has no named type` };
+		// A forward declaration's completion may follow it; a specifier is read where it is written.
+		const place =
+			declaration.kind === "struct"
+				? { scopeId: declaration.containerId }
+				: { scopeId: declaration.containerId, at: declaration.selectionIndex };
+		let found = typeCandidates(facts, type.name, type.tag, place).filter(
+			(candidate) => candidate.symbolId !== declaration.symbolId,
+		);
+		if (found.length === 0) {
+			const imported = this.crossFileCandidates(module, facts, type.name, (declared) =>
+				inNamespace(declared, type.tag),
+			);
+			found = imported.candidates;
+			if (found.length === 0 && imported.external)
+				return { reason: "ExternalDependency", detail: `${type.name} is declared in an external header` };
+			if (found.length === 0)
+				return { reason: imported.reason ?? "NotIndexed", detail: imported.detail ?? `no C type ${type.name}` };
+		}
+		const next = oneType(found);
+		return next === undefined
+			? { reason: "Ambiguous", detail: `${type.name} has more than one declaration` }
+			: this.memberOwner(this.declared(module, facts, next.symbolId), depth + 1);
+	}
+
+	private includeBinding(module: string, reference: CReference): Binding {
+		const resolution = this.resolveImport({ fromModule: module, specifier: reference.name });
+		if (resolution.status === "external")
+			return unknownBinding("ExternalDependency", "the included header is outside the workspace");
+		if (resolution.status === "unresolved")
+			return unknownBinding(resolution.reason, resolution.detail ?? "the included header is unresolved");
+		return unknownBinding("NotIndexed", "an include path does not name a declaration");
+	}
+
+	/** A name no declaration in this file answers, looked up in what it includes. */
+	private includedBinding(module: string, facts: ParsedCFile, reference: CReference): Binding {
+		const tag = reference.tag === true;
+		const imported =
+			reference.role === "typeUse"
+				? this.crossFileCandidates(module, facts, reference.name, (found) => {
+						const types = inNamespace(found, tag);
+						return types.length > 0 || tag ? types : typeMacros(found);
+					})
+				: this.crossFileCandidates(module, facts, reference.name, macrosFirst);
 		if (imported.candidates.length === 1)
 			return {
 				status: "bound",
@@ -402,46 +599,88 @@ export class CProvider {
 		return unknownBinding("NotIndexed", `no C declaration matches ${reference.name}`);
 	}
 
+	/**
+	 * `name` in what `module` includes: the nearest include depth holding any `accept` keeps, so a
+	 * header included directly outranks a platform twin further in.
+	 */
 	private crossFileCandidates(
 		module: string,
 		facts: ParsedCFile,
 		name: string,
+		accept: (found: CDeclaration[]) => CDeclaration[] = (found) => found,
 	): { candidates: CDeclaration[]; external: boolean; reason?: UnknownReason; detail?: string } {
-		const candidates: CDeclaration[] = [];
-		let external = false;
-		let reason: UnknownReason | undefined;
-		let detail: string | undefined;
-		for (const imported of facts.imports) {
-			const resolution = this.resolveImport({ fromModule: module, specifier: imported.specifier });
-			if (resolution.status === "external") {
-				external = true;
-				continue;
-			}
-			if (resolution.status === "unresolved") {
-				reason = resolution.reason;
-				detail = resolution.detail;
-				continue;
-			}
-			const target = this.factsForModule(resolution.module);
-			if (target === null) {
-				reason = "NotIndexed";
-				detail = `the included module ${resolution.module} is not indexed`;
-				continue;
-			}
-			for (const declaration of target.declarationsByName.get(name) ?? []) {
-				if (
-					declaration.name === name &&
-					declaration.containerId === undefined &&
-					declaration.exported !== false
-				)
-					candidates.push(declaration);
-			}
+		const { names, external, reason, detail } = this.reached(module, facts);
+		const unfound = { candidates: [], external, ...defined({ reason, detail }) };
+		const depths = names.get(name) ?? [];
+		for (let depth = 0; depth < depths.length; depth++) {
+			const declared = depths[depth];
+			const candidates = declared === undefined ? [] : accept(declared);
+			if (candidates.length > 0) return { ...unfound, candidates };
 		}
-		return {
-			candidates,
-			external,
-			...defined({ reason, detail }),
+		return unfound;
+	}
+
+	/** What `module` includes, through its headers' own includes; one walk per module and store generation. */
+	private reached(module: string, facts: ParsedCFile): Reach {
+		const held = this.store.memo(`\u0000reach\u0000${module}`, () => ({
+			facts,
+			reach: this.walkIncludes(module, facts),
+		}));
+		// A probe's text is not the held one, and a header that could not be read may read next time.
+		return held.facts === facts && !held.reach.incomplete ? held.reach : this.walkIncludes(module, facts);
+	}
+
+	/**
+	 * Breadth first, one depth per include level, every header searched with `module`'s own lists; a
+	 * unit's forced includes come first. A header seen once is not walked again. The file-scope
+	 * declarations reached are indexed by name and depth, once.
+	 */
+	private walkIncludes(module: string, facts: ParsedCFile): Reach {
+		const project = this.store.project;
+		const context = contextOf(project, module);
+		const reach: Reach = { names: new Map(), external: false, incomplete: false };
+		const seen = new Set([module]);
+		let depth = 0;
+		let frontier: Array<{ from: string; imports: readonly CImportFact[] }> = [];
+		const visit = (resolution: ImportResolution, written: string) => {
+			if (resolution.status === "external") reach.external = true;
+			if (resolution.status === "unresolved") {
+				reach.reason = resolution.reason;
+				reach.detail = resolution.detail ?? `no workspace header matches ${written}`;
+			}
+			if (resolution.status !== "resolved" || seen.has(resolution.module)) return;
+			seen.add(resolution.module);
+			const header = this.factsForModule(resolution.module);
+			if (header === null) {
+				reach.reason = "NotIndexed";
+				reach.detail = `the included module ${resolution.module} is not indexed`;
+				reach.incomplete = true;
+				return;
+			}
+			frontier.push({ from: resolution.module, imports: header.imports });
+			for (const declaration of header.declarations) {
+				const lexical = lexicalScope(header, declaration);
+				const fileScope =
+					declaration.containerId === undefined || (lexical !== undefined && lexical.scope === undefined);
+				if (!fileScope || declaration.exported === false) continue;
+				const depths = reach.names.get(declaration.name) ?? [];
+				reach.names.set(declaration.name, depths);
+				const atDepth = depths[depth] ?? [];
+				depths[depth] = atDepth;
+				atDepth.push(declaration);
+			}
 		};
+		for (const { written, resolution } of this.forcedIncludes(module)) visit(resolution, written);
+		let reading: typeof frontier = [{ from: module, imports: facts.imports }];
+		while (reading.length > 0) {
+			for (const { from, imports } of reading)
+				for (const imported of imports)
+					visit(this.resolveInclude(context, from, imported.specifier, imported.kind), imported.specifier);
+			reading = frontier;
+			frontier = [];
+			depth++;
+		}
+		return reach;
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {

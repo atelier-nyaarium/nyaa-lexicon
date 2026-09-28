@@ -1,12 +1,36 @@
 // Walks over a C token list: code neighbors, qualified names, ranges and doc comments.
 
-import { comparePositions, type Range } from "@nyaa-lexicon/protocol";
+import { comparePositions, type OffsetRange, type Range } from "@nyaa-lexicon/protocol";
 import type { DescriptorPath, QualifiedName } from "./model.js";
-import { type CToken, previousSignificant, syntaxValue } from "./tokens.js";
+import type { CToken, TokenKind } from "./tokens.js";
 import { isIdentifierToken } from "./words.js";
 
 ////////////////////////////////
+//  Constants
+
+/**
+ * Whether a token's text is syntax rather than data.
+ *
+ * Keyed by TokenKind, so a new kind must declare itself instead of defaulting into the parser.
+ */
+const CARRIES_SYNTAX: Record<TokenKind, boolean> = {
+	identifier: true,
+	number: true,
+	symbol: true,
+	newline: true,
+	string: false,
+	char: false,
+	comment: false,
+};
+
+////////////////////////////////
 //  Functions & Helpers
+
+/** A token's text as syntax, empty for the kinds whose text is content the program merely holds. */
+export function syntaxValue(token: CToken | undefined): string {
+	if (token === undefined) return "";
+	return CARRIES_SYNTAX[token.kind] ? token.value : "";
+}
 
 export function tokenValue(tokens: CToken[], index: number): string {
 	return syntaxValue(tokens[index]);
@@ -78,6 +102,26 @@ export function qualifiedNameForIdentifier(tokens: CToken[], index: number, end:
 	return qualifiedNameAt(tokens, component, end);
 }
 
+/** Last token of Ghidra's dotted type name from `index`, as in `anon_struct.conflict71c`; `index` when none follows. */
+export function dottedEnd(tokens: CToken[], index: number): number {
+	let end = index;
+	for (;;) {
+		const last = tokens[end];
+		const dot = tokens[end + 1];
+		const part = tokens[end + 2];
+		if (!isIdentifierToken(last) || syntaxValue(dot) !== "." || !isIdentifierToken(part)) return end;
+		if (dot?.startOffset !== last.endOffset || part.startOffset !== dot.endOffset) return end;
+		end += 2;
+	}
+}
+
+/** The name tokens `start` through `end` spell. */
+export function spelledName(tokens: CToken[], start: number, end: number): string {
+	const parts: string[] = [];
+	for (let index = start; index <= end; index++) parts.push((tokens[index] as CToken).raw);
+	return parts.join("");
+}
+
 export function descriptorKey(path: DescriptorPath): string {
 	return path
 		.map((descriptor) => `${descriptor.kind}:${descriptor.name}:${descriptor.disambiguator ?? ""}`)
@@ -122,19 +166,32 @@ export function declarationRangeStart(tokens: CToken[], start: number): number {
 	return docBefore(tokens, start) ?? start;
 }
 
-export function hasTopLevelValue(tokens: CToken[], start: number, end: number, wanted: string): boolean {
-	let parentheses = 0;
-	let brackets = 0;
-	let braces = 0;
-	for (let index = start; index < end; index++) {
-		const value = syntaxValue(tokens[index]);
-		if (value === "(") parentheses++;
-		else if (value === ")") parentheses--;
-		else if (value === "[") brackets++;
-		else if (value === "]") brackets--;
-		else if (value === "{") braces++;
-		else if (value === "}") braces--;
-		else if (value === wanted && parentheses === 0 && brackets === 0 && braces === 0) return true;
+/** `range` grown to cover `more`. */
+export function widened(range: OffsetRange | undefined, more: OffsetRange): OffsetRange {
+	if (range === undefined) return more;
+	return { start: Math.min(range.start, more.start), end: Math.max(range.end, more.end) };
+}
+
+export function tokenRange(token: CToken): Range {
+	return { start: token.start, end: token.end };
+}
+
+export function significant(tokens: CToken[], index: number): number {
+	let next = index;
+	while (next < tokens.length) {
+		const token = tokens[next] as CToken;
+		if (token.kind !== "comment" && token.kind !== "newline") return next;
+		next++;
 	}
-	return false;
+	return -1;
+}
+
+export function previousSignificant(tokens: CToken[], index: number): number {
+	let previous = index - 1;
+	while (previous >= 0) {
+		const token = tokens[previous] as CToken;
+		if (token.kind !== "comment" && token.kind !== "newline") return previous;
+		previous--;
+	}
+	return -1;
 }

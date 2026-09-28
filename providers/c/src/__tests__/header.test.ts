@@ -102,7 +102,7 @@ describe("C declaration headers", () => {
 		});
 	});
 
-	test("a header holds the tokens the parser read: no removed branch, Ghidra's warning suffix kept", () => {
+	test("a header holds the code the parser read: no directive line or removed branch, Ghidra's warning suffix kept", () => {
 		const read = signatures(
 			[
 				"int pick(",
@@ -114,23 +114,38 @@ describe("C declaration headers", () => {
 				") { return 0; }",
 				"int flag = (seed",
 				"// WARNING: Load size is inaccurate);",
+				"__attribute__((destructor))",
+				'#include "late.h"',
+				"void cleanup(void) {}",
 			].join("\n"),
 		);
 
-		expect(read.get("pick")).toContain("int kept");
-		expect(read.get("pick")).not.toContain("dropped");
+		expect(read.get("pick")).toBe("int pick(int kept)");
 		expect(read.get("flag")).toBe("int flag = (seed)");
+		expect(read.get("cleanup")).toBe("__attribute__((destructor)) void cleanup(void)");
 	});
 
-	test("a literal keeps its spacing and escapes its line break and tab", () => {
+	test("a literal keeps its spacing, joins its spliced lines, and escapes its tab", () => {
 		const read = signatures(
-			['static const char *SEP = "a  b",', '\t*DOC = "one\\', '  two";', "char tab = '\t';"].join("\n"),
+			[
+				'static const char *SEP = "a  b",',
+				'\t*DOC = "one\\',
+				'  two";',
+				"char tab = '\t';",
+				"int spliced = 12\\",
+				"34 + \\",
+				"5;",
+				"int shifted = 1 <\\",
+				"< 2;",
+			].join("\n"),
 		);
 
 		expect(Object.fromEntries(read)).toEqual({
 			SEP: 'static const char *SEP = "a  b"',
-			DOC: 'static const char *DOC = "one\\\\n  two"',
+			DOC: 'static const char *DOC = "one  two"',
 			tab: "char tab = '\\t'",
+			spliced: "int spliced = 1234 + 5",
+			shifted: "int shifted = 1 << 2",
 		});
 	});
 

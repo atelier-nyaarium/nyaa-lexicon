@@ -4,7 +4,7 @@ import type { CommentSpan, Diagnostic } from "@nyaa-lexicon/protocol";
 import type { ConditionalFrame, DelimiterEntry, Directive } from "./model.js";
 import type { CToken } from "./tokens.js";
 import { nextCode, previousCode, tokenValue } from "./tokenWalk.js";
-import { CLOSERS, OPENERS } from "./words.js";
+import { ATTRIBUTE_SPECIFIERS, CLOSERS, OPENERS } from "./words.js";
 
 ////////////////////////////////
 //  Classes
@@ -23,6 +23,9 @@ export class CStructure {
 	protected readonly directiveTokens = new Set<number>();
 
 	protected readonly includePathTokens = new Set<number>();
+
+	/** Inside `__attribute__((...))`, `__declspec(...)` or `[[...]]`. */
+	protected readonly attributeTokens = new Set<number>();
 
 	protected readonly diagnostics: Diagnostic[];
 
@@ -66,6 +69,23 @@ export class CStructure {
 		this.structured = true;
 		this.buildDirectives();
 		this.buildPairs();
+		this.buildAttributes();
+	}
+
+	private buildAttributes(): void {
+		for (let index = 0; index < this.tokens.length; index++) {
+			const token = this.tokens[index] as CToken;
+			const specifier = token.kind === "identifier" && ATTRIBUTE_SPECIFIERS.has(token.value);
+			if ((!specifier && tokenValue(this.tokens, index) !== "[") || this.directiveTokens.has(index)) continue;
+			const next = nextCode(this.tokens, index + 1);
+			let open = -1;
+			if (specifier && tokenValue(this.tokens, next) === "(") open = next;
+			else if (!specifier && tokenValue(this.tokens, next) === "[") open = index;
+			const close = open < 0 ? undefined : this.pairs.get(open);
+			if (close === undefined || close < open) continue;
+			for (let member = open; member <= close; member++) this.attributeTokens.add(member);
+			index = close;
+		}
 	}
 
 	private buildPairs(): void {
@@ -152,9 +172,9 @@ export class CStructure {
 
 	protected buildConditionals(): void {
 		const stack: ConditionalFrame[] = [];
+		let key = "";
+		let group = "";
 		for (let index = 0; index < this.tokens.length; index++) {
-			const key = stack.map((frame) => `${frame.id}:${frame.branch}`).join("|");
-			const group = stack.map((frame) => String(frame.id)).join("|");
 			this.conditionalByIndex.set(index, key);
 			this.conditionalGroupByIndex.set(index, group);
 			const directive = this.directives.get(index);
@@ -164,7 +184,7 @@ export class CStructure {
 				case "ifdef":
 				case "ifndef":
 					this.conditionalSerial++;
-					stack.push({ id: this.conditionalSerial, branch: 0 });
+					stack.push({ id: this.conditionalSerial, branch: 0, outerKey: key, outerGroup: group });
 					break;
 				case "elif":
 				case "else": {
@@ -172,12 +192,19 @@ export class CStructure {
 					if (frame !== undefined) frame.branch++;
 					break;
 				}
-				case "endif":
-					stack.pop();
-					break;
+				case "endif": {
+					const frame = stack.pop();
+					key = frame?.outerKey ?? key;
+					group = frame?.outerGroup ?? group;
+					continue;
+				}
 				default:
-					break;
+					continue;
 			}
+			const frame = stack.at(-1);
+			if (frame === undefined) continue;
+			key = `${frame.outerKey}${frame.outerKey === "" ? "" : "|"}${frame.id}:${frame.branch}`;
+			group = `${frame.outerGroup}${frame.outerGroup === "" ? "" : "|"}${frame.id}`;
 		}
 	}
 }

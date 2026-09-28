@@ -57,10 +57,16 @@ export const C_KEYWORDS: ReadonlySet<string> = new Set([
 	"false",
 	"true",
 	"typeof",
+	"typeof_unqual",
+	"__alignof",
+	"__alignof__",
 	"__asm",
 	"__asm__",
+	"__attribute",
 	"__attribute__",
 	"__declspec",
+	"__typeof",
+	"__typeof__",
 	"__extension__",
 	"__inline",
 	"__inline__",
@@ -134,6 +140,14 @@ export const TYPE_OPERATORS: ReadonlySet<string> = new Set([
 export const ASM_LABELS: ReadonlySet<string> = new Set(["asm", "__asm", "__asm__"]);
 
 export const ALIGNMENT_SPECIFIERS: ReadonlySet<string> = new Set(["_Alignas", "alignas"]);
+
+/** Specifiers whose arguments name nothing a declaration holds. */
+export const ATTRIBUTE_SPECIFIERS: ReadonlySet<string> = new Set(["__attribute__", "__attribute", "__declspec"]);
+
+/** Statements whose `(...)` a body follows. */
+export const CONTROL_WORDS: ReadonlySet<string> = new Set(["if", "for", "while", "switch"]);
+
+export const TAG_WORDS: ReadonlySet<string> = new Set(["struct", "union", "enum"]);
 
 /** Declaration words a type spelling omits. */
 export const UNSPELLED_WORDS: ReadonlySet<string> = new Set([
@@ -241,8 +255,6 @@ export const ASSIGNMENT_OPERATORS: ReadonlySet<string> = new Set([
 
 /** Member access and designators. */
 export const MEMBER_OPERATORS: ReadonlySet<string> = new Set([".", "->"]);
-
-export const COMMA: ReadonlySet<string> = new Set([","]);
 
 export const OPENERS: ReadonlySet<string> = new Set(["(", "[", "{"]);
 
