@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SessionProject } from "@nyaa-lexicon/core";
+import { defined, type NoteAuthor } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import type { BindingDeps } from "./binding.js";
 import { nothingBoundMessage } from "./binding.js";
@@ -9,7 +10,10 @@ import {
 	coChangedWith,
 	DESCRIBE_DESCRIPTION,
 	DescribeSymbolInput,
+	DOUBT_NOTE_DESCRIPTION,
+	DoubtNoteInput,
 	describeSymbol,
+	doubtNote,
 	FILE_HISTORY_DESCRIPTION,
 	FIND_COMMENTS_DESCRIPTION,
 	FIND_IMPORTS_DESCRIPTION,
@@ -24,24 +28,19 @@ import {
 	findImports,
 	findLiterals,
 	findReferences,
-	INVALIDATE_ANSWER_DESCRIPTION,
-	InvalidateAnswerInput,
-	invalidateAnswer,
-	KNOWLEDGE_GAPS_DESCRIPTION,
-	KnowledgeGapsInput,
-	knowledgeGaps,
 	MOST_REFERENCED_DESCRIPTION,
 	MostReferencedInput,
 	mostReferenced,
+	NOTE_BACKLINKS_DESCRIPTION,
+	NoteBacklinksInput,
+	noteBacklinks,
 	OUTLINE_MODULE_DESCRIPTION,
 	OutlineModuleInput,
 	OVERVIEW_DESCRIPTION,
 	OverviewInput,
 	outlineModule,
 	overview,
-	REAFFIRM_ANSWER_DESCRIPTION,
-	RECALL_ANSWER_DESCRIPTION,
-	RECORD_ANSWER_DESCRIPTION,
+	READ_NOTE_DESCRIPTION,
 	REFACTOR_COMMIT_DESCRIPTION,
 	REFACTOR_INSERT_DESCRIPTION,
 	REFACTOR_MOVE_DESCRIPTION,
@@ -55,9 +54,7 @@ import {
 	REFACTOR_UNDO_DESCRIPTION,
 	REFERENCES_DESCRIPTION,
 	RESOLVE_IMPORT_DESCRIPTION,
-	ReaffirmAnswerInput,
-	RecallAnswerInput,
-	RecordAnswerInput,
+	ReadNoteInput,
 	RefactorCommitInput,
 	RefactorInsertInput,
 	RefactorMoveInput,
@@ -67,9 +64,7 @@ import {
 	RefactorRevertInput,
 	RefactorTrackInput,
 	ResolveImportInput,
-	reaffirmAnswer,
-	recallAnswer,
-	recordAnswer,
+	readNote,
 	refactorCommit,
 	refactorInsert,
 	refactorMove,
@@ -86,15 +81,12 @@ import {
 	SEARCH_SYMBOLS_DESCRIPTION,
 	SearchDocsInput,
 	SearchSymbolsInput,
-	SYMBOL_FACTS_DESCRIPTION,
 	SYMBOL_HISTORY_DESCRIPTION,
 	SYMBOL_SOURCE_DESCRIPTION,
-	SymbolFactsInput,
 	SymbolHistoryInput,
 	SymbolSourceInput,
 	searchDocs,
 	searchSymbols,
-	symbolFacts,
 	symbolHistory,
 	symbolSource,
 	type ToolBackend,
@@ -102,6 +94,9 @@ import {
 	TYPE_OF_DESCRIPTION,
 	TypeOfInput,
 	typeOfSymbol,
+	WRITE_NOTE_DESCRIPTION,
+	WriteNoteInput,
+	writeNote,
 } from "./tools.js";
 
 ////////////////////////////////
@@ -116,6 +111,8 @@ interface ProjectToolDefinition {
 	description: string;
 	scope: ProjectToolScope;
 	batch?: boolean;
+	/** The harness names the author from the client handshake. */
+	authored?: boolean;
 	queryValidation?: QueryValidation;
 	input: Record<string, z.ZodType>;
 	handler: (...args: never[]) => Promise<ToolResult>;
@@ -340,14 +337,6 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		handler: fileHistory,
 	},
 	{
-		name: "symbol_facts",
-		title: `Symbol Facts`,
-		description: SYMBOL_FACTS_DESCRIPTION,
-		scope: "query",
-		input: SymbolFactsInput,
-		handler: symbolFacts,
-	},
-	{
 		name: "symbol_history",
 		title: `Symbol History`,
 		description: SYMBOL_HISTORY_DESCRIPTION,
@@ -356,44 +345,38 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		handler: symbolHistory,
 	},
 	{
-		name: "record_answer",
-		title: `Record Answer`,
-		description: RECORD_ANSWER_DESCRIPTION,
-		scope: "mutation",
-		input: RecordAnswerInput,
-		handler: recordAnswer,
-	},
-	{
-		name: "recall_answer",
-		title: `Recall Answer`,
-		description: RECALL_ANSWER_DESCRIPTION,
+		name: "read_note",
+		title: `Read Note`,
+		description: READ_NOTE_DESCRIPTION,
 		scope: "query",
-		input: RecallAnswerInput,
-		handler: recallAnswer,
+		input: ReadNoteInput,
+		handler: readNote,
 	},
 	{
-		name: "invalidate_answer",
-		title: `Invalidate Answer`,
-		description: INVALIDATE_ANSWER_DESCRIPTION,
+		name: "write_note",
+		title: `Write Note`,
+		description: WRITE_NOTE_DESCRIPTION,
 		scope: "mutation",
-		input: InvalidateAnswerInput,
-		handler: invalidateAnswer,
+		authored: true,
+		input: WriteNoteInput,
+		handler: writeNote,
 	},
 	{
-		name: "reaffirm_answer",
-		title: `Reaffirm Answer`,
-		description: REAFFIRM_ANSWER_DESCRIPTION,
+		name: "doubt_note",
+		title: `Doubt Note`,
+		description: DOUBT_NOTE_DESCRIPTION,
 		scope: "mutation",
-		input: ReaffirmAnswerInput,
-		handler: reaffirmAnswer,
+		authored: true,
+		input: DoubtNoteInput,
+		handler: doubtNote,
 	},
 	{
-		name: "knowledge_gaps",
-		title: `Knowledge Gaps`,
-		description: KNOWLEDGE_GAPS_DESCRIPTION,
+		name: "note_backlinks",
+		title: `Note Backlinks`,
+		description: NOTE_BACKLINKS_DESCRIPTION,
 		scope: "query",
-		input: KnowledgeGapsInput,
-		handler: knowledgeGaps,
+		input: NoteBacklinksInput,
+		handler: noteBacklinks,
 	},
 	{
 		name: "overview",
@@ -506,6 +489,13 @@ function selectProjects(
 	return Array.isArray(selected) ? { projects: selected, args } : selected;
 }
 
+/** The MCP client as it named itself; it cannot attest a model. */
+function clientAuthor(server: McpServer): NoteAuthor | undefined {
+	const client = server.server.getClientVersion();
+	if (client === undefined || client.name === "") return undefined;
+	return { kind: "client", name: client.name, version: client.version === "" ? null : client.version };
+}
+
 function isToolResult(value: Selection | ToolResult): value is ToolResult {
 	return "content" in value;
 }
@@ -575,10 +565,16 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 	for (const definition of PROJECT_TOOL_DEFINITIONS) {
 		const batched = definition.scope === "query" && (!("batch" in definition) || definition.batch !== false);
 		const queryValidation = "queryValidation" in definition ? definition.queryValidation : undefined;
-		const handler = definition.handler as unknown as (
+		const run = definition.handler as unknown as (
 			backend: ToolBackend,
 			args: Record<string, unknown>,
 		) => Promise<ToolResult>;
+		// Read per call: the handshake lands after registration.
+		const handler =
+			"authored" in definition && definition.authored
+				? (backend: ToolBackend, args: Record<string, unknown>) =>
+						run(backend, { ...args, ...defined({ author: clientAuthor(server) }) })
+				: run;
 		const selector = batched
 			? { queries: queryBatch(definition.input, queryValidation), projects: QUERY_PROJECTS }
 			: definition.scope === "query"

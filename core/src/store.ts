@@ -62,6 +62,7 @@ import {
 	keptBlobs,
 } from "./journalSchema.js";
 import { stampSeen } from "./lastSeen.js";
+import { NoteRows, seedNotesFromAnswers } from "./noteRows.js";
 import type { PatternDigest } from "./patternDigest.js";
 import { normalizeDocText } from "./proseText.js";
 import type { ScopeFilter } from "./scope.js";
@@ -545,6 +546,9 @@ const WORKSPACE_KEY = "workspaceRoot";
 /** Carries the ledger id across rebuilds. */
 const LEDGER_KEY = "refactorLedger";
 
+/** Set once describe answers have seeded notes; carried across rebuilds so a removed note stays removed. */
+const NOTES_SEEDED_KEY = "notesSeeded";
+
 /** Preserve journals needed to recover disk edits. */
 const SALVAGED_JOURNAL: readonly string[] = JOURNAL_TABLE_NAMES.filter((table) => {
 	const entry: JournalTable = JOURNAL_TABLES[table];
@@ -670,6 +674,70 @@ function restoreKnowledge(db: DatabaseSync, salvaged: SalvagedKnowledge, now: nu
 		const subjectId = placed.get(row);
 		if (subjectId === undefined) continue;
 		gap.run(subjectId, row.question, row.recordedAs, row.askCount, row.lastAsked);
+	}
+
+	// A note's links and proposal follow the note to wherever it was placed.
+	const notePlaced = new Map<string, string>();
+	const note = db.prepare(
+		`INSERT INTO symbol_notes (subjectId, recordedAs, revision, summary, description, why, gotchas, author,
+		 authoredAt, editedBy, editedAt, confirmedBy, confirmedAt, sourceDigest, doubtBy, doubtReason, doubtAt)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	);
+	for (const row of rows.notes) {
+		if (row.subjectId !== null && refused.has(row.subjectId)) {
+			unplaced++;
+			continue;
+		}
+		const placement = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
+		if (!placement.placed || notePlaced.has(placement.subjectId)) {
+			unplaced++;
+			continue;
+		}
+		if (row.subjectId !== null) notePlaced.set(row.subjectId, placement.subjectId);
+		note.run(
+			placement.subjectId,
+			row.recordedAs,
+			row.revision,
+			row.summary,
+			row.description,
+			row.why,
+			row.gotchas,
+			row.author,
+			row.authoredAt,
+			row.editedBy,
+			row.editedAt,
+			row.confirmedBy,
+			row.confirmedAt,
+			row.sourceDigest,
+			row.doubtBy,
+			row.doubtReason,
+			row.doubtAt,
+		);
+	}
+	const link = db.prepare(
+		"INSERT OR IGNORE INTO symbol_note_links (subjectId, field, written, target, targetDigest) VALUES (?, ?, ?, ?, ?)",
+	);
+	for (const row of rows.noteLinks) {
+		const subjectId = notePlaced.get(row.subjectId);
+		if (subjectId !== undefined) link.run(subjectId, row.field, row.written, row.target, row.targetDigest);
+	}
+	const proposal = db.prepare(
+		`INSERT OR IGNORE INTO symbol_note_proposals (subjectId, baseRevision, summary, description, why, gotchas,
+		 proposedBy, proposedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	);
+	for (const row of rows.noteProposals) {
+		const subjectId = notePlaced.get(row.subjectId);
+		if (subjectId === undefined) continue;
+		proposal.run(
+			subjectId,
+			row.baseRevision,
+			row.summary,
+			row.description,
+			row.why,
+			row.gotchas,
+			row.proposedBy,
+			row.proposedAt,
+		);
 	}
 
 	for (const table of SALVAGED_JOURNAL) restoreByColumn(db, table, salvaged[table] ?? []);
@@ -922,6 +990,8 @@ function namesOf(entries: readonly SurfaceEntry[]): string[] {
 export class IndexStore {
 	/** The one owner of knowledge identity. */
 	readonly subjects: KnowledgeSubjects;
+	/** Note rows, keyed by subject. */
+	readonly notes: NoteRows;
 
 	/** The newest stamp written or held, so no two commits share one. */
 	private newestStamp: number;
@@ -935,7 +1005,13 @@ export class IndexStore {
 		private readonly clock: Clock,
 	) {
 		this.subjects = new KnowledgeSubjects(db, (changed) => this.recordKnowledgeWrite(changed));
+		this.notes = new NoteRows(db, (changed) => this.recordKnowledgeWrite(changed));
 		this.newestStamp = this.newestIndexedAt() ?? 0;
+	}
+
+	/** Runs a note write in one transaction, so a note and its links never land apart. */
+	noteWrite<T>(work: () => T): T {
+		return this.inTransaction(work);
 	}
 
 	/** The later of the clock and one past the newest: two commits in one millisecond stay ordered. */
@@ -1003,6 +1079,7 @@ export class IndexStore {
 		const stored = version === SCHEMA_VERSION ? readMeta(db, COMPATIBILITY_KEY) : null;
 		// Preserve the ledger id across rebuilds.
 		const ledger = readMeta(db, LEDGER_KEY);
+		const seeded = readMeta(db, NOTES_SEEDED_KEY);
 		// Read before a rebuild creates it: a store without the table journaled its moves as JSON.
 		const liftRebinds = !tableExists(db, "refactor_rebinds");
 		if (version === SCHEMA_VERSION && compatibility != null && stored !== null && stored !== compatibility) {
@@ -1134,6 +1211,17 @@ export class IndexStore {
 		`);
 		installRevisionTriggers(db);
 		if (readMeta(db, LEDGER_KEY) === null) writeMeta(db, LEDGER_KEY, ledger ?? randomUUID());
+		if (readMeta(db, NOTES_SEEDED_KEY) === null) {
+			db.exec("BEGIN");
+			try {
+				if (seeded === null) seedNotesFromAnswers(db);
+				writeMeta(db, NOTES_SEEDED_KEY, seeded ?? String(clock.now()));
+				db.exec("COMMIT");
+			} catch (error) {
+				db.exec("ROLLBACK");
+				throw error;
+			}
+		}
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {
@@ -2396,6 +2484,33 @@ export class IndexStore {
 		if (regex === undefined) return rows;
 
 		return rows.filter((row) => regex.test(row.name)).slice(0, options.limit);
+	}
+
+	/** Declarations whose name contains `text`, any case: exact names first, then prefixes, then shortest. */
+	symbolsNamedLike(text: string, limit: number, offset = 0): StoredDeclaration[] {
+		const escaped = likePattern(text);
+		return this.db
+			.prepare(
+				`SELECT * FROM symbols WHERE name LIKE ? ESCAPE '\\'
+				 ORDER BY (name = ? COLLATE NOCASE) DESC, (name LIKE ? ESCAPE '\\') DESC, length(name), module, startLine
+				 LIMIT ? OFFSET ?`,
+			)
+			.all(`%${escaped}%`, text, `${escaped}%`, limit, offset)
+			.map(rowToDeclaration);
+	}
+
+	/** Indexed files whose path contains `text`, any case: a name starting with it first, then shortest. */
+	filesNamedLike(text: string, limit: number): string[] {
+		const escaped = likePattern(text);
+		// The directory part is what rtrim leaves once every character but '/' is trimmed away.
+		const rows = this.db
+			.prepare(
+				`SELECT module FROM files WHERE module LIKE ? ESCAPE '\\'
+				 ORDER BY (substr(module, length(rtrim(module, replace(module, '/', ''))) + 1) LIKE ? ESCAPE '\\') DESC,
+				 length(module), module LIMIT ?`,
+			)
+			.all(`%${escaped}%`, `${escaped}%`, limit) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
 	}
 
 	/** Imports whose specifier contains this text. "Which files import X", by the name as written. */

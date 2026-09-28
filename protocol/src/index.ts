@@ -10,6 +10,14 @@ export {
 	systemTimer,
 } from "./boundedChild.js";
 export {
+	type ChainCandidate,
+	type ChainFrontier,
+	type ChainWalk,
+	chainAvailable,
+	chainOf,
+	walkChain,
+} from "./chain.js";
+export {
 	comparePositions,
 	coordinatesOf,
 	type OffsetRange,
@@ -440,6 +448,38 @@ export {
 	type MoveRefusal,
 	MoveRefusalSchema,
 } from "./move.js";
+export { type FoundRef, findRefs, formatRef, type ParsedRef, parseRef, REF_SCHEME, type RefParse } from "./noteRefs.js";
+export {
+	ConfirmNoteRequestSchema,
+	DoubtNoteRequestSchema,
+	NOT_APPLICABLE,
+	NOTE_FIELDS,
+	type Note,
+	type NoteAuthor,
+	NoteAuthorSchema,
+	type NoteBacklinks,
+	NoteBacklinksRequestSchema,
+	NoteBacklinksSchema,
+	type NoteField,
+	NoteFieldSchema,
+	type NoteLink,
+	NoteLinkSchema,
+	type NoteOutcome,
+	NoteOutcomeSchema,
+	type NoteProposal,
+	NoteProposalSchema,
+	type NoteRefProblem,
+	NoteRefProblemSchema,
+	NoteSchema,
+	ReadNoteRequestSchema,
+	type RefCandidate,
+	RefCandidateSchema,
+	ResolveNoteProposalRequestSchema,
+	type SearchRefs,
+	SearchRefsRequestSchema,
+	SearchRefsSchema,
+	WriteNoteRequestSchema,
+} from "./noteShapes.js";
 export { withOccurrences } from "./occurrences.js";
 export { type PaintFacts, PaintFactsSchema } from "./paint.js";
 export { err, formatFailure, ok, type ParseFailure, type ParseResult, safeDigits } from "./parseResult.js";

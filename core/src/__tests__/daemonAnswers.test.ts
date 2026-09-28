@@ -167,6 +167,8 @@ function recordedAnswerId(): string {
 
 let doubtToken = "";
 
+const AGENT = { kind: "agent", model: "gpt-6-luna", via: "test", run: null } as const;
+
 /** One per method. Each asks its own method at least once and asserts what the fixture makes true. */
 const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	findByName: async () => {
@@ -453,6 +455,69 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect(outcome.resolved.map((entry) => entry.fact)).toEqual(["declaration", "answer"]);
 		expect(outcome.missing).toEqual(["ghost"]);
 	},
+	writeNote: async () => {
+		const note = {
+			symbolId: harness.symbol("add", "cart.ref"),
+			summary: "Adds one item to a [Cart](ref://cart.ref:Cart).",
+			description: "n/a",
+			why: "N/A",
+			gotchas: "n/a",
+			expectedRevision: 0,
+			author: AGENT,
+		};
+		const broken = await ask("writeNote", { ...note, summary: "Adds to a [cart](ref://cart.ref:Ghost)." });
+		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain("ref://cart.ref:Cart");
+		const saved = await ask("writeNote", note);
+		expect(saved.outcome === "saved" && saved.note).toMatchObject({
+			revision: 1,
+			why: null,
+			links: [{ state: "ok", symbolId: cart }],
+		});
+	},
+	readNote: async () => {
+		expect(await ask("readNote", { symbolId: harness.symbol("add", "cart.ref") })).toMatchObject({ revision: 1 });
+		expect(await ask("readNote", { symbolId: cart })).toBeNull();
+	},
+	doubtNote: async () => {
+		const symbolId = harness.symbol("add", "cart.ref");
+		const outcome = await ask("doubtNote", { symbolId, reason: "it adds two", expectedRevision: 1 });
+		expect(outcome.outcome === "saved" && outcome.note?.doubt?.reason).toBe("it adds two");
+	},
+	confirmNote: async () => {
+		const symbolId = harness.symbol("add", "cart.ref");
+		const outcome = await ask("confirmNote", { symbolId, expectedRevision: 1, author: { kind: "person" } });
+		expect(outcome.outcome === "saved" && outcome.note).toMatchObject({
+			doubt: null,
+			confirmedBy: { kind: "person" },
+		});
+	},
+	resolveNoteProposal: async () => {
+		const symbolId = harness.symbol("add", "cart.ref");
+		const fields = { summary: "Adds one item.", description: "n/a", why: "n/a", gotchas: "n/a" };
+		const proposed = await ask("writeNote", { symbolId, ...fields, expectedRevision: 1, author: AGENT });
+		expect(proposed.outcome).toBe("proposed");
+		const accepted = await ask("resolveNoteProposal", { symbolId, accept: true, expectedRevision: 1 });
+		expect(accepted.outcome === "saved" && accepted.note).toMatchObject({ revision: 2, summary: "Adds one item." });
+	},
+	searchRefs: async () => {
+		const found = await ask("searchRefs", { text: "car", limit: 10 });
+		expect(found.results.map((entry) => entry.ref)).toEqual(
+			expect.arrayContaining(["ref://cart.ref:Cart", "ref://cart.ref"]),
+		);
+		expect((await ask("searchRefs", { text: " " })).results).toEqual([]);
+	},
+	noteBacklinks: async () => {
+		const symbolId = harness.symbol("add", "cart.ref");
+		const fields = {
+			summary: "Fills a [Cart](ref://cart.ref:Cart).",
+			description: "n/a",
+			why: "n/a",
+			gotchas: "n/a",
+		};
+		await ask("writeNote", { symbolId, ...fields, expectedRevision: 2, author: { kind: "person" } });
+		const backlinks = await ask("noteBacklinks", { symbolId: cart });
+		expect(backlinks.notes.map((entry) => entry.symbolId)).toEqual([symbolId]);
+	},
 
 	// Refactoring, in the order the plan runs it; the three steps this provider cannot do refuse.
 	refactorStart: async () => {
@@ -599,6 +664,12 @@ const KNOWLEDGE = [
 	"recallAnswer",
 	"reaffirmAnswer",
 	"resolveFacts",
+	"writeNote",
+	"readNote",
+	"doubtNote",
+	"confirmNote",
+	"resolveNoteProposal",
+	"noteBacklinks",
 ] as const satisfies readonly DaemonMethod[];
 
 const REFACTOR = [

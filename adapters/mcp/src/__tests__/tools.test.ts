@@ -3,9 +3,11 @@ import type { DescribeResult, SymbolSummary } from "@nyaa-lexicon/core";
 import type { StoredDeclaration } from "@nyaa-lexicon/protocol";
 import {
 	describeSymbol,
+	doubtNote,
 	findReferences,
-	knowledgeGaps,
+	noteBacklinks,
 	outlineModule,
+	readNote,
 	refactorMove,
 	refactorPreview,
 	refactorRename,
@@ -15,10 +17,10 @@ import {
 	resolveImport,
 	searchDocs,
 	searchSymbols,
-	symbolFacts,
 	symbolSource,
 	type ToolBackend,
 	typeOfSymbol,
+	writeNote,
 } from "../tools";
 
 ////////////////////////////////
@@ -104,20 +106,11 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			lastTouched: null,
 			truncated: false,
 		}),
-		factsFor: async (symbolId) => ({ symbolId, facts: [], truncated: [] }),
 		commitsMentioning: async (name) => ({ name, mentions: [], commits: 0 }),
-		recordAnswer: async () => ({ recorded: false, reason: "not under test" }),
-		recallAnswer: async () => null,
-		recallAnswers: async () => [],
-		invalidateAnswer: async (symbolId) => ({ symbolId, doubted: [], noAnswer: [], refused: "not under test" }),
-		reaffirmAnswer: async () => ({ recorded: false, reason: "not under test" }),
-		knowledgeGaps: async (root, question) => ({
-			question: question ?? "describe",
-			rows: [],
-			total: 0,
-			external: 0,
-			truncated: false,
-		}),
+		readNote: async () => null,
+		writeNote: async () => ({ outcome: "refused", reason: "not under test" }),
+		doubtNote: async () => ({ outcome: "refused", reason: "not under test" }),
+		noteBacklinks: async () => ({ notes: [], total: 0 }),
 		overview: async () => ({
 			files: 0,
 			symbols: 0,
@@ -172,7 +165,8 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 	};
 }
 
-const RANGE = { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } };
+/** Every field answered, none saying anything. */
+const NOTHING = { summary: "n/a", description: "n/a", why: "n/a", gotchas: "n/a", expectedRevision: 0 };
 
 const described: DescribeResult = {
 	symbol: summary("Cart", { kind: "class", signature: "class Cart" }),
@@ -214,7 +208,10 @@ describe("resolving what the caller gave", () => {
 			await describeSymbol(dead, { symbolId: "x" }),
 			await findReferences(dead, { symbolId: "x" }),
 			await typeOfSymbol(dead, { symbolId: "x" }),
-			await symbolFacts(dead, { symbolId: "x" }),
+			await readNote(dead, { symbolId: "x" }),
+			await writeNote(dead, { symbolId: "x", ...NOTHING }),
+			await doubtNote(dead, { symbolId: "x", reason: "misleading", expectedRevision: 1 }),
+			await noteBacklinks(dead, { symbolId: "x" }),
 			await refactorPreview(dead, { symbolId: "x", newName: "y" }),
 		];
 
@@ -238,10 +235,6 @@ describe("resolving what the caller gave", () => {
 		expect(resolved).toBe(1);
 		expect(result.isError).toBe(true);
 		expect(JSON.stringify(result)).toContain("x diagnosed");
-
-		const facts = await symbolFacts(backend({ factsFor: async () => null }), { symbolId: "x" });
-		expect(facts.isError).toBe(true);
-		expect(JSON.stringify(facts)).toContain("x diagnosed");
 	});
 
 	it("refuses a symbol_source call naming both ids or neither, rather than picking one", async () => {
@@ -325,236 +318,86 @@ describe("resolving what the caller gave", () => {
 	});
 });
 
-describe("knowledge_gaps scopes", () => {
-	type Asked = { root: string | undefined; module: string | undefined };
+describe("the note tools", () => {
+	const CART = "lexicon ts src/a.ts Cart.";
+	const saved = {
+		symbolId: CART,
+		recordedAs: CART,
+		revision: 1,
+		summary: "Holds items.",
+		description: null,
+		why: null,
+		gotchas: null,
+		author: null,
+		authoredAt: 1,
+		editedBy: null,
+		editedAt: 1,
+		confirmedBy: null,
+		confirmedAt: null,
+		doubt: null,
+		sourceChanged: false,
+		links: [],
+		proposal: null,
+	};
 
-	function gapBackend(asked: Asked[]): ToolBackend {
-		return backend({
-			findByName: async () => [summary("Cart")],
-			knowledgeGaps: async (root, question, _limit, module) => {
-				asked.push({ root, module });
-				return {
-					question: question ?? "describe",
-					rows: [],
-					total: 0,
-					external: 0,
-					truncated: false,
-					filtered: true,
-					...(module === undefined ? {} : { scope: { module, declarations: 3 } }),
-				};
-			},
-		});
-	}
-
-	it("scopes to the file when only a module is given, and says so first", async () => {
-		const asked: Asked[] = [];
-		const result = await knowledgeGaps(gapBackend(asked), { module: "src/a.ts" });
-
-		expect(asked).toEqual([{ root: undefined, module: "src/a.ts" }]);
-		expect(result.content[0]?.text).toContain("In `src/a.ts`: no describe gaps");
+	it("reads a missing note as a finding, not a failure", async () => {
+		const result = await readNote(backend(), { symbolId: CART });
+		expect(result.isError).toBeUndefined();
 	});
 
-	it("treats a module beside a name as the name's qualifier, not the scope", async () => {
-		const asked: Asked[] = [];
-		const result = await knowledgeGaps(gapBackend(asked), { name: "Cart", module: "src/a.ts" });
-
-		expect(asked).toEqual([{ root: "lexicon ts src/a.ts Cart.", module: undefined }]);
-		expect(result.content[0]?.text).toContain("Under `lexicon ts src/a.ts Cart.`, leaves first: no describe gaps");
-
-		await knowledgeGaps(gapBackend(asked), { symbolId: "lexicon ts src/a.ts Cart." });
-		expect(asked[1]).toEqual({ root: "lexicon ts src/a.ts Cart.", module: undefined });
-	});
-
-	it("asks for the workspace when given nothing, and says so first", async () => {
-		const asked: Asked[] = [];
-		const result = await knowledgeGaps(gapBackend(asked), {});
-
-		expect(asked).toEqual([{ root: undefined, module: undefined }]);
-		expect(result.content[0]?.text).toContain("Workspace-wide: no describe gaps");
-	});
-
-	// The workspace demand list sweeps unhealthy answers to every question, and the page shown can
-	// be all one question while the total underneath mixes. So the header is decided by what the
-	// core says it filtered, never by inspecting the rows.
-	it("does not call the workspace demand list by the asked question, even when the page matches", async () => {
-		const page = backend({
-			knowledgeGaps: async () => ({
-				question: "why" as const,
-				rows: [
-					{
-						symbolId: "lexicon ts src/a.ts Cart.",
-						question: "why" as const,
-						why: "missing" as const,
-						askCount: 2,
-						fanIn: 3,
-					},
-				],
-				total: 4,
-				external: 0,
-				truncated: false,
-				filtered: false,
-			}),
-		});
-
-		const result = await knowledgeGaps(page, { question: "why" });
-
-		expect(result.content[0]?.text).toContain("4 gaps, ranked by demand, rechecks first");
-		expect(result.content[0]?.text).not.toContain("why gap");
-	});
-
-	it("still names the question where the scope filters by it", async () => {
-		const seeded = backend({
-			knowledgeGaps: async () => ({
-				question: "why" as const,
-				rows: [
-					{
-						symbolId: "lexicon ts src/a.ts Cart.",
-						question: "why" as const,
-						why: "missing" as const,
-						askCount: 0,
-						fanIn: 9,
-					},
-				],
-				total: 1,
-				external: 0,
-				truncated: false,
-				seeded: true,
-				filtered: true,
-			}),
-		});
-
-		const result = await knowledgeGaps(seeded, { question: "why" });
-
-		expect(result.content[0]?.text).toContain("unanswered why candidate");
-	});
-
-	it("names the question only when the core says it filtered, listed or empty, and never on an omitted flag", async () => {
-		const row = {
-			symbolId: "lexicon ts src/a.ts Cart.",
-			question: "why" as const,
-			why: "missing" as const,
-			askCount: 0,
-			fanIn: 9,
-		};
-		const answering = (rows: (typeof row)[], filtered: boolean | undefined) =>
+	it("resolves a name, then sends every field and the harness's author untouched", async () => {
+		const sent: unknown[] = [];
+		const author = { kind: "client" as const, name: "claude-code", version: null };
+		const result = await writeNote(
 			backend({
-				knowledgeGaps: async (_root, _question, _limit, module) => ({
-					question: "why" as const,
-					rows,
-					total: rows.length,
-					external: 0,
-					truncated: false,
-					scope: { module: module ?? "", declarations: 3 },
-					...(filtered === undefined ? {} : { filtered }),
-				}),
-			});
-		const header = async (rows: (typeof row)[], filtered: boolean | undefined) =>
-			(await knowledgeGaps(answering(rows, filtered), { module: "src/a.ts", question: "why" })).content[0]
-				?.text ?? "";
-
-		expect(await header([row], true)).toContain("1 why gap");
-		expect(await header([row], false)).toContain("1 gap");
-		expect(await header([row], false)).not.toContain("why gap");
-		expect(await header([row], undefined)).not.toContain("why gap");
-
-		expect(await header([], true)).toContain("no why gaps");
-		expect(await header([], false)).toContain("no gaps");
-		expect(await header([], undefined)).toContain("no gaps");
-		expect(await header([], undefined)).not.toContain("why gaps");
-
-		const seeded = (filtered: boolean | undefined) =>
-			backend({
-				knowledgeGaps: async () => ({
-					question: "why" as const,
-					rows: [row],
-					total: 1,
-					external: 0,
-					truncated: false,
-					seeded: true,
-					...(filtered === undefined ? {} : { filtered }),
-				}),
-			});
-		const seededHeader = async (filtered: boolean | undefined) =>
-			(await knowledgeGaps(seeded(filtered), { question: "why" })).content[0]?.text ?? "";
-		expect(await seededHeader(true)).toContain("unanswered why candidate");
-		expect(await seededHeader(false)).toContain("unanswered candidate");
-		expect(await seededHeader(undefined)).not.toContain("why candidate");
-	});
-
-	it("shows the stranded window apart from the work, and when nothing is actionable", async () => {
-		const stranded = {
-			symbolId: "lexicon ts src/gone.ts Cart.",
-			question: "describe" as const,
-			why: "stale" as const,
-			askCount: 0,
-			fanIn: 0,
-			stranded: true,
-			strandedAt: Date.UTC(2026, 7, 1),
-			evidence: "none",
-		};
-		const windowed = (rows: Array<typeof stranded | typeof row>, total: number) =>
-			backend({
-				knowledgeGaps: async () => ({
-					question: "describe" as const,
-					rows,
-					total,
-					external: 0,
-					truncated: false,
-					filtered: false,
-					stranded: 3,
-				}),
-			});
-		const row = { ...stranded, symbolId: "lexicon ts src/a.ts Cart.", stranded: false };
-
-		const empty = (await knowledgeGaps(windowed([stranded], 0), {})).content[0]?.text ?? "";
-		expect(empty).toContain("no gaps");
-		expect(empty).toContain("## Stranded");
-		expect(empty).toContain("| `Cart.` | describe | answer | 2026-08-01 | none |");
-		expect(empty).toContain("2 more stranded rows not shown");
-
-		const listed = (await knowledgeGaps(windowed([row, stranded], 1), {})).content[0]?.text ?? "";
-		expect(listed).toContain("1 gap, ranked by demand");
-		expect(listed.indexOf("## Stranded")).toBeGreaterThan(listed.indexOf("**Full ID example:**"));
-		expect(listed).not.toContain("| `Cart.` | `src/gone.ts` |");
-	});
-
-	it("says the staleness scan was skipped even when it lists no gaps", async () => {
-		const skipped = backend({
-			knowledgeGaps: async () => ({
-				question: "describe" as const,
-				rows: [],
-				total: 0,
-				external: 0,
-				truncated: false,
-				seeded: true,
-				filtered: true,
-				staleScanSkipped: true,
+				findByName: async () => [summary("Cart")],
+				writeNote: async (request) => {
+					sent.push(request);
+					return { outcome: "saved", note: saved };
+				},
 			}),
-		});
-
-		const result = await knowledgeGaps(skipped, {});
-
-		expect(result.content[0]?.text).toContain("no describe gaps");
-		expect(result.content[0]?.text).toContain("skipped its full staleness scan");
-	});
-
-	it("calls an unindexed file unindexed, never clean", async () => {
-		const result = await knowledgeGaps(
-			backend({
-				knowledgeGaps: async (_root, question, _limit, module) => ({
-					question: question ?? "describe",
-					rows: [],
-					total: 0,
-					external: 0,
-					truncated: false,
-					scope: { module: module ?? "", declarations: 0 },
-				}),
-			}),
-			{ module: "src/gone.ts" },
+			{ name: "Cart", ...NOTHING, summary: "Holds items.", author },
 		);
 
-		expect(result.content[0]?.text).toContain("holds no indexed declarations");
-		expect(result.content[0]?.text).not.toContain("no describe gaps");
+		expect(result.isError).toBeUndefined();
+		expect(sent).toEqual([{ symbolId: CART, ...NOTHING, summary: "Holds items.", author }]);
+	});
+
+	it("marks a refused write and a refused doubt as errors, and a proposal as neither", async () => {
+		const refusing = backend({
+			writeNote: async () => ({ outcome: "refused", reason: "stale revision", current: saved }),
+			doubtNote: async () => ({ outcome: "refused", reason: "no note stands" }),
+		});
+		expect((await writeNote(refusing, { symbolId: CART, ...NOTHING })).isError).toBe(true);
+		expect((await doubtNote(refusing, { symbolId: CART, reason: "misleading", expectedRevision: 1 })).isError).toBe(
+			true,
+		);
+
+		const proposing = backend({ writeNote: async () => ({ outcome: "proposed", note: saved }) });
+		expect((await writeNote(proposing, { symbolId: CART, ...NOTHING })).isError).toBeUndefined();
+	});
+
+	it("names a file when given a module alone, and resolves a symbol otherwise", async () => {
+		const asked: string[] = [];
+		const counting = backend({
+			findByName: async () => [summary("Cart")],
+			noteBacklinks: async (target) => {
+				asked.push(target);
+				return { notes: [{ symbolId: CART, summary: null, fields: ["description"] }], total: 1 };
+			},
+		});
+
+		await noteBacklinks(counting, { module: "src/a.ts" });
+		await noteBacklinks(counting, { name: "Cart", module: "src/a.ts" });
+
+		expect(asked).toEqual(["src/a.ts", CART]);
+	});
+
+	it("carries the note's summary on a describe", async () => {
+		const result = await describeSymbol(backend({ describe: async () => described, readNote: async () => saved }), {
+			symbolId: CART,
+		});
+		expect(result.content[0]?.text).toContain(saved.summary);
 	});
 });
 

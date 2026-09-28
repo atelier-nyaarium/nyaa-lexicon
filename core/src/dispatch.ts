@@ -287,6 +287,17 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			service.knowledgeGaps(params.root, params.question, params.limit, params.module),
 		),
 		knowledgeScope: read((params) => service.knowledgeScope(params)),
+		readNote: read((params) => service.readNote(params.symbolId)),
+		writeNote: write((params) => service.writeNote(params)),
+		confirmNote: write((params) => service.confirmNote(params.symbolId, params.expectedRevision, params.author)),
+		doubtNote: write((params) =>
+			service.doubtNote(params.symbolId, params.reason, params.expectedRevision, params.author),
+		),
+		resolveNoteProposal: write((params) =>
+			service.resolveNoteProposal(params.symbolId, params.accept, params.expectedRevision, params.author),
+		),
+		noteBacklinks: read((params) => service.noteBacklinks(params.symbolId, params.limit)),
+		searchRefs: read((params) => service.searchRefs(params.text, params.limit)),
 		diagnoseSubject: read((params) => service.diagnoseSubject(params.symbolId)),
 		typeOf: treeFirst(
 			(params) => params.symbolId,

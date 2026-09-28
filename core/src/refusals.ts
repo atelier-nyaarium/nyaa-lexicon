@@ -83,6 +83,65 @@ export function nothingToDoubt(symbolId: string): Refusal {
 }
 
 ////////////////////////////////
+//  Notes
+
+export function noteFieldsEmpty(fields: readonly string[]): Refusal {
+	return mint(`every field needs text, or \`n/a\` when nothing applies. Empty: ${fields.join(", ")}`);
+}
+
+export function noteSummaryOneLine(): Refusal {
+	return mint(`summary is one line. Move the rest into description`);
+}
+
+export function noteFieldTooLong(field: string, max: number, length: number): Refusal {
+	return mint(`${field} is at most ${max} characters, and this is ${length}`);
+}
+
+export function noteNotApplicable(kind: string): Refusal {
+	return mint(`${kind} is function-scoped and takes no note. Note the declaration that owns it`);
+}
+
+export function noteRevisionMoved(expected: number, current: number): Refusal {
+	return mint(
+		current === 0
+			? `no note stands, so expectedRevision is 0, not ${expected}`
+			: `the note is at revision ${current}, not ${expected}. Read it again and write over what stands`,
+	);
+}
+
+export function noteRefsRefused(count: number): Refusal {
+	return mint(`${count} ref${count === 1 ? " does" : "s do"} not resolve. Each is listed with candidates`);
+}
+
+export function noNoteStands(symbolId: string): Refusal {
+	return mint(`no note stands on ${symbolId}. \`write_note\` writes one`);
+}
+
+export function noProposalStands(symbolId: string): Refusal {
+	return mint(`no proposal waits on the note about ${symbolId}`);
+}
+
+export function refModuleNotIndexed(module: string): Refusal {
+	return mint(`${module} is not an indexed file`);
+}
+
+export function refNamesNothing(module: string): Refusal {
+	return mint(`names nothing in ${module}`);
+}
+
+export function refAmbiguous(count: number): Refusal {
+	return mint(`names ${count} declarations. Pick one of the candidates`);
+}
+
+export function refTargetGone(): Refusal {
+	return mint(`names nothing now; the symbol it named is gone`);
+}
+
+export function refNamesArguments(): Refusal {
+	return mint(`names a parameter list. Name the function, or one parameter after \`arguments\``);
+}
+
+////////////////////////////////
 //  Re-affirming
 
 export function noAnswerToReaffirm(question: string, symbolId: string): Refusal {

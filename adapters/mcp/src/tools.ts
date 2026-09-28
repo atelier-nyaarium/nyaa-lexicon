@@ -9,17 +9,11 @@ import type {
 	ContentTotals,
 	DescribeResult,
 	DocsResult,
-	FactSet,
 	FileHistory,
 	FileNotes,
 	IndexStatus,
-	InvalidateOutcome,
-	KnowledgeGaps,
 	LiteralsResult,
 	MovePlan,
-	QuestionClass,
-	RecalledAnswer,
-	RecordOutcome,
 	RefactorIssue,
 	ReferencesResult,
 	RenamePlan,
@@ -27,7 +21,7 @@ import type {
 	SymbolSummary,
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
-import { compileSearchRegex, QUESTION_CLASSES, searchTerm } from "@nyaa-lexicon/core";
+import { compileSearchRegex, searchTerm } from "@nyaa-lexicon/core";
 import type {
 	CoChangedWithResult,
 	CommitsMentioningResult,
@@ -37,6 +31,10 @@ import type {
 	InsertOutcome,
 	MostReferencedResult,
 	MoveOutcome,
+	Note,
+	NoteAuthor,
+	NoteBacklinks,
+	NoteOutcome,
 	RefactorCommitResult,
 	RefactorRevertResult,
 	RefactorStartResult,
@@ -60,21 +58,20 @@ import {
 	renderComments,
 	renderDescribe,
 	renderDocs,
-	renderFacts,
 	renderFileHistory,
 	renderImports,
 	renderInsertOutcome,
-	renderInvalidateOutcome,
-	renderKnowledge,
-	renderKnowledgeGaps,
 	renderLiterals,
 	renderMentions,
 	renderMostReferenced,
 	renderMoveOutcome,
 	renderMovePlan,
+	renderNote,
+	renderNoteBacklinks,
+	renderNoteLine,
+	renderNoteOutcome,
 	renderOutline,
 	renderOverview,
-	renderRecordOutcome,
 	renderRefactorCommit,
 	renderRefactorStart,
 	renderRefactorStatus,
@@ -138,29 +135,17 @@ export interface ToolBackend {
 	hubs: (limit?: number) => Promise<MostReferencedResult>;
 	overview: () => Promise<OverviewResult>;
 	fileHistory: (module: string) => Promise<FileHistory>;
-	factsFor: (symbolId: string, limit?: number) => Promise<FactSet | null>;
 	commitsMentioning: (name: string, limit?: number) => Promise<CommitsMentioningResult>;
-	recordAnswer: (
-		symbolId: string,
-		question: QuestionClass,
-		prose: string,
-		citations: string[],
-		options?: { model?: string; resolvesDoubt?: string },
-	) => Promise<RecordOutcome>;
-	recallAnswer: (symbolId: string, question: QuestionClass) => Promise<RecalledAnswer | null>;
-	recallAnswers: (symbolId: string) => Promise<RecalledAnswer[]>;
-	invalidateAnswer: (
+	readNote: (symbolId: string) => Promise<Note | null>;
+	writeNote: (request: RequestOf<"writeNote">) => Promise<NoteOutcome>;
+	doubtNote: (
 		symbolId: string,
 		reason: string,
-		question?: QuestionClass,
-		by?: string,
-	) => Promise<InvalidateOutcome>;
-	reaffirmAnswer: (
-		symbolId: string,
-		question: QuestionClass,
-		options?: { citations?: string[]; model?: string; resolvesDoubt?: string },
-	) => Promise<RecordOutcome>;
-	knowledgeGaps: (root?: string, question?: QuestionClass, limit?: number, module?: string) => Promise<KnowledgeGaps>;
+		expectedRevision: number,
+		author?: NoteAuthor,
+	) => Promise<NoteOutcome>;
+	/** A symbol id, or a module path for notes naming that file. */
+	noteBacklinks: (target: string, limit?: number) => Promise<NoteBacklinks>;
 	declarationOf: (symbolId: string) => Promise<StoredDeclaration | null>;
 	diagnoseSubject: (symbolId: string) => Promise<SubjectDiagnosis>;
 }
@@ -182,7 +167,6 @@ export interface OverviewResult {
 	largest: Array<{ module: string; symbols: number }>;
 	/** Data and document files, largest first, each saying which. */
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
-	knowledge?: { answers: number; stale?: number | undefined; doubted?: number | undefined };
 	entryPoints?: Array<{ module: string; how: EntryHow; symbolId?: string | undefined }> | undefined;
 	moreEntryPoints?: number | undefined;
 }
@@ -362,69 +346,43 @@ export const SymbolHistoryInput = {
 	limit: z.number().int().positive().max(100).optional().describe(`Maximum results. Default: \`20\`.`),
 };
 
-export const RecordAnswerInput = {
-	// Both id kinds appear in one `symbol_facts` answer, and this tool takes one of each.
-	symbolId: z.string().min(1).describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
-	question: z
-		.enum(QUESTION_CLASSES)
-		.describe(`Answer category for \`prose\`. Not every kind takes every category; a refusal names which do.`),
-	prose: z
-		.string()
-		.min(1)
-		.describe(
-			`State what the cited facts establish in roughly 1 to 2 concise incomplete sentences. May be longer if too complex for ≤2.`,
-		),
-	citations: z.array(z.string().min(1)).min(1).describe(`Current full fact IDs from \`symbol_facts\`.`),
-	model: z.string().min(1).optional().describe(`Author or model name.`),
-	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\`. Omit to carry it forward.`),
-};
-
-export const RecallAnswerInput = {
+const NOTE_SUBJECT = {
 	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
-	question: z.enum(QUESTION_CLASSES).optional().describe(`Answer category. Omit to show every answer.`),
 };
 
-export const InvalidateAnswerInput = {
+export const ReadNoteInput = NOTE_SUBJECT;
+
+// Unbounded strings: the core names every empty field at once.
+export const WriteNoteInput = {
+	...NOTE_SUBJECT,
+	summary: z.string().describe(`One plain line, or \`n/a\`.`),
+	description: z.string().describe(`Markdown with refs, or \`n/a\`.`),
+	why: z.string().describe(`A supported reason for a design choice, or \`n/a\`.`),
+	gotchas: z.string().describe(`A non-obvious constraint and its consequence, or \`n/a\`.`),
+	expectedRevision: z
+		.number()
+		.int()
+		.nonnegative()
+		.describe(`The revision \`read_note\` showed. \`0\` when none stands.`),
+};
+
+export const DoubtNoteInput = {
+	...NOTE_SUBJECT,
+	reason: z.string().min(1).describe(`What misled you.`),
+	expectedRevision: z.number().int().positive().describe(`The revision that misled you, as \`read_note\` shows it.`),
+};
+
+export const NoteBacklinksInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
-	symbolId: z.string().min(1).optional().describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
-	reason: z.string().min(1).describe(`Reason for the doubt.`),
-	question: z.enum(QUESTION_CLASSES).optional().describe(`Answer category. Omit to doubt every recorded answer.`),
-	by: z.string().min(1).optional().describe(`Author declaring the doubt.`),
-};
-
-export const ReaffirmAnswerInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
-	symbolId: z.string().min(1).optional().describe(`The subject's own \`symbolId\`, never a \`lexfact\` id.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
-	question: z.enum(QUESTION_CLASSES).describe(`Answer category to refresh.`),
-	citations: z
-		.array(z.string().min(1))
-		.optional()
-		.describe(`Current full fact IDs from \`symbol_facts\`. Omit when only clearing a doubt.`),
-	model: z.string().min(1).optional().describe(`Author or model name.`),
-	resolvesDoubt: z.string().min(1).optional().describe(`Doubt ID from \`recall_answer\`.`),
-};
-
-export const KnowledgeGapsInput = {
-	name: z.string().min(1).optional().describe(`Root symbol name: the tree under it, leaves first.`),
-	symbolId: z.string().min(1).optional().describe(`Exact root \`symbolId\` from an earlier result.`),
+	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z
 		.string()
 		.min(1)
 		.optional()
-		.describe(`Workspace-relative module path. Alone: that file's declarations. With \`name\`: which \`name\`.`),
-	question: z.enum(QUESTION_CLASSES).optional().describe(`Answer category. Defaults to \`describe\`.`),
-	limit: z.number().int().positive().max(300).optional().describe(`Maximum gaps. Default: \`60\`.`),
-};
-
-export const SymbolFactsInput = {
-	name: z.string().min(1).optional().describe(`Symbol name. Add \`module\` when needed.`),
-	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
-	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
-	limit: z.number().int().positive().max(200).optional().describe(`Maximum facts per kind. Default: \`40\`.`),
+		.describe(`Workspace-relative path. Alone: notes naming that file. With \`name\`: which \`name\`.`),
+	limit: z.number().int().positive().max(200).optional().describe(`Maximum notes. Default: \`50\`.`),
 };
 
 export const RefactorMoveInput = {
@@ -447,11 +405,10 @@ export const RefactorRenameInput = {
 export const DESCRIBE_DESCRIPTION = `
 # \`describe_symbol\`
 
-Show a symbol's declaration, members, type hierarchy, dependencies, usage, notes and recorded
-knowledge.
+Show a symbol's declaration, members, type hierarchy, dependencies, usage, comments and note summary.
 
-Documentation is the comment above it. Notes are what else was written about it: beside the code,
-or inside its body.
+Documentation is the comment above it. Comments are what else was written beside the code or inside
+its body. \`read_note\` shows the whole note.
 
 Use \`symbolId\` when known. Otherwise use \`name\`, adding \`module\` when needed.
 `.trim();
@@ -636,7 +593,7 @@ here. Use ripgrep for an exhaustive byte audit. Prose in a code comment is \`fin
 export const OVERVIEW_DESCRIPTION = `
 # \`overview\`
 
-Summarize selected workspaces: files, symbols, references, imports, literals, largest modules, knowledge, and index coverage.
+Summarize selected workspaces: files, symbols, references, imports, literals, largest modules, and index coverage.
 
 Use first in an unfamiliar codebase.
 `.trim();
@@ -699,62 +656,47 @@ Find Git commits whose subject names a symbol.
 Matches case and word boundaries. Includes changed-file counts.
 `.trim();
 
-export const RECORD_ANSWER_DESCRIPTION = `
-# Record Answer
+export const READ_NOTE_DESCRIPTION = `
+# Read Note
 
-Save an answer grounded in cited facts.
+Show a symbol's note: summary, description, why, gotchas, revision and advisories.
 
-Use current full fact IDs from \`symbol_facts\`. Changes to supporting facts make the answer stale.
-
-Never state line numbers: code that only moves keeps the answer fresh.
-
-Answer should be 1 to 2 concise incomplete sentences. May be longer if it's too complex for ≤2.
-
-Capitalize first letters of a sentence. Punctuate.
+Refs read at their targets' current addresses. Advisories: source changed, broken or changed refs,
+doubt, pending proposal.
 `.trim();
 
-export const RECALL_ANSWER_DESCRIPTION = `
-# Recall Answer
+export const WRITE_NOTE_DESCRIPTION = `
+# Write Note
 
-Show recorded answers and their health.
+Save a symbol's note. Read it first; pass its revision as \`expectedRevision\`, \`0\` when none
+stands.
 
-Reports \`STALE\`, \`SHAKY\`, and \`DOUBTED\`.
+Write on demand, when you learned something the code does not show. Never sweep for coverage.
+
+Every field is required: text, or \`n/a\` when nothing supported applies.
+
+- \`summary\`: one plain line. Refs allowed, no other markdown.
+- \`description\`: markdown. Refs anywhere, as \`[label](ref://path:Scope:Name)\`;
+  \`[label](ref://path)\` names a file. Mermaid blocks allowed.
+- \`why\`: a supported reason for a design choice the code and docs do not show.
+- \`gotchas\`: a non-obvious constraint, failure mode or limitation, and its consequence.
+
+A broken ref is refused with candidates. Over a note a person wrote or confirmed, the write becomes
+a proposal for them.
 `.trim();
 
-export const INVALIDATE_ANSWER_DESCRIPTION = `
-# Invalidate Answer
+export const DOUBT_NOTE_DESCRIPTION = `
+# Doubt Note
 
-Mark recorded answers doubtful without changing their prose.
+Flag a note's current revision as misleading, with the reason.
 
-The doubt reopens demand in \`knowledge_gaps\`.
+The next save or confirm clears it.
 `.trim();
 
-export const REAFFIRM_ANSWER_DESCRIPTION = `
-# Reaffirm Answer
+export const NOTE_BACKLINKS_DESCRIPTION = `
+# Note Backlinks
 
-Refresh an answer's evidence or clear its doubt.
-
-Use \`resolvesDoubt\` to clear a doubt.
-`.trim();
-
-export const KNOWLEDGE_GAPS_DESCRIPTION = `
-# Knowledge Gaps
-
-List missing, stale, shaky, or doubted answers. Three scopes, by what you pass:
-
-- nothing: the workspace, ranked by demand
-- \`module\`: that file's declarations
-- \`name\` or \`symbolId\`: the tree under that symbol, leaves first
-
-Use \`symbol_facts\` for each gap.
-`.trim();
-
-export const SYMBOL_FACTS_DESCRIPTION = `
-# Symbol Facts
-
-Show a symbol's declaration and supporting facts with full fact IDs.
-
-Use the full fact IDs as citations for \`record_answer\`.
+List notes whose refs name a symbol, or a file given as \`module\` alone.
 `.trim();
 
 export const TYPE_OF_DESCRIPTION = `
@@ -880,7 +822,7 @@ async function resolveOne(backend: ToolBackend, args: SymbolArgs): Promise<{ sym
 	return { symbolId: (candidates[0] as SymbolSummary).symbolId };
 }
 
-/** The one sentence for an id that names nothing, the same one `record_answer` composes. */
+/** The one sentence for an id that names nothing, the same one `write_note` composes. */
 async function diagnosed(backend: ToolBackend, symbolId: string): Promise<string> {
 	return (await backend.diagnoseSubject(symbolId)).reason;
 }
@@ -901,11 +843,8 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 			true,
 		);
 
-	// The knowledge line rides on every describe: recorded prose when it exists, one line of
-	// invitation when it does not. The recall itself counts the miss, which is what feeds the
-	// gap ledger with real demand rather than guesses.
-	const recalled = await backend.recallAnswer(resolved.symbolId, "describe");
-	return text(`${renderDescribe(described)}\n\n${renderKnowledge(recalled, "describe")}`);
+	const note = await backend.readNote(resolved.symbolId);
+	return text(`${renderDescribe(described)}\n\n${renderNoteLine(note)}`);
 }
 
 export async function findReferences(
@@ -1255,103 +1194,70 @@ export async function fileHistory(backend: ToolBackend, args: { module: string }
 	return text(renderFileHistory(await backend.fileHistory(args.module)));
 }
 
-export async function recordAnswer(
+export async function readNote(backend: ToolBackend, args: SymbolArgs): Promise<ToolResult> {
+	const resolved = await resolveOne(backend, args);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
+
+	const note = await backend.readNote(resolved.symbolId);
+	const body = renderNote(resolved.symbolId, note);
+	return text(note === null ? await withIndexState(backend, body, moduleOf(resolved.symbolId)) : body);
+}
+
+export async function writeNote(
 	backend: ToolBackend,
-	args: {
-		symbolId: string;
-		question: QuestionClass;
-		prose: string;
-		citations: string[];
-		model?: string | undefined;
-		resolvesDoubt?: string | undefined;
+	args: SymbolArgs & {
+		summary: string;
+		description: string;
+		why: string;
+		gotchas: string;
+		expectedRevision: number;
+		author?: NoteAuthor | undefined;
 	},
 ): Promise<ToolResult> {
-	const outcome = await backend.recordAnswer(args.symbolId, args.question, args.prose, args.citations, {
-		...defined({ model: args.model, resolvesDoubt: args.resolvesDoubt }),
+	const resolved = await resolveOne(backend, args);
+	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
+
+	const { summary, description, why, gotchas, expectedRevision } = args;
+	const outcome = await backend.writeNote({
+		symbolId: resolved.symbolId,
+		summary,
+		description,
+		why,
+		gotchas,
+		expectedRevision,
+		...defined({ author: args.author }),
 	});
-	return text(renderRecordOutcome(outcome), !outcome.recorded);
+	return text(renderNoteOutcome(resolved.symbolId, outcome, "write"), outcome.outcome === "refused");
 }
 
-export async function recallAnswer(
+export async function doubtNote(
 	backend: ToolBackend,
-	args: SymbolArgs & { question?: QuestionClass | undefined },
+	args: SymbolArgs & { reason: string; expectedRevision: number; author?: NoteAuthor | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
-	const recalled =
-		args.question === undefined
-			? await backend.recallAnswers(resolved.symbolId)
-			: [await backend.recallAnswer(resolved.symbolId, args.question)].filter(
-					(r): r is RecalledAnswer => r !== null,
-				);
-	if (recalled.length === 0) {
-		const which = args.question === undefined ? `Nothing is` : `No ${args.question} answer is`;
-		return text(
-			await withIndexState(
-				backend,
-				`${which} recorded about ${resolved.symbolId}. \`record_answer\` writes one, citing ids from \`symbol_facts\`.`,
-				moduleOf(resolved.symbolId),
-			),
-			true,
-		);
-	}
-	return text(recalled.map((answer) => renderKnowledge(answer)).join("\n\n"));
+	const outcome = await backend.doubtNote(resolved.symbolId, args.reason, args.expectedRevision, args.author);
+	return text(renderNoteOutcome(resolved.symbolId, outcome, "doubt"), outcome.outcome === "refused");
 }
 
-export async function invalidateAnswer(
+/** A module given alone names the file itself. */
+export async function noteBacklinks(
 	backend: ToolBackend,
-	args: SymbolArgs & {
-		reason: string;
-		question?: QuestionClass | undefined;
-		by?: string | undefined;
-	},
+	args: SymbolArgs & { limit?: number | undefined },
 ): Promise<ToolResult> {
-	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
-
-	const outcome = await backend.invalidateAnswer(resolved.symbolId, args.reason, args.question, args.by);
-	return text(renderInvalidateOutcome(outcome), outcome.refused !== undefined);
-}
-
-export async function reaffirmAnswer(
-	backend: ToolBackend,
-	args: SymbolArgs & {
-		question: QuestionClass;
-		citations?: string[] | undefined;
-		model?: string | undefined;
-		resolvesDoubt?: string | undefined;
-	},
-): Promise<ToolResult> {
-	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
-
-	const outcome = await backend.reaffirmAnswer(resolved.symbolId, args.question, {
-		...defined({ citations: args.citations, model: args.model, resolvesDoubt: args.resolvesDoubt }),
-	});
-	return text(renderRecordOutcome(outcome), !outcome.recorded);
-}
-
-export async function knowledgeGaps(
-	backend: ToolBackend,
-	args: SymbolArgs & {
-		question?: QuestionClass | undefined;
-		limit?: number | undefined;
-	},
-): Promise<ToolResult> {
-	// A root is optional here, unlike every other symbol-taking tool: no root means the workspace.
-	let root: string | undefined;
-	if (args.symbolId !== undefined || args.name !== undefined) {
+	let target: string;
+	if (args.symbolId === undefined && args.name === undefined && args.module !== undefined) {
+		target = args.module;
+	} else {
 		const resolved = await resolveOne(backend, args);
 		if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
-		root = resolved.symbolId;
+		target = resolved.symbolId;
 	}
 
-	// Alone, module is the scope.
-	const module = root === undefined ? args.module : undefined;
-	const gaps = await backend.knowledgeGaps(root, args.question, args.limit, module);
-	const concerning = root === undefined ? module : moduleOf(root);
-	return text(await withIndexState(backend, renderKnowledgeGaps(gaps, root), concerning));
+	const found = await backend.noteBacklinks(target, args.limit);
+	const body = renderNoteBacklinks(target, found);
+	return text(found.total === 0 ? await withIndexState(backend, body, moduleOf(target) ?? target) : body);
 }
 
 export async function symbolHistory(
@@ -1359,21 +1265,6 @@ export async function symbolHistory(
 	args: { name: string; limit?: number | undefined },
 ): Promise<ToolResult> {
 	return text(renderMentions(await backend.commitsMentioning(args.name, args.limit)));
-}
-
-export async function symbolFacts(
-	backend: ToolBackend,
-	args: SymbolArgs & { limit?: number | undefined },
-): Promise<ToolResult> {
-	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
-
-	const facts = await backend.factsFor(resolved.symbolId, args.limit);
-	const concerning = moduleOf(resolved.symbolId);
-	if (facts === null) {
-		return text(await withIndexState(backend, await diagnosed(backend, resolved.symbolId), concerning), true);
-	}
-	return text(await withIndexState(backend, renderFacts(facts), concerning));
 }
 
 export async function resolveImport(

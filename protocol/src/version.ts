@@ -93,7 +93,11 @@ export type Compatibility =
 // daemon omits it and is replaced on a stamp mismatch alone. The `providerPhase` notification, sent
 // by a provider unasked, which an older core ignores. `indexStatus.providers` and
 // `indexStatus.activity`, which an older daemon omits.
-export const PROTOCOL_VERSION = "3.21.0" as const;
+// 3.22.0: knowledge notes. `readNote`, `writeNote`, `confirmNote`, `doubtNote`,
+// `resolveNoteProposal`, `noteBacklinks` and `searchRefs`; an older daemon answers them as unknown
+// methods.
+// `recordAnswer` takes no `omitting`, and its refusal carries no `uncovered`.
+export const PROTOCOL_VERSION = "3.22.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 3;

@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { LiteralQuery, SessionProject } from "@nyaa-lexicon/core";
+import type { StoredDeclaration } from "@nyaa-lexicon/protocol";
 import type { BindingDeps } from "../binding";
 import type { BackendSource } from "../projectTools";
 import { buildServer } from "../serve";
@@ -19,17 +20,16 @@ const QUERY_TOOLS = [
 	"find_imports",
 	"find_literals",
 	"find_references",
-	"knowledge_gaps",
 	"most_referenced",
+	"note_backlinks",
 	"outline_module",
 	"overview",
-	"recall_answer",
+	"read_note",
 	"refactor_preview",
 	"refactor_status",
 	"resolve_import",
 	"search_docs",
 	"search_symbols",
-	"symbol_facts",
 	"symbol_history",
 	"symbol_source",
 	"type_of",
@@ -40,9 +40,7 @@ const QUERY_TOOLS = [
 const BATCH_QUERY_TOOLS = QUERY_TOOLS.filter((name) => name !== "overview" && name !== "refactor_status");
 
 const MUTATION_TOOLS = [
-	"invalidate_answer",
-	"reaffirm_answer",
-	"record_answer",
+	"doubt_note",
 	"refactor_commit",
 	"refactor_insert",
 	"refactor_move",
@@ -52,6 +50,7 @@ const MUTATION_TOOLS = [
 	"refactor_start",
 	"refactor_track",
 	"refactor_undo",
+	"write_note",
 ] as const;
 
 const MANAGEMENT_PROPERTIES = {
@@ -550,19 +549,39 @@ describe("query project routing", () => {
 });
 
 describe("mutation project routing", () => {
-	function recordSource(routes: string[]): BackendSource {
+	function recordSource(routes: string[], sent: unknown[] = []): BackendSource {
 		return (selected) => {
 			routes.push(selected.name);
-			return backend({ recordAnswer: async () => ({ recorded: false, reason: "observed" }) });
+			return backend({
+				declarationOf: async (symbolId) => ({ symbolId }) as unknown as StoredDeclaration,
+				writeNote: async (request) => {
+					sent.push(request);
+					return { outcome: "refused", reason: "observed" };
+				},
+			});
 		};
 	}
 
 	const args = {
 		symbolId: "lexicon test a.ts Thing.",
-		question: "describe",
-		prose: "Observed.",
-		citations: ["lexfact declaration a.ts 0000000000000000"],
+		summary: "Observed.",
+		description: "n/a",
+		why: "n/a",
+		gotchas: "n/a",
+		expectedRevision: 0,
 	};
+
+	// An agent never names itself; the harness does, from the handshake.
+	it("names the author from the client handshake, and refuses an author the caller sends", async () => {
+		const sent: unknown[] = [];
+		const client = await connectClient(recordSource([], sent), binding([project("alpha", true)]));
+
+		await call(client, "write_note", args);
+		const claimed = await call(client, "write_note", { ...args, author: { kind: "person" } });
+
+		expect(sent).toEqual([{ ...args, author: { kind: "client", name: "lexicon-mcp-test", version: "0.0.0" } }]);
+		expect(claimed.isError).toBe(true);
+	});
 
 	it("routes a scalar selection to one project", async () => {
 		const routes: string[] = [];
@@ -571,7 +590,7 @@ describe("mutation project routing", () => {
 			binding([project("alpha", true), project("beta", true)]),
 		);
 
-		await call(client, "record_answer", { ...args, project: "beta" });
+		await call(client, "write_note", { ...args, project: "beta" });
 
 		expect(routes).toEqual(["beta"]);
 	});
@@ -579,7 +598,7 @@ describe("mutation project routing", () => {
 	it("allows omission with one binding and rejects it with several", async () => {
 		const oneRoute: string[] = [];
 		const one = await connectClient(recordSource(oneRoute), binding([project("alpha", true)]));
-		await call(one, "record_answer", args);
+		await call(one, "write_note", args);
 		expect(oneRoute).toEqual(["alpha"]);
 
 		const manyRoutes: string[] = [];
@@ -587,7 +606,7 @@ describe("mutation project routing", () => {
 			recordSource(manyRoutes),
 			binding([project("alpha", true), project("beta", true)]),
 		);
-		const result = await call(many, "record_answer", args);
+		const result = await call(many, "write_note", args);
 		expect(result.isError).toBe(true);
 		expect(manyRoutes).toEqual([]);
 	});
@@ -596,7 +615,7 @@ describe("mutation project routing", () => {
 		const routes: string[] = [];
 		const client = await connectClient(recordSource(routes), binding([project("alpha", true)]));
 
-		const result = await call(client, "record_answer", { ...args, project: ["alpha"] });
+		const result = await call(client, "write_note", { ...args, project: ["alpha"] });
 
 		expect(result.isError).toBe(true);
 		expect(routes).toEqual([]);
@@ -606,7 +625,7 @@ describe("mutation project routing", () => {
 		const routes: string[] = [];
 		const client = await connectClient(recordSource(routes), binding([project("alpha", true)]));
 
-		const result = await call(client, "record_answer", { ...args, projects: ["alpha"] });
+		const result = await call(client, "write_note", { ...args, projects: ["alpha"] });
 
 		expect(result.isError).toBe(true);
 		expect(routes).toEqual([]);
@@ -623,7 +642,7 @@ describe("mutation project routing", () => {
 			binding([project("alpha", true), project("beta", false)]),
 		);
 
-		const result = await call(client, "record_answer", { ...args, project: selected });
+		const result = await call(client, "write_note", { ...args, project: selected });
 
 		expect(result.isError).toBe(true);
 		expect(routes).toEqual([]);

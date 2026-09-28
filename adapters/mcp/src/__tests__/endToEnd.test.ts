@@ -15,13 +15,16 @@ import {
 } from "@nyaa-lexicon/core";
 import {
 	describeSymbol,
+	doubtNote,
 	findReferences,
+	noteBacklinks,
+	readNote,
 	refactorPreview,
 	resolveImport,
-	symbolFacts,
 	symbolSource,
 	type ToolBackend,
 	typeOfSymbol,
+	writeNote,
 } from "../tools";
 
 ////////////////////////////////
@@ -87,18 +90,17 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		hubs: (limit) => ask("hubs", { limit }),
 		overview: () => ask("overview", {}),
 		fileHistory: (module) => ask("fileHistory", { module }),
-		factsFor: (symbolId, limit) => ask("factsFor", { symbolId, limit }),
 		commitsMentioning: (name, limit) => ask("commitsMentioning", { name, limit }),
-		recordAnswer: (symbolId, question, prose, citations, options) =>
-			ask("recordAnswer", { symbolId, question, prose, citations, ...options }),
-		recallAnswer: (symbolId, question) => ask("recallAnswer", { symbolId, question }),
-		recallAnswers: (symbolId) => ask("recallAnswer", { symbolId }),
-		invalidateAnswer: (symbolId, reason, question, by) =>
-			ask("invalidateAnswer", { symbolId, reason, question, by }),
-		reaffirmAnswer: (symbolId, question, options) => ask("reaffirmAnswer", { symbolId, question, ...options }),
-		knowledgeGaps: (root, question, limit) => ask("knowledgeGaps", { root, question, limit }),
+		readNote: (symbolId) => ask("readNote", { symbolId }),
+		writeNote: (request) => ask("writeNote", request),
+		doubtNote: (symbolId, reason, expectedRevision, author) =>
+			ask("doubtNote", { symbolId, reason, expectedRevision, author }),
+		noteBacklinks: (target, limit) => ask("noteBacklinks", { symbolId: target, limit }),
 	};
 }
+
+/** Every field answered, none saying anything. */
+const NOTHING = { summary: "Nothing.", description: "n/a", why: "n/a", gotchas: "n/a", expectedRevision: 0 };
 
 beforeEach(async () => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-e2e-"));
@@ -170,26 +172,22 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		expect(diagnosis.kind).toBe("unminted");
 		expect(result.isError).toBe(true);
 		expect(JSON.stringify(result)).toContain(JSON.stringify(diagnosis.reason).slice(1, -1));
-		const refused = await backend.recordAnswer(ghost, "describe", "Nothing.", []);
-		if (refused.recorded) throw new Error("expected a refusal");
+		const refused = await backend.writeNote({ symbolId: ghost, ...NOTHING });
+		if (refused.outcome !== "refused") throw new Error("expected a refusal");
 		expect(refused.reason).toBe(diagnosis.reason);
 	}, 30_000);
 
 	it("says what a writer says for every outcome the daemon reaches, from every tool taking an id", async () => {
 		const backend = backendOverDaemon(dir);
 		const [cart] = await backend.findByName("Cart", undefined);
-		const cartId = cart?.symbolId as string;
-		const cartFacts = await backend.factsFor(cartId, undefined);
-		const declaration = cartFacts?.facts.find((fact) => fact.kind === "declaration")?.factId as string;
+		const declaration = (await backend.declarationOf(cart?.symbolId as string))?.factId as string;
 
-		// An answer recorded about Item, whose file then vanishes, leaves its subject stranded.
+		// A note written about Item, whose file then vanishes, leaves its subject stranded.
 		files.set("item.ref", "export class Item {}\n");
 		await callDaemon(daemon.lock, "indexFile", { module: "item.ref" });
 		const [item] = await backend.findByName("Item", undefined);
 		const itemId = item?.symbolId as string;
-		const itemFacts = await backend.factsFor(itemId, undefined);
-		const itemDeclaration = itemFacts?.facts.find((fact) => fact.kind === "declaration")?.factId as string;
-		expect((await backend.recordAnswer(itemId, "describe", "An item.", [itemDeclaration])).recorded).toBe(true);
+		expect((await backend.writeNote({ symbolId: itemId, ...NOTHING, summary: "An item." })).outcome).toBe("saved");
 		files.delete("item.ref");
 		await callDaemon(daemon.lock, "indexFile", { module: "item.ref" });
 
@@ -202,12 +200,15 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		for (const [kind, symbolId] of outcomes) {
 			const diagnosis = await backend.diagnoseSubject(symbolId);
 			expect<string>(diagnosis.kind).toBe(kind);
-			const refused = await backend.recordAnswer(symbolId, "describe", "Nothing.", []);
-			expect(refused.recorded ? "recorded" : refused.reason).toBe(diagnosis.reason);
+			const refused = await backend.writeNote({ symbolId, ...NOTHING });
+			expect(refused.outcome === "refused" ? refused.reason : refused.outcome).toBe(diagnosis.reason);
 
 			const results = [
 				await describeSymbol(backend, { symbolId }),
-				await symbolFacts(backend, { symbolId }),
+				await readNote(backend, { symbolId }),
+				await writeNote(backend, { symbolId, ...NOTHING }),
+				await doubtNote(backend, { symbolId, reason: "misleading", expectedRevision: 1 }),
+				await noteBacklinks(backend, { symbolId }),
 				await findReferences(backend, { symbolId }),
 				await symbolSource(backend, { symbolId }),
 				await typeOfSymbol(backend, { symbolId }),
@@ -232,29 +233,36 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		expect(removed.isError).toBe(true);
 	}, 30_000);
 
-	it("carries the knowledge flow through the daemon: record, doubt, carry, and clear", async () => {
+	it("carries the note flow through the daemon: write, doubt, refuse, clear, and backlinks", async () => {
 		const backend = backendOverDaemon(dir);
 		const [cart] = await backend.findByName("Cart", undefined);
-		const symbolId = cart?.symbolId as string;
-		const facts = await backend.factsFor(symbolId, undefined);
-		const declaration = facts?.facts.find((fact) => fact.kind === "declaration")?.factId as string;
+		const [add] = await backend.findByName("add", undefined);
+		const cartId = cart?.symbolId as string;
+		const symbolId = add?.symbolId as string;
+		const note = { ...NOTHING, symbolId, summary: "Adds one item to a [Cart](ref://cart.ref:Cart)." };
 
-		const recorded = await backend.recordAnswer(symbolId, "describe", "Holds checkout state.", [declaration]);
-		expect(recorded.recorded).toBe(true);
+		expect((await writeNote(backend, note)).isError).toBeUndefined();
+		expect(await backend.readNote(symbolId)).toMatchObject({
+			revision: 1,
+			links: [{ state: "ok", symbolId: cartId }],
+		});
 
-		const doubted = await backend.invalidateAnswer(symbolId, "checkout was rewritten", "describe", "e2e");
-		expect(doubted.doubted).toHaveLength(1);
+		expect(
+			(await doubtNote(backend, { symbolId, reason: "it adds two", expectedRevision: 1 })).isError,
+		).toBeUndefined();
+		expect((await backend.readNote(symbolId))?.doubt?.reason).toBe("it adds two");
 
-		const recalled = await backend.recallAnswer(symbolId, "describe");
-		expect(recalled?.answer.doubt?.reason).toBe("checkout was rewritten");
+		expect((await writeNote(backend, note)).isError).toBe(true);
+		const broken = await backend.writeNote({
+			...note,
+			summary: "Adds to a [cart](ref://cart.ref:Ghost).",
+			expectedRevision: 1,
+		});
+		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain("ref://cart.ref:Cart");
 
-		// A re-record that never cites the doubt carries it; citing it clears it.
-		const blind = await backend.recordAnswer(symbolId, "describe", "Rewritten blind.", [declaration]);
-		expect(blind.recorded && blind.doubtCarried?.reason).toBe("checkout was rewritten");
-		const token = (await backend.recallAnswer(symbolId, "describe"))?.answer.doubt?.factId as string;
-		const cleared = await backend.reaffirmAnswer(symbolId, "describe", { resolvesDoubt: token });
-		expect(cleared.recorded).toBe(true);
-		expect((await backend.recallAnswer(symbolId, "describe"))?.answer.doubt).toBeUndefined();
+		const cleared = await backend.writeNote({ ...note, expectedRevision: 1 });
+		expect(cleared.outcome === "saved" && cleared.note).toMatchObject({ revision: 2, doubt: null });
+		expect((await backend.noteBacklinks(cartId)).notes.map((entry) => entry.symbolId)).toEqual([symbolId]);
 	}, 30_000);
 
 	it("refuses a caller that cannot find the daemon, rather than answering from nothing", async () => {

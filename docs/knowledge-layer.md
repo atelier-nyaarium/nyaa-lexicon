@@ -8,6 +8,37 @@ Lexicon never calls a model. The consumer of these tools is already an agent rea
 second model call inside the core would pay twice and bind the tool to a key and a bill. The core
 hands over facts, takes back prose, refuses what it cannot verify, and remembers.
 
+## Notes
+
+One note per symbol, four fields, each written as text or `n/a` (stored null):
+
+- `summary`: one plain line. Refs allowed, no other markdown.
+- `description`: markdown. Refs anywhere; mermaid blocks render.
+- `why`: a supported reason for a design choice the code and docs do not show.
+- `gotchas`: a non-obvious constraint, failure mode or limitation, and its consequence.
+
+A missing field bounces; every field `n/a` removes the note. A write carries the revision it read,
+and a mismatch bounces with the note as it stands.
+
+A ref is a link, `[label](ref://path:Scope:Name)`, or `[label](ref://path)` for a file, anywhere in
+any field, a mermaid `click` line included; never inside other code. Saving resolves each to a
+subject and refuses a broken or ambiguous one with candidates. Refs are stored by subject, so a read
+renders each at its target's current address and a rename needs no rewrite. `noteBacklinks` reads
+them back.
+
+Advisories are computed on read: the symbol's source changed since the revision was saved or
+confirmed, a ref's target is gone or changed, a doubt stands, a proposal waits. A doubt belongs to
+one revision; the next save or confirm clears it.
+
+The author comes from the harness, never the writer. A client names a person or the agent it
+launched; the MCP adapter names the client from its handshake. An agent's write over a note a person
+wrote or confirmed becomes a proposal for that person.
+
+The MCP tools are `read_note`, `write_note`, `doubt_note` and `note_backlinks`. Notes are written on
+demand, never as a coverage sweep.
+
+The answer layer below predates notes. The daemon still serves it; the MCP adapter does not.
+
 ## The citation rule
 
 An answer is prose PLUS the fact ids it consumed. That pairing is the whole design, because it
@@ -190,8 +221,7 @@ sentence is composed, so the wording agrees with what the identity owner last re
   `spellsName` matches a name against those descriptors and the whole tokens of that rest, so a
   name like `at` is not promoted by every id containing those letters.
 
-Recall carries the same diagnosis as `stranded` beside the answer, and the MCP surface renders it in
-place of the re-affirm instruction, which a stranded subject cannot follow.
+Recall carries the same diagnosis as `stranded` beside the answer.
 
 The diagnosis is one value, `diagnoseSubject` in `core/src/refusals.ts`: a closed kind
 (`factIdAsSubject`, `unminted`, `moved`, `stranded`, `waiting`, `unknown`), the sentence, the ids a
@@ -235,8 +265,8 @@ refreshed by every later admission, so a file a pass left unread never keeps a s
 
 The gap list says whether it filtered by the asked question: `filtered` is set by every core
 return, `false` from the workspace demand sweep, which carries every question with rechecks first,
-and `true` from the seeded fallback, the module scope and the subtree walk. The MCP renderer names
-the question only when the core says so, and reads an omitted flag as unfiltered.
+and `true` from the seeded fallback, the module scope and the subtree walk. A client names the
+question only when the core says so, and reads an omitted flag as unfiltered.
 
 A row's `why` reads `answerHealth`. The module scope, the subtree walk and the unasked sweep list an
 answer's own doubt or staleness only, since a shaky answer's cause is its own row. A demand row for a
@@ -262,7 +292,7 @@ as `factsFor` does; a module the index does not hold answers an empty scope.
   owns the rule.
 - **Live declarations only:** a scope lists what the index holds, so it carries no stranded state.
 - **State:** `stale` and `doubted` are the answer's own, as `knowledgeGaps` reads them; `shaky` says
-  an answer it cites is stale or doubted beneath it, as `recall_answer` reports SHAKY. One function,
+  an answer it cites is stale or doubted beneath it, as recall reports SHAKY. One function,
   `answerHealth`, reads them for recall, gaps, demand and the scope: `upstreamStale` and
   `upstreamDoubted` apart, and `shaky` as either, which every caller asking "shaky" reads.
 

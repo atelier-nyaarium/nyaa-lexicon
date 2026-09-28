@@ -50,6 +50,7 @@ import {
 	type TypeHierarchy,
 } from "./indexReads.js";
 import { KnowledgeLedger } from "./knowledge.js";
+import { NoteLedger } from "./notes.js";
 import { PaintReads } from "./paintFacts.js";
 import type { ProviderPort } from "./providerPort.js";
 import { liveProbe, type ProviderProbe } from "./providerProbe.js";
@@ -105,6 +106,7 @@ export class LexiconService {
 			);
 		});
 		this.knowledge = new KnowledgeLedger(store, this.imports, this.clock);
+		this.notes = new NoteLedger(store, this.clock);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
 		this.indexer = new WorkspaceIndexer(
 			store,
@@ -156,6 +158,8 @@ export class LexiconService {
 	readonly imports: ImportResolver;
 
 	readonly knowledge: KnowledgeLedger;
+
+	readonly notes: NoteLedger;
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */
 	cacheStats(): CacheStats {
@@ -514,6 +518,37 @@ export class LexiconService {
 		...args: Parameters<KnowledgeLedger["knowledgeScope"]>
 	): ReturnType<KnowledgeLedger["knowledgeScope"]> {
 		return this.knowledge.knowledgeScope(...args);
+	}
+
+	////////////////////////////////
+	//  Notes, answered by NoteLedger
+
+	readNote(...args: Parameters<NoteLedger["read"]>): ReturnType<NoteLedger["read"]> {
+		return this.notes.read(...args);
+	}
+
+	writeNote(...args: Parameters<NoteLedger["write"]>): ReturnType<NoteLedger["write"]> {
+		return this.notes.write(...args);
+	}
+
+	confirmNote(...args: Parameters<NoteLedger["confirm"]>): ReturnType<NoteLedger["confirm"]> {
+		return this.notes.confirm(...args);
+	}
+
+	doubtNote(...args: Parameters<NoteLedger["doubt"]>): ReturnType<NoteLedger["doubt"]> {
+		return this.notes.doubt(...args);
+	}
+
+	resolveNoteProposal(...args: Parameters<NoteLedger["resolveProposal"]>): ReturnType<NoteLedger["resolveProposal"]> {
+		return this.notes.resolveProposal(...args);
+	}
+
+	noteBacklinks(...args: Parameters<NoteLedger["backlinks"]>): ReturnType<NoteLedger["backlinks"]> {
+		return this.notes.backlinks(...args);
+	}
+
+	searchRefs(...args: Parameters<NoteLedger["searchRefs"]>): ReturnType<NoteLedger["searchRefs"]> {
+		return this.notes.searchRefs(...args);
 	}
 
 	////////////////////////////////

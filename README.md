@@ -93,11 +93,12 @@ change broke is reported rather than assumed away. `refactor_replace` given the 
 `symbol_source` refuses a span that changed since it was read. A file that is not valid UTF-8 is
 refused rather than rewritten.
 
-**Knowledge.** `record_answer` stores prose about a symbol, but only prose that cites the facts it
-was drawn from. `symbol_facts` hands out those ids, `recall_answer` reads what is stored along with
-its health, `knowledge_gaps` lists what is missing or stale, and `invalidate_answer` and
-`reaffirm_answer` move an answer between doubted and current. See
-[docs/knowledge-layer.md](docs/knowledge-layer.md) for why it refuses what it refuses.
+**Knowledge.** One note per symbol: `summary`, `description`, `why` and `gotchas`, each text or
+`n/a`. `read_note` shows it with advisories: source changed, broken or changed refs, doubt, a
+pending proposal. `write_note` saves it against the revision it read; a broken `ref://` link is
+refused with candidates. `doubt_note` flags a misleading revision. `note_backlinks` lists notes
+whose refs name a symbol or file. The author comes from the MCP client handshake, never from the
+caller. See [docs/knowledge-layer.md](docs/knowledge-layer.md).
 
 **Housekeeping.** `list_project_stores`, `stop_project_daemon` and `delete_project_store` manage the
 indexes this machine holds, across every project. An index whose workspace has been gone for more
@@ -114,8 +115,7 @@ root.
 Read tools accept a `queries` array. Each item uses that tool's normal fields, and one MCP call can
 run several items. The outer `projects` selector applies to every item. Omit it when one project is
 bound, pass names for a subset, or pass `[]` for every bound project. Every `refactor_` tool, plus
-`record_answer`, `invalidate_answer`, and `reaffirm_answer`, accepts one optional `project` instead
-and never fans out.
+`write_note` and `doubt_note`, accepts one optional `project` instead and never fans out.
 
 Binding names are session-local. Same-named roots use `app-1`, `app-2`, and so on. A plugin reload
 compacts the names, so call `list_projects` again and match the full root.

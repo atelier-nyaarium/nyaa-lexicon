@@ -10,12 +10,8 @@ import type {
 	DescribeResult,
 	DocsResult,
 	FileNotes,
-	InvalidateOutcome,
-	KnowledgeGaps,
 	LiteralsResult,
 	MovePlan,
-	RecalledAnswer,
-	RecordOutcome,
 	RefactorIssue,
 	ReferencesResult,
 	RenamePlan,
@@ -23,20 +19,22 @@ import type {
 	SymbolSummary,
 	TransactionStatus,
 } from "@nyaa-lexicon/core";
-import {
-	answerHealth,
-	type EntryHow,
-	FACT_KINDS,
-	type FactKind,
-	type FileRole,
-	type InsertOutcome,
-	type KnowledgeSweep,
-	type MoveOutcome,
-	type RefactorCommitResult,
-	type RefactorStartResult,
-	type RenameStepOutcome,
-	type ReplaceOutcome,
-	type TypeInfo,
+import type {
+	EntryHow,
+	FileRole,
+	InsertOutcome,
+	KnowledgeSweep,
+	MoveOutcome,
+	Note,
+	NoteAuthor,
+	NoteBacklinks,
+	NoteField,
+	NoteOutcome,
+	RefactorCommitResult,
+	RefactorStartResult,
+	RenameStepOutcome,
+	ReplaceOutcome,
+	TypeInfo,
 } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
@@ -225,7 +223,7 @@ ${summarize(result.symbol.docComment)}`);
 	// by opening the file.
 	if (result.comments !== undefined && result.comments.length > 0) {
 		lines.push(`
-## Notes
+## Comments
 `);
 		for (const comment of result.comments) {
 			lines.push(`- Line ${comment.line + 1} (${comment.form}): ${summarize(comment.text)}`);
@@ -634,284 +632,131 @@ export function renderFileHistory(result: {
 	return lines.join("\n");
 }
 
-function questionTitle(question: string): string {
-	return question.slice(0, 1).toUpperCase() + question.slice(1);
+const FIELD_TITLES: Record<NoteField, string> = {
+	summary: "Summary",
+	description: "Description",
+	why: "Why",
+	gotchas: "Gotchas",
+};
+
+const NOTE_FIELD_ORDER: readonly NoteField[] = ["summary", "description", "why", "gotchas"];
+
+/** Who, as the harness attested it. */
+function authorName(author: NoteAuthor | null): string {
+	if (author === null) return "unattributed";
+	switch (author.kind) {
+		case "person":
+			return "a person";
+		case "agent":
+			return author.model ?? "an agent";
+		case "client":
+			return author.version === null ? author.name : `${author.name} ${author.version}`;
+	}
 }
 
-/** Recorded knowledge, or a short invitation to write it. */
-export function renderKnowledge(recalled: RecalledAnswer | null, question = `knowledge`): string {
-	if (recalled === null)
-		return `## ${questionTitle(question)}\n\nNo answer recorded. Call \`symbol_facts\` for the current supporting facts.`;
-
-	const lines = [
-		`## ${questionTitle(recalled.answer.question)}`,
-		"",
-		recalled.answer.prose,
-		"",
-		code(recalled.answer.factId),
-	];
-	if (recalled.answer.thin)
-		lines.push(`
-**THIN:** Only the declaration was cited.`);
-	const status: string[] = [];
-	const health = answerHealth(recalled);
-	if (recalled.answer.doubt !== undefined) {
-		const by = recalled.answer.doubt.by === undefined ? "" : ` (${recalled.answer.doubt.by})`;
-		lines.push(`
-#### Doubt
-
-${recalled.answer.doubt.reason}${by}
-
-	${code(recalled.answer.doubt.factId)}
-
-${
-	recalled.stranded === undefined
-		? "Clear with `record_answer` or `reaffirm_answer`, citing this doubt ID as `resolvesDoubt`."
-		: "Nothing at this address can clear it; the doubt rides along when the prose is recorded again."
+/** Revision and who touched it, one line. */
+function provenance(note: Note): string {
+	const edited = note.revision > 1 ? `, last edited by ${authorName(note.editedBy)}` : "";
+	const confirmed = note.confirmedAt === null ? "" : `, confirmed by ${authorName(note.confirmedBy)}`;
+	return `Revision ${note.revision}, written by ${authorName(note.author)}${edited}${confirmed}.`;
 }
-`);
-	}
-	if (recalled.stranded !== undefined) {
-		// Nothing at this address can be re-affirmed; the way forward is to record it where a reader will find it.
-		const shown = recalled.stranded.candidates.slice(0, 8).map((id) => code(id));
-		const rest = recalled.stranded.candidates.length - shown.length;
-		const candidates = `${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
-		const hold = recalled.stranded.exempt
-			? " while its module fails to parse; nothing is orphaned or deleted until that is fixed"
-			: "";
-		status.push(
-			`**STRANDED:** This address no longer resolves${hold}. Record the prose again where a reader will find it${candidates === "" ? "" : `: ${candidates}`}.`,
-		);
-	} else if (health.stale) {
-		status.push(
-			`**STALE:** ${recalled.stale.length} cited fact${recalled.stale.length === 1 ? "" : "s"} changed. Re-check \`symbol_facts\`, then call \`reaffirm_answer\` or \`record_answer\`.`,
-		);
-	}
-	if (health.upstreamStale) {
-		status.push(
-			`**SHAKY:** Leans on ${recalled.inheritedStale.length} answer${recalled.inheritedStale.length === 1 ? "" : "s"} whose supporting facts changed. Re-affirm those first.`,
-		);
-	}
-	if (health.upstreamDoubted) {
-		status.push(
-			`**SHAKY:** Leans on ${recalled.doubtedUpstream.length} answer${recalled.doubtedUpstream.length === 1 ? "" : "s"} someone has doubted. Address those first.`,
-		);
-	}
-	if (recalled.subject !== undefined && recalled.subject.recordedAs !== recalled.answer.symbolId) {
-		status.push(
-			`**REBOUND:** Recorded at ${code(recalled.subject.recordedAs)}; followed to this address by ${code(recalled.subject.evidence)}.`,
-		);
-	}
-	if (status.length > 0)
-		lines.push(`
-### Status
 
-${status.join("\n")}`);
+/** What moved since the revision was written, one bullet each. */
+function noteAdvisories(note: Note): string[] {
+	const found: string[] = [];
+	if (note.sourceChanged) found.push(`- **Source changed; review:** the symbol changed since this revision.`);
+	for (const link of note.links.filter((entry) => entry.state === "broken")) {
+		found.push(`- **Broken ref:** ${code(link.written)} in ${link.field} names nothing now.`);
+	}
+	const changed = note.links.filter((entry) => entry.state === "changed");
+	if (changed.length > 0) {
+		found.push(
+			`- **Changed refs:** ${changed.map((link) => code(link.current)).join(", ")} changed since this revision.`,
+		);
+	}
+	if (note.doubt !== null) {
+		found.push(`- **Doubted** by ${authorName(note.doubt.by)}: ${note.doubt.reason}`);
+	}
+	if (note.proposal !== null) {
+		found.push(`- **Proposal pending:** a replacement from ${authorName(note.proposal.by)} waits on a person.`);
+	}
+	return found;
+}
+
+/** A whole note, or where none stands. */
+export function renderNote(symbolId: string, note: Note | null): string {
+	if (note === null) return `# Note on ${code(symbolId)}\n\nNo note stands. \`write_note\` writes one.`;
+
+	const lines = [`# Note on ${code(symbolId)}`, "", provenance(note)];
+	for (const field of NOTE_FIELD_ORDER) {
+		const value = note[field];
+		if (value === null) continue;
+		lines.push(`
+## ${FIELD_TITLES[field]}
+
+${value}`);
+	}
+	const advisories = noteAdvisories(note);
+	if (advisories.length > 0)
+		lines.push(`
+## Advisories
+
+${advisories.join("\n")}`);
 	return lines.join("\n");
 }
 
-export function renderRecordOutcome(outcome: RecordOutcome): string {
-	if (outcome.recorded) {
-		const carried = outcome.doubtCarried === undefined ? undefined : outcome.doubtCarried;
-		const lines = [
-			`# Answer recorded
+/** The note's summary and advisories, for a describe. */
+export function renderNoteLine(note: Note | null): string {
+	if (note === null) return `## Note\n\nNo note stands.`;
 
-	${code(outcome.answer.factId)}`,
-		];
-		if (outcome.answer.thin)
-			lines.push(`
-**THIN:** Only the declaration was cited.`);
-		if (carried !== undefined) {
-			lines.push(`
-## Doubt
+	const summary = note.summary ?? `No summary. \`read_note\` shows the rest.`;
+	const lines = [`## Note`, "", summary, "", provenance(note)];
+	const advisories = noteAdvisories(note);
+	if (advisories.length > 0) lines.push("", ...advisories);
+	return lines.join("\n");
+}
 
-${carried.reason}
-
-	${code(carried.factId)}
-
-Cite this ID as \`resolvesDoubt\` to clear the doubt.
-`);
+/** What a write or a doubt did. */
+export function renderNoteOutcome(symbolId: string, outcome: NoteOutcome, action: "write" | "doubt"): string {
+	if (outcome.outcome === "refused") {
+		const reason = /[.!?]$/.test(outcome.reason) ? outcome.reason : `${outcome.reason}.`;
+		const lines = [`# ${action === "doubt" ? "Doubt not recorded" : "Note not saved"}`, "", reason];
+		const refs = outcome.refs ?? [];
+		if (refs.length > 0) lines.push("");
+		for (const problem of refs) {
+			const candidates =
+				problem.candidates.length === 0
+					? ""
+					: ` Candidates: ${problem.candidates.map((candidate) => code(candidate)).join(", ")}.`;
+			lines.push(`- ${code(problem.ref)} in ${problem.field}: ${problem.problem}.${candidates}`);
+		}
+		if (outcome.current !== undefined && outcome.current !== null) {
+			lines.push("", `**Current revision:** ${outcome.current.revision}`);
 		}
 		return lines.join("\n");
 	}
-	const lines = [
-		`# Answer not recorded
-
-${outcome.reason}`,
-	];
-	if ((outcome.unresolved ?? []).length > 0) {
-		lines.push(`
-## Unresolved fact IDs
-`);
-		for (const factId of outcome.unresolved ?? []) lines.push(`- ${code(factId)}`);
+	if (outcome.outcome === "proposed") {
+		return `# Proposal saved\n\n**Symbol:** ${code(symbolId)}\n\nA person wrote or confirmed revision ${outcome.note.revision}, so this waits for them.`;
 	}
-	return lines.join("\n");
+	if (outcome.note === null) return `# No note stands\n\n**Symbol:** ${code(symbolId)}\n\nEvery field was \`n/a\`.`;
+	if (action === "doubt") {
+		return `# Doubt recorded\n\n**Symbol:** ${code(symbolId)}\n\nOn revision ${outcome.note.revision}. The next save or confirm clears it.`;
+	}
+	return `# Note saved\n\n**Symbol:** ${code(symbolId)}\n\nRevision ${outcome.note.revision}.`;
 }
 
-/** What declaring a doubt did, question by question, with the id the eventual clearer must cite. */
-export function renderInvalidateOutcome(outcome: InvalidateOutcome): string {
-	if (outcome.refused !== undefined) return `# Doubt not recorded\n\n${outcome.refused}.`;
+/** Notes whose refs name a symbol or file. */
+export function renderNoteBacklinks(target: string, result: NoteBacklinks): string {
+	if (result.notes.length === 0) return `# Notes naming ${code(target)}\n\nNo note names it.`;
 
-	const title = outcome.doubted.length > 0 ? "# Doubt recorded" : "# Gap recorded";
-	const lines: string[] = [
-		`${title}
-
-**Symbol:** ${code(outcome.symbolId)}`,
-	];
-	for (const entry of outcome.doubted) {
-		const by = entry.doubt.by === undefined ? "" : ` (${entry.doubt.by})`;
-		lines.push(`
-## ${questionTitle(entry.question)}
-
-${entry.doubt.reason}${by}
-
-${code(entry.doubt.factId)}
-
-Clear with \`record_answer\` or \`reaffirm_answer\`, citing this doubt ID as \`resolvesDoubt\`.`);
+	const lines = [`# Notes naming ${code(target)}`, ""];
+	for (const entry of result.notes) {
+		const summary = entry.summary === null ? "" : `: ${entry.summary}`;
+		lines.push(`- ${code(entry.symbolId)} (${entry.fields.join(", ")})${summary}`);
 	}
-	if (outcome.noAnswer.length > 0) {
+	if (result.total > result.notes.length)
 		lines.push(`
-## No answer
-
-No ${outcome.noAnswer.join(", ")} answer exists. The request was added to \`knowledge_gaps\`.`);
-	}
-	return lines.join("\n");
-}
-
-/** The window on orphaned subjects: dated, with the evidence, and what the sweep does to them. Nothing to do. */
-function renderStranded(count: number, rows: KnowledgeGaps["rows"]): string[] {
-	if (count === 0 && rows.length === 0) return [];
-	const lines = [
-		`
-## Stranded
-
-${count} row${count === 1 ? " belongs" : "s belong"} to subjects whose address no longer resolves. They are not work: recall carries the diagnosis, and the sweep deletes each thirty days after the date shown.`,
-	];
-	if (rows.length > 0) {
-		lines.push(`
-| Symbol | Question | Held | Orphaned | Evidence |
-| --- | --- | --- | --- | --- |`);
-		for (const row of rows) {
-			const tail = row.symbolId.split(" ").slice(3).join(" ");
-			const when = row.strandedAt === undefined ? "-" : new Date(row.strandedAt).toISOString().slice(0, 10);
-			lines.push(
-				`| ${code(tail)} | ${row.question} | ${row.why === "missing" ? "demand" : "answer"} | ${when} | ${row.evidence ?? "-"} |`,
-			);
-		}
-	}
-	if (count > rows.length)
-		lines.push(`
-> ${count - rows.length} more stranded rows not shown.`);
-	return lines;
-}
-
-/** Every answer leads with its scope. */
-function gapScope(gaps: KnowledgeGaps, root: string | undefined): string {
-	if (gaps.scope !== undefined) return `In ${code(gaps.scope.module)}`;
-	if (root === undefined) return `Workspace-wide`;
-	return `Under ${code(root)}, leaves first`;
-}
-
-export function renderKnowledgeGaps(gaps: KnowledgeGaps, root: string | undefined): string {
-	const lead = gapScope(gaps, root);
-	if (gaps.scope !== undefined && gaps.scope.declarations === 0) {
-		return [
-			`# Knowledge gaps`,
-			"",
-			`${code(gaps.scope.module)} holds no indexed declarations: not indexed yet, or no provider claims it. Call \`overview\` for coverage.`,
-		].join("\n");
-	}
-	// Only the core knows whether every row honours the asked question; an omitted flag reads as unfiltered.
-	const asked = gaps.filtered === true ? `${gaps.question} ` : "";
-	// A stranded row is a window, never work: shown apart, and shown even when nothing is actionable.
-	const actionable = gaps.rows.filter((row) => row.stranded !== true);
-	const strandedRows = gaps.rows.filter((row) => row.stranded === true);
-	if (gaps.total === 0) {
-		const lines = [
-			`# Knowledge gaps
-
-${lead}: no ${asked}gaps.`,
-		];
-		if (gaps.staleScanSkipped === true) {
-			lines.push(`
-> The index skipped its full staleness scan. Stale answers surface when recalled.`);
-		}
-		if (gaps.external > 0)
-			lines.push(`
-> ${gaps.external} dependencies are outside the index and cannot be answered.`);
-		lines.push(...renderStranded(gaps.stranded ?? 0, strandedRows));
-		return lines.join("\n");
-	}
-
-	const lines: string[] = [
-		`# Knowledge gaps
-`,
-	];
-	const plural = gaps.total === 1 ? "" : "s";
-	const what =
-		gaps.seeded === true
-			? `the ${gaps.total} most-referenced unanswered ${asked}candidate${plural}, since no demand is recorded yet`
-			: gaps.scope === undefined && root === undefined
-				? `${gaps.total} ${asked}gap${plural}, ranked by demand, rechecks first`
-				: `${gaps.total} ${asked}gap${plural}`;
-	lines.push(`${lead}: ${what}.`);
-	// The bias a seeded page carries is said, never silent: unknown status keeps a candidate eligible.
-	const unknown = gaps.seededUnknown;
-	if (gaps.seeded === true && unknown !== undefined && (unknown.generated > 0 || unknown.exported > 0)) {
-		const parts = [
-			...(unknown.generated > 0
-				? [
-						`${unknown.generated} ${unknown.generated === 1 ? "comes" : "come"} from a file git could not call generated or not`,
-					]
-				: []),
-			...(unknown.exported > 0
-				? [`${unknown.exported} ${unknown.exported === 1 ? "has" : "have"} no export verdict from the provider`]
-				: []),
-		];
-		lines.push(`
-> Of these, ${parts.join(", and ")}; all stay eligible.`);
-	}
-
-	lines.push(`
-| Symbol | Module | State | Asked | Fan-in |
-| --- | --- | --- | ---: | ---: |`);
-	for (const row of actionable) {
-		const tail = row.symbolId.split(" ").slice(3).join(" ");
-		const symbol = row.name === undefined ? code(tail) : `**${row.kind ?? "symbol"}** ${code(tail)}`;
-		const state = row.why === "missing" ? `MISSING` : `**${row.shaky === true ? "SHAKY" : row.why.toUpperCase()}**`;
-		const question = row.question === gaps.question ? "" : ` (${row.question})`;
-		const askedAt =
-			row.recordedAs === undefined || row.recordedAs === row.symbolId
-				? ""
-				: ` (asked at ${code(row.recordedAs.split(" ").slice(3).join(" "))})`;
-		lines.push(
-			`| ${symbol}${question}${askedAt} | ${code(row.module ?? "unknown")} | ${state} | ${row.askCount || "-"} | ${row.fanIn} |`,
-		);
-	}
-	if (gaps.total > actionable.length)
-		lines.push(`
-> ${gaps.total - actionable.length} more gaps not shown.`);
-	const first = actionable[0];
-	if (first !== undefined)
-		lines.push(`
-**Full ID example:** ${code(first.symbolId)}`);
-	lines.push(...renderStranded(gaps.stranded ?? 0, strandedRows));
-	if (gaps.truncated)
-		lines.push(`
-> The dependency walk hit its cap, so the total above is a floor.`);
-	if (gaps.staleScanSkipped === true) {
-		lines.push(`
-> The index skipped its full staleness scan. Stale answers surface when recalled.`);
-	}
-	if (gaps.external > 0) {
-		lines.push(`
-> ${gaps.external} dependencies are outside the index: nothing citable exists for them.`);
-	}
-
-	lines.push(`
-## Next step
-
-For each row, call \`symbol_facts\`.`);
+> ${result.total - result.notes.length} more not shown. Raise \`limit\`.`);
 	return lines.join("\n");
 }
 
@@ -946,83 +791,6 @@ export function renderMentions(result: {
 	}
 	lines.push(`
 Read from ${result.commits} commits.`);
-	return lines.join("\n");
-}
-
-/** The facts behind an answer, grouped by kind. */
-export function renderFacts(result: {
-	symbolId: string;
-	facts: Array<{
-		factId: string;
-		kind: string;
-		module: string;
-		summary: string;
-	}>;
-	truncated: string[];
-}): string {
-	const lines = [`# Facts about ${code(result.symbolId)}`];
-	const factsByKind = new Map<string, typeof result.facts>();
-	for (const fact of result.facts) {
-		const group = factsByKind.get(fact.kind) ?? [];
-		group.push(fact);
-		factsByKind.set(fact.kind, group);
-	}
-
-	const answers = factsByKind.get("answer") ?? [];
-	const descriptions = answers.filter((fact) => fact.summary.startsWith("describe: "));
-	if (descriptions.length > 0) {
-		lines.push(`
-## Description
-`);
-		for (const fact of descriptions)
-			lines.push(`${fact.summary.slice("describe: ".length)}
-
-${code(fact.factId)}`);
-	}
-
-	// Keyed by FactKind, so a new kind fails the type check here rather than going unrendered.
-	// Null means the kind is not a grouped citation: answers render above and below, doubts never.
-	const headings: Record<FactKind, string | null> = {
-		declaration: "Declaration",
-		reference: "References",
-		import: "Imports",
-		literal: "Literals",
-		comment: "Comments",
-		doc: "Documentation",
-		answer: null,
-		doubt: null,
-	};
-	for (const kind of FACT_KINDS) {
-		const heading = headings[kind];
-		const group = factsByKind.get(kind) ?? [];
-		if (heading === null || group.length === 0) continue;
-		lines.push(`
-## ${heading}
-`);
-		for (const fact of group) lines.push(`- ${fact.summary}`, `  ${code(fact.factId)}`);
-	}
-
-	const otherAnswers = answers.filter((fact) => !fact.summary.startsWith("describe: "));
-	if (otherAnswers.length > 0) {
-		lines.push(`
-## Recorded answers
-`);
-		for (const fact of otherAnswers) {
-			const separator = fact.summary.indexOf(": ");
-			const question = separator < 0 ? `Answer` : questionTitle(fact.summary.slice(0, separator));
-			const prose = separator < 0 ? fact.summary : fact.summary.slice(separator + 2);
-			lines.push(`### ${question}
-
-${prose}
-
-${code(fact.factId)}`);
-		}
-	}
-
-	if (result.truncated.length > 0) {
-		lines.push(`
-> More ${result.truncated.join(" and ")} facts are not shown. Raise \`limit\`.`);
-	}
 	return lines.join("\n");
 }
 
@@ -1063,7 +831,6 @@ export function renderOverview(result: {
 	notes?: { noted: number; unknown: number };
 	largest: Array<{ module: string; symbols: number }>;
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
-	knowledge?: { answers: number; stale?: number | undefined; doubted?: number | undefined };
 	entryPoints?: Array<{ module: string; how: EntryHow; symbolId?: string | undefined }> | undefined;
 	moreEntryPoints?: number | undefined;
 }): string {
@@ -1178,33 +945,6 @@ ${code(result.scope)}
 		lines.push(`
 > Counts cover workspace files. The index holds ${external} external surface module${external === 1 ? "" : "s"} besides, ${result.index.stored} in total.
 `);
-	}
-
-	if (result.knowledge !== undefined) {
-		if (result.knowledge.answers === 0) {
-			lines.push(`
-## Knowledge
-
-None recorded yet. \`knowledge_gaps\` lists what is worth writing.
-`);
-		} else {
-			// Absent means staleness was skipped.
-			const stale =
-				result.knowledge.stale === undefined
-					? ", staleness not scanned at this size"
-					: result.knowledge.stale > 0
-						? `, ${result.knowledge.stale} stale`
-						: "";
-			const doubted =
-				result.knowledge.doubted === undefined || result.knowledge.doubted === 0
-					? ""
-					: `, ${result.knowledge.doubted} doubted`;
-			lines.push(`
-## Knowledge
-
-${result.knowledge.answers} recorded answer${result.knowledge.answers === 1 ? "" : "s"}${stale}${doubted}. \`knowledge_gaps\` lists what is missing.
-`);
-		}
 	}
 
 	if (result.entryPoints !== undefined || result.moreEntryPoints !== undefined) {

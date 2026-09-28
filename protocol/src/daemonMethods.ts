@@ -74,6 +74,19 @@ import {
 } from "./daemonShapes.js";
 import { ModuleExclusionSchema } from "./moduleExclusion.js";
 import { ModulePathSchema as ModulePath } from "./modulePath.js";
+import {
+	ConfirmNoteRequestSchema,
+	DoubtNoteRequestSchema,
+	NoteBacklinksRequestSchema,
+	NoteBacklinksSchema,
+	NoteOutcomeSchema,
+	NoteSchema,
+	ReadNoteRequestSchema,
+	ResolveNoteProposalRequestSchema,
+	SearchRefsRequestSchema,
+	SearchRefsSchema,
+	WriteNoteRequestSchema,
+} from "./noteShapes.js";
 import { ImportResolutionSchema } from "./project.js";
 import { PositionSchema } from "./symbols.js";
 import { TypeInfoSchema } from "./values.js";
@@ -648,6 +661,62 @@ export const DAEMON_METHODS = {
 	knowledgeScope: {
 		request: KnowledgeScopeRequest,
 		response: KnowledgeScopeSchema.nullable(),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** A symbol's note, refs at current addresses, with what moved since. */
+	readNote: {
+		request: ReadNoteRequestSchema,
+		response: NoteSchema.nullable(),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Save a note: every field text or `n/a`, refs checked. */
+	writeNote: {
+		request: WriteNoteRequestSchema,
+		response: NoteOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** Mark a note still true. */
+	confirmNote: {
+		request: ConfirmNoteRequestSchema,
+		response: NoteOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** Flag a note's current revision as misleading. */
+	doubtNote: {
+		request: DoubtNoteRequestSchema,
+		response: NoteOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** Accept or reject an agent's proposed replacement. */
+	resolveNoteProposal: {
+		request: ResolveNoteProposalRequestSchema,
+		response: NoteOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** Notes whose refs name a symbol. */
+	noteBacklinks: {
+		request: NoteBacklinksRequestSchema,
+		response: NoteBacklinksSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Symbols and files a ref could name, by name, with the ref written. */
+	searchRefs: {
+		request: SearchRefsRequestSchema,
+		response: SearchRefsSchema,
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",

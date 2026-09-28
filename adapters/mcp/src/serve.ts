@@ -118,23 +118,12 @@ function backendOver(ask: Asker): ToolBackend {
 		hubs: (limit) => ask("mostReferenced", { limit }),
 		overview: () => ask("overview", {}),
 		fileHistory: (module) => ask("fileHistory", { module }),
-		factsFor: (symbolId, limit) => ask("factsFor", { symbolId, limit }),
 		commitsMentioning: (name, limit) => ask("commitsMentioning", { name, limit }),
-		recordAnswer: (symbolId, question, prose, citations, options) =>
-			ask("recordAnswer", { symbolId, question, prose, citations, ...options }),
-		// One wire method answers both arities; the question decides which shape comes back.
-		recallAnswer: async (symbolId, question) => {
-			const answer = await ask("recallAnswer", { symbolId, question });
-			return Array.isArray(answer) ? (answer[0] ?? null) : answer;
-		},
-		recallAnswers: async (symbolId) => {
-			const answer = await ask("recallAnswer", { symbolId });
-			return Array.isArray(answer) ? answer : answer === null ? [] : [answer];
-		},
-		invalidateAnswer: (symbolId, reason, question, by) =>
-			ask("invalidateAnswer", { symbolId, reason, question, by }),
-		reaffirmAnswer: (symbolId, question, options) => ask("reaffirmAnswer", { symbolId, question, ...options }),
-		knowledgeGaps: (root, question, limit, module) => ask("knowledgeGaps", { root, question, limit, module }),
+		readNote: (symbolId) => ask("readNote", { symbolId }),
+		writeNote: (request) => ask("writeNote", request),
+		doubtNote: (symbolId, reason, expectedRevision, author) =>
+			ask("doubtNote", { symbolId, reason, expectedRevision, ...defined({ author }) }),
+		noteBacklinks: (target, limit) => ask("noteBacklinks", { symbolId: target, limit }),
 		declarationOf: (symbolId) => ask("declarationOf", { symbolId }),
 		diagnoseSubject: (symbolId) => ask("diagnoseSubject", { symbolId }),
 	};

@@ -155,11 +155,54 @@ export interface SalvagedGap {
 	lastAsked: number;
 }
 
+/** A salvaged note row, columns as the notes table holds them. */
+export interface SalvagedNote {
+	subjectId: string | null;
+	recordedAs: string;
+	revision: number;
+	summary: string | null;
+	description: string | null;
+	why: string | null;
+	gotchas: string | null;
+	author: string | null;
+	authoredAt: number;
+	editedBy: string | null;
+	editedAt: number;
+	confirmedBy: string | null;
+	confirmedAt: number | null;
+	sourceDigest: string | null;
+	doubtBy: string | null;
+	doubtReason: string | null;
+	doubtAt: number | null;
+}
+
+export interface SalvagedNoteLink {
+	subjectId: string;
+	field: string;
+	written: string;
+	target: string;
+	targetDigest: string | null;
+}
+
+export interface SalvagedNoteProposal {
+	subjectId: string;
+	baseRevision: number;
+	summary: string | null;
+	description: string | null;
+	why: string | null;
+	gotchas: string | null;
+	proposedBy: string | null;
+	proposedAt: number;
+}
+
 /** The salvaged knowledge in closed shapes, and how many rows were unreadable. */
 export interface NormalizedSalvage {
 	subjects: SalvagedSubject[];
 	answers: SalvagedAnswer[];
 	gaps: SalvagedGap[];
+	notes: SalvagedNote[];
+	noteLinks: SalvagedNoteLink[];
+	noteProposals: SalvagedNoteProposal[];
 	dropped: number;
 }
 
@@ -248,6 +291,52 @@ CREATE TABLE IF NOT EXISTS gaps (
   PRIMARY KEY (subjectId, question)
 );
 
+-- One note per subject: four fields, each null when its writer answered n/a. Author columns hold
+-- the harness's JSON; sourceDigest is the subject's digest when last saved or confirmed.
+CREATE TABLE IF NOT EXISTS symbol_notes (
+  subjectId    TEXT PRIMARY KEY,
+  recordedAs   TEXT NOT NULL,
+  revision     INTEGER NOT NULL CHECK (revision > 0),
+  summary      TEXT,
+  description  TEXT,
+  why          TEXT,
+  gotchas      TEXT,
+  author       TEXT,
+  authoredAt   INTEGER NOT NULL,
+  editedBy     TEXT,
+  editedAt     INTEGER NOT NULL,
+  confirmedBy  TEXT,
+  confirmedAt  INTEGER,
+  sourceDigest TEXT,
+  doubtBy      TEXT,
+  doubtReason  TEXT,
+  doubtAt      INTEGER
+);
+
+-- A note's refs as written, each with what it named: a subject id, or "module:<path>" for a whole
+-- file. targetDigest is the target's digest when the note was last saved or confirmed.
+CREATE TABLE IF NOT EXISTS symbol_note_links (
+  subjectId    TEXT NOT NULL,
+  field        TEXT NOT NULL,
+  written      TEXT NOT NULL,
+  target       TEXT NOT NULL,
+  targetDigest TEXT,
+  PRIMARY KEY (subjectId, field, written)
+);
+CREATE INDEX IF NOT EXISTS symbol_note_links_target ON symbol_note_links(target);
+
+-- An agent's replacement for a note a person last edited, until that person accepts or rejects it.
+CREATE TABLE IF NOT EXISTS symbol_note_proposals (
+  subjectId    TEXT PRIMARY KEY,
+  baseRevision INTEGER NOT NULL,
+  summary      TEXT,
+  description  TEXT,
+  why          TEXT,
+  gotchas      TEXT,
+  proposedBy   TEXT,
+  proposedAt   INTEGER NOT NULL
+);
+
 -- A key never changes: identity moves by rebinding the subject's address and by nothing else.
 CREATE TRIGGER IF NOT EXISTS knowledge_subjects_key_frozen BEFORE UPDATE OF subjectId ON knowledge_subjects
   BEGIN SELECT RAISE(ABORT, 'knowledge_subjects.subjectId never changes'); END;
@@ -255,6 +344,12 @@ CREATE TRIGGER IF NOT EXISTS answers_key_frozen BEFORE UPDATE OF subjectId ON an
   BEGIN SELECT RAISE(ABORT, 'answers.subjectId never changes'); END;
 CREATE TRIGGER IF NOT EXISTS gaps_key_frozen BEFORE UPDATE OF subjectId ON gaps
   BEGIN SELECT RAISE(ABORT, 'gaps.subjectId never changes'); END;
+CREATE TRIGGER IF NOT EXISTS symbol_notes_key_frozen BEFORE UPDATE OF subjectId ON symbol_notes
+  BEGIN SELECT RAISE(ABORT, 'symbol_notes.subjectId never changes'); END;
+CREATE TRIGGER IF NOT EXISTS symbol_note_links_key_frozen BEFORE UPDATE OF subjectId ON symbol_note_links
+  BEGIN SELECT RAISE(ABORT, 'symbol_note_links.subjectId never changes'); END;
+CREATE TRIGGER IF NOT EXISTS symbol_note_proposals_key_frozen BEFORE UPDATE OF subjectId ON symbol_note_proposals
+  BEGIN SELECT RAISE(ABORT, 'symbol_note_proposals.subjectId never changes'); END;
 
 CREATE VIEW IF NOT EXISTS subjects_addressed AS
   SELECT subjectId, currentSymbolId AS symbolId, state, boundAt, orphanedAt, fromSymbolId, evidence, lastDigest, lastCoverage
@@ -265,6 +360,9 @@ CREATE VIEW IF NOT EXISTS answers_addressed AS
 CREATE VIEW IF NOT EXISTS gaps_addressed AS
   SELECT g.*, s.currentSymbolId AS symbolId, s.state, s.orphanedAt, s.evidence
   FROM gaps g JOIN knowledge_subjects s ON s.subjectId = g.subjectId;
+CREATE VIEW IF NOT EXISTS notes_addressed AS
+  SELECT n.*, s.currentSymbolId AS symbolId, s.state, s.lastDigest
+  FROM symbol_notes n JOIN knowledge_subjects s ON s.subjectId = n.subjectId;
 
 -- Work: rows whose address the index holds. A ranking reader reads these and cannot see a dead address.
 CREATE VIEW IF NOT EXISTS answers_live AS
@@ -278,12 +376,20 @@ export const KNOWLEDGE_VIEWS = [
 	"subjects_addressed",
 	"answers_addressed",
 	"gaps_addressed",
+	"notes_addressed",
 	"answers_live",
 	"gaps_live",
 ] as const;
 
 /** The tables a rebuild salvages, subjects first so the rows that key by them restore after. */
-export const KNOWLEDGE_TABLES = ["knowledge_subjects", "answers", "gaps"] as const;
+export const KNOWLEDGE_TABLES = [
+	"knowledge_subjects",
+	"answers",
+	"gaps",
+	"symbol_notes",
+	"symbol_note_links",
+	"symbol_note_proposals",
+] as const;
 
 /** Checked before the insert, so a salvaged row from another version cannot fail the rebuild. */
 const EVIDENCE = new Set<string>(EVIDENCE_VALUES);
@@ -474,7 +580,69 @@ export function normalizeSalvaged(raw: Record<string, Array<Record<string, unkno
 			lastAsked: num(row["lastAsked"], 0),
 		});
 	}
-	return { subjects, answers, gaps, dropped };
+
+	// A time a row lacks reads as unknown, never as now.
+	const at = (value: unknown): number | null => (num(value, -1) < 0 ? null : num(value, -1));
+	const notes: SalvagedNote[] = [];
+	for (const row of raw["symbol_notes"] ?? []) {
+		const recordedAs = addressOf(row);
+		if (recordedAs === null) {
+			dropped++;
+			continue;
+		}
+		notes.push({
+			subjectId: str(row["subjectId"]),
+			recordedAs,
+			revision: Math.max(1, num(row["revision"], 1)),
+			summary: str(row["summary"]),
+			description: str(row["description"]),
+			why: str(row["why"]),
+			gotchas: str(row["gotchas"]),
+			author: str(row["author"]),
+			authoredAt: num(row["authoredAt"], 0),
+			editedBy: str(row["editedBy"]),
+			editedAt: num(row["editedAt"], 0),
+			confirmedBy: str(row["confirmedBy"]),
+			confirmedAt: at(row["confirmedAt"]),
+			sourceDigest: str(row["sourceDigest"]),
+			doubtBy: str(row["doubtBy"]),
+			doubtReason: str(row["doubtReason"]),
+			doubtAt: at(row["doubtAt"]),
+		});
+	}
+
+	const noteLinks: SalvagedNoteLink[] = [];
+	for (const row of raw["symbol_note_links"] ?? []) {
+		const subjectId = str(row["subjectId"]);
+		const field = str(row["field"]);
+		const written = str(row["written"]);
+		const target = str(row["target"]);
+		if (subjectId === null || field === null || written === null || target === null) {
+			dropped++;
+			continue;
+		}
+		noteLinks.push({ subjectId, field, written, target, targetDigest: str(row["targetDigest"]) });
+	}
+
+	const noteProposals: SalvagedNoteProposal[] = [];
+	for (const row of raw["symbol_note_proposals"] ?? []) {
+		const subjectId = str(row["subjectId"]);
+		if (subjectId === null) {
+			dropped++;
+			continue;
+		}
+		noteProposals.push({
+			subjectId,
+			baseRevision: Math.max(1, num(row["baseRevision"], 1)),
+			summary: str(row["summary"]),
+			description: str(row["description"]),
+			why: str(row["why"]),
+			gotchas: str(row["gotchas"]),
+			proposedBy: str(row["proposedBy"]),
+			proposedAt: num(row["proposedAt"], 0),
+		});
+	}
+	return { subjects, answers, gaps, notes, noteLinks, noteProposals, dropped };
 }
 
 /** Salvaged subject rows put back as they were; every other row finds its subject through `placeRow`. */
@@ -717,8 +885,11 @@ export class KnowledgeSubjects {
 	delete(subjectId: string): void {
 		const answers = this.db.prepare("DELETE FROM answers WHERE subjectId = ?").run(subjectId);
 		const gaps = this.db.prepare("DELETE FROM gaps WHERE subjectId = ?").run(subjectId);
+		const notes = this.db.prepare("DELETE FROM symbol_notes WHERE subjectId = ?").run(subjectId);
+		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ?").run(subjectId);
+		this.db.prepare("DELETE FROM symbol_note_proposals WHERE subjectId = ?").run(subjectId);
 		const subject = this.db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(subjectId);
-		this.recordKnowledgeWrite(answers.changes > 0 || gaps.changes > 0 || subject.changes > 0);
+		this.recordKnowledgeWrite(answers.changes > 0 || gaps.changes > 0 || notes.changes > 0 || subject.changes > 0);
 	}
 
 	/** Orphans whose kept address the module holds again are bound: the address resolves, so nothing was lost. */

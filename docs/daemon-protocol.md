@@ -398,7 +398,7 @@ Four reads let a client draw what surrounds one symbol without walking the store
   `fanIn`, and `describe`'s `referenceCount`, `graph.fanIn`, `graph.fanOut`, `graph.dependents`
   and `graph.cycle` leave out `import` and `export` rows. One closed role table in
   `core/src/store.ts` decides it, and every such read goes through the store's use surfaces
-  (`usesTo`, `usesFrom`, `usesIn`, `useEdges`). `symbol_facts` keeps those rows, and rename planning
+  (`usesTo`, `usesFrom`, `usesIn`, `useEdges`). `factsFor` keeps those rows, and rename planning
   reads the store's rows whole; a residue names every raw reader.
 - **`findReferences` rows** carry `topLevel` and `language`, both computed at read time, so neither
   is part of a reference's fact id and no citation moves. `topLevel` is the outermost declaration
@@ -421,6 +421,8 @@ Four reads let a client draw what surrounds one symbol without walking the store
 - **`describe`'s `graph.dependents`** counts the distinct top-level declarations holding a use; a
   use at module level counts its file.
 - **`knowledgeScope`** is the knowledge layer's containment read; `knowledge-layer.md` holds it.
+- **Notes:** `readNote`, `writeNote`, `confirmNote`, `doubtNote`, `resolveNoteProposal`,
+  `noteBacklinks` and `searchRefs`; `knowledge-layer.md` holds them.
 
 Protocol 3.3.0 changed two answers an older client may count on. `describe.members` no longer lists
 parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `graph.fanIn`,

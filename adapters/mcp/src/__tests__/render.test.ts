@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { renderDescribe, renderDocs, renderFacts, renderKnowledgeGaps, renderOutline, renderOverview } from "../render";
+import { renderDescribe, renderDocs, renderNote, renderOutline, renderOverview } from "../render";
 
 ////////////////////////////////
 //  Helpers
@@ -22,61 +22,49 @@ function overview(extra: Partial<Parameters<typeof renderOverview>[0]> = {}): st
 ////////////////////////////////
 //  Tests
 
-describe("saying what a seeded page could not tell", () => {
-	const row = {
-		symbolId: "lexicon typescript src/a.ts add().",
-		question: "describe",
-		why: "missing" as const,
-		askCount: 0,
-		fanIn: 4,
+describe("reading a note back", () => {
+	const SYMBOL = "lexicon typescript src/a.ts add().";
+	const note = {
+		symbolId: SYMBOL,
+		recordedAs: SYMBOL,
+		revision: 2,
+		summary: "Adds one item.",
+		description: null,
+		why: "Totals are cached, so every add refreshes them.",
+		gotchas: null,
+		author: null,
+		authoredAt: 1,
+		editedBy: { kind: "client" as const, name: "claude-code", version: "2.1.0" },
+		editedAt: 2,
+		confirmedBy: null,
+		confirmedAt: null,
+		doubt: null,
+		sourceChanged: false,
+		links: [],
+		proposal: null,
 	};
 
-	it("names the unknown counts under a seeded header, in a sentence", () => {
-		const rendered = renderKnowledgeGaps(
-			{
-				question: "describe",
-				rows: [row],
-				total: 1,
-				external: 0,
-				truncated: false,
-				seeded: true,
-				seededUnknown: { generated: 1, exported: 2 },
-			},
-			undefined,
-		);
-
-		expect(rendered).toContain(
-			"> Of these, 1 comes from a file git could not call generated or not, and 2 have no export verdict from the provider; all stay eligible.",
-		);
+	// An `n/a` field says nothing, so it takes no section.
+	it("shows each field that says something, and none that said n/a", () => {
+		const rendered = renderNote(SYMBOL, note);
+		expect(rendered).toContain(note.summary);
+		expect(rendered).toContain(note.why);
+		expect(rendered).not.toContain("## Description");
+		expect(rendered).not.toContain("## Gotchas");
+		expect(rendered).not.toContain("n/a");
 	});
 
-	it("says nothing when nothing was unknown, and nothing on a page of measured demand", () => {
-		const seeded = renderKnowledgeGaps(
-			{
-				question: "describe",
-				rows: [row],
-				total: 1,
-				external: 0,
-				truncated: false,
-				seeded: true,
-				seededUnknown: { generated: 0, exported: 0 },
-			},
-			undefined,
-		);
-		const measured = renderKnowledgeGaps(
-			{
-				question: "describe",
-				rows: [{ ...row, askCount: 3 }],
-				total: 1,
-				external: 0,
-				truncated: false,
-				seededUnknown: { generated: 1, exported: 0 },
-			},
-			undefined,
-		);
-
-		expect(seeded).not.toContain("Of these");
-		expect(measured).not.toContain("Of these");
+	it("lists what moved as advisories, and none when nothing did", () => {
+		const moved = renderNote(SYMBOL, {
+			...note,
+			sourceChanged: true,
+			links: [
+				{ field: "summary", written: "ref://src/b.ts:Gone", current: "ref://src/b.ts:Gone", state: "broken" },
+			],
+		});
+		expect(moved).toContain("## Advisories");
+		expect(moved).toContain("ref://src/b.ts:Gone");
+		expect(renderNote(SYMBOL, note)).not.toContain("## Advisories");
 	});
 });
 
@@ -312,27 +300,6 @@ describe("reporting what failed to parse", () => {
 
 	it("says nothing about failures when there are none", () => {
 		expect(overview()).not.toContain("Failed to parse");
-	});
-});
-
-describe("offering every citable fact kind, not a hand-kept subset", () => {
-	const SYMBOL = "lexicon reference src/a.ts work#";
-
-	function facts(kind: string): string {
-		return renderFacts({
-			symbolId: SYMBOL,
-			facts: [{ factId: `lexfact ${kind} src/a.ts abc123`, kind, module: "src/a.ts", summary: `a ${kind}` }],
-			truncated: [],
-		});
-	}
-
-	// A citation cannot be made from an id the author was never shown.
-	it.each(["declaration", "reference", "import", "literal", "comment", "doc"])("prints a %s id", (kind) => {
-		expect(facts(kind)).toContain(`lexfact ${kind} src/a.ts abc123`);
-	});
-
-	it("leaves doubt ids out, since a doubt is a handshake rather than evidence", () => {
-		expect(facts("doubt")).not.toContain("lexfact doubt");
 	});
 });
 

@@ -24,20 +24,46 @@ const NONE = { kind: "exact", count: 0 } as const;
 const CAPPED = { kind: "atLeast", count: 4, reason: "pageCapped" } as const;
 const AT = 1_700_000_000;
 
-const ANSWER = {
-	question: "why",
-	prose: "Because the store is the owner.",
-	factId: "lexicon typescript src/a.ts add(). answer why",
-	recordedAt: AT,
-	model: "test",
-	citations: ["lexicon typescript src/a.ts add(). declaration"],
+const AGENT = { kind: "agent", model: "gpt-6-luna", via: "test", run: null } as const;
+
+const NOTE = {
+	symbolId: SYMBOL.symbolId,
+	recordedAs: SYMBOL.symbolId,
+	revision: 2,
+	summary: "Adds one item to a [Cart](ref://src/a.ts:Cart).",
+	description: "Totals refresh on every add.",
+	why: "Totals are cached.",
+	gotchas: "Adding past the limit throws.",
+	author: { kind: "person" },
+	authoredAt: AT,
+	editedBy: AGENT,
+	editedAt: AT,
+	confirmedBy: null,
+	confirmedAt: null,
+	doubt: null,
+	sourceChanged: false,
+	links: [{ field: "summary", written: "ref://src/a.ts:Cart", current: "ref://src/a.ts:Cart", state: "ok" }],
+	proposal: null,
 } as const;
 
-const DOUBT = {
-	factId: "lexicon typescript src/a.ts add(). doubt why",
-	reason: "the body changed",
-	by: "test",
+const MOVED_NOTE = {
+	...NOTE,
+	revision: 1,
+	summary: null,
+	description: null,
+	gotchas: null,
+	editedBy: null,
+	confirmedBy: { kind: "client", name: "claude-code", version: null },
+	confirmedAt: AT,
+	doubt: { by: AGENT, reason: "it adds two", at: AT },
+	sourceChanged: true,
+	links: [
+		{ field: "why", written: "ref://src/b.ts:Gone", current: "ref://src/b.ts:Gone", state: "broken" },
+		{ field: "why", written: "ref://src/a.ts:Cart", current: "ref://src/a.ts:Basket", state: "changed" },
+	],
+	proposal: { summary: "Adds.", description: null, why: null, gotchas: null, baseRevision: 1, by: AGENT, at: AT },
 } as const;
+
 const ISSUE = { kind: "unresolved", detail: "a name stopped resolving", module: "src/a.ts" } as const;
 
 export const CASES: Record<string, unknown[][]> = {
@@ -214,95 +240,52 @@ export const CASES: Record<string, unknown[][]> = {
 			},
 		],
 	],
-	renderKnowledge: [
-		[null, "describe"],
-		[{ answer: ANSWER, stale: false, shaky: false, inheritedStale: [], doubtedUpstream: [], doubts: [] }, "why"],
-		[
-			{
-				answer: ANSWER,
-				stale: true,
-				shaky: true,
-				inheritedStale: [ANSWER.citations[0]],
-				doubtedUpstream: [ANSWER.citations[0]],
-				doubts: [DOUBT],
-			},
-			"why",
-		],
+	renderNote: [
+		[SYMBOL.symbolId, null],
+		[SYMBOL.symbolId, NOTE],
+		[SYMBOL.symbolId, MOVED_NOTE],
 	],
-	renderKnowledgeGaps: [
-		[{ question: "describe", total: 0, external: 2, rows: [], scope: undefined, seeded: false }, undefined],
+	renderNoteLine: [[null], [NOTE], [MOVED_NOTE]],
+	renderNoteOutcome: [
+		[SYMBOL.symbolId, { outcome: "saved", note: NOTE }, "write"],
+		[SYMBOL.symbolId, { outcome: "saved", note: null }, "write"],
+		[SYMBOL.symbolId, { outcome: "saved", note: MOVED_NOTE }, "doubt"],
+		[SYMBOL.symbolId, { outcome: "proposed", note: NOTE }, "write"],
+		[SYMBOL.symbolId, { outcome: "refused", reason: "the note is at revision 2, not 1", current: NOTE }, "write"],
 		[
-			{ question: "describe", total: 0, external: 0, rows: [], scope: { module: "src/a.ts", declarations: 0 } },
-			undefined,
-		],
-		[
+			SYMBOL.symbolId,
 			{
-				question: "describe",
-				total: 2,
-				external: 0,
-				seeded: true,
-				seededUnknown: { generated: 1, exported: 2 },
-				rows: [
+				outcome: "refused",
+				reason: "1 ref does not resolve. Each is listed with candidates",
+				refs: [
 					{
-						symbolId: SYMBOL.symbolId,
-						name: "add",
-						kind: "function",
-						module: "src/a.ts",
-						why: "missing",
-						askCount: 0,
-						fanIn: 4,
-						question: "describe",
+						field: "summary",
+						ref: "ref://src/a.ts:Ghost",
+						problem: "names nothing in src/a.ts",
+						candidates: [],
+					},
+					{
+						field: "description",
+						ref: "ref://src/a.ts:add",
+						problem: "names 2 declarations",
+						candidates: ["ref://src/a.ts:add[1]", "ref://src/a.ts:add[2]"],
 					},
 				],
 			},
-			undefined,
+			"write",
 		],
-		[
-			{
-				question: "describe",
-				total: 3,
-				external: 0,
-				seeded: true,
-				rows: [
-					{
-						symbolId: SYMBOL.symbolId,
-						name: "add",
-						kind: "function",
-						module: "src/a.ts",
-						why: "stale",
-						askCount: 2,
-						fanIn: 9,
-						question: "describe",
-					},
-				],
-			},
-			"src",
-		],
+		[SYMBOL.symbolId, { outcome: "refused", reason: "no note stands on it." }, "doubt"],
 	],
-	renderRecordOutcome: [[{ recorded: true, answer: ANSWER }], [{ recorded: false, reason: "a citation is stale" }]],
-	renderInvalidateOutcome: [
-		[{ refused: "no such symbol" }],
+	renderNoteBacklinks: [
+		["src/a.ts", { notes: [], total: 0 }],
 		[
+			SYMBOL.symbolId,
 			{
-				symbolId: SYMBOL.symbolId,
-				doubted: [{ question: "why", doubt: DOUBT }],
-				noAnswer: [],
-				gaps: [],
-			},
-		],
-		[{ symbolId: SYMBOL.symbolId, doubted: [], noAnswer: ["contract"], gaps: [] }],
-	],
-	renderFacts: [
-		[{ symbolId: SYMBOL.symbolId, facts: [], truncated: [] }],
-		[
-			{
-				symbolId: SYMBOL.symbolId,
-				facts: [
-					{ factId: "f1", kind: "answer", module: "src/a.ts", summary: "describe: it adds." },
-					{ factId: "f2", kind: "declaration", module: "src/a.ts", summary: "function add()" },
-					{ factId: "f3", kind: "reference", module: "src/b.ts", summary: "call" },
+				notes: [
+					{ symbolId: OTHER.symbolId, summary: "Counts items.", fields: ["summary", "why"] },
+					{ symbolId: SYMBOL.symbolId, summary: null, fields: ["description"] },
 				],
-				truncated: ["reference"],
+				total: 5,
 			},
 		],
 	],
