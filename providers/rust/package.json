@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-rust",
-	"version": "11.4.2",
+	"version": "11.5.0",
 	"private": true,
 	"type": "module",
 	"description": "Rust provider for nyaa-lexicon",
