@@ -788,6 +788,7 @@ describe("previewing a refactor without a transaction", () => {
 					],
 					referencing: ["src/use.ts"],
 					usedAtSource: true,
+					exportsAtTarget: false,
 					baseHash: "h",
 				}),
 			}),

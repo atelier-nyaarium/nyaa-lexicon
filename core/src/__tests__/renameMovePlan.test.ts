@@ -120,11 +120,8 @@ function plannerFor(world: World): RefactorPlanner {
 			const insertion = request.role.insertion;
 			if (insertion !== undefined) {
 				const at = { line: 0, character: 0 };
-				return {
-					status: "ready",
-					edits: [{ range: { start: at, end: at }, newText: `${insertion.text}\n` }],
-					blocked: [],
-				};
+				const newText = `${insertion.exported === true ? "export " : ""}${insertion.text}`;
+				return { status: "ready", edits: [{ range: { start: at, end: at }, newText }], blocked: [] };
 			}
 			return { status: "ready", edits: [], blocked: [] };
 		},
@@ -210,6 +207,58 @@ describe("writing a rename only over the rows the plan read", () => {
 
 		expect(outcome).toMatchObject({ renamed: false, reason: expect.stringMatching(/indexed again/) });
 		expect(written).toEqual([]);
+	});
+});
+
+describe("moving a declaration something left behind still uses", () => {
+	it("asks the target to export it when it is not exported now", async () => {
+		const alpha = id("alpha");
+		const world: World = {
+			text: "function alpha() {}\n\nalpha();\n",
+			declarations: [
+				{
+					factId: `decl:${alpha}`,
+					module: MODULE,
+					symbolId: alpha,
+					kind: "function",
+					name: "alpha",
+					range: range(0, 0, 0, 19),
+					selectionRange: range(0, 9, 0, 14),
+					visibility: "public",
+					exported: false,
+				} as StoredDeclaration,
+			],
+			references: [
+				{
+					factId: `ref:${alpha}`,
+					module: MODULE,
+					name: "alpha",
+					role: "call",
+					targetId: alpha,
+					fromId: null,
+					qualified: null,
+					provenance: "bound",
+					startLine: 2,
+					startCharacter: 0,
+					endLine: 2,
+					endCharacter: 5,
+				},
+			],
+		};
+
+		const { written } = await stepWith(
+			{
+				planner: plannerFor(world),
+				currentHashOf: (module) => (module === MODULE ? hashContent(world.text) : null),
+				declarationsIn: () => world.declarations,
+				store: storeFor(world),
+			},
+			"refactorMove",
+			{ symbolId: alpha, toModule: TARGET },
+			() => {},
+		);
+
+		expect(written).toContainEqual({ module: TARGET, text: "export function alpha() {}\n" });
 	});
 });
 
@@ -377,7 +426,7 @@ function multiPlannerFor(world: ImportWorld, resolve: ResolveSpecifier): Refacto
 				const at = { line: 0, character: 0 };
 				return {
 					status: "ready",
-					edits: [{ range: { start: at, end: at }, newText: `${insertion.text}\n` }],
+					edits: [{ range: { start: at, end: at }, newText: insertion.text }],
 					blocked: [],
 				};
 			}

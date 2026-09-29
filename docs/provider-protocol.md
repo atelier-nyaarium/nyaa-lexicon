@@ -498,6 +498,14 @@ target already binds the import's name to something else.
 A target that does not exist yet arrives with `exists: false` and empty text. The provider parses
 the supplied text and answers as usual; the file is created by applying the edits.
 
+An insertion with `exported: true` must leave the target: code outside it still uses the
+declaration. A language that marks exports adds the mark. One whose top-level names are always
+importable ignores it.
+
+`BrokenImport` is the unbound reason for a local import that binds nothing: a missing export, a
+missing module, or a file that is not a module. It dangles, so a move that leaves one behind
+reports it.
+
 `MoveBlockedReason` and `MoveRefusal` are separate enums from rename's despite five shared
 spellings, so neither contract needs the other's agreement to gain a member.
 

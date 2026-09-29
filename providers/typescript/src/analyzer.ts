@@ -448,6 +448,8 @@ export class TypeScriptAnalyzer {
 		if (this.isNotIndexedSymbol(checker, symbol)) {
 			return sourceFailure("NotIndexed", "the imported declaration is not in the symbol index");
 		}
+		const broken = brokenImportOf(checker, symbol);
+		if (broken !== undefined) return sourceFailure("BrokenImport", broken);
 		if (ts.isMetaProperty(node.parent)) {
 			return sourceFailure("RuntimeConstructed", "import.meta is runtime metadata");
 		}
@@ -662,18 +664,36 @@ function unclaimedLocalImportOf(node: ts.Node): boolean {
 	return specifier?.startsWith(".") === true && path.extname(specifier) !== "" && !claimsExtension(specifier);
 }
 
+/** Why a local import binds nothing, when it does. */
+function brokenImportOf(checker: ts.TypeChecker, symbol: ts.Symbol): string | undefined {
+	if ((symbol.flags & ts.SymbolFlags.Alias) === 0) return undefined;
+	if (!checker.isUnknownSymbol(checker.getAliasedSymbol(symbol))) return undefined;
+	for (const declaration of declarationsOf(symbol)) {
+		const specifier = moduleSpecifierOf(declaration);
+		if (specifier === undefined || isExternalModuleSpecifier(specifier.text)) continue;
+		return checker.getSymbolAtLocation(specifier) === undefined
+			? "the imported module is missing or is not a module"
+			: "the imported module does not export it";
+	}
+	return undefined;
+}
+
 function importSpecifierOf(node: ts.Node): string | undefined {
+	return moduleSpecifierOf(node)?.text;
+}
+
+function moduleSpecifierOf(node: ts.Node): ts.StringLiteral | undefined {
 	let current: ts.Node | undefined = node;
 	while (current !== undefined) {
 		if (ts.isImportDeclaration(current)) {
-			return ts.isStringLiteral(current.moduleSpecifier) ? current.moduleSpecifier.text : undefined;
+			return ts.isStringLiteral(current.moduleSpecifier) ? current.moduleSpecifier : undefined;
 		}
 		if (ts.isImportEqualsDeclaration(current)) {
 			const reference = current.moduleReference;
 			return ts.isExternalModuleReference(reference) &&
 				reference.expression !== undefined &&
 				ts.isStringLiteral(reference.expression)
-				? reference.expression.text
+				? reference.expression
 				: undefined;
 		}
 		current = current.parent;

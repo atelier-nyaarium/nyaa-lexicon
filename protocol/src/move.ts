@@ -142,7 +142,14 @@ export const MoveRoleSchema = z
 		/** The declaration's whole range in the source module, comments included. */
 		removal: RangeSchema.optional(),
 		/** The text to write into the target. Absent position means the end of the file. */
-		insertion: z.object({ text: z.string().min(1), position: PositionSchema.optional() }).optional(),
+		insertion: z
+			.object({
+				text: z.string().min(1),
+				position: PositionSchema.optional(),
+				/** Something outside the target uses it, so it must leave the target. */
+				exported: z.boolean().optional(),
+			})
+			.optional(),
 	})
 	.meta({ id: "MoveRole" });
 

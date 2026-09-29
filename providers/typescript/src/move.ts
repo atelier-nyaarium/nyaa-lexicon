@@ -14,7 +14,7 @@ import {
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { claimsExtension } from "./file-types.js";
+import { claimsExtension, scriptKindOf } from "./file-types.js";
 import {
 	bindsPlanned,
 	boundIdentifiers,
@@ -191,7 +191,9 @@ export function makeMoveEdits(
 	}
 
 	if (request.role.insertion !== undefined) {
-		const { text, position } = request.role.insertion;
+		const { position, exported } = request.role.insertion;
+		const text =
+			exported === true ? exportedText(request.role.insertion.text, request.module) : request.role.insertion.text;
 		const offset = position === undefined ? source.text.length : coordinates.offsetAt(position);
 		const point = offset === undefined ? undefined : coordinates.positionAt(offset);
 		if (point === undefined) {
@@ -261,6 +263,51 @@ function sharedNames(source: ts.SourceFile, removed: { start: number; end: numbe
 
 function hasDefaultModifier(node: ts.ClassDeclaration | ts.FunctionDeclaration): boolean {
 	return (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword);
+}
+
+////////////////////////////////
+//  Exporting
+
+type Exportable =
+	| ts.VariableStatement
+	| ts.FunctionDeclaration
+	| ts.ClassDeclaration
+	| ts.InterfaceDeclaration
+	| ts.TypeAliasDeclaration
+	| ts.EnumDeclaration
+	| ts.ModuleDeclaration;
+
+function isExportable(statement: ts.Statement): statement is Exportable {
+	return (
+		ts.isVariableStatement(statement) ||
+		ts.isFunctionDeclaration(statement) ||
+		ts.isClassDeclaration(statement) ||
+		ts.isInterfaceDeclaration(statement) ||
+		ts.isTypeAliasDeclaration(statement) ||
+		ts.isEnumDeclaration(statement) ||
+		(ts.isModuleDeclaration(statement) &&
+			ts.isIdentifier(statement.name) &&
+			(statement.flags & ts.NodeFlags.GlobalAugmentation) === 0)
+	);
+}
+
+/** `text` with `export` on each declaration lacking it, after its decorators. */
+function exportedText(text: string, module: string): string {
+	const inserted = ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, scriptKindOf(module));
+	const points = inserted.statements.flatMap((statement) => {
+		if (!isExportable(statement)) return [];
+		const modifiers = ts.getModifiers(statement) ?? [];
+		if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) return [];
+		const first =
+			modifiers[0] ??
+			statement
+				.getChildren(inserted)
+				.find((child) => child.kind !== ts.SyntaxKind.SyntaxList && !ts.isJSDoc(child));
+		return first === undefined ? [] : [first.getStart(inserted)];
+	});
+	let exported = text;
+	for (const point of points.reverse()) exported = `${exported.slice(0, point)}export ${exported.slice(point)}`;
+	return exported;
 }
 
 ////////////////////////////////

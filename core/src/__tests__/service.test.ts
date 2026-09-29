@@ -685,6 +685,120 @@ describe("planning a move", () => {
 		expect(plan.dependencies).toEqual([{ name: "mystery", origin: { kind: "unresolved", reason: "Ambiguous" } }]);
 	});
 
+	const MOVE = "lexicon reference a.ref Move#";
+
+	function declared(
+		symbolId: string,
+		name: string,
+		line: number,
+		more: { exported?: boolean; containerId?: string },
+	) {
+		const span = { start: { line, character: 0 }, end: { line, character: 10 } };
+		return {
+			symbolId,
+			kind: "class" as const,
+			name,
+			range: span,
+			selectionRange: span,
+			visibility: "public" as const,
+			...more,
+		};
+	}
+
+	function used(
+		name: string,
+		line: number,
+		binding: { symbolId: string } | { reason: string },
+		more: { fromId?: string; qualified?: boolean } = { fromId: MOVE },
+	) {
+		return {
+			name,
+			range: { start: { line, character: 0 }, end: { line, character: 4 } },
+			role: "read" as const,
+			binding:
+				"symbolId" in binding
+					? { status: "bound" as const, symbolId: binding.symbolId, provenance: "bound" as const }
+					: { status: "unbound" as const, reason: binding.reason as "NotIndexed" },
+			...more,
+		};
+	}
+
+	/** A service whose index holds exactly these rows for `a.ref`. */
+	function holding(
+		declarations: ReturnType<typeof declared>[],
+		references: ReturnType<typeof used>[],
+	): LexiconService {
+		files.set("a.ref", "export class Move {}\n");
+		const built = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText((m) => files.get(m) ?? null),
+			dir,
+		);
+		const contentHash = built.currentHashOf("a.ref") as string;
+		store.replaceFile({ module: "a.ref", contentHash, declarations, references });
+		return built;
+	}
+
+	// Only what holds a member needs an import.
+	it("lists what the moved text reaches by name, never a member reached through a key or a receiver", () => {
+		const helper = "lexicon reference a.ref helper#";
+		const total = "lexicon reference a.ref total#";
+		const shapeHelper = "lexicon reference a.ref Shape#helper.";
+		const built = holding(
+			[
+				declared(MOVE, "Move", 0, { exported: true }),
+				declared(helper, "helper", 1, { exported: true }),
+				declared(total, "total", 2, { exported: true }),
+				declared("lexicon reference a.ref Shape#", "Shape", 3, { exported: true }),
+				declared(shapeHelper, "helper", 4, { containerId: "lexicon reference a.ref Shape#" }),
+			],
+			[
+				used("helper", 0, { symbolId: shapeHelper }),
+				used("total", 0, { symbolId: total }, { fromId: MOVE, qualified: true }),
+				used("helper", 0, { symbolId: helper }),
+			],
+		);
+
+		const plan = built.planMove(MOVE, "b.ref", built.newReadContext());
+
+		expect(plan.ok && plan.dependencies).toEqual([
+			{ name: "helper", origin: { kind: "sourceModule", symbolId: helper, name: "helper", exported: true } },
+		]);
+	});
+
+	it("exports at the target only what stays in use outside it and is not exported now", () => {
+		const cases = [
+			{ exported: false, usedAtSource: true, exportsAtTarget: true },
+			{ exported: true, usedAtSource: true, exportsAtTarget: false },
+			{ exported: false, usedAtSource: false, exportsAtTarget: false },
+		];
+
+		const user = "lexicon reference a.ref user#";
+		const planned = cases.map(({ exported, usedAtSource }) => {
+			const built = holding(
+				[declared(MOVE, "Move", 0, { exported }), declared(user, "user", 2, {})],
+				usedAtSource ? [used("Move", 2, { symbolId: MOVE }, { fromId: user })] : [],
+			);
+			const plan = built.planMove(MOVE, "b.ref", built.newReadContext());
+			return plan.ok && plan.exportsAtTarget;
+		});
+
+		expect(planned).toEqual(cases.map((entry) => entry.exportsAtTarget));
+	});
+
+	it("reports a use whose import binds nothing after a move, not one the language cannot type", () => {
+		const built = holding(
+			[],
+			[used("FOLDER", 1, { reason: "BrokenImport" }, {}), used("value", 2, { reason: "DynamicallyTyped" }, {})],
+		);
+
+		expect([
+			built.checkMoveLanded("FOLDER", ["a.ref"]).length,
+			built.checkMoveLanded("value", ["a.ref"]).length,
+		]).toEqual([1, 0]);
+	});
+
 	it("says so when the symbol is not indexed", async () => {
 		await boot();
 		expect(service.planMove("lexicon reference a.ref Ghost#", "b.ref", ctx())).toMatchObject({ ok: false });

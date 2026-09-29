@@ -136,6 +136,7 @@ export const CASES: Record<string, unknown[][]> = {
 				closure: [SYMBOL, OTHER],
 				removal: { start: { line: 1, column: 0 }, end: { line: 8, column: 1 } },
 				usedAtSource: false,
+				exportsAtTarget: false,
 				referencing: ["src/c.ts"],
 				dependencies: [
 					{ name: "helper", origin: { kind: "insideClosure" } },

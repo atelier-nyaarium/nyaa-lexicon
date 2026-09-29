@@ -25,6 +25,8 @@ export const UnknownReasonSchema = z
 		"Ambiguous",
 		/** Built at runtime: computed import, reflection, string-keyed access. */
 		"RuntimeConstructed",
+		/** An import names a module or export that does not exist. */
+		"BrokenImport",
 		/**
 		 * Real and statically known, but not something this index contains. Locals and parameters are
 		 * the usual case. Distinct from RuntimeConstructed, which claims the target cannot be known.

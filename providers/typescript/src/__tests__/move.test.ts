@@ -498,7 +498,7 @@ describe("move edits", () => {
 
 			if (response.status !== "ready") throw new Error("move was refused");
 			expect(response.blocked).toEqual([]);
-			expect(applyEdits(target, response.edits)).toEqual({ text: `${target}${statement}\n\n\n${body}` });
+			expect(applyEdits(target, response.edits)).toEqual({ text: `${target}${statement}\n\n${body}` });
 		}
 	});
 
@@ -529,7 +529,7 @@ describe("move edits", () => {
 
 		if (response.status !== "ready") throw new Error("move was refused");
 		expect(applyEdits(target, response.edits)).toEqual({
-			text: `import type { Shape } from "./source";\nimport { sibling } from "./source";\n\n\n${body}`,
+			text: `import type { Shape } from "./source";\nimport { sibling } from "./source";\n\n${body}`,
 		});
 	});
 
@@ -549,7 +549,7 @@ describe("move edits", () => {
 				"import { existing } from './source' assert { type: 'json' };\n",
 			].map((target) => ({
 				target,
-				expected: `${target}import { sibling, other } from './source';\n\n\n${BODY}`,
+				expected: `${target}import { sibling, other } from './source';\n\n${BODY}`,
 			})),
 			{
 				target: "import {} from './source';\n",
@@ -566,7 +566,7 @@ describe("move edits", () => {
 			{ target: "", expected: `import { sibling, other } from "./source";\n${BODY}` },
 			{
 				target: "import type { Shape } from './source';\n",
-				expected: `import type { Shape } from './source';\nimport { sibling, other } from './source';\n\n\n${BODY}`,
+				expected: `import type { Shape } from './source';\nimport { sibling, other } from './source';\n\n${BODY}`,
 			},
 		];
 
@@ -880,6 +880,66 @@ describe("move edits", () => {
 			if (response.status !== "ready") throw new Error("move was refused");
 			expect(response.blocked).toEqual([]);
 			expect(applyEdits(target, response.edits)).toEqual({ text: expected });
+		}
+	});
+
+	it("adds a new import below the leading imports and directives, never under a statement's comment", () => {
+		const cases = [
+			{
+				target: 'import { a } from "./a";\n\n// Fixtures\nconst kept = a;\n',
+				expected: `import { a } from "./a";\nimport { sibling } from "./source";\n\n// Fixtures\nconst kept = a;\n\n${BODY}`,
+			},
+			{
+				target: 'import { a } from "./a"; // why\nconst kept = a;\n',
+				expected: `import { a } from "./a"; // why\nimport { sibling } from "./source";\nconst kept = a;\n\n${BODY}`,
+			},
+			{
+				target: '"use client";\n\nconst kept = 1;\n',
+				expected: `"use client";\nimport { sibling } from "./source";\n\nconst kept = 1;\n\n${BODY}`,
+			},
+			{
+				target: 'import { a } from "./a";',
+				expected: `import { a } from "./a";\nimport { sibling } from "./source";\n\n${BODY}`,
+			},
+		];
+
+		for (const { target, expected } of cases) {
+			const result = importInto(target, [sibling("sibling")], { "a.ts": "export const a = 1;\n" });
+			expect(result.blocked).toEqual([]);
+			expect(result.applied).toEqual({ text: expected });
+		}
+	});
+
+	it("exports what it inserts when asked, after decorators and before other modifiers", () => {
+		const cases = [
+			{ text: "const moved = 1;\n", expected: "export const moved = 1;\n" },
+			{ text: "/** Doc. */\nfunction moved() {}\n", expected: "/** Doc. */\nexport function moved() {}\n" },
+			{ text: "@sealed\nclass Moved {}\n", expected: "@sealed\nexport class Moved {}\n" },
+			{ text: "declare const moved: number;\n", expected: "export declare const moved: number;\n" },
+			{
+				text: "function moved(a: string): void;\nfunction moved(a: unknown) {}\n",
+				expected: "export function moved(a: string): void;\nexport function moved(a: unknown) {}\n",
+			},
+			{ text: "export const moved = 1;\n", expected: "export const moved = 1;\n" },
+		];
+
+		for (const { text, expected } of cases) {
+			const response = move(workspace({ "target.ts": "" }), {
+				module: "target.ts",
+				text: "",
+				exists: false,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text, exported: true } },
+				importSites: [],
+				dependencies: [],
+				sites: [],
+			});
+
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(applyEdits("", response.edits)).toEqual({ text: expected });
 		}
 	});
 

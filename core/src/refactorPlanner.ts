@@ -138,11 +138,18 @@ const UNKNOWN_REASONS: UnknownReason[] = [
 	"RecursionLimit",
 	"Ambiguous",
 	"RuntimeConstructed",
+	"BrokenImport",
 	"NotIndexed",
 ];
 
 function isDangling(reason: string): boolean {
 	return reason !== "ExternalDependency" && reason !== "NotIndexed" && reason !== "DynamicallyTyped";
+}
+
+/** `text` with its last line ended, in the line ending it already uses. */
+function lineEnded(text: string): string {
+	if (text.endsWith("\n")) return text;
+	return `${text}${text.includes("\r\n") ? "\r\n" : "\n"}`;
 }
 
 /**
@@ -593,6 +600,7 @@ export class RefactorPlanner {
 			dependencies,
 			referencing: [...referencing],
 			usedAtSource,
+			exportsAtTarget: (usedAtSource || referencing.size > 0) && declaration.exported === false,
 			baseHash: source.contentHash,
 		};
 	}
@@ -676,7 +684,9 @@ export class RefactorPlanner {
 			{
 				...shared,
 				module: plan.toModule,
-				role: { insertion: { text: plan.text } },
+				role: {
+					insertion: { text: lineEnded(plan.text), ...(plan.exportsAtTarget ? { exported: true } : {}) },
+				},
 				importSites: [],
 				dependencies: plan.dependencies,
 				sites: [],
@@ -757,17 +767,20 @@ export class RefactorPlanner {
 
 		for (const reference of context.referencesIn(module)) {
 			if (!this.inRange(reference, source.range)) continue;
+			const target = reference.targetId;
+			const declaration = target === null ? null : context.declaration(target);
+			// Members and receiver accesses need no import.
+			const held = declaration?.containerId !== undefined && !isWithin(symbolId, declaration.containerId);
+			if (reference.qualified === true || held) continue;
 			if (seen.has(reference.name)) continue;
 			seen.add(reference.name);
 
-			const target = reference.targetId;
 			if (target !== null && inside.has(target)) {
 				dependencies.push({ name: reference.name, origin: { kind: "insideClosure", symbolId: target } });
 				continue;
 			}
 
 			if (target !== null) {
-				const declaration = context.declaration(target);
 				if (declaration?.module === module) {
 					dependencies.push({
 						name: reference.name,

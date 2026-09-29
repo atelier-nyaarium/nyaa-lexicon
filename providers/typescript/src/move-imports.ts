@@ -184,16 +184,27 @@ export function mergedImport(
 ////////////////////////////////
 //  Insertion
 
-/** Before the first other statement, else after the last import, else at the end. */
+/** After the leading imports and directives, else before the first statement. */
 export function importInsertion(source: ts.SourceFile): { offset: number; lineBreak: boolean } {
-	let lastImport: ts.Statement | undefined;
+	let head: ts.Statement | undefined;
 	for (const statement of source.statements) {
-		if (!isImportLike(statement)) return lineBefore(statement, source);
-		lastImport = statement;
+		if (!isImportLike(statement) && !isDirective(statement)) break;
+		head = statement;
 	}
-	return lastImport === undefined
-		? lineBefore(source.endOfFileToken, source)
-		: { offset: lastImport.getEnd(), lineBreak: true };
+	return head === undefined
+		? lineBefore(source.statements[0] ?? source.endOfFileToken, source)
+		: lineAfter(head, source);
+}
+
+/** Start of the line after `node` and its trailing comments. */
+function lineAfter(node: ts.Node, source: ts.SourceFile): { offset: number; lineBreak: boolean } {
+	const text = source.text;
+	const comments = ts.getTrailingCommentRanges(text, node.getEnd()) ?? [];
+	const end = Math.max(node.getEnd(), ...comments.map((comment) => comment.end));
+	const lineEnd = /[ \t]*\r?\n/y;
+	lineEnd.lastIndex = end;
+	const match = lineEnd.exec(text);
+	return match === null ? { offset: end, lineBreak: true } : { offset: end + match[0].length, lineBreak: false };
 }
 
 /** Just before `node`, breaking the line when a token or comment ends on it first. */
@@ -216,6 +227,11 @@ export function contentLineBefore(node: ts.Node, source: ts.SourceFile): number 
 
 export function lineOf(source: ts.SourceFile, offset: number): number {
 	return source.getLineAndCharacterOfPosition(offset).line;
+}
+
+/** A prologue string such as `"use client"`. */
+function isDirective(statement: ts.Statement): boolean {
+	return ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression);
 }
 
 function isImportLike(statement: ts.Statement): boolean {

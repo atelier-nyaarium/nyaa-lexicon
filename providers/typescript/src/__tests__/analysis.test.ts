@@ -1047,6 +1047,31 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
+	// Dangling rather than dynamic, so a move that leaves one behind reports it.
+	it("calls a local import that binds nothing broken: a missing export, a script or a missing file", () => {
+		const root = workspace({
+			"script.ts": "const shared = 1;\n",
+			"module.ts": "const shared = 1;\nexport const other = 2;\n",
+			"exported.ts": "export const shared = 1;\n",
+		});
+		const provider = harness();
+		provider.initialize(root);
+		const bindingFrom = (specifier: string) => {
+			const text = `import { shared } from "${specifier}";\nexport const copy = shared;\n`;
+			const facts = provider.parseFile({ module: "use.ts", contentHash: specifier, text });
+			const binding = facts.references.find((reference) => reference.name === "shared")?.binding;
+			return binding?.status === "unbound" ? binding.reason : binding?.status;
+		};
+
+		expect(["./script", "./module", "./missing", "./exported"].map(bindingFrom)).toEqual([
+			"BrokenImport",
+			"BrokenImport",
+			"BrokenImport",
+			"bound",
+		]);
+		provider.shutdown();
+	});
+
 	it("reports a runtime reason only when the requested range has no source token", () => {
 		const text = "export const value = 1;\n";
 		const root = workspace({ "tokens.ts": text });

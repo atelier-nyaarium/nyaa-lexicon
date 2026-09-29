@@ -1443,6 +1443,8 @@ export const MovePlanSchema = z
 			referencing: z.array(z.string()),
 			/** Whether anything left behind in the source module still uses it. */
 			usedAtSource: z.boolean(),
+			/** Used outside the target and not exported now. */
+			exportsAtTarget: z.boolean().optional(),
 			baseHash: z.string(),
 		}),
 		z.object({ ok: z.literal(false), reason: z.string() }),

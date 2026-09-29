@@ -379,7 +379,7 @@ export function renderMovePlan(plan: MovePlan): string {
 ## Files
 
 - ${code(plan.fromModule)}: lines ${plan.removal.start.line + 1} to ${plan.removal.end.line + 1} removed${plan.usedAtSource ? ", and an import back added, since something here still uses it" : ""}
-- ${code(plan.toModule)}: ${moved} line${moved === 1 ? "" : "s"} inserted${needed.length === 0 ? "" : ", plus the imports below"}`,
+- ${code(plan.toModule)}: ${moved} line${moved === 1 ? "" : "s"} inserted${plan.exportsAtTarget ? " and exported" : ""}${needed.length === 0 ? "" : ", plus the imports below"}`,
 	];
 	for (const module of plan.referencing) lines.push(`- ${code(module)}: import specifier re-pointed`);
 	if (plan.closure.length > 1) {
