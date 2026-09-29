@@ -794,9 +794,15 @@ export class RefactorPlanner {
 					continue;
 				}
 				if (declaration) {
+					const via = this.imports.importOriginFor(module, reference.name, context);
 					dependencies.push({
 						name: reference.name,
-						origin: { kind: "workspaceModule", symbolId: target, module: declaration.module },
+						origin: {
+							kind: "workspaceModule",
+							symbolId: target,
+							module: declaration.module,
+							...(via === null ? {} : { via }),
+						},
 					});
 					continue;
 				}

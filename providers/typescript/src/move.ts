@@ -39,7 +39,13 @@ import {
 	standaloneImports,
 	type WorkMeter,
 } from "./move-imports.js";
-import { type ImportSiteNode, importSiteNode, locateImportSite, rewriteImportSites } from "./move-sites.js";
+import {
+	type ImportSiteNode,
+	importSiteNode,
+	locateImportSite,
+	orphanedImports,
+	rewriteImportSites,
+} from "./move-sites.js";
 import type { ModuleResolver, SpecifierRenderer, SpecifierRenderResult } from "./project.js";
 
 ////////////////////////////////
@@ -111,7 +117,7 @@ export function makeMoveEdits(
 				),
 			);
 		} else {
-			edits.push({ range: request.role.removal, newText: "" });
+			edits.push({ range: request.role.removal, newText: "" }, ...orphanedImports(source, coordinates, removed));
 		}
 	}
 

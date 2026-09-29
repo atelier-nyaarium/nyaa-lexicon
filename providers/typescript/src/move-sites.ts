@@ -152,6 +152,65 @@ export function rewriteImportSites(
 	return { blocked: [], planned, edit: { range, newText: kept } };
 }
 
+////////////////////////////////
+//  Orphaned Imports
+
+/**
+ * Drops the import bindings only the removed text named, and a statement left with none. A name
+ * written anywhere else keeps its binding, so an import unused before the move stays.
+ */
+export function orphanedImports(
+	source: ts.SourceFile,
+	coordinates: TextCoordinates,
+	removed: { start: number; end: number },
+): TextEdit[] {
+	const inside = new Set<string>();
+	const outside = new Set<string>();
+	const visit = (node: ts.Node): void => {
+		if (ts.isImportDeclaration(node)) return;
+		if (ts.isIdentifier(node)) {
+			const at = node.getStart(source);
+			(removed.start <= at && at < removed.end ? inside : outside).add(node.text);
+		}
+		ts.forEachChild(node, visit);
+	};
+	ts.forEachChild(source, visit);
+
+	const edits: TextEdit[] = [];
+	for (const statement of source.statements) {
+		if (!ts.isImportDeclaration(statement)) continue;
+		const bound = statementBindings(statement);
+		const orphaned = new Set<ts.Node>();
+		for (const binding of bound) {
+			const name = localNameOf(binding);
+			if (inside.has(name) && !outside.has(name)) orphaned.add(binding.node);
+		}
+		if (orphaned.size === 0) continue;
+		if (orphaned.size === bound.length) {
+			const removal = statementRemoval(source, coordinates, statement);
+			if (removal !== undefined) edits.push(removal);
+			continue;
+		}
+		const start = statement.getStart(source);
+		const range = coordinates.rangeAt(start, statement.getEnd());
+		if (range === undefined) continue;
+		const raw = source.text.slice(start, statement.getEnd());
+		let kept = "";
+		let cursor = 0;
+		for (const span of removedSpans(source, statement, orphaned)) {
+			kept += raw.slice(cursor, span.start - start);
+			cursor = span.end - start;
+		}
+		edits.push({ range, newText: kept + raw.slice(cursor) });
+	}
+	return edits;
+}
+
+function localNameOf(binding: StatementBinding): string {
+	if (binding.form === "default") return binding.node.text;
+	return binding.node.name.text;
+}
+
 function statementBindings(node: ts.ImportDeclaration | ts.ExportDeclaration): StatementBinding[] {
 	const bound: StatementBinding[] = [];
 	if (ts.isExportDeclaration(node)) {

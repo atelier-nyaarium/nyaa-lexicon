@@ -835,9 +835,7 @@ describe("move edits", () => {
 				expect(response.blocked).toMatchObject([{ reason: "NotImplemented" }]);
 			} else {
 				expect(response.blocked).toEqual([]);
-				expect(applyEdits(text, response.edits)).toEqual({
-					text: 'import { source } from "./data";\nexport const kept = 1;\n',
-				});
+				expect(applyEdits(text, response.edits)).toEqual({ text: "export const kept = 1;\n" });
 			}
 		}
 	});
@@ -908,6 +906,37 @@ describe("move edits", () => {
 			expect(result.blocked).toEqual([]);
 			expect(result.applied).toEqual({ text: expected });
 		}
+	});
+
+	it("drops the imports only the moved text named, keeping shared ones and ones unused before", () => {
+		const text = [
+			'import d, { a, b } from "./m";',
+			'import { c } from "./n";',
+			'import { unused } from "./o";',
+			"",
+			"export function moved() { return a + c + d; }",
+			"export const kept = b;",
+			"",
+		].join("\n");
+		const response = move(workspace({ "source.ts": text }), {
+			module: "source.ts",
+			text,
+			exists: true,
+			symbolId: "lexicon typescript source.ts moved().",
+			name: "moved",
+			fromModule: "source.ts",
+			toModule: "target.ts",
+			role: { removal: rangeForText(text, "export function moved() { return a + c + d; }\n") },
+			importSites: [],
+			dependencies: [],
+			sites: [],
+		});
+
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(response.blocked).toEqual([]);
+		expect(applyEdits(text, response.edits)).toEqual({
+			text: 'import { b } from "./m";\nimport { unused } from "./o";\n\nexport const kept = b;\n',
+		});
 	});
 
 	it("exports what it inserts when asked, after decorators and before other modifiers", () => {

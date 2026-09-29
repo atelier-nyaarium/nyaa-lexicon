@@ -727,6 +727,7 @@ describe("planning a move", () => {
 	function holding(
 		declarations: ReturnType<typeof declared>[],
 		references: ReturnType<typeof used>[],
+		imports: Parameters<IndexStore["replaceFile"]>[0]["imports"] = [],
 	): LexiconService {
 		files.set("a.ref", "export class Move {}\n");
 		const built = new LexiconService(
@@ -736,15 +737,23 @@ describe("planning a move", () => {
 			dir,
 		);
 		const contentHash = built.currentHashOf("a.ref") as string;
-		store.replaceFile({ module: "a.ref", contentHash, declarations, references });
+		store.replaceFile({ module: "a.ref", contentHash, declarations, references, imports });
 		return built;
 	}
 
 	// Only what holds a member needs an import.
-	it("lists what the moved text reaches by name, never a member reached through a key or a receiver", () => {
+	it("lists what the moved text reaches by name in the form the source imported it, never a member reached through a key or a receiver", () => {
 		const helper = "lexicon reference a.ref helper#";
 		const total = "lexicon reference a.ref total#";
 		const shapeHelper = "lexicon reference a.ref Shape#helper.";
+		const remote = "lexicon reference b.ref Remote#";
+		files.set("b.ref", "export class Remote {}\n");
+		store.replaceFile({
+			module: "b.ref",
+			contentHash: hashContent("export class Remote {}\n"),
+			declarations: [declared(remote, "Remote", 0, { exported: true })],
+			references: [],
+		});
 		const built = holding(
 			[
 				declared(MOVE, "Move", 0, { exported: true }),
@@ -757,13 +766,44 @@ describe("planning a move", () => {
 				used("helper", 0, { symbolId: shapeHelper }),
 				used("total", 0, { symbolId: total }, { fromId: MOVE, qualified: true }),
 				used("helper", 0, { symbolId: helper }),
+				used("Local", 0, { symbolId: remote }),
+			],
+			[
+				{
+					specifier: "./b",
+					reExport: false,
+					imported: [
+						{
+							name: "Remote",
+							range: { start: { line: 9, character: 14 }, end: { line: 9, character: 20 } },
+							local: "Local",
+							localRange: { start: { line: 9, character: 24 }, end: { line: 9, character: 29 } },
+							typeOnly: true,
+						},
+					],
+				},
 			],
 		);
 
-		const plan = built.planMove(MOVE, "b.ref", built.newReadContext());
+		const plan = built.planMove(MOVE, "c.ref", built.newReadContext());
 
 		expect(plan.ok && plan.dependencies).toEqual([
 			{ name: "helper", origin: { kind: "sourceModule", symbolId: helper, name: "helper", exported: true } },
+			{
+				name: "Local",
+				origin: {
+					kind: "workspaceModule",
+					symbolId: remote,
+					module: "b.ref",
+					via: {
+						specifier: "./b",
+						importKind: "named",
+						typeOnly: true,
+						importedName: "Remote",
+						localName: "Local",
+					},
+				},
+			},
 		]);
 	});
 
