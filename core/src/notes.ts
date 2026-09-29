@@ -380,10 +380,12 @@ export class NoteLedger {
 		if (trimmed.length > NOTE_MAX) {
 			return { ok: false, outcome: refused(refusal.noteTooLong(NOTE_MAX, trimmed.length)) };
 		}
-		// Untrimmed, so an indented code block still reads as one.
-		const opening = noteOpening(text);
-		if (opening.kind !== "paragraph" && opening.kind !== "empty") {
-			return { ok: false, outcome: refused(refusal.noteOpensWith(BLOCK_NAMES[opening.kind])) };
+		// Untrimmed, so an indented code block still reads as one; trimmed, as it is stored.
+		for (const read of [text, trimmed]) {
+			const opening = noteOpening(read);
+			if (opening.kind !== "paragraph" && opening.kind !== "empty") {
+				return { ok: false, outcome: refused(refusal.noteOpensWith(BLOCK_NAMES[opening.kind])) };
+			}
 		}
 		return { ok: true, value: trimmed };
 	}

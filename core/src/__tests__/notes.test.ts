@@ -116,6 +116,8 @@ describe("writing a note", () => {
 			["```mermaid\ngraph LR\n```", "code block"],
 			["\n    const cart = new Cart();", "code block"],
 			["<details>\nMore\n</details>", "HTML block"],
+			// A paragraph as sent, a heading as stored once trimmed.
+			[`${String.fromCharCode(0xa0)}# Basket`, "heading"],
 		];
 		for (const [text, block] of openings) {
 			expect(service.writeNote(note({ text }))).toMatchObject({
