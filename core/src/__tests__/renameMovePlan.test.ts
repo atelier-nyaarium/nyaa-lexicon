@@ -263,6 +263,82 @@ describe("moving a declaration something left behind still uses", () => {
 });
 
 // The write must prove the plan's reads did not move.
+// The undo of a move: the old home still imports what moves back into it.
+describe("moving a declaration into a module that imports it", () => {
+	it("asks that module once, with its import sites, so its edits share one base and land as one file", async () => {
+		const texts: Record<string, string> = {
+			[MODULE]: "export function greet() {}\n",
+			[TARGET]: 'import { greet } from "./mod";\ngreet();\n',
+		};
+		const site = {
+			range: range(0, 9, 0, 14),
+			specifier: "./mod",
+			importKind: "named",
+			importedName: "greet",
+			reExport: false,
+		} as const;
+		const asked: string[] = [];
+		const probe: ProviderProbe = {
+			owner: () => ({ owned: true, providerId: "test" }),
+			declares: () => true,
+			words: () => ({ keywords: [], builtins: [], literals: [] }),
+			parseCandidate: (): Promise<CandidateParse> => Promise.reject(new Error("not asked")),
+			renameEdits: () => Promise.reject(new Error("not asked")),
+			moveEdits: async (module, request) => {
+				asked.push(`${module} ${Object.keys(request.role).join("+")} ${request.importSites.length}`);
+				const edits = [
+					...(request.role.removal === undefined ? [] : [{ range: request.role.removal, newText: "" }]),
+					...request.importSites.map(() => ({ range: range(0, 0, 1, 0), newText: "" })),
+					...(request.role.insertion === undefined
+						? []
+						: [{ range: range(2, 0, 2, 0), newText: request.role.insertion.text }]),
+				];
+				return { status: "ready", edits, blocked: [] };
+			},
+		};
+		const imports = {
+			importSitesForMove: (module: string) => (module === TARGET ? [site] : []),
+		} as unknown as ImportResolver;
+		const source = { writable: (module: string) => ({ text: texts[module] ?? null }) };
+		const planner = new RefactorPlanner(
+			storeFor({ text: "", declarations: [] }),
+			imports,
+			source as unknown as SourceWorkspace,
+			probe,
+		);
+
+		const outcome = await planner.moveEdits(
+			{
+				ok: true,
+				symbolId: id("greet"),
+				name: "greet",
+				fromModule: MODULE,
+				toModule: TARGET,
+				text: "export function greet() {}",
+				removal: range(0, 0, 1, 0),
+				closure: [],
+				dependencies: [],
+				referencing: [TARGET],
+				usedAtSource: false,
+				exportsAtTarget: false,
+				baseHash: hashContent(texts[MODULE] as string),
+			},
+			{} as never,
+		);
+
+		expect({
+			asked: asked.sort(),
+			files: outcome.ok ? outcome.files.map((file) => [file.module, file.text]) : outcome,
+		}).toEqual({
+			asked: [`${MODULE} removal 0`, `${TARGET} insertion 1`],
+			files: [
+				[MODULE, ""],
+				[TARGET, "greet();\nexport function greet() {}\n"],
+			],
+		});
+	});
+});
+
 describe("writing a move only over the rows the plan read", () => {
 	const text = "function alpha() {}\n";
 

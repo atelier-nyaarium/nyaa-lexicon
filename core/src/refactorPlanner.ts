@@ -694,14 +694,12 @@ export class RefactorPlanner {
 		];
 
 		for (const module of plan.referencing) {
-			requests.push({
-				...shared,
-				module,
-				role: {},
-				importSites: this.imports.importSitesForMove(module, plan.name, context),
-				dependencies: [],
-				sites: [],
-			});
+			const importSites = this.imports.importSitesForMove(module, plan.name, context);
+			// A module already asked, the target importing what moves home, takes its sites in that one
+			// request, so its edits share one base and land as one write.
+			const asked = requests.find((request) => request.module === module);
+			if (asked !== undefined) asked.importSites = [...asked.importSites, ...importSites];
+			else requests.push({ ...shared, module, role: {}, importSites, dependencies: [], sites: [] });
 		}
 
 		return requests;
