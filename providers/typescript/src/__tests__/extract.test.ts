@@ -1124,6 +1124,31 @@ describe("visibility and reach", () => {
 		expect(reach("function local() {}", "src/a.mts")).toEqual({ local: ["fileLocal", false] });
 	});
 
+	// Another module can never bind to them, so they are no part of what the module offers.
+	it("keeps what a function-local declaration holds local, but not what a parameter's type names", () => {
+		const source = [
+			"export function scan(options: { strict: boolean }) {",
+			"  const runs: { from: number; to: number }[] = [];",
+			"  class Cursor { at = 0; step() {} }",
+			"  return runs;",
+			"}",
+		].join("\n");
+		const visibility = Object.fromEntries(
+			extract(source).declarations.map((declaration) => [declaration.name, declaration.visibility]),
+		);
+
+		expect(visibility).toMatchObject({
+			scan: "public",
+			strict: "fileLocal",
+			runs: "local",
+			from: "local",
+			to: "local",
+			Cursor: "local",
+			at: "local",
+			step: "local",
+		});
+	});
+
 	it("reads an access modifier rather than guessing from the name, and keeps a non-public member home", () => {
 		const source = [
 			"export class C {",

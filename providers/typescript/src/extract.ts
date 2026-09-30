@@ -76,6 +76,8 @@ interface Scope {
 	containerId: string | undefined;
 	/** Inside a running body. */
 	runs?: true;
+	/** Under a declaration a running body holds, so what is declared here never leaves it either. */
+	hidden?: true;
 }
 
 ////////////////////////////////
@@ -286,7 +288,7 @@ export function extractFileWithNodes(
 		const { descriptors, symbolId } = mint(home, { kind: "term", name });
 		if (parameter.type !== undefined) typeScopes.set(parameter.type, { descriptors, containerId: symbolId });
 		const range = parameterRangeOf(parameter, source);
-		const visibility = home.runs === true ? "local" : visibilityOf(parameter, reachable);
+		const visibility = home.runs === true || home.hidden === true ? "local" : visibilityOf(parameter, reachable);
 		noteDeclaredIn(home);
 		declare(parameter, {
 			symbolId,
@@ -345,7 +347,7 @@ export function extractFileWithNodes(
 		const name = classified ? nameOf(node) : null;
 		if (!classified || name === null || !isOwnedMember(node)) return scope;
 
-		const local = scope.runs === true;
+		const local = scope.runs === true || scope.hidden === true;
 		const reachable = exportedByParent || isExported(node) || isGlobalBlock(node);
 		const visibility = local ? "local" : visibilityOf(node, reachable);
 		const { descriptors, symbolId } = mint(scope, { kind: classified.descriptor, name });
@@ -370,7 +372,7 @@ export function extractFileWithNodes(
 			}),
 		});
 
-		const inner = { descriptors, containerId: symbolId };
+		const inner: Scope = { descriptors, containerId: symbolId, ...(local ? { hidden: true } : {}) };
 		declarationScopes.set(node, inner);
 		if (ts.isConstructorDeclaration(node)) constructorHomes.set(node, scope);
 		return inner;
@@ -383,7 +385,7 @@ export function extractFileWithNodes(
 		scope: Scope,
 		reachable: boolean,
 	): void {
-		const local = scope.runs === true;
+		const local = scope.runs === true || scope.hidden === true;
 		const exported = !local && reachable;
 		// `const` is a different kind from `let`, and a consumer deciding whether something can be
 		// reassigned reads the kind rather than re-parsing the declaration.
@@ -397,7 +399,11 @@ export function extractFileWithNodes(
 			for (const binding of boundNames(declaration)) {
 				const name = binding.name.text;
 				const { descriptors, symbolId } = mint(scope, { kind: "term", name });
-				declarationScopes.set(binding.node, { descriptors, containerId: symbolId });
+				declarationScopes.set(binding.node, {
+					descriptors,
+					containerId: symbolId,
+					...(local ? { hidden: true } : {}),
+				});
 
 				noteDeclaredIn(scope);
 				declare(binding.node, {
