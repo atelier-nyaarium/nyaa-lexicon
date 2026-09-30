@@ -9,8 +9,40 @@ describe("finding refs in a note", () => {
 			"```ts",
 			"[y](ref://src/fenced.ts:Y)",
 			"```",
+			"An unclosed `` run leaves [z](ref://src/z.ts:Z) a link` too.",
 		].join("\n");
-		expect(findRefs(text).map((found) => found.ref)).toEqual(["ref://src/cart.ts:Cart", "ref://src/a b.ts:add"]);
+		expect(findRefs(text).map((found) => found.ref)).toEqual([
+			"ref://src/cart.ts:Cart",
+			"ref://src/a b.ts:add",
+			"ref://src/z.ts:Z",
+		]);
+	});
+
+	it("scans text in time linear in its length, however its brackets, backticks and backslashes fall", () => {
+		const shapes: Record<string, (length: number) => string> = {
+			"closes with no label": (length) => "](ref://a)".repeat(length / 10),
+			"bare destinations with no close": (length) => "](ref://a".repeat(length / 9),
+			"angled destinations with no close": (length) => "](<ref://a".repeat(length / 10),
+			"backslashes inside a label": (length) => `[${"\\".repeat(length)}](ref://a)`,
+			"backtick runs of rising length": (length) => {
+				let text = "";
+				for (let run = 1; text.length < length; run++) text += `${"`".repeat(run)}a`;
+				return text;
+			},
+		};
+		const timed = (text: string) => {
+			let best = Number.POSITIVE_INFINITY;
+			for (let round = 0; round < 3; round++) {
+				const started = performance.now();
+				findRefs(text);
+				best = Math.min(best, performance.now() - started);
+			}
+			return best;
+		};
+		// Linear reads scale 8x; a walk back per link, or a rescan per backtick run, scales 64x.
+		for (const [shape, text] of Object.entries(shapes)) {
+			expect(timed(text(128_000)) / timed(text(16_000)), shape).toBeLessThan(24);
+		}
 	});
 
 	it("points at the ref itself in the angle form, and skips escaped brackets and wrapped code spans", () => {

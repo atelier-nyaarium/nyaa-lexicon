@@ -33,38 +33,81 @@ export const REF_SCHEME = "ref://";
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
 
-/** `](ref://...)`, `](<ref://...>)`, with an optional title. */
-const LINK_DESTINATION = /\]\(\s*(<ref:\/\/[^>\n]*>|ref:\/\/[^\s)]+)(?:\s+"[^"\n]*")?\s*\)/g;
+/**
+ * `](ref://...)`, `](<ref://...>)`, with an optional title. A bare destination stops before `](`
+ * and an angled one before `<`, so no match reads past the next link.
+ */
+const LINK_DESTINATION = /\]\(\s*(<ref:\/\/[^<>\n]*>|ref:\/\/(?:[^\s)\]]|\](?!\())+)(?:\s+"[^"\n]*")?\s*\)/g;
 
 /** A mermaid `click` line: `click id "ref://..."` or `click id href "ref://..."`. */
 const MERMAID_CLICK = /^\s*click\s+\S+\s+(?:href\s+)?"(ref:\/\/[^"]+)"/;
 
-/** A code span may wrap lines but never crosses a blank one, LF or CRLF. */
-const CODE_SPAN = /(`+)((?:(?!\n[ \t\r]*\n)[\s\S])*?[^`])\1(?!`)/g;
+/** A blank line, LF or CRLF. */
+const BLANK_LINE = /^[ \t\r]*$/;
 
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Whether an odd run of backslashes escapes the character at `at`. */
-function escapedAt(text: string, at: number): boolean {
+/** Each unescaped `]` to the unescaped `[` on its line that opens its label. */
+function labelStarts(text: string): Map<number, number> {
+	const starts = new Map<number, number>();
+	const open: number[] = [];
 	let slashes = 0;
-	for (let i = at - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
-	return slashes % 2 === 1;
-}
-
-/** The unescaped `[` opening the label that the `]` at `close` ends, or -1. */
-function labelStart(text: string, close: number): number {
-	if (escapedAt(text, close)) return -1;
-	let depth = 0;
-	for (let i = close - 1; i >= 0 && text[i] !== "\n"; i--) {
-		if (escapedAt(text, i)) continue;
-		if (text[i] === "]") depth++;
-		else if (text[i] === "[") {
-			if (depth === 0) return i;
-			depth--;
+	for (let i = 0; i < text.length; i++) {
+		const char = text[i];
+		const escaped = slashes % 2 === 1;
+		slashes = char === "\\" ? slashes + 1 : 0;
+		if (char === "\n") open.length = 0;
+		else if (escaped) continue;
+		else if (char === "[") open.push(i);
+		else if (char === "]") {
+			const start = open.pop();
+			if (start !== undefined) starts.set(i, start);
 		}
 	}
-	return -1;
+	return starts;
+}
+
+/**
+ * Blanks each code span to spaces, keeping newlines. A backtick run opens a span that the next run
+ * of its length closes; a span may wrap lines but never crosses a blank one.
+ */
+function blankCodeSpans(text: string): string {
+	const runs: { from: number; to: number; key: string }[] = [];
+	let paragraph = 0;
+	let offset = 0;
+	for (const line of text.split("\n")) {
+		if (BLANK_LINE.test(line)) paragraph++;
+		for (let i = line.indexOf("`"); i >= 0; i = line.indexOf("`", i)) {
+			let end = i;
+			while (line[end] === "`") end++;
+			runs.push({ from: offset + i, to: offset + end, key: `${paragraph} ${end - i}` });
+			i = end;
+		}
+		offset += line.length + 1;
+	}
+
+	const closer: number[] = [];
+	const next = new Map<string, number>();
+	for (let k = runs.length - 1; k >= 0; k--) {
+		const key = runs[k]?.key ?? "";
+		closer[k] = next.get(key) ?? -1;
+		next.set(key, k);
+	}
+
+	const parts: string[] = [];
+	let kept = 0;
+	for (let k = 0; k < runs.length; k++) {
+		const shut = closer[k] ?? -1;
+		const open = runs[k];
+		const close = runs[shut];
+		if (open === undefined || close === undefined) continue;
+		parts.push(text.slice(kept, open.from), text.slice(open.from, close.to).replace(/[^\n]/g, " "));
+		kept = close.to;
+		k = shut;
+	}
+	parts.push(text.slice(kept));
+	return parts.join("");
 }
 
 /** Written links and mermaid clicks outside code. */
@@ -97,11 +140,12 @@ function scan(text: string): { links: RefLink[]; clicks: FoundRef[] } {
 	}
 
 	// Fences and code spans blank to spaces, so every index still reads the text.
-	const plain = shown.join("\n").replace(CODE_SPAN, (span) => span.replace(/[^\n]/g, " "));
+	const plain = blankCodeSpans(shown.join("\n"));
+	const starts = labelStarts(plain);
 	for (const match of plain.matchAll(LINK_DESTINATION)) {
 		const at = match.index ?? 0;
-		const from = labelStart(plain, at);
-		if (from < 0) continue;
+		const from = starts.get(at);
+		if (from === undefined) continue;
 		const raw = match[1] ?? "";
 		const angled = raw.startsWith("<");
 		links.push({
