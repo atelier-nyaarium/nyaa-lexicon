@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-json",
-	"version": "11.9.3",
+	"version": "11.9.4",
 	"private": true,
 	"type": "module",
 	"description": "JSON provider for nyaa-lexicon, covering keys, values and the line-delimited dialects",
