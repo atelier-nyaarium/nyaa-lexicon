@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-kotlin",
-	"version": "11.9.1",
+	"version": "11.9.2",
 	"private": true,
 	"type": "module",
 	"description": "Kotlin provider for nyaa-lexicon",
