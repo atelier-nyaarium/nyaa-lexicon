@@ -8,6 +8,7 @@ import type {
 	TextEdit,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { sameModulePath } from "./move-dependencies.js";
 import { append, blockedSite, type PlannedImport, quoted, type WorkMeter } from "./move-imports.js";
 import type { SpecifierRenderer } from "./project.js";
 
@@ -93,7 +94,19 @@ export function rewriteImportSites(
 	meter?: WorkMeter,
 ): SiteRewrite {
 	const node = statement.node as ts.ImportDeclaration | ts.ExportDeclaration;
-	const rendered = renderSpecifier(request.module, request.toModule, statement.literal.text);
+	// The target declares the moved names itself, so its import of them goes rather than pointing home.
+	const home = sameModulePath(request.module, request.toModule);
+	if (home && ts.isExportDeclaration(node)) {
+		return {
+			blocked: sites.map((site) =>
+				blockedSite(site.range, "NotImplemented", "the target re-exports the moved symbol from its old home"),
+			),
+			planned: [],
+		};
+	}
+	const rendered = home
+		? { specifier: "" }
+		: renderSpecifier(request.module, request.toModule, statement.literal.text);
 	if ("reason" in rendered) {
 		return { blocked: sites.map((site) => blockedSite(site.range, rendered.reason, rendered.detail)), planned: [] };
 	}
@@ -115,9 +128,10 @@ export function rewriteImportSites(
 
 	const quote = statement.literal.getText(source).startsWith("'") ? "'" : '"';
 	const specifier = quoted(rendered.specifier, quote);
-	const planned = ts.isImportDeclaration(node)
-		? bound.flatMap((binding) => (moved.has(binding.node) ? plannedFor(node, binding, rendered.specifier) : []))
-		: [];
+	const planned =
+		!home && ts.isImportDeclaration(node)
+			? bound.flatMap((binding) => (moved.has(binding.node) ? plannedFor(node, binding, rendered.specifier) : []))
+			: [];
 	const start = node.getStart(source);
 	const range = coordinates.rangeAt(start, node.getEnd());
 	const literalStart = statement.literal.getStart(source) - start;
@@ -132,6 +146,17 @@ export function rewriteImportSites(
 	const raw = source.text.slice(start, node.getEnd());
 
 	if (bound.every((binding) => moved.has(binding.node))) {
+		if (home) {
+			const removal = statementRemoval(source, coordinates, node);
+			return removal === undefined
+				? {
+						blocked: sites.map((site) =>
+							blockedSite(site.range, "ParseError", "the import is outside the module"),
+						),
+						planned: [],
+					}
+				: { blocked: [], planned: [], edit: removal };
+		}
 		const literalEnd = statement.literal.getEnd() - start;
 		const rewrite = { range, newText: `${raw.slice(0, literalStart)}${specifier}${raw.slice(literalEnd)}` };
 		const removal = ts.isImportDeclaration(node) ? statementRemoval(source, coordinates, node) : undefined;

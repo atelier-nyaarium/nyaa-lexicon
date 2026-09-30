@@ -611,7 +611,7 @@ describe("move edits", () => {
 		const scoped = "function load() {\n\tvar sibling = 1;\n}\n";
 		expect(importInto(scoped, [sibling("sibling")])).toEqual({
 			blocked: [],
-			applied: { text: `import { sibling } from "./source";\n${scoped}\n${BODY}` },
+			applied: { text: `import { sibling } from "./source";\n\n${scoped}\n${BODY}` },
 		});
 
 		for (const target of [
@@ -841,17 +841,17 @@ describe("move edits", () => {
 	});
 
 	// A byte order mark is whitespace to the scanner, so nothing precedes the first statement.
-	it("breaks the line before a first statement only when a token or comment precedes it there", () => {
+	it("puts a module's first import after a byte order mark and above a comment on the first line", () => {
 		const bom = String.fromCharCode(0xfeff);
 		const body = "export function moved() { return sibling; }\n";
 		const cases = [
 			{
 				target: `${bom}export const kept = 1;\n`,
-				expected: `${bom}import { sibling } from "./source";\nexport const kept = 1;\n\n${body}`,
+				expected: `${bom}import { sibling } from "./source";\n\nexport const kept = 1;\n\n${body}`,
 			},
 			{
 				target: "/* lead */ export const kept = 1;\n",
-				expected: `/* lead */ \nimport { sibling } from "./source";\nexport const kept = 1;\n\n${body}`,
+				expected: `import { sibling } from "./source";\n\n/* lead */ export const kept = 1;\n\n${body}`,
 			},
 		];
 
@@ -898,6 +898,15 @@ describe("move edits", () => {
 			{
 				target: 'import { a } from "./a";',
 				expected: `import { a } from "./a";\nimport { sibling } from "./source";\n\n${BODY}`,
+			},
+			// Without imports: past the file's header, above the banner and the doc its declaration owns.
+			{
+				target: "// Header.\n\n////\n//  Types\n\n/** Doc. */\nconst kept = 1;\n",
+				expected: `// Header.\n\nimport { sibling } from "./source";\n\n////\n//  Types\n\n/** Doc. */\nconst kept = 1;\n\n${BODY}`,
+			},
+			{
+				target: "/** Doc. */\nconst kept = 1;\n",
+				expected: `import { sibling } from "./source";\n\n/** Doc. */\nconst kept = 1;\n\n${BODY}`,
 			},
 		];
 
@@ -1187,6 +1196,47 @@ describe("move edits", () => {
 			});
 
 			expect(response, name).toMatchObject({ status: "refused", reason: "TargetCollision" });
+		}
+	});
+
+	// Moving a symbol back where a move left an import of it: the undo of that move.
+	it("takes the target's own import of the moved symbol out instead of refusing it as a collision", () => {
+		const cases = [
+			{
+				text: 'import { moved } from "./source";\n\nexport const kept = moved();\n',
+				expected: `\nexport const kept = moved();\n\n${BODY}`,
+			},
+			{
+				text: 'import { moved, other } from "./source";\n\nexport const kept = moved() + other;\n',
+				expected: `import { other } from "./source";\n\nexport const kept = moved() + other;\n\n${BODY}`,
+			},
+		];
+		for (const { text, expected } of cases) {
+			const response = move(workspace({ "target.ts": text, "source.ts": `${BODY}export const other = 2;\n` }), {
+				module: "target.ts",
+				text,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved().",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: BODY } },
+				importSites: [
+					{
+						range: rangeForText(text, "moved"),
+						specifier: "./source",
+						importKind: "named",
+						importedName: "moved",
+						reExport: false,
+					},
+				],
+				dependencies: [],
+				sites: [],
+			});
+
+			if (response.status !== "ready") throw new Error(`move was refused: ${JSON.stringify(response)}`);
+			expect(response.blocked).toEqual([]);
+			expect(applyEdits(text, response.edits)).toEqual({ text: expected });
 		}
 	});
 

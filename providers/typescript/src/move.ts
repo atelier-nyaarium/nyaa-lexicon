@@ -19,6 +19,7 @@ import {
 	bindsPlanned,
 	boundIdentifiers,
 	importForDependency,
+	type ModuleBinding,
 	moduleBindings,
 	sameModulePath,
 } from "./move-dependencies.js";
@@ -67,14 +68,6 @@ export function makeMoveEdits(
 		return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
 	}
 
-	if (sameModulePath(request.module, request.toModule) && request.exists && declaresName(source, request.name)) {
-		return {
-			status: "refused",
-			reason: "TargetCollision",
-			detail: `the target already declares ${request.name}`,
-		};
-	}
-
 	const blocked: MoveBlockedSite[] = [];
 	const edits: TextEdit[] = [];
 	const removed = request.role.removal === undefined ? undefined : coordinates.offsetsForRange(request.role.removal);
@@ -93,6 +86,23 @@ export function makeMoveEdits(
 		}
 		return key;
 	};
+
+	// The target's own import of the moved symbol goes with the move, so it names nothing that collides.
+	const movedImport = (binding: ModuleBinding) =>
+		binding.specifier !== undefined &&
+		(binding.imported ?? request.name) === request.name &&
+		sameModulePath(landingKey(binding.specifier), request.fromModule);
+	if (
+		sameModulePath(request.module, request.toModule) &&
+		request.exists &&
+		declaresName(source, request.name, movedImport)
+	) {
+		return {
+			status: "refused",
+			reason: "TargetCollision",
+			detail: `the target already declares ${request.name}`,
+		};
+	}
 	const renders = new Map<string, SpecifierRenderResult>();
 	const render: SpecifierRenderer = (fromModule, targetModule, preferred) => {
 		const key = `${fromModule}\0${targetModule}\0${preferred ?? ""}`;
@@ -184,14 +194,14 @@ export function makeMoveEdits(
 
 	const standalone = standaloneImports(unmerged, quote);
 	if (standalone.length > 0) {
-		const { offset, lineBreak } = importInsertion(source);
+		const { offset, lineBreak, blankAfter } = importInsertion(source);
 		const insertion = coordinates.positionAt(offset);
 		if (insertion === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });
 		} else {
 			edits.push({
 				range: { start: insertion, end: insertion },
-				newText: `${lineBreak ? "\n" : ""}${standalone.join("\n")}\n`,
+				newText: `${lineBreak ? "\n" : ""}${standalone.join("\n")}\n${blankAfter ? "\n" : ""}`,
 			});
 		}
 	}
@@ -234,9 +244,9 @@ export function isValidTargetModule(workspaceRoot: string, module: string): bool
 	}
 }
 
-/** Bound in module scope, exported under that name, or the default export when it is `default`. */
-function declaresName(source: ts.SourceFile, name: string): boolean {
-	if (moduleBindings(source, undefined).has(name)) return true;
+/** Bound in module scope, but for bindings `exempt` names, exported under that name, or the default export when it is `default`. */
+function declaresName(source: ts.SourceFile, name: string, exempt: (binding: ModuleBinding) => boolean): boolean {
+	if ((moduleBindings(source, undefined).get(name) ?? []).some((binding) => !exempt(binding))) return true;
 	return source.statements.some((statement) => {
 		if (ts.isModuleDeclaration(statement) && ts.isStringLiteral(statement.name))
 			return statement.name.text === name;

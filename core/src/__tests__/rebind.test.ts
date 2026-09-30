@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type Binding, type Declaration, hashContent, type Range } from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
-import { REBIND_CAP, RESOLVE_RETRY_MS } from "../indexer";
+import { type IndexOutcome, REBIND_CAP, RESOLVE_RETRY_MS } from "../indexer";
 import type { MethodRequest, MethodResponse } from "../providerPort";
 import { journaledStep } from "../refactorStep";
 import type { ProviderClaims } from "../routing";
@@ -229,6 +229,13 @@ async function eventually(done: () => boolean): Promise<boolean> {
 
 const targetOf = (module: string, from = store) => from.referencesIn(module)[0]?.targetId;
 
+/** What a batch parsed itself, not what the pump paid meanwhile. */
+const parsedIn = (outcomes: readonly IndexOutcome[]) =>
+	outcomes
+		.filter((outcome) => outcome.action === "indexed")
+		.map((outcome) => outcome.module)
+		.sort();
+
 /** Outlines that leave out every `Late*` class, as a provider whose outline skips members does. */
 const lateInFull = (request: MethodRequest<"parseFile">) =>
 	parseFake(request).declarations.filter((found) => request.depth !== "outline" || !found.name.startsWith("Late"));
@@ -250,7 +257,7 @@ afterEach(async () => {
 
 describe("a batch that moves a module's surface", () => {
 	// The importer's own bytes never change, so only the module it binds against can say it owes a parse.
-	it("parses again whoever binds against a gained or lost name, and nobody for a body edit", async () => {
+	it("parses again whoever imports or binds into a moved surface, leaves an unresolved use to the pump, and parses nobody for a body edit", async () => {
 		await gitInit(root);
 		put("x.fake", "export class Base {}\n");
 		put("importer.fake", 'import "./x.fake";\nuse Foo\n');
@@ -261,10 +268,11 @@ describe("a batch that moves a module's surface", () => {
 		service = bindingService(parses);
 		await service.indexWorkspace();
 		const edit = async (text: string) => {
-			parses.length = 0;
 			put("x.fake", text);
-			await service.applyBatch([{ kind: "changed", module: "x.fake", contentHash: text }]);
-			return { parsed: [...parses].sort(), importer: targetOf("importer.fake"), loose: targetOf("loose.fake") };
+			const outcomes = await service.applyBatch([{ kind: "changed", module: "x.fake", contentHash: text }]);
+			const batch = parsedIn(outcomes);
+			await service.upgradeRemaining();
+			return { batch, importer: targetOf("importer.fake"), loose: targetOf("loose.fake") };
 		};
 		const foo = "lexicon fake x.fake Foo#";
 
@@ -275,9 +283,10 @@ describe("a batch that moves a module's surface", () => {
 
 		expect({ unbound, gained, body, lost }).toEqual({
 			unbound: { importer: null, loose: null },
-			gained: { parsed: ["importer.fake", "loose.fake", "plain.fake", "x.fake"], importer: foo, loose: foo },
-			body: { parsed: ["x.fake"], importer: foo, loose: foo },
-			lost: { parsed: ["importer.fake", "loose.fake", "plain.fake", "x.fake"], importer: null, loose: null },
+			gained: { batch: ["importer.fake", "plain.fake", "x.fake"], importer: foo, loose: foo },
+			body: { batch: ["x.fake"], importer: foo, loose: foo },
+			// Bound into what x.fake lost, so the batch parses it.
+			lost: { batch: ["importer.fake", "loose.fake", "plain.fake", "x.fake"], importer: null, loose: null },
 		});
 	});
 
@@ -297,24 +306,27 @@ describe("a batch that moves a module's surface", () => {
 
 		parses.length = 0;
 		put("z.fake", "export class Other {}\n");
-		await service.applyBatch([{ kind: "changed", module: "z.fake", contentHash: "z-2" }]);
-		const edited = [...parses].sort();
+		const batch = parsedIn(await service.applyBatch([{ kind: "changed", module: "z.fake", contentHash: "z-2" }]));
+		await service.upgradeRemaining();
+		const paid = parses.filter((module) => !batch.includes(module));
 		rmSync(path.join(root, "y.fake"));
 		await service.applyBatch([{ kind: "deleted", module: "y.fake" }]);
+		await service.upgradeRemaining();
 
-		expect({ ambiguous, edited, deleted: targetOf("user.fake") }).toEqual({
+		expect({ ambiguous, batch, paid, deleted: targetOf("user.fake") }).toEqual({
 			ambiguous: null,
-			edited: ["user.fake", "z.fake"],
+			batch: ["z.fake"],
+			paid: ["user.fake"],
 			deleted: "lexicon fake x.fake Foo#",
 		});
 	});
 
-	// A common name can have more users than one batch should hold the gate for.
+	// A widely imported module can have more importers than one batch should hold the gate for.
 	it("parses at most REBIND_CAP dependents in the batch and leaves the rest to the background pump", async () => {
 		await gitInit(root);
 		put("x.fake", "export class Base {}\n");
 		const users = Array.from({ length: REBIND_CAP + 6 }, (_, at) => `user${at}.fake`);
-		for (const user of users) put(user, "use Foo\n");
+		for (const user of users) put(user, 'import "./x.fake";\nuse Foo\n');
 		service = bindingService();
 		await service.indexWorkspace();
 
@@ -566,7 +578,7 @@ describe("rebind debt", () => {
 	it("rebinds after a restart what a batch stopped mid-rebind had read but not yet owed", async () => {
 		await gitInit(root);
 		put("x.fake", "export class Base {}\n");
-		put("user.fake", "use Foo\n");
+		put("user.fake", 'import "./x.fake";\nuse Foo\n');
 		const file = path.join(root, "stopped.sqlite");
 		const stopped = IndexStore.open(file).store;
 		let stopping = false;
@@ -762,7 +774,7 @@ describe("rebind debt", () => {
 	it("drops the debt of a module whose file is deleted", async () => {
 		await gitInit(root);
 		put("x.fake", "export class Base {}\n");
-		put("user.fake", "use Foo\n");
+		put("user.fake", 'import "./x.fake";\nuse Foo\n');
 		const refusing = new Set<string>();
 		service = bindingService([], { refusing });
 		await service.indexWorkspace();
@@ -924,7 +936,7 @@ describe("what wakes the pump", () => {
 	it("retries a refused rebind when its provider respawns, with no other work", async () => {
 		await gitInit(root);
 		put("x.fake", "export class Base {}\n");
-		put("user.fake", "use Foo\n");
+		put("user.fake", 'import "./x.fake";\nuse Foo\n');
 		const refusing = new Set<string>();
 		const respawns: { respawn?: (providerId: string) => void } = {};
 		service = bindingService([], { refusing, respawns });
@@ -943,11 +955,11 @@ describe("what wakes the pump", () => {
 	it("retries a refused rebind once its file is restored to the bytes the index holds", async () => {
 		await gitInit(root);
 		put("x.fake", "export class Base {}\n");
-		const admitted = "use Foo\n";
+		const admitted = 'import "./x.fake";\nuse Foo\n';
 		put("user.fake", admitted);
 		service = bindingService();
 		await service.indexWorkspace();
-		put("user.fake", "use Foo\nSYNTAX\n");
+		put("user.fake", `${admitted}SYNTAX\n`);
 		put("x.fake", "export class Base {}\nexport class Foo {}\n");
 		await service.applyBatch([{ kind: "changed", module: "x.fake", contentHash: "x-2" }]);
 		const refused = store.blockedRebinds().map((debt) => debt.module);

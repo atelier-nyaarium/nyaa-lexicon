@@ -1256,7 +1256,8 @@ export class WorkspaceIndexer {
 	/**
 	 * Parses again the modules that bind against a surface this batch moved, so their references see
 	 * it without an edit of their own. One hop, and a further one only from a dependent whose own
-	 * surface moved. Past `REBIND_CAP` parses, the rest wait for the pump.
+	 * surface moved. Past `REBIND_CAP` parses, the rest wait for the pump, as does every module with
+	 * only an unresolved use of a moved name, so a common name never holds the gate.
 	 *
 	 * Caller-held, inside `applyBatch`.
 	 */
@@ -1273,9 +1274,12 @@ export class WorkspaceIndexer {
 		let budget = REBIND_CAP;
 		let moves = this.pendingMoves(outcomes.map((outcome) => outcome.module));
 		while (moves.size > 0) {
-			const { modules, complete } = await this.dependentsOf(moves);
+			const { modules, unbound, complete } = await this.dependentsOf(moves);
 			if (complete) for (const [module, change] of moves) answered.set(module, change);
 			else this.retryResolving(moves.keys());
+			for (const module of unbound) {
+				if (!this.readAfter(module, moves, order) && this.rebindable(module)) owed.push(module);
+			}
 			const hop: string[] = [];
 			for (const module of modules) {
 				if (this.readAfter(module, moves, order) || !this.rebindable(module)) continue;
@@ -1312,8 +1316,8 @@ export class WorkspaceIndexer {
 		order: ReadonlyMap<string, number>,
 		stale: (module: string, change: SurfaceChange) => boolean = () => true,
 	): Promise<void> {
-		const { modules, complete } = await this.dependentsOf(moves);
-		const owed = modules.filter(
+		const { modules, unbound, complete } = await this.dependentsOf(moves);
+		const owed = [...modules, ...unbound].filter(
 			(module) => !this.readAfter(module, moves, order, stale) && this.rebindable(module),
 		);
 		if (!complete) this.retryResolving(moves.keys());
@@ -1338,13 +1342,14 @@ export class WorkspaceIndexer {
 
 	/**
 	 * Who binds against these moved surfaces: modules importing one, now or when they were written,
-	 * modules bound into what one held, and modules with an unresolved use of a name
-	 * one gained or lost. In module order. Incomplete when a resolver fault left an importer unread.
+	 * and modules bound into what one held. `unbound` holds the rest with an unresolved use of a name
+	 * one gained or lost, which only may bind now. Each in module order. Incomplete when a resolver
+	 * fault left an importer unread.
 	 */
 	private async dependentsOf(
 		moves: ReadonlyMap<string, SurfaceChange>,
-	): Promise<{ modules: string[]; complete: boolean }> {
-		if (moves.size === 0) return { modules: [], complete: true };
+	): Promise<{ modules: string[]; unbound: string[]; complete: boolean }> {
+		if (moves.size === 0) return { modules: [], unbound: [], complete: true };
 		const { importers, complete } = await this.importersOf(moves.keys());
 		// The import index answers where specifiers land now; a module that went, or that a specifier
 		// stopped landing on, is still named by the import written against it.
@@ -1354,8 +1359,10 @@ export class WorkspaceIndexer {
 			for (const module of change.boundInto) importers.add(module);
 			for (const name of [...change.gained, ...change.lost]) names.add(name);
 		}
-		for (const module of this.store.modulesWithUnbound([...names])) importers.add(module);
-		return { modules: [...importers].filter((module) => !moves.has(module)).sort(), complete };
+		const unbound = this.store
+			.modulesWithUnbound([...names])
+			.filter((module) => !moves.has(module) && !importers.has(module));
+		return { modules: [...importers].filter((module) => !moves.has(module)).sort(), unbound, complete };
 	}
 
 	/**

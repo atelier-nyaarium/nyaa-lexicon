@@ -321,7 +321,9 @@ it does not sleep until unrelated work.
 `applyBatch` asks after its own parses and parses the dependents at their stored depth, one hop, and
 a further hop only from a dependent whose own surface moved. A module the batch wrote after the last
 move it depends on read that move already and is skipped; one written before is parsed again. An
-outline holds no references and a refused file owes only its own event, so neither is owed. Past
+outline holds no references and a refused file owes only its own event, so neither is owed. A module
+found only by an unresolved use of a moved name is a guess, owed to the pump rather than parsed under
+the batch's hold, so a common name never holds the gate. Past
 `REBIND_CAP` parses in one batch the rest are owed in `rebind_owed`, which the background pump pays
 one module per hold, each run trying each payable debt once; an owed outline is paid by its full
 parse. A failed rebind is held rather than retried at once: an outage until its provider admits a

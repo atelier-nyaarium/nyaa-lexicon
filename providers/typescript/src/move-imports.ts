@@ -184,16 +184,29 @@ export function mergedImport(
 ////////////////////////////////
 //  Insertion
 
-/** After the leading imports and directives, else before the first statement. */
-export function importInsertion(source: ts.SourceFile): { offset: number; lineBreak: boolean } {
+/**
+ * After the leading imports and directives. Without them, at the top: past a header comment a blank
+ * line sets apart, above any banner or doc comment, with a blank line after.
+ */
+export function importInsertion(source: ts.SourceFile): { offset: number; lineBreak: boolean; blankAfter: boolean } {
 	let head: ts.Statement | undefined;
 	for (const statement of source.statements) {
 		if (!isImportLike(statement) && !isDirective(statement)) break;
 		head = statement;
 	}
-	return head === undefined
-		? lineBefore(source.statements[0] ?? source.endOfFileToken, source)
-		: lineAfter(head, source);
+	if (head !== undefined) return { ...lineAfter(head, source), blankAfter: false };
+	const first = source.statements[0];
+	if (first === undefined) return { ...lineBefore(source.endOfFileToken, source), blankAfter: false };
+	const text = source.text;
+	const comments = ts.getLeadingCommentRanges(text, first.pos) ?? [];
+	const blankBetween = (from: number, to: number) => /\n[ \t]*\r?\n/.test(text.slice(from, to));
+	const headerEnd = comments.findIndex((comment, at) =>
+		blankBetween(comment.end, comments[at + 1]?.pos ?? first.getStart(source)),
+	);
+	const after = headerEnd === -1 ? undefined : comments[headerEnd + 1];
+	const offset =
+		headerEnd === -1 ? (comments[0]?.pos ?? first.getStart(source)) : (after?.pos ?? first.getStart(source));
+	return { offset, lineBreak: false, blankAfter: true };
 }
 
 /** Start of the line after `node` and its trailing comments. */
