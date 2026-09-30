@@ -195,7 +195,7 @@ interface SurfaceEntry {
 //  Constants
 
 /** Store layout version; mismatches rebuild the index. */
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 /** Re-export hops an imported name follows before giving up. */
 const EXPORT_HOPS = 32;
