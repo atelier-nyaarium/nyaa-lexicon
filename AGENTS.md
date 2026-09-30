@@ -49,7 +49,7 @@ Bun workspace monorepo. Seven packages, and the boundaries are real.
 
 ```bash
 bun install
-bun run check     # the full gate: corpora, lint and tests; all parts run and report
+bun run check     # the full gate: corpora, lint, then tests on a fresh dist/; all parts report
 bun run corpora   # test corpora cloned into temp/ at pinned commits; --reset discards edits
 bun run lint      # run and report biome ci and tsc --build
 bun run test      # bun test, including the residue tests
@@ -72,8 +72,9 @@ unchanged. Projects pinning Lexicon as a submodule can fetch that ref to try unr
 NyaaCode's umbrella does this with `lexicon:dev`.
 
 `withBuiltDist` in `scripts/dist.ts` owns building `dist/`, using the build and restoring the
-committed `dist/`. `bench` and `snapshot` use it. It refuses a `dist/` that differs from HEAD,
-since restoring would discard it, and a failed restore fails the run. The release build commits
+committed `dist/`. `check`, `bench` and `snapshot` use it; plain `bun run test` tests whatever
+`dist/` holds. It refuses a `dist/` that differs from HEAD, since restoring would discard it,
+and a failed restore fails the run. The release build commits
 `dist/` and manages its own rollback.
 
 **Read both halves of the gate.** Grepping lint output for `error TS` misses every formatting
@@ -191,8 +192,9 @@ Ordered by how much they prove:
    suite cannot express survives a clean gate and dies to a five-line probe.
 
    Provider discovery prefers the bundle over the source, so `indexCli` and the daemon both spawn
-   what is in `dist/`, not what you just edited. `bench` and `snapshot` call `withBuiltDist` to
-   build and restore `dist/`. For an ad hoc probe, run `bun run build --build-only` first and
+   what is in `dist/`, not what you just edited. `check`, `bench` and `snapshot` call
+   `withBuiltDist` to build and restore `dist/`. For an ad hoc probe, run
+   `bun run build --build-only` first and
    `git restore dist` after, so a probe's bundle never lands in a commit.
 
 ## Rules
