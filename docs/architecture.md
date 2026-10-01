@@ -503,6 +503,21 @@ notes update it too. An editor note is accepted only when disk matches the repor
 and it marks the module as edited. Status exposes that marker in `edited` and compares each tracked
 path with its known state. Its other wire fields are described in `docs/daemon-protocol.md`.
 
+### Fix on write
+
+`lexicon.json` may name a `fix` command as an argument list, such as
+`["bunx", "biome", "check", "--write"]`. Every journaled step runs it once its writes land, with
+no shell, the written modules appended as `./path`, from the workspace root, under a timeout. The
+step then records each written file as it stands as that step's output hash, before
+`completeStep`, so Undo and the settlement ledger treat the fixed text as the step's own. A run that
+does not exit cleanly adds a `FixFailed` issue and keeps the step. So does a written file the run
+deleted, which keeps its planned image. A crash during the run leaves files matching neither image,
+which recovery reports as a conflict.
+
+The command must write only the files it is given; the journal does not track others. On Windows
+it must be an executable, not a `.cmd` shim, since nothing runs through a shell. An editor save
+that lands while the command runs becomes part of the step's output.
+
 ### Revisions and drift
 
 An open transaction has a durable revision. Changes to step, image, issue, rebind, recovery-intent

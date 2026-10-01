@@ -21,6 +21,7 @@ import {
 	type RefactorDeps,
 	refactorInsert,
 	refactorMove,
+	refactorMoveTogether,
 	refactorRename,
 	refactorReplace,
 	renameStepOutcome,
@@ -382,7 +383,9 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			refactorRename(service, transactions(), gate.write, params, "join").then(renameStepOutcome),
 		),
 		refactorMove: staged((params, gate) =>
-			refactorMove(service, transactions(), gate.write, params, "join").then(moveOutcome),
+			params.together === undefined || params.together.length === 0
+				? refactorMove(service, transactions(), gate.write, params, "join").then(moveOutcome)
+				: refactorMoveTogether(service, transactions(), gate.write, { ...params, together: params.together }),
 		),
 		refactorRenameCommitted: staged((params, gate) =>
 			underClientStep(transactions(), params.stepId, "rename", (cancelled) =>

@@ -28,7 +28,8 @@ import { stageAll } from "./applyEdits.js";
 import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
 import { bindsModule, type NamespaceTarget, namespaceTargetOf, sameTarget } from "./edges.js";
-import { describeScope, type FileScope, isExternalModule } from "./fileScope.js";
+import { describeScope, type FileScope, isExternalModule, readScopeConfig } from "./fileScope.js";
+import { runFix } from "./fixOnWrite.js";
 import {
 	coChangesFor,
 	commitsMentioning,
@@ -299,6 +300,13 @@ export class LexiconService {
 	/** False on base mismatch. */
 	writeModule(module: string, text: string, base: string | null): boolean {
 		return this.source.writeModule(module, text, base);
+	}
+
+	/** Runs `lexicon.json`'s `fix` on written modules; `failed` says how a run that did not exit cleanly went. */
+	async fixWritten(modules: string[]): Promise<{ ran: boolean; failed: string | null }> {
+		const argv = readScopeConfig(this.workspaceRoot).fix;
+		if (argv === undefined || modules.length === 0) return { ran: false, failed: null };
+		return { ran: true, failed: await runFix(this.workspaceRoot, argv, modules) };
 	}
 
 	////////////////////////////////

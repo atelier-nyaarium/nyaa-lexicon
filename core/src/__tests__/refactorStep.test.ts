@@ -26,6 +26,8 @@ let reindexed: string[];
 let failReindexOf: string | null;
 /** Runs before the `base` check. */
 let beforeWrite: ((module: string) => void) | null;
+/** The workspace's fix; null runs none. */
+let fixer: ((modules: string[]) => { ran: boolean; failed: string | null }) | null;
 
 interface Outcome {
 	ok: boolean;
@@ -71,6 +73,7 @@ const service = {
 		write(module, text);
 		return true;
 	},
+	fixWritten: async (modules: string[]) => fixer?.(modules) ?? { ran: false, failed: null },
 } as unknown as LexiconService;
 
 function over(module: string, before: string, text: string): PlannedWrite {
@@ -106,6 +109,7 @@ beforeEach(() => {
 	reindexed = [];
 	failReindexOf = null;
 	beforeWrite = null;
+	fixer = null;
 	write("src/a.ts", "before\n");
 });
 
@@ -150,6 +154,52 @@ describe("the addresses a step re-mints", () => {
 		expect(outcome.issues.map((issue) => issue.kind)).toContain("ReindexFailed");
 		expect(store.subjects.forAddress(to)?.evidence).toBe("journalMove");
 		expect(store.subjects.forAddress(from)).toBeNull();
+	});
+});
+
+describe("the workspace's fix command", () => {
+	it("runs inside the step, so its output is the step's after-image and undo restores the original", async () => {
+		transactions.start();
+		fixer = (modules) => {
+			for (const module of modules) write(module, `${read(module)}// fixed\n`);
+			return { ran: true, failed: null };
+		};
+		const outcome = await run();
+		const undone = transactions.undo();
+
+		expect({
+			ok: outcome.ok,
+			after: outcome.files?.[0]?.after,
+			undone: undone.undone,
+			text: read("src/a.ts"),
+		}).toEqual({ ok: true, after: hashContent("after\n// fixed\n"), undone: true, text: "before\n" });
+	});
+
+	it("keeps the step when the fix fails, and says so", async () => {
+		transactions.start();
+		fixer = () => ({ ran: true, failed: "exited with 1" });
+		const outcome = await run();
+
+		expect({ ok: outcome.ok, kinds: outcome.issues.map((issue) => issue.kind), text: read("src/a.ts") }).toEqual({
+			ok: true,
+			kinds: ["FixFailed"],
+			text: "after\n",
+		});
+	});
+
+	it("names a written file the fix deleted, and keeps the planned after-image", async () => {
+		transactions.start();
+		fixer = (modules) => {
+			for (const module of modules) rmSync(path.join(root, module));
+			return { ran: true, failed: null };
+		};
+		const outcome = await run();
+
+		expect({
+			ok: outcome.ok,
+			issues: outcome.issues.map((issue) => [issue.kind, issue.module]),
+			after: outcome.files?.[0]?.after,
+		}).toEqual({ ok: true, issues: [["FixFailed", "src/a.ts"]], after: hashContent("after\n") });
 	});
 });
 

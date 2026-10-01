@@ -574,7 +574,10 @@ export class RefactorPlanner {
 		// read the id string, never a stored containerId.
 		const closure = context.symbolIdsIn(declaration.module).filter((candidate) => isWithin(candidate, symbolId));
 
-		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId, context);
+		// Declared at the target already, so nothing to import there.
+		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId, context).filter(
+			(dependency) => dependency.origin.kind !== "workspaceModule" || dependency.origin.module !== toModule,
+		);
 
 		// Modules whose imports name the moved symbol, plus the source itself when something left
 		// behind still uses it.

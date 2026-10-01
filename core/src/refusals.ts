@@ -615,6 +615,14 @@ export function stepRefused(problem: string, stranded: string | null): Refusal {
 	return mint(`${problem}${remains}`);
 }
 
+export function moveCycle(names: readonly string[]): Refusal {
+	return mint(`${names.join(" uses ")}, so none can move first. Export one of them, then move them`);
+}
+
+export function moveTogetherSplit(name: string, module: string, from: string): Refusal {
+	return mint(`${name} is in ${module}, not ${from}. Only declarations from one module move together`);
+}
+
 /** The world moved between planning and the gate, so the plan describes text that is gone. */
 export function changedWhilePlanned(module: string, kind: string): Refusal {
 	return mint(`${module} changed while the ${kind} was planned. Re-index it and plan again`);

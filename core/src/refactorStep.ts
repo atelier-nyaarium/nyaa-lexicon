@@ -209,9 +209,16 @@ async function runStep<Outcome>(deps: StepDeps, shape: StepShape<Outcome>): Prom
 				return shape.refuse(stepAbandoned(failed(null), settled.conflicts), []);
 			}
 
+			// The workspace's fix runs inside the step, so its output is the step's own after-image.
+			const fixed = await service.fixWritten(written);
+			const lost = fixed.ran ? written.filter((module) => !transactions.restampAfter(begun.stepNo, module)) : [];
 			transactions.completeStep(begun.stepNo, "written");
 
 			const issues = [...planned.issues];
+			if (fixed.failed !== null) issues.push({ kind: "FixFailed", detail: `the fix command ${fixed.failed}` });
+			for (const module of lost) {
+				issues.push({ kind: "FixFailed", detail: `the fix command left ${module} no longer a file`, module });
+			}
 			let fullyReindexed = true;
 			for (const module of planned.reindex) {
 				try {

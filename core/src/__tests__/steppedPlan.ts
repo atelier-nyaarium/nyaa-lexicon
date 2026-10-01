@@ -106,6 +106,7 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 		gate,
 		upgradeRemaining: async () => {},
 		during: (_doing: unknown, work: () => Promise<unknown>) => work(),
+		fixWritten: async () => ({ ran: false, failed: null }),
 		newReadContext: () => new ReadContext(world.store as IndexStore),
 		planReplacement: answering((...args: Parameters<RefactorPlanner["planReplacement"]>) =>
 			world.planner.planReplacement(...args),

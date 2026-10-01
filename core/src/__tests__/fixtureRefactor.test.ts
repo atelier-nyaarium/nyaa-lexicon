@@ -248,6 +248,68 @@ describe("a move through the daemon's handlers", () => {
 	});
 });
 
+describe("moving several declarations together", () => {
+	const BAG = "lexicon reference a.ref Bag#";
+	const BOTH = "export class Cart {}\nexport class Bag {}\n";
+
+	beforeEach(async () => {
+		put("a.ref", BOTH);
+		await service.indexFile("a.ref");
+	});
+
+	it("moves each in a step of its own and names them in order", async () => {
+		const outcome = (await dispatch("refactorMove", {
+			symbolId: CART,
+			toModule: "b.ref",
+			together: [BAG],
+		})) as ResponseOf<"refactorMove">;
+
+		expect({
+			moved: outcome.moved,
+			order: [...(outcome.order ?? [])].sort(),
+			steps: transactions.status().steps.length,
+		}).toEqual({ moved: true, order: ["Bag", "Cart"], steps: 2 });
+	}, 60_000);
+
+	it("refuses declarations from two modules before writing anything", async () => {
+		put("c.ref", "export class Box {}\n");
+		await service.indexFile("c.ref");
+		const outcome = (await dispatch("refactorMove", {
+			symbolId: CART,
+			toModule: "b.ref",
+			together: ["lexicon reference c.ref Box#"],
+		})) as ResponseOf<"refactorMove">;
+
+		expect({ moved: outcome.moved, source: read("a.ref"), target: read("b.ref") }).toEqual({
+			moved: false,
+			source: BOTH,
+			target: null,
+		});
+	}, 60_000);
+
+	it("still names what moved when a later member throws", async () => {
+		const handlers = daemonHandlers(service, { transactions });
+		let gated = 0;
+		const outcome = await handlers.refactorMove.run(
+			{ symbolId: CART, toModule: "b.ref", together: [BAG] },
+			gateAfter(() => {
+				gated += 1;
+				if (gated === 2) throw new Error("the gate closed");
+			}),
+		);
+
+		expect({
+			moved: outcome.moved,
+			order: outcome.order?.length,
+			steps: transactions.status().steps.length,
+		}).toEqual({
+			moved: false,
+			order: 1,
+			steps: 1,
+		});
+	}, 60_000);
+});
+
 describe("read-only refactor previews", () => {
 	it("previews the exact insert text and leaves disk and transaction state alone", async () => {
 		const before = read("a.ref");

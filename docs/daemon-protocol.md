@@ -332,10 +332,20 @@ It answers `{ written: true, contentHash, refactor, ledger, indexed }`. `content
 a delete. `refactor` is the open refactor's `{ id }` or null. `indexed` is false when the indexing
 attempt fails. The method is not exposed over MCP.
 
+### Moving several declarations
+
+`refactorMove` takes `together`: more declarations from the same module moving to the same target.
+Each moves as its own step in the open refactor, after the unexported declarations of the set it
+uses, since a move refuses to leave one of those behind. A declaration inside another moves with it.
+Two that use each other, or a member from another module, refuse the whole call before anything
+moves. A refused or failed step stops the rest and keeps the steps already taken. `MoveOutcome.order`
+names what moved, in order. `planMove` and `previewMove` take one declaration.
+
 ### Committed steps
 
-`refactorRenameCommitted` and `refactorMoveCommitted` take the `refactorRename` or `refactorMove`
-request plus `bases`: every module the caller was shown, with the hash it saw, or null for absent.
+`refactorRenameCommitted` and `refactorMoveCommitted` take the `refactorRename` request or a
+one-declaration `refactorMove` request, plus `bases`: every module the caller was shown, with the
+hash it saw, or null for absent.
 Each writes one step as a refactor of its own and commits it before answering. They are methods
 rather than a flag because an older daemon strips an unknown field and would join the open refactor.
 

@@ -1343,6 +1343,7 @@ export const REFACTOR_ISSUE_KINDS = [
 	"AmbiguousImportPath",
 	"DynamicDependency",
 	"Landed",
+	"FixFailed",
 ] as const;
 
 /** Reported, never block commits. */
@@ -1761,6 +1762,8 @@ export const MoveOutcomeSchema = z
 		migrated: migrated.optional(),
 		issues: z.array(RefactorIssueSchema),
 		reason: z.string().optional(),
+		/** With `together`: the names that moved, one step each, in order. */
+		order: z.array(z.string()).optional(),
 	})
 	.meta({ id: "MoveOutcome" });
 

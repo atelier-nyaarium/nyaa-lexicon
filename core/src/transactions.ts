@@ -727,6 +727,22 @@ export class TransactionManager {
 		return { ok: true, stepNo };
 	}
 
+	/** A fix rewrote a written file inside its step: the file as it now stands is the step's after-image.
+	 * False when it no longer stands as a file, which keeps the planned image. */
+	restampAfter(stepNo: number, module: string): boolean {
+		const open = this.openTransaction();
+		if (!open) return false;
+		const after = this.snapshot(module);
+		if ("foreign" in after || !after.existed) return false;
+		this.store.journalWrite((db) => {
+			db.prepare(
+				`UPDATE refactor_images SET existsAfter = 1, afterHash = ?
+				 WHERE transactionId = ? AND scope = 'step' AND stepNo = ? AND module = ?`,
+			).run(after.hash, open.id, stepNo, module);
+		});
+		return true;
+	}
+
 	/** Records step output. See `docs/architecture.md` Refactor transactions. */
 	completeStep(stepNo: number, phase: StepPhase): void {
 		const open = this.openTransaction();

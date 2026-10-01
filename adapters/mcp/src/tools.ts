@@ -121,7 +121,7 @@ export interface ToolBackend {
 		module?: string | undefined;
 		text: string;
 	}) => Promise<InsertOutcome>;
-	refactorMove: (symbolId: string, toModule: string) => Promise<MoveOutcome>;
+	refactorMove: (symbolId: string, toModule: string, together: string[]) => Promise<MoveOutcome>;
 	refactorRename: (symbolId: string, newName: string) => Promise<RenameStepOutcome>;
 	indexStatus: (concerning?: string) => Promise<IndexStatus>;
 	findLiterals: (query: RequestOf<"findLiterals">) => Promise<LiteralsResult>;
@@ -387,6 +387,11 @@ export const RefactorMoveInput = {
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 	toModule: z.string().min(1).describe(`Workspace-relative path to move it to. Created if absent.`),
+	together: z
+		.array(z.string().min(1))
+		.max(100)
+		.optional()
+		.describe(`More names to move with it, from the same \`module\`. Each moves after the ones it uses.`),
 };
 
 export const RefactorRenameInput = {
@@ -436,6 +441,8 @@ Move a declaration to another module, rewriting the imports that reach it.
 Creates the target if it does not exist. Imports in every referencing file are re-pointed, and the
 moved body's own dependencies are imported into its new home. A site that cannot be rewritten
 safely stops the whole move rather than relocating the declaration and stranding its importers.
+
+Name more declarations in \`together\` to move them too, one step each, each after the ones it uses.
 `.trim();
 
 export const REFACTOR_RENAME_DESCRIPTION = `
@@ -867,11 +874,21 @@ export async function typeOfSymbol(backend: ToolBackend, args: SymbolArgs): Prom
 	return text(renderType(args.name ?? resolved.symbolId, type));
 }
 
-export async function refactorMove(backend: ToolBackend, args: SymbolArgs & { toModule: string }): Promise<ToolResult> {
+export async function refactorMove(
+	backend: ToolBackend,
+	args: SymbolArgs & { toModule: string; together?: string[] | undefined },
+): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
+	const together: string[] = [];
+	const from = moduleOf(resolved.symbolId) ?? args.module;
+	for (const name of args.together ?? []) {
+		const each = await resolveOne(backend, { name, module: from });
+		if ("problem" in each) return text(await withIndexState(backend, each.problem, args.module), true);
+		together.push(each.symbolId);
+	}
 
-	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule).catch(
+	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule, together).catch(
 		(error: unknown): Awaited<ReturnType<ToolBackend["refactorMove"]>> => ({
 			moved: false,
 			issues: [],

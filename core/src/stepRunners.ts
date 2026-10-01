@@ -12,12 +12,15 @@ import {
 	type ReverseStep,
 	reverseOf,
 } from "@nyaa-lexicon/protocol";
+import { type MoveMember, moveOrder } from "./moveOrder.js";
 import type { ReadContext } from "./readContext.js";
 import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
 import {
 	changedWhilePlanned,
 	factsMovedWhilePlanned,
+	moveCycle,
+	moveTogetherSplit,
 	type Refusal,
 	staleSincePlanned,
 	stepCancelled,
@@ -384,6 +387,70 @@ export function refactorInsert(
 export function renameStepOutcome(result: StepResult): RenameStepOutcome {
 	if (!result.done) return { renamed: false, issues: result.issues, reason: result.reason };
 	return { renamed: true, modules: result.modules, ...defined({ migrated: result.migrated }), issues: result.issues };
+}
+
+/**
+ * Moves a set of declarations to one target, one joined step each.
+ *
+ * Each moves after the unexported siblings it uses, since a move refuses to leave one behind. A
+ * refused step stops the rest; the steps already taken stay, for the caller to keep or undo.
+ */
+export async function refactorMoveTogether(
+	service: LexiconService,
+	transactions: TransactionManager,
+	write: <T>(work: () => Promise<T> | T) => Promise<T>,
+	args: { symbolId: string; toModule: string; together: readonly string[] },
+): Promise<MoveOutcome> {
+	const context = service.newReadContext();
+	const members: MoveMember[] = [];
+	let from: string | undefined;
+	for (const symbolId of new Set([args.symbolId, ...args.together])) {
+		const plan = service.planMove(symbolId, args.toModule, context);
+		if (!plan.ok) return { moved: false, issues: [], reason: plan.reason };
+		from ??= plan.fromModule;
+		if (plan.fromModule !== from) {
+			return { moved: false, issues: [], reason: moveTogetherSplit(plan.name, plan.fromModule, from) };
+		}
+		const uses = plan.dependencies.flatMap((dependency) =>
+			dependency.origin.kind === "sourceModule" && dependency.origin.exported === false
+				? [dependency.origin.symbolId]
+				: [],
+		);
+		members.push({ symbolId: plan.symbolId, name: plan.name, closure: plan.closure, uses });
+	}
+	const ordered = moveOrder(members);
+	if ("cycle" in ordered) return { moved: false, issues: [], reason: moveCycle(ordered.cycle) };
+
+	const order: string[] = [];
+	const modules = new Set<string>();
+	const issues: RefactorIssue[] = [];
+	let toModule: string | undefined;
+	for (const member of ordered.order) {
+		// A throw after earlier members landed must still name them.
+		const step = await refactorMove(
+			service,
+			transactions,
+			write,
+			{ symbolId: member.symbolId, toModule: args.toModule },
+			"join",
+		).then(
+			moveOutcome,
+			(error: unknown): MoveOutcome => ({
+				moved: false,
+				issues: [],
+				reason: error instanceof Error ? error.message : String(error),
+			}),
+		);
+		issues.push(...step.issues);
+		if (!step.moved) {
+			const moved = order.length === 0 ? "" : ` after ${order.join(", ")} moved`;
+			return { moved: false, issues, order, reason: `${member.name} did not move${moved}: ${step.reason}` };
+		}
+		for (const module of step.modules ?? []) modules.add(module);
+		toModule = step.toModule ?? toModule;
+		order.push(member.name);
+	}
+	return { moved: true, ...defined({ toModule }), modules: [...modules], issues, order };
 }
 
 export function moveOutcome(result: StepResult): MoveOutcome {

@@ -1336,6 +1336,10 @@ ${outcome.reason ?? `the move could not be carried out`}`,
 
 ${modules.length} file${modules.length === 1 ? "" : "s"} written: ${modules.map((m) => code(m)).join(", ")}`,
 	];
+	if (outcome.order !== undefined && outcome.order.length > 1) {
+		lines.push(`
+Moved in order, one step each: ${outcome.order.map((name) => code(name)).join(", ")}`);
+	}
 	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
 		lines.push(`
 Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);

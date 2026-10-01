@@ -105,7 +105,8 @@ function backendOver(ask: Asker): ToolBackend {
 		refactorReplaceSpan: (args) => ask("refactorReplaceSpan", args),
 		refactorInsert: (args) => ask("refactorInsert", args),
 		refactorRename: (symbolId, newName) => ask("refactorRename", { symbolId, newName }),
-		refactorMove: (symbolId, toModule) => ask("refactorMove", { symbolId, toModule }),
+		refactorMove: (symbolId, toModule, together) =>
+			ask("refactorMove", { symbolId, toModule, ...(together.length === 0 ? {} : { together }) }),
 		indexStatus: (concerning) => ask("indexStatus", concerning === undefined ? {} : { concerning }),
 		findLiterals: (query) => ask("findLiterals", query),
 		findComments: (query) => ask("findComments", query),

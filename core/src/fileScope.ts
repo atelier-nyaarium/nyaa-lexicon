@@ -35,6 +35,8 @@ export interface ScopeConfig {
 	deny?: string[];
 	/** Generated or shipped modules constrained to their exported surface. */
 	bundles?: string[];
+	/** A command and its arguments, run with no shell on the files a refactor step wrote. */
+	fix?: string[];
 }
 
 export interface FileScope {
@@ -132,14 +134,21 @@ export function readScopeConfig(workspaceRoot: string): ScopeConfig {
 			exclude?: unknown;
 			deny?: unknown;
 			bundles?: unknown;
+			fix?: unknown;
 		};
 		const paths = (value: unknown): string[] =>
 			Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+		// A command with one wrong part is not run at all.
+		const fix =
+			Array.isArray(parsed.fix) && parsed.fix.length > 0 && parsed.fix.every((part) => typeof part === "string")
+				? (parsed.fix as string[])
+				: undefined;
 		return {
 			include: paths(parsed.include),
 			exclude: paths(parsed.exclude),
 			deny: paths(parsed.deny),
 			bundles: paths(parsed.bundles),
+			...(fix === undefined ? {} : { fix }),
 		};
 	} catch {
 		return {};

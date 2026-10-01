@@ -742,7 +742,7 @@ describe("planning a move", () => {
 	}
 
 	// Only what holds a member needs an import.
-	it("lists what the moved text reaches by name in the form the source imported it, never a member reached through a key or a receiver", () => {
+	it("lists what the moved text reaches by name in the form the source imported it, never a member reached through a key or a receiver, nor what the target declares", () => {
 		const helper = "lexicon reference a.ref helper#";
 		const total = "lexicon reference a.ref total#";
 		const shapeHelper = "lexicon reference a.ref Shape#helper.";
@@ -805,6 +805,8 @@ describe("planning a move", () => {
 				},
 			},
 		]);
+		const home = built.planMove(MOVE, "b.ref", built.newReadContext());
+		expect(home.ok && home.dependencies.map((dependency) => dependency.name)).toEqual(["helper"]);
 	});
 
 	it("exports at the target only what stays in use outside it and is not exported now", () => {

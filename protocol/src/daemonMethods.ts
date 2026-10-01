@@ -134,7 +134,12 @@ const KnowledgeScopeRequest = z
 	.meta({ id: "KnowledgeScopeRequest" });
 const Resolve = z.object({ fromModule: ModulePath, specifier: z.string().min(1) }).meta({ id: "ResolveRequest" });
 const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) }).meta({ id: "RenameRequest" });
-const Move = z.object({ symbolId: z.string().min(1), toModule: ModulePath }).meta({ id: "MoveRequest" });
+const MoveOne = z.object({ symbolId: z.string().min(1), toModule: ModulePath });
+const Move = MoveOne.meta({ id: "MoveRequest" });
+const MoveTogether = MoveOne.extend({
+	/** More declarations moving to the same target; each moves after the ones it uses. */
+	together: z.array(z.string().min(1)).max(100).optional(),
+}).meta({ id: "MoveTogetherRequest" });
 /** Every module the caller saw in the preview, at the hash it saw. */
 const Bases = z
 	.array(z.object({ module: ModulePath, contentHash: StepBaseSchema.shape.contentHash }))
@@ -145,7 +150,9 @@ const StepId = z.string().min(1).max(128);
 const RenameCommitted = Rename.extend({ bases: Bases, stepId: StepId.optional() }).meta({
 	id: "RenameCommittedRequest",
 });
-const MoveCommitted = Move.extend({ bases: Bases, stepId: StepId.optional() }).meta({ id: "MoveCommittedRequest" });
+const MoveCommitted = MoveOne.extend({ bases: Bases, stepId: StepId.optional() }).meta({
+	id: "MoveCommittedRequest",
+});
 const ByStep = z.object({ stepId: StepId }).meta({ id: "ByStepRequest" });
 const Literals = z
 	.object({
@@ -907,7 +914,7 @@ export const DAEMON_METHODS = {
 	},
 	/** Move declarations and rewrite imports. */
 	refactorMove: {
-		request: Move,
+		request: MoveTogether,
 		response: MoveOutcomeSchema,
 		lifecycle: "query",
 		mutates: true,
