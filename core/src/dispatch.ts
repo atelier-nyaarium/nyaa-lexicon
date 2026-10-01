@@ -307,7 +307,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			),
 		),
 		noteBacklinks: read((params) => service.noteBacklinks(params.symbolId, params.limit)),
-		searchRefs: read((params) => service.searchRefs(params.text, params.limit)),
+		searchRefs: read((params) => service.searchRefs(params.text, params.limit, params.kinds)),
 		diagnoseSubject: read((params) => service.diagnoseSubject(params.symbolId)),
 		typeOf: treeFirst(
 			(params) => params.symbolId,

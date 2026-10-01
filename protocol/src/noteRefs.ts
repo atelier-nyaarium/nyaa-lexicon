@@ -110,9 +110,8 @@ function blankCodeSpans(text: string): string {
 	return parts.join("");
 }
 
-/** Written links and mermaid clicks outside code. */
-function scan(text: string): { links: RefLink[]; clicks: FoundRef[] } {
-	const links: RefLink[] = [];
+/** The text with fenced lines blanked, and the mermaid clicks inside those fences. */
+function fenced(text: string): { shown: string; clicks: FoundRef[] } {
 	const clicks: FoundRef[] = [];
 	const shown: string[] = [];
 	let fence: { marker: string; mermaid: boolean } | null = null;
@@ -138,9 +137,21 @@ function scan(text: string): { links: RefLink[]; clicks: FoundRef[] } {
 		shown.push(hidden ? " ".repeat(line.length) : line);
 		offset += line.length + 1;
 	}
+	return { shown: shown.join("\n"), clicks };
+}
+
+/** Fences and code spans blanked to spaces, newlines kept, so every index still reads the text. */
+export function blankCode(text: string): string {
+	return blankCodeSpans(fenced(text).shown);
+}
+
+/** Written links and mermaid clicks outside code. */
+function scan(text: string): { links: RefLink[]; clicks: FoundRef[] } {
+	const links: RefLink[] = [];
+	const { shown, clicks } = fenced(text);
 
 	// Fences and code spans blank to spaces, so every index still reads the text.
-	const plain = blankCodeSpans(shown.join("\n"));
+	const plain = blankCodeSpans(shown);
 	const starts = labelStarts(plain);
 	for (const match of plain.matchAll(LINK_DESTINATION)) {
 		const at = match.index ?? 0;

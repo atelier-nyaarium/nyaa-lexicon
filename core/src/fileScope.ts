@@ -63,6 +63,9 @@ export const CONFIG_FILE = "lexicon.json";
 /** Stops an include glob from walking a deep tree forever. Deeper than any real source layout. */
 const MAX_INCLUDE_DEPTH = 12;
 
+/** Never indexed, whatever the config includes. */
+const BUILT_IN_DENY = ["**/.git/**"];
+
 /** Bounds every git call, so a wedged process is killed rather than waited on forever. */
 const GIT_TIMEOUT_MS = 30_000;
 
@@ -141,6 +144,11 @@ export function readScopeConfig(workspaceRoot: string): ScopeConfig {
 	} catch {
 		return {};
 	}
+}
+
+/** The config's deny globs and the built-in ones. */
+export function denyGlobs(config: ScopeConfig): string[] {
+	return [...BUILT_IN_DENY, ...(config.deny ?? [])];
 }
 
 /**
@@ -269,7 +277,7 @@ export async function fileScopeFor(
 	const known = await gitFiles(workspaceRoot, clock);
 	const include = config.include ?? [];
 	const exclude = config.exclude ?? [];
-	const deny = config.deny ?? [];
+	const deny = denyGlobs(config);
 	const bundles = config.bundles ?? [];
 	const matchers = include.map((glob) => globToRegExp(glob));
 	const excluded = exclude.map((glob) => globToRegExp(glob));

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { findRefLinks, findRefs, formatRef, parseRef } from "../noteRefs";
+import { blankCode, findRefLinks, findRefs, formatRef, parseRef } from "../noteRefs";
 
 describe("finding refs in a note", () => {
-	it("finds written links anywhere in prose, and nothing in code or bare text", () => {
+	it("finds written links anywhere in prose, and nothing in code or bare text, which blanks to the same length", () => {
 		const text = [
 			"Wraps [Cart](ref://src/cart.ts:Cart) mid-sentence, and [add](<ref://src/a b.ts:add>).",
 			"A bare ref://src/cart.ts:Cart is text, and so is `[x](ref://src/code.ts:X)`.",
@@ -16,6 +16,11 @@ describe("finding refs in a note", () => {
 			"ref://src/a b.ts:add",
 			"ref://src/z.ts:Z",
 		]);
+		const plain = blankCode(text);
+		expect({
+			length: plain.length,
+			shown: ["cart.ts", "code.ts", "fenced.ts"].map((name) => plain.includes(`src/${name}`)),
+		}).toEqual({ length: text.length, shown: [true, false, false] });
 	});
 
 	it("scans text in time linear in its length, however its brackets, backticks and backslashes fall", () => {

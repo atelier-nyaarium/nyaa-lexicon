@@ -459,6 +459,15 @@ export function renderSpecifier(
 
 	const { options } = setup;
 	const targetExists = setup.system.fileExists(target);
+	// The importer's own bare spelling wins while it still lands here, as a linked package does.
+	if (
+		preferredSpecifier !== undefined &&
+		!preferredSpecifier.startsWith(".") &&
+		targetExists &&
+		resolvesToTarget(root, fromModule, preferredSpecifier, targetModule, setup, lookupSurface)
+	) {
+		return { specifier: preferredSpecifier };
+	}
 	const candidates = dedupeCandidates([
 		{
 			specifier: relativeSpecifier(fromModule, targetModule, options, preferredSpecifier),

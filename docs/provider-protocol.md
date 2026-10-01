@@ -241,11 +241,11 @@ provider claims a shebang.
 In Git mode, tracked files remain in scope even under a default-excluded directory; directory exclusions
 only limit files added by provider discovery. An ignored file never enters scope unless explicitly included.
 Use `deny` for tracked secrets, such as `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.
-Denied files are excluded from indexing, and no provider reads one. `initialize` carries the scope's
-`deny` globs. The kit's module store never fills a denied file, and `store.policy` gates every read a
-provider makes itself, such as a compiler host, a config file or a scene. A denied glob matches a
-file by its name and, through a link, by its real path. A file outside the workspace stays readable,
-since no workspace glob names it.
+`**/.git/**` is always denied. Denied files are excluded from indexing, and no provider reads one.
+`initialize` carries the scope's `deny` globs, the built-in one included. The kit's module store never
+fills a denied file, and `store.policy` gates every read a provider makes itself, such as a compiler
+host, a config file or a scene. A denied glob matches a file by its name and, through a link, by its
+real path. A file outside the workspace stays readable, since no workspace glob names it.
 
 Indexing, the watcher and the provider probe read through the guarded source reader. Transaction snapshots
 read bytes for byte-exact rollback and never send those bytes to a provider.

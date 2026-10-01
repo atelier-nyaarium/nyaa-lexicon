@@ -2,6 +2,7 @@
 // carries, who wrote it, and what has moved since.
 
 import { z } from "zod";
+import { SymbolKindSchema } from "./symbols.js";
 
 ////////////////////////////////
 //  Schemas
@@ -190,9 +191,14 @@ export const SearchRefsSchema = z.object({ results: z.array(RefCandidateSchema) 
 
 export type SearchRefs = z.infer<typeof SearchRefsSchema>;
 
-/** `limit` caps the declarations; up to eight files follow them. Case folds ASCII only. */
+/** `limit` caps the declarations; up to eight files follow them. `kinds` narrows both. Case folds ASCII only. */
 export const SearchRefsRequestSchema = z
-	.object({ text: z.string(), limit: z.number().int().positive().max(100).optional() })
+	.object({
+		text: z.string(),
+		limit: z.number().int().positive().max(100).optional(),
+		/** Absent means every kind; `file` asks for files. */
+		kinds: z.array(SymbolKindSchema).optional(),
+	})
 	.meta({ id: "SearchRefsRequest" });
 
 export const NoteBacklinksRequestSchema = z

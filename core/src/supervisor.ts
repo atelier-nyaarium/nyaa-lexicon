@@ -32,7 +32,7 @@ import type { z } from "zod";
 import { type Clock, systemClock } from "./clock.js";
 import { withTimeout } from "./deadline.js";
 import { settleDeclaredTiers } from "./declaredTiers.js";
-import { readScopeConfig } from "./fileScope.js";
+import { denyGlobs, readScopeConfig } from "./fileScope.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import { RequestQueue } from "./requestQueue.js";
 import {
@@ -122,7 +122,7 @@ function initializeParams(workspaceRoot: string): {
 	protocolVersion: string;
 	deny: string[];
 } {
-	return { workspaceRoot, protocolVersion: PROTOCOL_VERSION, deny: readScopeConfig(workspaceRoot).deny ?? [] };
+	return { workspaceRoot, protocolVersion: PROTOCOL_VERSION, deny: denyGlobs(readScopeConfig(workspaceRoot)) };
 }
 
 /** An answered initialize makes a starting provider ready, unless it already said it is warming. */

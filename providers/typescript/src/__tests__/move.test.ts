@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -1148,6 +1148,54 @@ describe("move edits", () => {
 
 		if (response.status !== "ready") throw new Error("move was refused");
 		expect(response.edits[0]).toMatchObject({ newText: 'import { moved } from "@/new";' });
+	});
+
+	it("keeps a linked workspace package's specifier for a dependency it still reaches", () => {
+		const body = "export const moved = findRefs(text);\n";
+		const root = workspace({
+			"packages/proto/package.json": JSON.stringify({
+				name: "@acme/proto",
+				exports: { "./refs": "./src/refs.ts" },
+			}),
+			"packages/proto/src/refs.ts": "export function findRefs(text: string) { return text; }\n",
+			"app/src/source.ts": "",
+			"app/src/editor/target.ts": "",
+		});
+		mkdirSync(path.join(root, "node_modules/@acme"), { recursive: true });
+		symlinkSync(path.join(root, "packages/proto"), path.join(root, "node_modules/@acme/proto"), "dir");
+		const response = move(root, {
+			module: "app/src/editor/target.ts",
+			text: "",
+			exists: true,
+			symbolId: "lexicon typescript app/src/source.ts moved.",
+			name: "moved",
+			fromModule: "app/src/source.ts",
+			toModule: "app/src/editor/target.ts",
+			role: { insertion: { text: body } },
+			importSites: [],
+			dependencies: [
+				{
+					name: "findRefs",
+					origin: {
+						kind: "workspaceModule",
+						symbolId: "lexicon typescript packages/proto/src/refs.ts findRefs().",
+						module: "packages/proto/src/refs.ts",
+						via: {
+							specifier: "@acme/proto/refs",
+							importKind: "named",
+							importedName: "findRefs",
+							localName: "findRefs",
+						},
+					},
+				},
+			],
+			sites: [],
+		});
+
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(applyEdits("", response.edits)).toEqual({
+			text: `import { findRefs } from "@acme/proto/refs";\n${body}`,
+		});
 	});
 
 	it("answers normally for a target file that does not exist yet", () => {

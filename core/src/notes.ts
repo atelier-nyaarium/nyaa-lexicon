@@ -309,15 +309,21 @@ export class NoteLedger {
 	}
 
 	/** Declarations by name, then files by path, each with its ref written. Locals are left out. */
-	searchRefs(text: string, limit = REFS_SHOWN): SearchRefs {
+	searchRefs(text: string, limit = REFS_SHOWN, kinds?: readonly string[]): SearchRefs {
 		const needle = text.trim();
 		if (needle === "") return { results: [] };
 		const results: RefCandidate[] = [];
 		const context = new ReadContext(this.store);
 		// Locals are skipped after the read, so pages continue until enough others are found.
 		const page = limit * 2;
+		const symbolKinds = kinds?.filter((kind) => kind !== "file");
 		for (let offset = 0; results.length < limit && offset < SEARCH_SCANNED; offset += page) {
-			const rows = this.store.symbolsNamedLike(needle, Math.min(page, SEARCH_SCANNED - offset), offset);
+			const rows = this.store.symbolsNamedLike(
+				needle,
+				Math.min(page, SEARCH_SCANNED - offset),
+				offset,
+				symbolKinds,
+			);
 			for (const row of rows) {
 				if (results.length >= limit) break;
 				if (isLocalSymbol(row.symbolId)) continue;
@@ -334,7 +340,9 @@ export class NoteLedger {
 			}
 			if (rows.length < page) break;
 		}
-		for (const module of this.store.filesNamedLike(needle, FILES_SHOWN)) {
+		const files =
+			kinds === undefined || kinds.includes("file") ? this.store.filesNamedLike(needle, FILES_SHOWN) : [];
+		for (const module of files) {
 			const name = module.slice(module.lastIndexOf("/") + 1);
 			results.push({ ref: formatRef(module, []), name, kind: "file", module, container: [] });
 		}

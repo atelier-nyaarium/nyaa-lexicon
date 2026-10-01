@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { NoteAuthor } from "@nyaa-lexicon/protocol";
+import type { NoteAuthor, SymbolKind } from "@nyaa-lexicon/protocol";
 import type { NoteWrite } from "../notes";
 import * as refusal from "../refusals";
 import { LexiconService } from "../service";
@@ -29,17 +29,17 @@ const HOLDS = "Holds a [Cart](ref://a.ref:Cart) per shopper.";
 
 const at = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 8 } });
 
-/** One module's classes, each with the digest a full parse would mint. */
+/** One module's declarations, classes by default, each with the digest a full parse would mint. */
 function plant(
 	module: string,
-	classes: Array<{ symbolId: string; name: string; digest: string; containerId?: string }>,
+	entries: Array<{ symbolId: string; name: string; digest: string; containerId?: string; kind?: SymbolKind }>,
 ): void {
 	store.replaceFile({
 		module,
-		contentHash: classes.map((entry) => entry.digest).join(""),
-		declarations: classes.map((entry, line) => ({
+		contentHash: entries.map((entry) => entry.digest).join(""),
+		declarations: entries.map((entry, line) => ({
 			symbolId: entry.symbolId,
-			kind: "class" as const,
+			kind: entry.kind ?? "class",
 			name: entry.name,
 			range: at(line),
 			selectionRange: at(line),
@@ -54,7 +54,7 @@ function plant(
 		docs: [],
 		notes: [],
 		content: "code",
-		digests: classes.map((entry) => ({
+		digests: entries.map((entry) => ({
 			symbolId: entry.symbolId,
 			patternDigest: entry.digest,
 			patternCoverage: "commentsStripped" as const,
@@ -292,6 +292,12 @@ describe("searching for a ref", () => {
 		plant("src/cart.ref", [{ symbolId: "lexicon reference src/cart.ref Cart#", name: "Cart", digest: "s1" }]);
 		plant("src/shop.ref", [
 			{ symbolId: "lexicon reference src/shop.ref ShopCart#", name: "ShopCart", digest: "p1" },
+			{
+				symbolId: "lexicon reference src/shop.ref cartTotal().",
+				name: "cartTotal",
+				digest: "p2",
+				kind: "function",
+			},
 		]);
 		plant("node_modules/zod/cart.ref", [
 			{ symbolId: "lexicon reference node_modules/zod/cart.ref Carton#", name: "Carton", digest: "v1" },
@@ -301,12 +307,21 @@ describe("searching for a ref", () => {
 			["class", "ref://a.ref:Cart"],
 			["class", "ref://src/cart.ref:Cart"],
 			["class", "ref://src/__tests__/cart.test.ref:Cart"],
+			["function", "ref://src/shop.ref:cartTotal"],
 			["class", "ref://src/shop.ref:ShopCart"],
 			["class", "ref://node_modules/zod/cart.ref:Carton"],
 			["file", "ref://src/cart.ref"],
 			["file", "ref://src/__tests__/cart.test.ref"],
 			["file", "ref://node_modules/zod/cart.ref"],
 		]);
+
+		const refs = (kinds: SymbolKind[]) =>
+			service.searchRefs("Cart", undefined, kinds).results.map((entry) => entry.ref);
+		expect({ functions: refs(["function"]), files: refs(["file"]), none: refs([]) }).toEqual({
+			functions: ["ref://src/shop.ref:cartTotal"],
+			files: ["ref://src/cart.ref", "ref://src/__tests__/cart.test.ref", "ref://node_modules/zod/cart.ref"],
+			none: [],
+		});
 	});
 });
 
