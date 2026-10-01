@@ -2471,15 +2471,16 @@ export class IndexStore {
 		return rows.filter((row) => regex.test(row.name)).slice(0, options.limit);
 	}
 
-	/** Declarations whose name contains `text`, any case: exact names, then own code, then prefixes, then shortest. */
+	/** Declarations whose name contains `text`, any case: own code, then top-level, then exact names, then
+	 * prefixes, then shortest. */
 	symbolsNamedLike(text: string, limit: number, offset = 0, kinds?: readonly string[]): StoredDeclaration[] {
 		const kindClause = kinds === undefined ? "" : ` AND kind IN (${kinds.map(() => "?").join(", ")})`;
 		const escaped = likePattern(text);
 		return this.db
 			.prepare(
 				`SELECT * FROM symbols WHERE name LIKE ? ESCAPE '\\'${kindClause}
-				 ORDER BY (name = ? COLLATE NOCASE) DESC, ${VENDOR_PATH} ASC, (name LIKE ? ESCAPE '\\') DESC, ${TEST_PATH} ASC,
-				 length(name), module, startLine
+				 ORDER BY ${VENDOR_PATH} ASC, (containerId IS NULL) DESC, (name = ? COLLATE NOCASE) DESC,
+				 (name LIKE ? ESCAPE '\\') DESC, ${TEST_PATH} ASC, length(name), module, startLine
 				 LIMIT ? OFFSET ?`,
 			)
 			.all(`%${escaped}%`, ...(kinds ?? []), text, `${escaped}%`, limit, offset)

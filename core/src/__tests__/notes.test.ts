@@ -285,7 +285,7 @@ describe("whose words an agent may replace", () => {
 });
 
 describe("searching for a ref", () => {
-	it("lists source before tests, own code before dependencies, and files after declarations", () => {
+	it("lists own code before dependencies, top-level before members, source before tests, and files after declarations", () => {
 		plant("src/__tests__/cart.test.ref", [
 			{ symbolId: "lexicon reference src/__tests__/cart.test.ref Cart#", name: "Cart", digest: "t1" },
 		]);
@@ -298,9 +298,17 @@ describe("searching for a ref", () => {
 				digest: "p2",
 				kind: "function",
 			},
+			{
+				symbolId: "lexicon reference src/shop.ref ShopCart#cart.",
+				name: "cart",
+				digest: "p3",
+				kind: "property",
+				containerId: "lexicon reference src/shop.ref ShopCart#",
+			},
 		]);
 		plant("node_modules/zod/cart.ref", [
 			{ symbolId: "lexicon reference node_modules/zod/cart.ref Carton#", name: "Carton", digest: "v1" },
+			{ symbolId: "lexicon reference node_modules/zod/cart.ref Cart#", name: "Cart", digest: "v2" },
 		]);
 
 		expect(service.searchRefs("Cart").results.map((entry) => [entry.kind, entry.ref])).toEqual([
@@ -309,6 +317,8 @@ describe("searching for a ref", () => {
 			["class", "ref://src/__tests__/cart.test.ref:Cart"],
 			["function", "ref://src/shop.ref:cartTotal"],
 			["class", "ref://src/shop.ref:ShopCart"],
+			["property", "ref://src/shop.ref:ShopCart:cart"],
+			["class", "ref://node_modules/zod/cart.ref:Cart"],
 			["class", "ref://node_modules/zod/cart.ref:Carton"],
 			["file", "ref://src/cart.ref"],
 			["file", "ref://src/__tests__/cart.test.ref"],
