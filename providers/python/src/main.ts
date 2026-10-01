@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	asyncModuleStore,
 	type Binding,
 	type CommentSpan,
@@ -34,6 +35,7 @@ import {
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
+import { makeArrangeEdits } from "./arrange";
 import { extractFacts } from "./facts/extract";
 import { renameEdits } from "./facts/rename";
 import type {
@@ -697,19 +699,21 @@ export class PythonProvider {
 	}
 
 	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
-		if (!isValidTargetModule(params.toModule)) {
-			return {
-				status: "refused",
-				reason: "InvalidTarget",
-				detail: `the target is not a Python module: ${params.toModule}`,
-			};
-		}
-		return makeMoveEdits(params, extractFacts(params.module, params.text));
+		return invalidTarget(params.toModule) ?? makeMoveEdits(params, extractFacts(params.module, params.text));
+	}
+
+	arrangeEdits(params: ArrangeEditsRequest): MoveEditsResponse {
+		return invalidTarget(params.toModule) ?? makeArrangeEdits(params, extractFacts(params.module, params.text));
 	}
 
 	renameEdits(params: RenameEditsRequest): RenameEditsResponse {
 		return renameEdits(params);
 	}
+}
+
+function invalidTarget(toModule: string): MoveEditsResponse | undefined {
+	if (isValidTargetModule(toModule)) return undefined;
+	return { status: "refused", reason: "InvalidTarget", detail: `the target is not a Python module: ${toModule}` };
 }
 
 function unknownAnnotationType(): TypeInfo {

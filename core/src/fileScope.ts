@@ -37,6 +37,8 @@ export interface ScopeConfig {
 	bundles?: string[];
 	/** A command and its arguments, run with no shell on the files a refactor step wrote. */
 	fix?: string[];
+	/** A formatter run with no shell: the text on stdin, the result on stdout; `{module}` names the file. */
+	fixText?: string[];
 }
 
 export interface FileScope {
@@ -135,20 +137,24 @@ export function readScopeConfig(workspaceRoot: string): ScopeConfig {
 			deny?: unknown;
 			bundles?: unknown;
 			fix?: unknown;
+			fixText?: unknown;
 		};
 		const paths = (value: unknown): string[] =>
 			Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 		// A command with one wrong part is not run at all.
-		const fix =
-			Array.isArray(parsed.fix) && parsed.fix.length > 0 && parsed.fix.every((part) => typeof part === "string")
-				? (parsed.fix as string[])
+		const command = (value: unknown): string[] | undefined =>
+			Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === "string")
+				? (value as string[])
 				: undefined;
+		const fix = command(parsed.fix);
+		const fixText = command(parsed.fixText);
 		return {
 			include: paths(parsed.include),
 			exclude: paths(parsed.exclude),
 			deny: paths(parsed.deny),
 			bundles: paths(parsed.bundles),
 			...(fix === undefined ? {} : { fix }),
+			...(fixText === undefined ? {} : { fixText }),
 		};
 	} catch {
 		return {};

@@ -21,6 +21,7 @@ test("every handler answers, the notifications included, and write operations re
 	handlers.discoverProject({ workspaceRoot: process.cwd() });
 
 	expect(Object.keys(handlers).sort()).toEqual([
+		"arrangeEdits",
 		"bind",
 		"discoverProject",
 		"forgetModule",
@@ -53,6 +54,18 @@ test("every handler answers, the notifications included, and write operations re
 			importSites: [],
 			dependencies: [],
 			sites: [],
+		}),
+	).toMatchObject({ status: "refused", reason: "NotImplemented" });
+	expect(
+		handlers.arrangeEdits({
+			module: "a.kt",
+			text: "",
+			exists: false,
+			fromModule: "a.kt",
+			toModule: "b.kt",
+			members: [],
+			importSites: [],
+			dependencies: [],
 		}),
 	).toMatchObject({ status: "refused", reason: "NotImplemented" });
 });

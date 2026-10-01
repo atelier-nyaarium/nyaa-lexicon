@@ -73,6 +73,7 @@ function toy(
 		typeOf: () => ({}) as never,
 		renameEdits: () => ({}) as never,
 		moveEdits: () => ({}) as never,
+		arrangeEdits: () => ({}) as never,
 	};
 	const handlers = handlersFor(provider);
 	handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
@@ -499,6 +500,7 @@ describe("the module store's verdicts", () => {
 			typeOf: () => ({}) as never,
 			renameEdits: () => ({}) as never,
 			moveEdits: () => ({}) as never,
+			arrangeEdits: () => ({}) as never,
 		});
 		handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
 		handlers.discoverProject({ workspaceRoot: root });
@@ -715,6 +717,7 @@ describe("the module store's layers", () => {
 			typeOf: () => ({}) as never,
 			renameEdits: () => ({}) as never,
 			moveEdits: () => ({}) as never,
+			arrangeEdits: () => ({}) as never,
 		});
 		handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
 		handlers.discoverProject({ workspaceRoot: root });

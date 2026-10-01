@@ -1,7 +1,13 @@
 // The imports a moved body needs where it lands, against what that module already binds.
 
 import path from "node:path";
-import type { ImportKind, MoveBlockedSite, MoveDependency, MoveEditsRequest } from "@nyaa-lexicon/protocol";
+import type {
+	ImportKind,
+	MoveBlockedSite,
+	MoveDependency,
+	MoveEditsRequest,
+	OffsetRange,
+} from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { EXPORT_EQUALS } from "./extract.js";
 import { scriptKindOf } from "./file-types.js";
@@ -127,7 +133,7 @@ const BUILTIN_NAMES = new Set([
 //  Dependency Imports
 
 export function importForDependency(
-	request: MoveEditsRequest,
+	request: Pick<MoveEditsRequest, "module" | "fromModule">,
 	dependency: MoveDependency,
 	source: ts.SourceFile,
 	checker: ts.TypeChecker | undefined,
@@ -221,14 +227,11 @@ function plannedImport(dependency: MoveDependency, specifier: string): PlannedIm
 }
 
 /** Every name the module's scope binds, with the import binding it, save what the move removes. */
-export function moduleBindings(
-	source: ts.SourceFile,
-	removed: { start: number; end: number } | undefined,
-): Map<string, ModuleBinding[]> {
+export function moduleBindings(source: ts.SourceFile, removed: readonly OffsetRange[]): Map<string, ModuleBinding[]> {
 	const bindings = new Map<string, ModuleBinding[]>();
 	const bind = (name: string, binding: ModuleBinding) => append(bindings, name, binding);
 	for (const statement of source.statements) {
-		if (removed !== undefined && removed.start <= statement.getStart(source) && statement.getEnd() <= removed.end) {
+		if (removed.some((span) => span.start <= statement.getStart(source) && statement.getEnd() <= span.end)) {
 			continue;
 		}
 		const external =

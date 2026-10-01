@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	BindingSchema,
 	composeSymbolId,
 	coordinatesOf,
@@ -107,6 +108,7 @@ describe("C provider protocol", () => {
 		const handlers = started();
 
 		expect(Object.keys(handlers).sort()).toEqual([
+			"arrangeEdits",
 			"bind",
 			"discoverProject",
 			"forgetModule",
@@ -2515,7 +2517,7 @@ describe("C edge coverage", () => {
 });
 
 describe("C edit refusals and protocol values", () => {
-	test("refuses rename and move with a closed reason", () => {
+	test("refuses rename, move and arrange with a closed reason", () => {
 		const handlers = started();
 		const rename: RenameEditsRequest = {
 			module: "a.c",
@@ -2537,9 +2539,20 @@ describe("C edit refusals and protocol values", () => {
 			dependencies: [],
 			sites: [],
 		};
+		const arrange: ArrangeEditsRequest = {
+			module: "a.c",
+			text: "int value;\n",
+			exists: true,
+			fromModule: "a.c",
+			toModule: "b.c",
+			members: [],
+			importSites: [],
+			dependencies: [],
+		};
 
 		expect(handlers.renameEdits(rename)).toMatchObject({ status: "refused", reason: "NotImplemented" });
 		expect(handlers.moveEdits(move)).toMatchObject({ status: "refused", reason: "NotImplemented" });
+		expect(handlers.arrangeEdits(arrange)).toMatchObject({ status: "refused", reason: "NotImplemented" });
 	});
 
 	test("validates binding and type values against their schemas", () => {

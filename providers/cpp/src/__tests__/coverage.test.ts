@@ -394,6 +394,7 @@ describe("C++ structural coverage", () => {
 		const handlers = wire();
 
 		expect(Object.keys(handlers).sort()).toEqual([
+			"arrangeEdits",
 			"bind",
 			"discoverProject",
 			"forgetModule",

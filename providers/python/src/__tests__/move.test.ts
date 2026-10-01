@@ -222,6 +222,32 @@ describe("Python move edits", () => {
 		}
 	});
 
+	it("blocks a split that would drop a comment inside the import", async () => {
+		const files = {
+			"src/__init__.py": "",
+			"src/cart.py": "def add():\n    pass\ndef keep():\n    pass\n",
+			"src/items.py": "",
+		};
+		const text = "from .cart import (\n    keep,  # compatibility export\n    add,\n)\nvalue = add()\n";
+		const request = namedImportRequest(text, "add", "add", true);
+		const response = await provider({ ...files, "src/use.py": text }).moveEdits(request);
+
+		expect(response).toMatchObject({
+			status: "ready",
+			edits: [],
+			blocked: [{ range: span(text, "add"), reason: "NotImplemented" }],
+		});
+
+		// A comment after the statement is outside its range.
+		const trailing = "from .cart import keep, add  # compatibility export\n";
+		expect(
+			await apply(trailing, namedImportRequest(trailing, "add", "add", true), {
+				...files,
+				"src/use.py": trailing,
+			}),
+		).toBe("from .cart import keep\nfrom .items import add  # compatibility export\n");
+	});
+
 	it("preserves an alias in a single named import", async () => {
 		const text = "from cart import add as total\nvalue = total(1, 2)\n";
 		const request = namedImportRequest(text, "add", "total");

@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	composeSymbolId,
 	coordinatesOf,
@@ -17,6 +18,7 @@ import {
 	withOccurrences,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { makeArrangeEdits } from "./arrange.js";
 import { type Extracted, extractFile, extractFileWithNodes, LANGUAGE } from "./extract.js";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
 import type { TypeScriptProject, TypeScriptStore } from "./module.js";
@@ -213,6 +215,27 @@ export class TypeScriptAnalyzer {
 		renderSpecifier: SpecifierRenderer,
 		resolveModule: ModuleResolver,
 	): MoveEditsResponse {
+		const read = this.moveSource(params);
+		if ("refused" in read) return read.refused;
+		return makeMoveEdits(params, read.source, read.checker, renderSpecifier, resolveModule, read.esm);
+	}
+
+	arrangeEdits(
+		params: ArrangeEditsRequest,
+		renderSpecifier: SpecifierRenderer,
+		resolveModule: ModuleResolver,
+	): MoveEditsResponse {
+		const read = this.moveSource(params);
+		if ("refused" in read) return read.refused;
+		return makeArrangeEdits(params, read.source, read.checker, renderSpecifier, resolveModule, read.esm);
+	}
+
+	/** The request's text parsed, with the program's checker when the module exists. */
+	private moveSource(params: {
+		module: string;
+		text: string;
+		exists: boolean;
+	}): { source: ts.SourceFile; checker: ts.TypeChecker | undefined; esm: boolean } | { refused: MoveEditsResponse } {
 		const source = ts.createSourceFile(
 			this.fileName(params.module),
 			params.text,
@@ -221,7 +244,9 @@ export class TypeScriptAnalyzer {
 			scriptKindOf(params.module),
 		);
 		if (parseDiagnosticsOf(source).length > 0) {
-			return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
+			return {
+				refused: { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" },
+			};
 		}
 
 		let checker: ts.TypeChecker | undefined;
@@ -231,7 +256,7 @@ export class TypeScriptAnalyzer {
 		}
 
 		const esm = runsAsEsm(this.fileName(params.module), this.project.loaded);
-		return makeMoveEdits(params, source, checker, renderSpecifier, resolveModule, esm);
+		return { source, checker, esm };
 	}
 
 	programStats(): {

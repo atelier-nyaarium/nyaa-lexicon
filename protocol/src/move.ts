@@ -153,7 +153,7 @@ export const MoveRoleSchema = z
 			.object({
 				text: z.string().min(1),
 				position: PositionSchema.optional(),
-				/** Something outside the target uses it, so it must leave the target. */
+				/** Something outside the target uses it, so the target must export it. */
 				exported: z.boolean().optional(),
 			})
 			.optional(),
@@ -296,3 +296,58 @@ export const MoveEditsResponseSchema = z
 	.meta({ id: "MoveEditsResponse" });
 
 export type MoveEditsResponse = z.infer<typeof MoveEditsResponseSchema>;
+
+/** An import naming one member of an arrangement. */
+export const ArrangeImportSiteSchema = MoveImportSiteSchema.extend({
+	/** The member it names. */
+	symbolId: z.string().min(1),
+}).meta({ id: "ArrangeImportSite" });
+
+export type ArrangeImportSite = z.infer<typeof ArrangeImportSiteSchema>;
+
+/** One declaration of an arrangement, as one module sees it. */
+export const ArrangeMemberSchema = z
+	.object({
+		symbolId: z.string().min(1),
+		name: z.string().min(1),
+		/** Its range, widened to whole lines and blank separators when it owns its lines; absent when it stays. */
+		removal: RangeSchema.optional(),
+		/** Framed by the core; insertions sharing a position land in member order as one edit. */
+		insertion: z
+			.object({
+				text: z.string().min(1),
+				position: PositionSchema,
+				/** Something outside the target uses it, so the target must export it. */
+				exported: z.boolean().optional(),
+			})
+			.optional(),
+		/** Uses in this module outside import statements, such as a qualified one. */
+		sites: z.array(RangeSchema),
+	})
+	.meta({ id: "ArrangeMember" });
+
+export type ArrangeMember = z.infer<typeof ArrangeMemberSchema>;
+
+/**
+ * One module's part of an arrangement: declarations from one source module, or the target's own,
+ * placed in the target as one plan. Answered as `moveEdits` is.
+ */
+export const ArrangeEditsRequestSchema = z
+	.object({
+		module: z.string().min(1),
+		text: z.string(),
+		/** False when the target does not exist yet. */
+		exists: z.boolean(),
+		/** The target when only its own declarations move. */
+		fromModule: z.string().min(1),
+		toModule: z.string().min(1),
+		/** In landing order. */
+		members: z.array(ArrangeMemberSchema),
+		/** A statement naming several members is rewritten once. */
+		importSites: z.array(ArrangeImportSiteSchema),
+		/** Complete, as on a move; a member's use of another member is `insideClosure`. */
+		dependencies: z.array(MoveDependencySchema),
+	})
+	.meta({ id: "ArrangeEditsRequest" });
+
+export type ArrangeEditsRequest = z.infer<typeof ArrangeEditsRequestSchema>;

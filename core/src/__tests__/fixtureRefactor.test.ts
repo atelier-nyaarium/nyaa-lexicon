@@ -5,7 +5,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { bunCommand } from "@nyaa-lexicon/client";
-import { applyEdits, hashBytes, hashContent, type RefactorUndoResult, type ResponseOf } from "@nyaa-lexicon/protocol";
+import {
+	type ArrangeEditsRequest,
+	applyEdits,
+	hashBytes,
+	hashContent,
+	type Range,
+	type RefactorUndoResult,
+	type ResponseOf,
+} from "@nyaa-lexicon/protocol";
 import { createDispatch, daemonHandlers } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { LexiconService } from "../service";
@@ -573,5 +581,179 @@ describe("an anchored move", () => {
 		expect(read("b.ref")).toBe(
 			["Zebra", ...(outcome.order ?? [])].map((name) => `export class ${name}\n`).join("\n"),
 		);
+	}, 60_000);
+});
+
+describe("an arrangement through the daemon's handlers", () => {
+	const PEAR = "lexicon reference a.ref Pear#";
+	const KIWI = "lexicon reference c.ref Kiwi#";
+	const SOURCE = "export class Cart\n\nexport class Apple\n\nexport class Pear\n";
+	const ARRANGED = {
+		toModule: "b.ref",
+		placements: [
+			{ symbolId: CART, anchor: { symbolId: ZEBRA, side: "before" } },
+			{ symbolId: APPLE, anchor: { symbolId: CART, side: "after" } },
+		],
+	};
+
+	type Shown = Extract<ResponseOf<"previewArrange">, { ok: true }>;
+
+	async function files(entries: Record<string, string>): Promise<void> {
+		for (const [module, text] of Object.entries(entries)) {
+			put(module, text);
+			await service.indexFile(module);
+		}
+	}
+
+	async function preview(request: object): Promise<Shown> {
+		const answer = (await dispatch("previewArrange", request)) as ResponseOf<"previewArrange">;
+		if (!answer.ok) throw new Error(answer.reason);
+		return answer;
+	}
+
+	function expectOf(shown: Shown) {
+		return shown.files.map(({ module, base, result }) => ({ module, base, result }));
+	}
+
+	it("writes exactly the previewed bytes as one step, and one Undo puts every file back", async () => {
+		await files({ "a.ref": SOURCE, "b.ref": "export class Zebra\n" });
+		const before = { a: read("a.ref"), b: read("b.ref") };
+		const shown = await preview(ARRANGED);
+		const unchanged = { a: read("a.ref"), b: read("b.ref") };
+		const outcome = await dispatch("refactorArrange", { ...ARRANGED, expect: expectOf(shown) });
+		const written = Object.fromEntries(shown.files.map((file) => [file.module, read(file.module)]));
+		const recalled = store.answer(MOVED, "describe")?.prose;
+		await dispatch("refactorUndo", {});
+
+		expect({
+			texts: Object.fromEntries(shown.files.map((file) => [file.module, file.text])),
+			bases: shown.files.map((file) => file.base),
+			unchanged,
+			outcome,
+			written,
+			recalled,
+			undone: { a: read("a.ref"), b: read("b.ref") },
+		}).toMatchObject({
+			texts: {
+				"b.ref": "export class Cart\n\nexport class Apple\n\nexport class Zebra\n",
+				"a.ref": "export class Pear\n",
+			},
+			bases: [hashContent(before.b as string), hashContent(before.a as string)],
+			unchanged: before,
+			outcome: { moved: true },
+			written: {
+				"b.ref": "export class Cart\n\nexport class Apple\n\nexport class Zebra\n",
+				"a.ref": "export class Pear\n",
+			},
+			recalled: "A shopping cart.",
+			undone: before,
+		});
+	}, 60_000);
+
+	it("refuses an apply whose preview no longer matches, and writes nothing", async () => {
+		await files({ "a.ref": SOURCE, "b.ref": "export class Zebra\n" });
+		const shown = await preview(ARRANGED);
+		await files({ "b.ref": "export class Zebra\n\nexport class Kiwi\n" });
+		const outcome = (await dispatch("refactorArrange", {
+			...ARRANGED,
+			expect: expectOf(shown),
+		})) as ResponseOf<"refactorArrange">;
+
+		expect({
+			moved: outcome.moved,
+			previewed: outcome.reason?.includes("previewed"),
+			a: read("a.ref"),
+			b: read("b.ref"),
+		}).toEqual({ moved: false, previewed: true, a: SOURCE, b: "export class Zebra\n\nexport class Kiwi\n" });
+	}, 60_000);
+
+	it("previews and writes the formatter's text, which the fix command leaves alone", async () => {
+		put("format.ts", 'process.stdout.write((await Bun.stdin.text()) + "\\n");\n');
+		put("spoil.ts", 'for (const file of process.argv.slice(2)) await Bun.write(file, "spoiled\\n");\n');
+		put(
+			"lexicon.json",
+			JSON.stringify({ fixText: [process.execPath, "format.ts"], fix: [process.execPath, "spoil.ts"] }),
+		);
+		await files({ "a.ref": SOURCE, "b.ref": "export class Zebra\n" });
+		const shown = await preview(ARRANGED);
+		await dispatch("refactorArrange", { ...ARRANGED, expect: expectOf(shown) });
+
+		expect({ formatted: shown.formatted, a: read("a.ref"), b: read("b.ref") }).toEqual({
+			formatted: true,
+			a: "export class Pear\n\n",
+			b: "export class Cart\n\nexport class Apple\n\nexport class Zebra\n\n",
+		});
+	}, 60_000);
+
+	it("reorders a module's own declarations", async () => {
+		await files({ "a.ref": SOURCE });
+		const request = {
+			toModule: "a.ref",
+			placements: [{ symbolId: PEAR, anchor: { symbolId: CART, side: "before" } }],
+		};
+		const shown = await preview(request);
+		const outcome = await dispatch("refactorArrange", { ...request, expect: expectOf(shown) });
+
+		expect({ outcome, a: read("a.ref") }).toMatchObject({
+			outcome: { moved: true },
+			a: "export class Pear\n\nexport class Cart\n\nexport class Apple\n",
+		});
+	}, 60_000);
+
+	it("applies an arrangement that changes nothing as no step", async () => {
+		await files({ "a.ref": SOURCE });
+		const request = {
+			toModule: "a.ref",
+			placements: [{ symbolId: PEAR, anchor: { symbolId: APPLE, side: "after" } }],
+		};
+		const shown = await preview(request);
+		const status = transactions.status();
+		const outcome = await dispatch("refactorArrange", { ...request, expect: expectOf(shown) });
+
+		expect({ files: shown.files, outcome, a: read("a.ref"), status: transactions.status() }).toMatchObject({
+			files: [],
+			outcome: { moved: true },
+			a: SOURCE,
+			status,
+		});
+	}, 60_000);
+
+	it("refuses a declaration placed twice, members of two modules, and an anchor placed later", async () => {
+		await files({ "a.ref": SOURCE, "b.ref": "export class Zebra\n", "c.ref": "export class Kiwi\n" });
+		const answers: boolean[] = [];
+		for (const placements of [
+			[{ symbolId: CART }, { symbolId: CART }],
+			[{ symbolId: CART }, { symbolId: KIWI }],
+			[{ symbolId: CART, anchor: { symbolId: APPLE, side: "after" } }, { symbolId: APPLE }],
+		]) {
+			const answer = (await dispatch("previewArrange", {
+				toModule: "b.ref",
+				placements,
+			})) as ResponseOf<"previewArrange">;
+			answers.push(answer.ok);
+		}
+
+		expect(answers).toEqual([false, false, false]);
+	}, 60_000);
+
+	it("refuses edits that leave a member declared where it was", async () => {
+		await files({ "a.ref": SOURCE, "b.ref": "export class Zebra\n" });
+		const probe = service.probe;
+		const real = probe.arrangeEdits;
+		// The source loses only its first member.
+		probe.arrangeEdits = (module: string, request: ArrangeEditsRequest) =>
+			module === "a.ref"
+				? Promise.resolve({
+						status: "ready" as const,
+						edits: request.members
+							.slice(0, 1)
+							.map((member) => ({ range: member.removal as Range, newText: "" })),
+						blocked: [],
+					})
+				: real(module, request);
+		const answer = (await dispatch("previewArrange", ARRANGED)) as ResponseOf<"previewArrange">;
+		probe.arrangeEdits = real;
+
+		expect({ ok: answer.ok, a: read("a.ref") }).toEqual({ ok: false, a: SOURCE });
 	}, 60_000);
 });

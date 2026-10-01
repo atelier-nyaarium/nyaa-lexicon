@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readYaml, readYamlLayout } from "@nyaa-lexicon/formats/yaml";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	coordinatesOf,
 	defined,
@@ -119,6 +120,10 @@ export class YamlProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("YAML move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("YAML arrange edits are not implemented");
 	}
 }
 

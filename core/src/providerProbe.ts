@@ -3,6 +3,7 @@
 // Candidate parsing uses `probeFile`.
 
 import type {
+	ArrangeEditsRequest,
 	FileFacts,
 	MoveEditsRequest,
 	MoveEditsResponse,
@@ -31,6 +32,7 @@ export interface ProviderProbe {
 	/** Stateful stores isolate rename and move edits. */
 	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
 	moveEdits(module: string, request: MoveEditsRequest): Promise<MoveEditsResponse>;
+	arrangeEdits(module: string, request: ArrangeEditsRequest): Promise<MoveEditsResponse>;
 }
 
 ////////////////////////////////
@@ -59,6 +61,7 @@ export function liveProbe(supervisor: ProviderPort): ProviderProbe {
 		renameEdits: (module, request) => supervisor.ask(module, "renameEdits", request),
 
 		moveEdits: (module, request) => supervisor.ask(module, "moveEdits", request),
+		arrangeEdits: (module, request) => supervisor.ask(module, "arrangeEdits", request),
 
 		async parseCandidate(module, text) {
 			try {

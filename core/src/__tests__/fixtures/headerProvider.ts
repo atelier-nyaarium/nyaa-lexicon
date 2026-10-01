@@ -47,6 +47,7 @@ const handlers: ProviderHandlers = {
 	typeOf: () => notImplementedType("fixture"),
 	renameEdits: () => ({ status: "refused", reason: "NotImplemented", detail: "fixture" }),
 	moveEdits: () => notImplementedMove("fixture"),
+	arrangeEdits: () => notImplementedMove("fixture"),
 	shutdown: () => ({}),
 };
 

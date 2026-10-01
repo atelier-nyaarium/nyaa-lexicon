@@ -518,6 +518,28 @@ reports it.
 `MoveBlockedReason` and `MoveRefusal` are separate enums from rename's despite five shared
 spellings, so neither contract needs the other's agreement to gain a member.
 
+## Arrange
+
+`arrangeEdits` places declarations from one source module, or the target's own, in the target as
+one plan. `protocol/src/move.ts` holds the schemas. The answer is a `MoveEditsResponse`. The core
+sends one request per module:
+
+- The target: `members` in landing order. One arriving from the source carries `insertion`; one of
+  the target's own carries `removal` and `insertion`. `importSites` name members the target
+  imported, now its own. `dependencies` cover every name the arriving bodies use; one member's use
+  of another is `insideClosure`.
+- The source: members carry `removal`. `dependencies` name members the code staying behind still
+  uses, and one import from the target names them all.
+- Any other module: members carry neither. `importSites`, each tagged with its member's
+  `symbolId`, move to the target. A statement naming several members is rewritten once.
+
+A removal is the declaration's range, widened to whole lines and blank separators when the declaration
+owns its lines. Insertion texts arrive framed. Insertions sharing a position land as one edit, in
+member order, since `applyEdits` refuses two insertions at one point. `exported` and `sites` mean what
+they mean on a move.
+
+A provider without arrangement support refuses `NotImplemented`.
+
 ## Transport
 
 `vscode-jsonrpc` over stdio. It solves the partial-read problem a pipe creates and gives request

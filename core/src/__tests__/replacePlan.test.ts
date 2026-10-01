@@ -116,6 +116,7 @@ function plannerFor(world: World): RefactorPlanner {
 		parseCandidate: async (_module, candidate) => world.parse(candidate),
 		renameEdits: () => Promise.reject(new Error("not asked")),
 		moveEdits: () => Promise.reject(new Error("not asked")),
+		arrangeEdits: () => Promise.reject(new Error("not asked")),
 	};
 
 	const source = {

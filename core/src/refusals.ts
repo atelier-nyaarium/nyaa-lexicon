@@ -639,6 +639,36 @@ export function moveTogetherSplit(name: string, module: string, from: string): R
 	return mint(`${name} is in ${module}, not ${from}. Only declarations from one module move together`);
 }
 
+export function arrangeNeedsTopLevel(name: string): Refusal {
+	return mint(`${name} sits inside another declaration. An arrangement places top-level declarations only`);
+}
+
+export function placedTwice(name: string): Refusal {
+	return mint(`${name} is placed twice. Place each declaration once`);
+}
+
+export function anchorNotPlaced(anchor: string, name: string, module: string): Refusal {
+	return mint(
+		`${name}'s anchor ${anchor} has no place yet. Anchor on a declaration that stays in ${module}, or on one placed earlier`,
+	);
+}
+
+export function alreadyDeclaredIn(name: string, module: string): Refusal {
+	return mint(`${module} already declares ${name}. Rename one of them first`);
+}
+
+export function arrangeMisplaced(name: string, module: string): Refusal {
+	return mint(`the provider's edits leave ${name} misplaced in ${module}. Move it on its own, or hand-edit`);
+}
+
+export function arrangeNotAsPreviewed(module: string): Refusal {
+	return mint(`${module} would not be written as previewed. Preview the arrangement again`);
+}
+
+export function writtenNotAsPlanned(module: string): Refusal {
+	return mint(`${module} on disk differs from what the step wrote, so the step was undone`);
+}
+
 /** The world moved between planning and the gate, so the plan describes text that is gone. */
 export function changedWhilePlanned(module: string, kind: string): Refusal {
 	return mint(`${module} changed while the ${kind} was planned. Re-index it and plan again`);

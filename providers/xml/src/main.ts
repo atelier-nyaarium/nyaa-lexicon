@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readXml, type XmlFacts } from "@nyaa-lexicon/formats/xml";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	coordinatesOf,
 	defined,
@@ -117,6 +118,10 @@ export class XmlProvider {
 	}
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("XML move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("XML arrange edits are not implemented");
 	}
 }
 

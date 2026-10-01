@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	defined,
 	discoverByWalk,
@@ -364,6 +365,10 @@ export class CsharpProvider extends CsharpBinder {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("C# move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("C# arrange edits are not implemented");
 	}
 
 	private typeForMetadata(facts: IndexedFacts, meta: DeclarationMeta): TypeInfo {

@@ -36,6 +36,7 @@ export function harness() {
 		typeOf: handlers.typeOf,
 		renameEdits: handlers.renameEdits,
 		moveEdits: handlers.moveEdits,
+		arrangeEdits: handlers.arrangeEdits,
 		forgetModule: (params: { module: string }) => wire.forgetModule?.(params),
 		programStats: () => {
 			const analyzer = provider.store.project.analyzer;

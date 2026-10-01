@@ -1,12 +1,6 @@
 // Repointing the import statements that name a moved symbol.
 
-import type {
-	MoveBlockedSite,
-	MoveEditsRequest,
-	MoveImportSite,
-	TextCoordinates,
-	TextEdit,
-} from "@nyaa-lexicon/protocol";
+import type { MoveBlockedSite, MoveImportSite, OffsetRange, TextCoordinates, TextEdit } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { sameModulePath } from "./move-dependencies.js";
 import { append, blockedSite, type PlannedImport, quoted, type WorkMeter } from "./move-imports.js";
@@ -25,6 +19,14 @@ type StatementBinding =
 	| { form: "default"; node: ts.Identifier }
 	| { form: "namespace"; node: ts.NamespaceImport }
 	| { form: "named"; node: ts.ImportSpecifier | ts.ExportSpecifier };
+
+/** Where the moved names go, and the name each site imports. */
+export interface SiteMove<S extends MoveImportSite = MoveImportSite> {
+	/** The module holding the sites. */
+	module: string;
+	toModule: string;
+	nameOf(site: S): string;
+}
 
 /** What repointing the moved names of one statement does to it. */
 export interface SiteRewrite {
@@ -84,18 +86,18 @@ export function locateImportSite(
  * Moves the statement's moved names to their new home. Names that stay keep the statement; the
  * moved ones leave it in their own form, and a re-export of them follows it.
  */
-export function rewriteImportSites(
+export function rewriteImportSites<S extends MoveImportSite>(
 	source: ts.SourceFile,
 	coordinates: TextCoordinates,
 	statement: ImportSiteNode,
-	sites: readonly MoveImportSite[],
-	request: MoveEditsRequest,
+	sites: readonly S[],
+	move: SiteMove<S>,
 	renderSpecifier: SpecifierRenderer,
 	meter?: WorkMeter,
 ): SiteRewrite {
 	const node = statement.node as ts.ImportDeclaration | ts.ExportDeclaration;
 	// The target declares the moved names itself, so its import of them goes rather than pointing home.
-	const home = sameModulePath(request.module, request.toModule);
+	const home = sameModulePath(move.module, move.toModule);
 	if (home && ts.isExportDeclaration(node)) {
 		return {
 			blocked: sites.map((site) =>
@@ -104,19 +106,17 @@ export function rewriteImportSites(
 			planned: [],
 		};
 	}
-	const rendered = home
-		? { specifier: "" }
-		: renderSpecifier(request.module, request.toModule, statement.literal.text);
+	const rendered = home ? { specifier: "" } : renderSpecifier(move.module, move.toModule, statement.literal.text);
 	if ("reason" in rendered) {
 		return { blocked: sites.map((site) => blockedSite(site.range, rendered.reason, rendered.detail)), planned: [] };
 	}
 	if (rendered.specifier === statement.literal.text) return { blocked: [], planned: [] };
 
 	const bound = statementBindings(node);
-	const named = bindingFinder(source, bound, request.name, meter);
+	const named = bindingFinder(source, bound, meter);
 	const moved = new Set<ts.Node>();
 	for (const site of sites) {
-		const match = named(site, coordinates.offsetsForRange(site.range)?.start ?? -1);
+		const match = named(site, coordinates.offsetsForRange(site.range)?.start ?? -1, move.nameOf(site));
 		if (match === undefined) {
 			return {
 				blocked: [blockedSite(site.range, "ParseError", "the range does not name the requested import")],
@@ -187,7 +187,7 @@ export function rewriteImportSites(
 export function orphanedImports(
 	source: ts.SourceFile,
 	coordinates: TextCoordinates,
-	removed: { start: number; end: number },
+	removed: readonly OffsetRange[],
 ): TextEdit[] {
 	const inside = new Set<string>();
 	const outside = new Set<string>();
@@ -195,7 +195,7 @@ export function orphanedImports(
 		if (ts.isImportDeclaration(node)) return;
 		if (ts.isIdentifier(node)) {
 			const at = node.getStart(source);
-			(removed.start <= at && at < removed.end ? inside : outside).add(node.text);
+			(removed.some((span) => span.start <= at && at < span.end) ? inside : outside).add(node.text);
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -258,9 +258,8 @@ function statementBindings(node: ts.ImportDeclaration | ts.ExportDeclaration): S
 function bindingFinder(
 	source: ts.SourceFile,
 	bound: readonly StatementBinding[],
-	name: string,
 	meter?: WorkMeter,
-): (site: MoveImportSite, at: number) => StatementBinding | undefined {
+): (site: MoveImportSite, at: number, name: string) => StatementBinding | undefined {
 	const byName = new Map<string, StatementBinding[]>();
 	for (const binding of bound) {
 		if (binding.form === "default") append(byName, `default\0${binding.node.text}`, binding);
@@ -269,7 +268,7 @@ function bindingFinder(
 		append(byName, `named\0${imported}`, binding);
 		append(byName, `named\0${imported}\0${binding.node.name.text}`, binding);
 	}
-	return (site, at) => {
+	return (site, at, name) => {
 		let low = 0;
 		let high = bound.length - 1;
 		while (low <= high) {

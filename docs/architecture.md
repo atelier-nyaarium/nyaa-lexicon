@@ -518,6 +518,10 @@ The command must write only the files it is given; the journal does not track ot
 it must be an executable, not a `.cmd` shim, since nothing runs through a shell. An editor save
 that lands while the command runs becomes part of the step's output.
 
+`fixText` formats text before it is written: an argument list run with no shell from the workspace
+root, `{module}` in an argument replaced by `./path`, the text on stdin and the result on stdout,
+under the same bounds. An arrangement's preview runs it, so the step writes the previewed bytes.
+
 ### Revisions and drift
 
 An open transaction has a durable revision. Changes to step, image, issue, rebind, recovery-intent

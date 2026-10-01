@@ -126,6 +126,7 @@ function plannerFor(world: World): RefactorPlanner {
 			}
 			return { status: "ready", edits: [], blocked: [] };
 		},
+		arrangeEdits: () => Promise.reject(new Error("not asked")),
 	};
 
 	const imports = { importSitesFor: async () => [], importSitesForMove: () => [] } as unknown as ImportResolver;
@@ -296,6 +297,7 @@ describe("moving a declaration into a module that imports it", () => {
 				];
 				return { status: "ready", edits, blocked: [] };
 			},
+			arrangeEdits: () => Promise.reject(new Error("not asked")),
 		};
 		const imports = {
 			importSitesForMove: (module: string) => (module === TARGET ? [site] : []),
@@ -509,6 +511,7 @@ function multiPlannerFor(world: ImportWorld, resolve: ResolveSpecifier): Refacto
 			}
 			return { status: "ready", edits: [], blocked: [] };
 		},
+		arrangeEdits: () => Promise.reject(new Error("not asked")),
 	};
 
 	const imports = new ImportResolver(multiStoreFor(world), resolve);

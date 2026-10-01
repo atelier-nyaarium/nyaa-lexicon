@@ -1,6 +1,7 @@
 import path from "node:path";
 import { type HtmlFacts, readHtml } from "@nyaa-lexicon/formats/html";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	coordinatesOf,
 	defined,
@@ -101,6 +102,10 @@ export class HtmlProvider {
 	}
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("HTML move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("HTML arrange edits are not implemented");
 	}
 }
 

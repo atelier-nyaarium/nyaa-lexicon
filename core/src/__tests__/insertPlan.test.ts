@@ -105,6 +105,7 @@ function plannerFor(world: World) {
 		parseCandidate: async (_module, candidate) => world.parse?.(candidate) ?? { parsed: true, facts: facts([]) },
 		renameEdits: () => Promise.reject(new Error("not asked")),
 		moveEdits: () => Promise.reject(new Error("not asked")),
+		arrangeEdits: () => Promise.reject(new Error("not asked")),
 	};
 
 	const source = { writable: (module: string) => ({ text: module === MODULE ? world.text : null }) };

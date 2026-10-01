@@ -1,6 +1,7 @@
 // The GDScript provider. It reports project structure, declarations, and reference candidates.
 
 import {
+	type ArrangeEditsRequest,
 	type Declaration,
 	defined,
 	handlersFor,
@@ -15,6 +16,7 @@ import {
 	serveProvider,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
+import { makeArrangeEdits } from "./arrange.js";
 import { GDScriptBindingIndex } from "./binding.js";
 import { LANGUAGE } from "./extract.js";
 import { createGDScriptStore, type GDScriptProject, type GDScriptValue } from "./module.js";
@@ -216,6 +218,10 @@ export class GDScriptProvider {
 
 	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
 		return makeMoveEdits(params, this.store);
+	}
+
+	arrangeEdits(params: ArrangeEditsRequest): MoveEditsResponse {
+		return makeArrangeEdits(params, this.store);
 	}
 }
 

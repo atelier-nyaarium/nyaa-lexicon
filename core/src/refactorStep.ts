@@ -2,7 +2,7 @@
 //
 // Plans carry whole texts and base hashes; the executor journals then writes.
 
-import { type CommittedFile, defined, type StepBase } from "@nyaa-lexicon/protocol";
+import { type CommittedFile, defined, hashContent, type StepBase } from "@nyaa-lexicon/protocol";
 import {
 	changedWhilePlanned,
 	noTransactionOpen,
@@ -11,6 +11,7 @@ import {
 	stepAbandoned,
 	stepNotWritten,
 	stepRefused,
+	writtenNotAsPlanned,
 } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import type { RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
@@ -41,6 +42,8 @@ export interface PlannedStep {
 	modules: string[];
 	/** Ordered writes require their disk bases. */
 	writes: PlannedWrite[];
+	/** Written as they are: no fix runs on them, and each is read back before the step is written. */
+	exact?: boolean;
 	planRecord?: unknown;
 	/** Null while planned facts still hold. */
 	stale: () => Refusal | null;
@@ -182,6 +185,12 @@ async function runStep<Outcome>(deps: StepDeps, shape: StepShape<Outcome>): Prom
 					}
 					throw new StepRefusal(changedWhilePlanned(write.module, nounOf(shape.kind)));
 				}
+				if (planned.exact === true) {
+					const differs = planned.writes.find(
+						(write) => service.currentHashOf(write.module) !== hashContent(write.text),
+					);
+					if (differs !== undefined) throw new StepRefusal(writtenNotAsPlanned(differs.module));
+				}
 			} catch (error) {
 				// Release unwritten modules, or Revert erases later edits to them.
 				for (const module of planned.modules) {
@@ -210,7 +219,7 @@ async function runStep<Outcome>(deps: StepDeps, shape: StepShape<Outcome>): Prom
 			}
 
 			// The workspace's fix runs inside the step, so its output is the step's own after-image.
-			const fixed = await service.fixWritten(written);
+			const fixed = planned.exact === true ? { ran: false, failed: null } : await service.fixWritten(written);
 			const lost = fixed.ran ? written.filter((module) => !transactions.restampAfter(begun.stepNo, module)) : [];
 			transactions.completeStep(begun.stepNo, "written");
 

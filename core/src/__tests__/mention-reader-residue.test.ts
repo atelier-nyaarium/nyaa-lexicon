@@ -13,6 +13,8 @@ const RAW = ["referencesTo", "referencesIn", "referencesFrom"];
 const MENTION_READERS: Record<string, number> = {
 	// Rewrites every spelling.
 	"core/src/refactorPlanner.ts": 10,
+	// Re-points every importer and qualified use.
+	"core/src/arrangePlanner.ts": 2,
 	// Mention is citable evidence.
 	"core/src/knowledge.ts": 1,
 	// Stamps the row's own module.

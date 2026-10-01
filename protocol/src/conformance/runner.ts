@@ -10,6 +10,7 @@ import type { z } from "zod";
 import { applyEdits } from "../edits.js";
 import type { ModuleAdmission } from "../methods.js";
 import { METHOD_SCHEMAS, type ProviderMethod, type ProviderNotification, type ProviderTiers } from "../methods.js";
+import type { ArrangeEditsRequest } from "../move.js";
 import { composeSymbolId, moduleOf } from "../symbolId.js";
 import { PROTOCOL_VERSION } from "../version.js";
 import { checkFacts, checkImport, checkType } from "./check.js";
@@ -387,6 +388,57 @@ async function checkMoveIsAnswered(session: ProviderSession): Promise<CaseResult
 
 	return {
 		caseId: "moveEdits-is-answered",
+		tier: "protocol",
+		outcome: problems.length === 0 ? "passed" : "failed",
+		problems,
+	};
+}
+
+/**
+ * Every provider answers arrangeEdits, and one that cannot arrange refuses rather than agreeing.
+ *
+ * Ungated by tier, as moveEdits is. The probe asks for an insertion, so ready with nothing to do
+ * would have the core report a member landed that never did.
+ */
+async function checkArrangeIsAnswered(session: ProviderSession): Promise<CaseResult> {
+	const problems: string[] = [];
+
+	try {
+		const request: ArrangeEditsRequest = {
+			module: "src/probe-target",
+			text: "",
+			exists: false,
+			fromModule: "src/probe-source",
+			toModule: "src/probe-target",
+			members: [
+				{
+					symbolId: composeSymbolId({
+						language: "probe",
+						module: "src/probe-source",
+						descriptors: [{ kind: "term", name: "probe" }],
+					}),
+					name: "probe",
+					insertion: { text: "probe\n", position: { line: 0, character: 0 } },
+					sites: [],
+				},
+			],
+			importSites: [],
+			dependencies: [],
+		};
+		const answer = await session.call("arrangeEdits", request);
+
+		if (answer.status === "ready" && answer.edits.length === 0 && answer.blocked.length === 0) {
+			problems.push(
+				"arrangeEdits answered ready with nothing to do, which reads as an arrangement that succeeded",
+			);
+		}
+	} catch (error) {
+		if (error instanceof Stall) throw error;
+		problems.push(error instanceof Error ? error.message : String(error));
+	}
+
+	return {
+		caseId: "arrangeEdits-is-answered",
 		tier: "protocol",
 		outcome: problems.length === 0 ? "passed" : "failed",
 		problems,
@@ -1305,6 +1357,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 		// project model, and probing it cold would test a state nothing else puts it in.
 		try {
 			results.push(await checkMoveIsAnswered(session));
+			results.push(await checkArrangeIsAnswered(session));
 			results.push(await checkBadModuleIsRefused(session));
 		} catch (error) {
 			if (!(error instanceof Stall)) throw error;

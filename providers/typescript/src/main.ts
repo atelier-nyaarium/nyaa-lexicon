@@ -2,6 +2,7 @@
 
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	discoverByWalk,
 	handlersFor,
 	type ImportResolution,
@@ -33,10 +34,12 @@ import {
 	type LoadedProject,
 	landingOf,
 	loadProject,
+	type ModuleResolver,
 	projectFingerprint,
 	readableSystem,
 	renderSpecifier,
 	resolveSpecifier,
+	type SpecifierRenderer,
 	toModule,
 } from "./project.js";
 import { extractSurfaceFile } from "./surface.js";
@@ -395,21 +398,14 @@ export class TypeScriptProvider {
 	}
 
 	moveEdits(params: MoveEditsRequest): MoveEditsResponse {
-		if (!isValidTargetModule(this.store.root, params.toModule)) {
-			return {
-				status: "refused",
-				reason: "InvalidTarget",
-				detail: `the target is not a TypeScript module: ${params.toModule}`,
-			};
-		}
-		const setup = this.store.project.loaded;
-		const surface = (module: string) => this.runtimeSurface(module);
-		return this.analyzed().moveEdits(
-			params,
-			(fromModule, targetModule, preferredSpecifier) =>
-				renderSpecifier(this.store.root, fromModule, targetModule, setup, preferredSpecifier, surface),
-			(fromModule, specifier) =>
-				landingOf(resolveSpecifier(this.store.root, fromModule, specifier, setup, [], surface)),
+		return this.specifierWork(params.toModule, (render, resolve) =>
+			this.analyzed().moveEdits(params, render, resolve),
+		);
+	}
+
+	arrangeEdits(params: ArrangeEditsRequest): MoveEditsResponse {
+		return this.specifierWork(params.toModule, (render, resolve) =>
+			this.analyzed().arrangeEdits(params, render, resolve),
 		);
 	}
 
@@ -422,6 +418,28 @@ export class TypeScriptProvider {
 		project?.analyzer?.dispose();
 		if (project !== undefined) project.analyzer = undefined;
 		return {};
+	}
+
+	/** Refuses a target that is no TypeScript module, else runs `work` with this project's specifier lookups. */
+	private specifierWork(
+		toModule: string,
+		work: (render: SpecifierRenderer, resolve: ModuleResolver) => MoveEditsResponse,
+	): MoveEditsResponse {
+		if (!isValidTargetModule(this.store.root, toModule)) {
+			return {
+				status: "refused",
+				reason: "InvalidTarget",
+				detail: `the target is not a TypeScript module: ${toModule}`,
+			};
+		}
+		const setup = this.store.project.loaded;
+		const surface = (module: string) => this.runtimeSurface(module);
+		return work(
+			(fromModule, targetModule, preferredSpecifier) =>
+				renderSpecifier(this.store.root, fromModule, targetModule, setup, preferredSpecifier, surface),
+			(fromModule, specifier) =>
+				landingOf(resolveSpecifier(this.store.root, fromModule, specifier, setup, [], surface)),
+		);
 	}
 
 	private runtimeSurface(module: string): boolean {
@@ -462,7 +480,7 @@ export function warmingHandlers(provider: TypeScriptProvider): ReturnType<typeof
 		return model;
 	};
 	const reads = handlers as unknown as Record<string, (params: { depth?: IndexDepth }) => unknown>;
-	for (const method of ["parseFile", "probeFile", "bind", "typeOf", "renameEdits", "moveEdits"]) {
+	for (const method of ["parseFile", "probeFile", "bind", "typeOf", "renameEdits", "moveEdits", "arrangeEdits"]) {
 		const handle = reads[method] as (params: { depth?: IndexDepth }) => unknown;
 		reads[method] = (params) => {
 			// An outline reads no program.

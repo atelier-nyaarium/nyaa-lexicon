@@ -41,6 +41,18 @@ function kindOf(statement: StoredImport): ImportKind {
 	return statement.kind ?? (statement.name === undefined ? "namespace" : "named");
 }
 
+/** A statement as a move or an arrangement re-points it. */
+function siteOf(statement: StoredImport, range: Range): MoveImportSite {
+	return {
+		range,
+		specifier: statement.specifier,
+		importKind: kindOf(statement),
+		...(statement.typeOnly === true ? { typeOnly: true } : {}),
+		...defined({ importedName: statement.name, localName: statement.local }),
+		reExport: statement.reExport,
+	};
+}
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -69,17 +81,28 @@ export class ImportResolver {
 		const sites: MoveImportSite[] = [];
 		for (const statement of reads.importsIn(module)) {
 			if (statement.name !== name && statement.local !== name) continue;
-			if (statement.range === undefined) continue;
-			sites.push({
-				range: statement.range,
-				specifier: statement.specifier,
-				importKind: kindOf(statement),
-				...(statement.typeOnly === true ? { typeOnly: true } : {}),
-				...defined({ importedName: statement.name, localName: statement.local }),
-				reExport: statement.reExport,
-			});
+			if (statement.range !== undefined) sites.push(siteOf(statement, statement.range));
 		}
 		return sites;
+	}
+
+	/**
+	 * Every import or re-export naming `name` whose specifier resolves to its declaring module, with
+	 * the module holding it. A barrel's re-export counts; a same-named import from elsewhere does not.
+	 */
+	async importSitesResolvingTo(
+		declaringModule: string,
+		name: string,
+		reads: ImportReads,
+	): Promise<Array<{ module: string; site: MoveImportSite }>> {
+		const resolve = this.resolutionCache();
+		const found: Array<{ module: string; site: MoveImportSite }> = [];
+		for (const statement of reads.importsNamed(name)) {
+			if (statement.range === undefined || statement.module === declaringModule) continue;
+			if ((await resolve(statement.module, statement.specifier)) !== declaringModule) continue;
+			found.push({ module: statement.module, site: siteOf(statement, statement.range) });
+		}
+		return found;
 	}
 
 	/** The import statement that brought a name into a module, when one did. Stamped through `reads`

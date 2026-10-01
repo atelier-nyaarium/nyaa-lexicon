@@ -3,6 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { IncludeSearch } from "@nyaa-lexicon/formats/compile-commands";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
@@ -15,6 +16,7 @@ import {
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -736,6 +738,10 @@ export class CProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "C move edits are not implemented" };
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("C arrange edits are not implemented");
 	}
 }
 

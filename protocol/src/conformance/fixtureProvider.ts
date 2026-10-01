@@ -4,9 +4,16 @@
 import { coordinatesOf } from "../coordinates.js";
 import { defined } from "../defined.js";
 import type { TextEdit } from "../edits.js";
-import type { MoveBlockedSite, MoveEditsRequest, MoveEditsResponse } from "../move.js";
+import type {
+	ArrangeEditsRequest,
+	ArrangeMember,
+	MoveBlockedSite,
+	MoveDependency,
+	MoveEditsRequest,
+	MoveEditsResponse,
+} from "../move.js";
 import type { BlockedSite, RenameEditsRequest, RenameEditsResponse } from "../rename.js";
-import { type ProviderHandlers, runProviderOnStdio } from "../serve.js";
+import { notImplementedMove, type ProviderHandlers, runProviderOnStdio } from "../serve.js";
 import { PROTOCOL_VERSION } from "../version.js";
 import {
 	extractDeclarations,
@@ -52,6 +59,15 @@ export function makeFixtureRenameEdits(request: RenameEditsRequest): RenameEdits
 	return { status: "ready", edits, blocked };
 }
 
+/** No import is written, so each blocks. */
+function dependencyBlocks(dependencies: readonly MoveDependency[]): MoveBlockedSite[] {
+	return dependencies.map((dependency) => ({
+		...defined({ range: dependency.range }),
+		reason: "NotImplemented" as const,
+		detail: `the fixture provider writes no import for ${dependency.name}`,
+	}));
+}
+
 /** The source loses its removal range, the target gains the insertion; a dependency is blocked, since no import is written. */
 export function makeFixtureMoveEdits(request: MoveEditsRequest): MoveEditsResponse {
 	const { removal, insertion } = request.role;
@@ -66,11 +82,7 @@ export function makeFixtureMoveEdits(request: MoveEditsRequest): MoveEditsRespon
 		return { status: "refused", reason: "TargetCollision" };
 	}
 
-	const blocked: MoveBlockedSite[] = request.dependencies.map((dependency) => ({
-		...defined({ range: dependency.range }),
-		reason: "NotImplemented" as const,
-		detail: `the fixture provider writes no import for ${dependency.name}`,
-	}));
+	const blocked = dependencyBlocks(request.dependencies);
 	const edits: TextEdit[] = [];
 	if (removal !== undefined) edits.push({ range: removal, newText: "" });
 	if (insertion !== undefined) {
@@ -89,6 +101,92 @@ export function makeFixtureMoveEdits(request: MoveEditsRequest): MoveEditsRespon
 	return { status: "ready", edits, blocked };
 }
 
+/** Each member's import sites repointed as one moved symbol's. */
+function repointArrangeImports(request: ArrangeEditsRequest): MoveEditsResponse {
+	if (request.members.length === 0) return notImplementedMove("the fixture provider arranges no members");
+	const edits: TextEdit[] = [];
+	const blocked: MoveBlockedSite[] = [];
+	for (const member of request.members) {
+		const answer = makeReferenceMoveEdits({
+			module: request.module,
+			text: request.text,
+			exists: request.exists,
+			symbolId: member.symbolId,
+			name: member.name,
+			fromModule: request.fromModule,
+			toModule: request.toModule,
+			role: {},
+			importSites: request.importSites.filter((site) => site.symbolId === member.symbolId),
+			dependencies: request.dependencies,
+			sites: member.sites,
+		});
+		if (answer.status === "refused") return answer;
+		edits.push(...answer.edits);
+		blocked.push(...answer.blocked);
+	}
+	return { status: "ready", edits, blocked };
+}
+
+/**
+ * Removals become empty edits, and insertions sharing a position one edit in member order. A module
+ * whose members carry neither repoints its imports.
+ */
+export function makeFixtureArrangeEdits(request: ArrangeEditsRequest): MoveEditsResponse {
+	const moving = (member: ArrangeMember) => member.removal !== undefined || member.insertion !== undefined;
+	if (!request.members.some(moving)) return repointArrangeImports(request);
+	if (request.fromModule !== request.toModule && request.exists) {
+		const held = new Set(extractDeclarations(request.module, request.text).map((declaration) => declaration.name));
+		// Incoming members carry no removal.
+		const collides = request.members.find(
+			(member) => member.insertion !== undefined && member.removal === undefined && held.has(member.name),
+		);
+		if (collides !== undefined) {
+			return {
+				status: "refused",
+				reason: "TargetCollision",
+				detail: `${request.module} declares ${collides.name}`,
+			};
+		}
+	}
+
+	const coordinates = coordinatesOf(request.text);
+	const edits: TextEdit[] = [];
+	const groups = new Map<number, TextEdit>();
+	for (const member of request.members) {
+		if (member.removal !== undefined) edits.push({ range: member.removal, newText: "" });
+		// Toy declarations are always exported.
+		const insertion = member.insertion;
+		if (insertion === undefined) continue;
+		const offset = coordinates.offsetAt(insertion.position);
+		const at = offset === undefined ? undefined : coordinates.rangeAt(offset, offset);
+		if (offset === undefined || at === undefined) {
+			return { status: "refused", reason: "ParseError", detail: "the insertion point is outside the module" };
+		}
+		const group = groups.get(offset);
+		if (group === undefined) groups.set(offset, { range: at, newText: insertion.text });
+		else group.newText += insertion.text;
+	}
+	edits.push(...groups.values());
+
+	const blocked: MoveBlockedSite[] = [
+		// Travels with the members.
+		...dependencyBlocks(request.dependencies.filter((dependency) => dependency.origin.kind !== "insideClosure")),
+		...request.importSites.map((site) => ({
+			range: site.range,
+			reason: "NotImplemented" as const,
+			detail: `the fixture provider removes no import from ${site.specifier}`,
+		})),
+		...request.members.flatMap((member) =>
+			member.sites.map((range) => ({
+				range,
+				reason: "NotImplemented" as const,
+				detail: `the fixture provider rewrites no qualified use of ${member.name}`,
+			})),
+		),
+	];
+	return { status: "ready", edits, blocked };
+}
+
 ////////////////////////////////
 //  Main
 
@@ -104,6 +202,7 @@ export const fixtureHandlers: ProviderHandlers = {
 	}),
 	renameEdits: makeFixtureRenameEdits,
 	moveEdits: makeFixtureMoveEdits,
+	arrangeEdits: makeFixtureArrangeEdits,
 };
 
 if (import.meta.main) runProviderOnStdio(fixtureHandlers);

@@ -1774,6 +1774,41 @@ export const MoveOutcomeSchema = z
 
 export type MoveOutcome = z.infer<typeof MoveOutcomeSchema>;
 
+/** One file an arrangement writes, and the text it will write. */
+export const ArrangeFileSchema = z
+	.object({
+		module: z.string(),
+		/** The hash planned over; null when created. */
+		base: Hash32.nullable(),
+		created: z.boolean(),
+		text: z.string(),
+		/** The text's hash, which `refactorArrange` expects back. */
+		result: Hash32,
+	})
+	.meta({ id: "ArrangeFile" });
+
+export type ArrangeFile = z.infer<typeof ArrangeFileSchema>;
+
+export const ArrangePreviewSchema = z
+	.discriminatedUnion("ok", [
+		z.object({
+			ok: z.literal(true),
+			files: z.array(ArrangeFileSchema),
+			issues: z.array(RefactorIssueSchema),
+			/** Every file went through `fixText` cleanly. */
+			formatted: z.boolean(),
+		}),
+		z.object({
+			ok: z.literal(false),
+			issues: z.array(RefactorIssueSchema),
+			blockers: z.array(z.object({ module: z.string().optional(), reason: z.string() })),
+			reason: z.string(),
+		}),
+	])
+	.meta({ id: "ArrangePreview" });
+
+export type ArrangePreview = z.infer<typeof ArrangePreviewSchema>;
+
 /** What a rename did, with what it carried across and what it could not promise. */
 export const RenameStepOutcomeSchema = z
 	.object({

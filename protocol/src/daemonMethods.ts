@@ -6,6 +6,7 @@
 import { z } from "zod";
 import {
 	AdmittedModuleSchema,
+	ArrangePreviewSchema,
 	CacheStatsSchema,
 	CallHierarchySchema,
 	CoChangedWithResultSchema,
@@ -159,6 +160,26 @@ const RenameCommitted = Rename.extend({ bases: Bases, stepId: StepId.optional() 
 const MoveCommitted = MoveOne.extend({ bases: Bases, stepId: StepId.optional() }).meta({
 	id: "MoveCommittedRequest",
 });
+const ArrangePlacement = z.object({
+	symbolId: z.string().min(1),
+	/** A target declaration that stays, or an earlier placement; absent means the target's end. */
+	anchor: MoveAnchorSchema.optional(),
+});
+const Arrange = z
+	.object({ toModule: ModulePath, placements: z.array(ArrangePlacement).min(1).max(100) })
+	.meta({ id: "ArrangeRequest" });
+const ArrangeApply = Arrange.extend({
+	/** Every file of the preview: the hash it was planned over, and its text's hash. */
+	expect: z
+		.array(
+			z.object({
+				module: ModulePath,
+				base: StepBaseSchema.shape.contentHash,
+				result: StepBaseSchema.shape.contentHash.unwrap(),
+			}),
+		)
+		.max(4096),
+}).meta({ id: "ArrangeApplyRequest" });
 const ByStep = z.object({ stepId: StepId }).meta({ id: "ByStepRequest" });
 const Literals = z
 	.object({
@@ -780,6 +801,14 @@ export const DAEMON_METHODS = {
 	planMove: { request: Move, response: MovePlanSchema, lifecycle: "query", mutates: false, budget: "refactor" },
 	/** Move preview. See `docs/daemon-protocol.md` `previewMove`. */
 	previewMove: { request: Move, response: MovePreviewSchema, lifecycle: "query", mutates: false, budget: "refactor" },
+	/** Arrangement preview. See `docs/daemon-protocol.md` `previewArrange`. */
+	previewArrange: {
+		request: Arrange,
+		response: ArrangePreviewSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "refactor",
+	},
 	/** Insertion preview. See `docs/daemon-protocol.md` `previewInsert`. */
 	previewInsert: {
 		request: Insert,
@@ -921,6 +950,14 @@ export const DAEMON_METHODS = {
 	/** Move declarations and rewrite imports. */
 	refactorMove: {
 		request: MoveTogether,
+		response: MoveOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "refactor",
+	},
+	/** Writes a previewed arrangement as one step. See `docs/daemon-protocol.md` `refactorArrange`. */
+	refactorArrange: {
+		request: ArrangeApply,
 		response: MoveOutcomeSchema,
 		lifecycle: "query",
 		mutates: true,

@@ -258,6 +258,7 @@ export const referenceHandlers: ProviderHandlers = {
 		detail: "the reference provider does not rewrite text",
 	}),
 	moveEdits: makeReferenceMoveEdits,
+	arrangeEdits: () => notImplementedMove("the reference provider does not arrange declarations"),
 	shutdown: () => ({}),
 };
 

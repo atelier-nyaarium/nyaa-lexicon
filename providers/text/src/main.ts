@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readText } from "@nyaa-lexicon/formats/text";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	coordinatesOf,
 	defined,
@@ -109,6 +110,10 @@ export class TextProvider implements ProviderMethods {
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
+		return notImplementedMove("plain text has no symbols");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
 		return notImplementedMove("plain text has no symbols");
 	}
 }

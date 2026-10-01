@@ -5,11 +5,14 @@ import {
 	coordinatesOf,
 	MOVE_EDIT_CONFLICT,
 	type MoveBlockedSite,
+	type MoveDependency,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	type MoveImportSite,
 	normalizeModulePath,
+	type OffsetRange,
 	planEdits,
+	type Range,
 	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
@@ -46,8 +49,37 @@ import {
 	locateImportSite,
 	orphanedImports,
 	rewriteImportSites,
+	type SiteMove,
 } from "./move-sites.js";
 import type { ModuleResolver, SpecifierRenderer, SpecifierRenderResult } from "./project.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+/** One module as a move reads it: its imports, its quote, and cached specifier lookups. */
+export interface ModuleScope {
+	source: ts.SourceFile;
+	coordinates: TextCoordinates;
+	checker: ts.TypeChecker | undefined;
+	/** The module runs as an ECMAScript module. */
+	esm: boolean;
+	statements: ImportSiteNode[];
+	quote: Quote;
+	landingKey: LandingKey;
+	render: SpecifierRenderer;
+	meter: WorkMeter | undefined;
+}
+
+/** The import work in one module's part. */
+export interface ImportWork<S extends MoveImportSite> extends SiteMove<S> {
+	fromModule: string;
+	importSites: readonly S[];
+	/** Uses outside import statements, which block. */
+	sites: readonly Range[];
+	/** Spans leaving the module, whose names no longer bind. */
+	removed: readonly OffsetRange[];
+	dependencies: readonly MoveDependency[];
+}
 
 ////////////////////////////////
 //  Main
@@ -62,43 +94,24 @@ export function makeMoveEdits(
 	esm: boolean,
 	meter?: WorkMeter,
 ): MoveEditsResponse {
-	const coordinates = coordinatesOf(source.text);
 	const syntaxErrors = parseDiagnostics(source);
 	if (syntaxErrors.length > 0) {
 		return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
 	}
 
+	const scope = moduleScope(request.module, source, checker, renderSpecifier, resolveModule, esm, meter);
+	const { coordinates } = scope;
 	const blocked: MoveBlockedSite[] = [];
 	const edits: TextEdit[] = [];
 	const removed = request.role.removal === undefined ? undefined : coordinates.offsetsForRange(request.role.removal);
-	const bindings = moduleBindings(source, removed);
-	const importSites = source.statements
-		.map(importSiteNode)
-		.filter((site): site is ImportSiteNode => site !== undefined);
-	const quote: Quote = importSites[0]?.literal.getText(source).startsWith("'") === true ? "'" : '"';
-	const landings = new Map<string, string>();
-	const landingKey: LandingKey = (specifier) => {
-		let key = landings.get(specifier);
-		if (key === undefined) {
-			const landing = resolveModule(request.module, specifier);
-			key = landing === undefined ? `\0${specifier}` : landing;
-			landings.set(specifier, key);
-		}
-		return key;
-	};
 
-	// The target's own import of the moved symbol goes with the move, so it names nothing that collides.
-	const movedImport = (binding: ModuleBinding) =>
-		binding.specifier !== undefined &&
-		(binding.imported ?? request.name) === request.name &&
-		sameModulePath(landingKey(binding.specifier), request.fromModule);
 	// A reorder: the module keeps the moved name and every import it uses.
 	const reorder = sameModulePath(request.fromModule, request.toModule);
 	if (
 		!reorder &&
 		sameModulePath(request.module, request.toModule) &&
 		request.exists &&
-		declaresName(source, request.name, movedImport)
+		targetDeclares(scope, request.name, request.fromModule)
 	) {
 		return {
 			status: "refused",
@@ -106,6 +119,83 @@ export function makeMoveEdits(
 			detail: `the target already declares ${request.name}`,
 		};
 	}
+
+	if (request.role.removal !== undefined) {
+		const removal = removalOf(scope, request.role.removal, request.name);
+		if ("blocked" in removal) blocked.push(removal.blocked);
+		else {
+			edits.push(
+				{ range: request.role.removal, newText: "" },
+				...(reorder ? [] : orphanedImports(source, coordinates, [removal.removed])),
+			);
+		}
+	}
+
+	planImports(
+		scope,
+		{
+			module: request.module,
+			fromModule: request.fromModule,
+			toModule: request.toModule,
+			nameOf: () => request.name,
+			importSites: request.importSites,
+			sites: request.sites,
+			removed: removed === undefined ? [] : [removed],
+			dependencies: request.dependencies,
+		},
+		edits,
+		blocked,
+	);
+
+	if (request.role.insertion !== undefined) {
+		const { position, exported } = request.role.insertion;
+		const text =
+			exported === true ? exportedText(request.role.insertion.text, request.module) : request.role.insertion.text;
+		const offset = position === undefined ? source.text.length : coordinates.offsetAt(position);
+		const point = offset === undefined ? undefined : coordinates.positionAt(offset);
+		if (point === undefined) {
+			blocked.push(
+				blockedSite(
+					position === undefined ? undefined : { start: position, end: position },
+					"ParseError",
+					"the insertion position is outside the module",
+				),
+			);
+		} else {
+			const separate = position === undefined && needsBlankLine(source);
+			edits.push({ range: { start: point, end: point }, newText: separate ? `\n${text}` : text });
+		}
+	}
+
+	return validateEdits(coordinates, edits, blocked);
+}
+
+////////////////////////////////
+//  Module Work
+
+export function moduleScope(
+	module: string,
+	source: ts.SourceFile,
+	checker: ts.TypeChecker | undefined,
+	renderSpecifier: SpecifierRenderer,
+	resolveModule: ModuleResolver,
+	esm: boolean,
+	meter: WorkMeter | undefined,
+): ModuleScope {
+	const statements = source.statements
+		.map(importSiteNode)
+		.filter((site): site is ImportSiteNode => site !== undefined);
+	const quote: Quote = statements[0]?.literal.getText(source).startsWith("'") === true ? "'" : '"';
+	const landings = new Map<string, string>();
+	const landingKey: LandingKey = (specifier) => {
+		let key = landings.get(specifier);
+		if (key === undefined) {
+			const landing = resolveModule(module, specifier);
+			key = landing === undefined ? `\0${specifier}` : landing;
+			landings.set(specifier, key);
+		}
+		return key;
+	};
 	const renders = new Map<string, SpecifierRenderResult>();
 	const render: SpecifierRenderer = (fromModule, targetModule, preferred) => {
 		const key = `${fromModule}\0${targetModule}\0${preferred ?? ""}`;
@@ -116,45 +206,94 @@ export function makeMoveEdits(
 		}
 		return rendered;
 	};
+	return {
+		source,
+		coordinates: coordinatesOf(source.text),
+		checker,
+		esm,
+		statements,
+		quote,
+		landingKey,
+		render,
+		meter,
+	};
+}
 
-	if (request.role.removal !== undefined) {
-		const siblings = removed === undefined ? [] : sharedNames(source, removed, request.name);
-		if (removed === undefined) {
-			blocked.push(blockedSite(request.role.removal, "ParseError", "the removal range is outside the module"));
-		} else if (siblings.length > 0) {
-			blocked.push(
-				blockedSite(
-					request.role.removal,
-					"NotImplemented",
-					`${request.name} shares its declaration with ${siblings.join(", ")}, and splitting it is not implemented`,
-				),
-			);
-		} else {
-			edits.push(
-				{ range: request.role.removal, newText: "" },
-				...(reorder ? [] : orphanedImports(source, coordinates, removed)),
-			);
-		}
+/** The target binds `name`. */
+export function targetDeclares(scope: ModuleScope, name: string, fromModule: string): boolean {
+	// The target's own import of the moved symbol goes with the move, so it names nothing that collides.
+	return declaresName(
+		scope.source,
+		name,
+		(binding) =>
+			binding.specifier !== undefined &&
+			(binding.imported ?? name) === name &&
+			sameModulePath(scope.landingKey(binding.specifier), fromModule),
+	);
+}
+
+/** A declaration's span, or why it cannot leave alone. */
+export function removalOf(
+	scope: ModuleScope,
+	removal: Range,
+	name: string,
+): { removed: OffsetRange } | { blocked: MoveBlockedSite } {
+	const removed = scope.coordinates.offsetsForRange(removal);
+	if (removed === undefined) {
+		return { blocked: blockedSite(removal, "ParseError", "the removal range is outside the module") };
 	}
+	const siblings = sharedNames(scope.source, removed, name);
+	if (siblings.length > 0) {
+		return {
+			blocked: blockedSite(
+				removal,
+				"NotImplemented",
+				`${name} shares its declaration with ${siblings.join(", ")}, and splitting it is not implemented`,
+			),
+		};
+	}
+	return { removed };
+}
 
-	const siteStatements = new Map<ImportSiteNode, MoveImportSite[]>();
-	for (const site of request.importSites) {
-		const located = locateImportSite(source, coordinates, site, importSites);
+/**
+ * Repoints each import statement naming a moved symbol once, blocks other uses, and imports every
+ * dependency: joined into an import of the same module where one fits, else after the imports.
+ */
+export function planImports<S extends MoveImportSite>(
+	scope: ModuleScope,
+	work: ImportWork<S>,
+	edits: TextEdit[],
+	blocked: MoveBlockedSite[],
+): void {
+	const { source, coordinates, quote, landingKey, render, meter } = scope;
+	const bindings = moduleBindings(source, work.removed);
+	const siteStatements = new Map<ImportSiteNode, S[]>();
+	for (const site of work.importSites) {
+		const located = locateImportSite(source, coordinates, site, scope.statements);
 		if (located.blocked !== undefined) blocked.push(located.blocked);
 		if (located.statement !== undefined) append(siteStatements, located.statement, site);
 	}
 	const rewrites = [...siteStatements].map(([statement, sites]) =>
-		rewriteImportSites(source, coordinates, statement, sites, request, render, meter),
+		rewriteImportSites(source, coordinates, statement, sites, work, render, meter),
 	);
 
-	for (const site of request.sites) {
+	for (const site of work.sites) {
 		blocked.push(blockedSite(site, "NotImplemented", "the moved symbol occurs outside an import statement"));
 	}
 
 	const pendingImports = new Map<string, PlannedImport>();
 	const pend = (planned: PlannedImport) => pendingImports.set(renderImport([planned], quote), planned);
-	for (const dependency of request.dependencies) {
-		const plan = importForDependency(request, dependency, source, checker, bindings, render, landingKey, esm);
+	for (const dependency of work.dependencies) {
+		const plan = importForDependency(
+			work,
+			dependency,
+			source,
+			scope.checker,
+			bindings,
+			render,
+			landingKey,
+			scope.esm,
+		);
 		if (plan.blocked !== undefined) blocked.push(plan.blocked);
 		if (plan.planned !== undefined) pend(plan.planned);
 	}
@@ -211,28 +350,6 @@ export function makeMoveEdits(
 			});
 		}
 	}
-
-	if (request.role.insertion !== undefined) {
-		const { position, exported } = request.role.insertion;
-		const text =
-			exported === true ? exportedText(request.role.insertion.text, request.module) : request.role.insertion.text;
-		const offset = position === undefined ? source.text.length : coordinates.offsetAt(position);
-		const point = offset === undefined ? undefined : coordinates.positionAt(offset);
-		if (point === undefined) {
-			blocked.push(
-				blockedSite(
-					position === undefined ? undefined : { start: position, end: position },
-					"ParseError",
-					"the insertion position is outside the module",
-				),
-			);
-		} else {
-			const separate = position === undefined && needsBlankLine(source);
-			edits.push({ range: { start: point, end: point }, newText: separate ? `\n${text}` : text });
-		}
-	}
-
-	return validateEdits(coordinates, edits, blocked);
 }
 
 ////////////////////////////////
@@ -252,7 +369,7 @@ export function isValidTargetModule(workspaceRoot: string, module: string): bool
 
 /** Bound in module scope, but for bindings `exempt` names, exported under that name, or the default export when it is `default`. */
 function declaresName(source: ts.SourceFile, name: string, exempt: (binding: ModuleBinding) => boolean): boolean {
-	if ((moduleBindings(source, undefined).get(name) ?? []).some((binding) => !exempt(binding))) return true;
+	if ((moduleBindings(source, []).get(name) ?? []).some((binding) => !exempt(binding))) return true;
 	return source.statements.some((statement) => {
 		if (ts.isModuleDeclaration(statement) && ts.isStringLiteral(statement.name))
 			return statement.name.text === name;
@@ -271,7 +388,7 @@ function declaresName(source: ts.SourceFile, name: string, exempt: (binding: Mod
 }
 
 /** The other names a removed variable statement binds, which removing it would take along. */
-function sharedNames(source: ts.SourceFile, removed: { start: number; end: number }, name: string): string[] {
+function sharedNames(source: ts.SourceFile, removed: OffsetRange, name: string): string[] {
 	for (const statement of source.statements) {
 		if (!ts.isVariableStatement(statement)) continue;
 		if (statement.getStart(source) < removed.start || statement.getEnd() > removed.end) continue;
@@ -314,7 +431,7 @@ function isExportable(statement: ts.Statement): statement is Exportable {
 }
 
 /** `text` with `export` on each declaration lacking it, after its decorators. */
-function exportedText(text: string, module: string): string {
+export function exportedText(text: string, module: string): string {
 	const inserted = ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, scriptKindOf(module));
 	const points = inserted.statements.flatMap((statement) => {
 		if (!isExportable(statement)) return [];
@@ -341,7 +458,11 @@ function needsBlankLine(source: ts.SourceFile): boolean {
 	return last !== undefined && lineOf(source, source.text.length) - last < 2;
 }
 
-function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked: MoveBlockedSite[]): MoveEditsResponse {
+export function validateEdits(
+	coordinates: TextCoordinates,
+	edits: TextEdit[],
+	blocked: MoveBlockedSite[],
+): MoveEditsResponse {
 	const plan = planEdits(coordinates, edits);
 	for (const { edit, conflict } of plan.conflicts) {
 		const named = MOVE_EDIT_CONFLICT[conflict];
@@ -352,6 +473,6 @@ function validateEdits(coordinates: TextCoordinates, edits: TextEdit[], blocked:
 	return { status: "ready", edits: plan.edits, blocked };
 }
 
-function parseDiagnostics(source: ts.SourceFile): readonly ts.Diagnostic[] {
+export function parseDiagnostics(source: ts.SourceFile): readonly ts.Diagnostic[] {
 	return (source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
 }

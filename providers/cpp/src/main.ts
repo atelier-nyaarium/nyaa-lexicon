@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	comparePositions,
 	discoverByWalk,
@@ -392,6 +393,10 @@ export class CppProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("C++ move rendering is not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("C++ arrange rendering is not implemented");
 	}
 
 	/**

@@ -1,4 +1,5 @@
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	comparePositions,
 	type Declaration,
@@ -485,6 +486,10 @@ export class RustProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("Rust move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("Rust arrange edits are not implemented");
 	}
 
 	private factsForModule(module: string): ParsedFile | null {

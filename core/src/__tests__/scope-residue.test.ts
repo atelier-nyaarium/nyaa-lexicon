@@ -20,8 +20,12 @@ describe("scope containment ownership", () => {
 			return source !== null && callsTo(parseSource(file, source).source, "isWithin").length > 0;
 		});
 		expect(matches.length).toBeGreaterThan(0);
-		// Planner containment is rename closure, not search scope.
-		expect(matches.map((file) => path.relative(root, file)).sort()).toEqual(["refactorPlanner.ts", "scope.ts"]);
+		// Planner containment is a rename, move or arrangement closure, not search scope.
+		expect(matches.map((file) => path.relative(root, file)).sort()).toEqual([
+			"arrangePlanner.ts",
+			"refactorPlanner.ts",
+			"scope.ts",
+		]);
 		expect(existsSync(path.join(root, "scope.ts"))).toBe(true);
 	});
 });

@@ -356,6 +356,31 @@ declaration back: its next sibling, before it, else its previous, after it. A co
 move's `reverse` carries it. With `together`, `before` keeps the members in order ahead of the
 anchor and `after` lands each after the one before it; an anchor inside the set refuses.
 
+### Arranging a target
+
+`previewArrange` and `refactorArrange` take `toModule` and `placements`, in order: each a top-level
+declaration that moves, from one source module or the target's own, with an optional
+`anchor: { symbolId, side }`. An anchor names a target declaration that stays, or an earlier
+placement, and puts the declaration directly beside it. Without one the target's end takes it, in
+placement order. Imports, statements and loose comments never move. A declaration moves with what its
+provider's range covers, such as a TypeScript doc comment or a Python decorator.
+
+The core plans the whole set once: removals as whole lines where a declaration owns its lines, each
+blank separator owned once, and placements sharing a landing point framed as one group. A member's
+use of another member needs no import, and a member only the set uses gains no export. Each module
+gets one `arrangeEdits` request. A result that leaves a member undeclared in the target, or still
+declared in the source, refuses.
+
+`previewArrange` answers each file the step would write: `base`, the hash it was planned over, or
+null when created; `text`; and `result`, the text's hash. With `lexicon.json`'s `fixText` set, each
+text is the formatter's output and `formatted` is true. A formatter that fails leaves its file as
+planned, with a `FixFailed` issue and `formatted: false`. Without `fixText`, `formatted` is false.
+
+`refactorArrange` takes the same request plus `expect`: every previewed file's `module`, `base` and
+`result`. It plans again and refuses unless the files and hashes match, then writes those bytes as
+one step joining the open refactor. The `fix` command skips them. Each is read back before the step
+finishes, and a difference undoes the step. It answers a `MoveOutcome`.
+
 ### Committed steps
 
 `refactorRenameCommitted` and `refactorMoveCommitted` take the `refactorRename` request or a

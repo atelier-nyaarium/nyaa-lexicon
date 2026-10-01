@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	comparePositions,
 	type Declaration,
@@ -348,6 +349,10 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("Kotlin move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("Kotlin arrange edits are not implemented");
 	}
 
 	private factsForModule(module: string): KotlinFile | null {

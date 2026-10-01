@@ -7,19 +7,23 @@ import {
 	DAEMON_METHODS,
 	type DaemonMethod,
 	defined,
+	hashContent,
 	isDaemonMethod,
 	type MoveAnchor,
 	type RequestOf,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
+import type { ArrangePlacement } from "./arrangePlanner.js";
 import { changedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import {
+	arrangeStale,
 	committedOutcome,
 	type Gate,
 	moveOutcome,
 	moveStale,
 	type RefactorDeps,
+	refactorArrange,
 	refactorInsert,
 	refactorMove,
 	refactorMoveTogether,
@@ -139,6 +143,49 @@ async function previewMove(
 		}),
 		issues: result.issues,
 		blockers: [],
+	};
+}
+
+async function previewArrange(
+	service: LexiconService,
+	args: { toModule: string; placements: readonly ArrangePlacement[] },
+): Promise<ResponseOf<"previewArrange">> {
+	const refused = (reason: Refusal): ResponseOf<"previewArrange"> => ({
+		ok: false,
+		issues: [],
+		blockers: [{ reason }],
+		reason,
+	});
+
+	const context = service.newReadContext();
+	const plan = await service.planArrange(args.toModule, args.placements, context);
+	if (!plan.ok) return refused(plan.reason);
+	// Check stale sites before provider requests.
+	const stale = service.staleModules([plan.fromModule, ...plan.referencing.keys()]);
+	if (stale.length > 0) return refused(staleSincePlanned(stale, "arrangement"));
+
+	const arranged = await service.arrangedFiles(plan, context);
+	if (!arranged.ok) {
+		const blockers =
+			arranged.issues.length > 0
+				? arranged.issues.map((issue) => ({ module: issue.module, reason: issue.detail }))
+				: [{ reason: arranged.reason }];
+		return { ok: false, issues: arranged.issues, blockers, reason: arranged.reason };
+	}
+	const moved = arrangeStale(service, plan, context);
+	if (moved !== null) return refused(moved);
+
+	return {
+		ok: true,
+		files: arranged.files.map((file) => ({
+			module: file.module,
+			base: file.base,
+			created: file.base === null,
+			text: file.text,
+			result: hashContent(file.text),
+		})),
+		issues: arranged.issues,
+		formatted: arranged.formatted,
 	};
 }
 
@@ -326,6 +373,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		// Upgrade outlines before preview reads.
 		previewMove: upgradedRead((params) => previewMove(service, params)),
+		previewArrange: upgradedRead((params) => previewArrange(service, params)),
 		previewInsert: upgradedRead((params) => previewInsert(service, params)),
 		indexFile: write((params) => service.indexFile(params.module)),
 		symbolSource: read((params) => service.symbolSource(params)),
@@ -388,6 +436,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 				? refactorMove(service, transactions(), gate.write, params, "join").then(moveOutcome)
 				: refactorMoveTogether(service, transactions(), gate.write, { ...params, together: params.together }),
 		),
+		refactorArrange: staged((params, gate) => refactorArrange(service, transactions(), gate.write, params)),
 		refactorRenameCommitted: staged((params, gate) =>
 			underClientStep(transactions(), params.stepId, "rename", (cancelled) =>
 				refactorRename(service, transactions(), gate.write, params, { own: params.bases }, cancelled).then(

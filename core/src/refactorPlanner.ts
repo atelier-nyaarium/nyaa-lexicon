@@ -96,7 +96,7 @@ function memberOwner(symbolId: string): string | null {
 }
 
 /** A module a plan may create or write, in its canonical spelling, or why not. */
-function workspaceModule(raw: string): { module: string } | { refused: Refusal } {
+export function workspaceModule(raw: string): { module: string } | { refused: Refusal } {
 	try {
 		return { module: normalizeModulePath(raw) };
 	} catch (error) {
@@ -563,7 +563,7 @@ export class RefactorPlanner {
 
 	/** Importers are found from stored references and imports, each written by the provider owning the
 	 * file it is in. One claiming neither reported none, which is not the same as there being none. */
-	private importersUnfound(modules: string[]): RefactorIssue[] {
+	importersUnfound(modules: string[]): RefactorIssue[] {
 		const issues: RefactorIssue[] = [];
 		for (const module of new Set(modules)) {
 			const owner = this.probe.owner(module);

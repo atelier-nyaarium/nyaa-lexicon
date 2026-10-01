@@ -1,6 +1,7 @@
 import path from "node:path";
 import { type JsonFacts, readJson } from "@nyaa-lexicon/formats/json";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	coordinatesOf,
 	type Descriptor,
@@ -166,6 +167,10 @@ export class JsonProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("JSON move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("JSON arrange edits are not implemented");
 	}
 }
 

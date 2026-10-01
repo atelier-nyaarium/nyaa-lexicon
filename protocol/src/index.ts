@@ -63,6 +63,10 @@ export {
 	AnswerSchema,
 	type AnswerTier,
 	AnswerTierSchema,
+	type ArrangeFile,
+	ArrangeFileSchema,
+	type ArrangePreview,
+	ArrangePreviewSchema,
 	type AttachedComment,
 	AttachedCommentSchema,
 	answerHealth,
@@ -436,6 +440,12 @@ export {
 	type StoreSpec,
 } from "./moduleStore.js";
 export {
+	type ArrangeEditsRequest,
+	ArrangeEditsRequestSchema,
+	type ArrangeImportSite,
+	ArrangeImportSiteSchema,
+	type ArrangeMember,
+	ArrangeMemberSchema,
 	type DependencyOrigin,
 	DependencyOriginSchema,
 	type ImportKind,

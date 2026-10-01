@@ -116,7 +116,10 @@ export type Compatibility =
 // target the move lands before or after (for a reorder, a sibling); with it the target may be the
 // source, which reorders. An older daemon ignores it: a move to another module lands at the end, and
 // a reorder refuses.
-export const PROTOCOL_VERSION = "4.3.0" as const;
+// 4.4.0: `previewArrange` and `refactorArrange` place declarations from one module, or the target's
+// own, in the target as one step, through the provider method `arrangeEdits`. An older daemon
+// answers them as unknown methods; an older provider does not answer it, so the request fails.
+export const PROTOCOL_VERSION = "4.4.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 4;

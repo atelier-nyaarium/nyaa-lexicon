@@ -18,6 +18,7 @@ import {
 //  Interfaces & Types
 
 export interface PythonMoveFacts {
+	comments: Array<{ range: Range }>;
 	declarations: Array<{ name: string; containerPath: unknown[] }>;
 	diagnostics: Array<{ severity: string; message: string }>;
 	importBindings: Array<{ specifier: string; localName: string; scopePath: unknown[]; star: boolean }>;
@@ -26,7 +27,7 @@ export interface PythonMoveFacts {
 	prologueEnd: Range["start"] | null;
 }
 
-interface PythonImportAlias {
+export interface PythonImportAlias {
 	name: string;
 	localName: string;
 	range: Range;
@@ -35,7 +36,7 @@ interface PythonImportAlias {
 	star: boolean;
 }
 
-interface PythonImportStatement {
+export interface PythonImportStatement {
 	kind: "import" | "from";
 	specifier: string;
 	range: Range;
@@ -44,6 +45,15 @@ interface PythonImportStatement {
 	reExport: boolean;
 	aliases: PythonImportAlias[];
 }
+
+export type BlockedSite = { range?: Range; reason: MoveBlockedReason; detail: string };
+
+/** An import a dependency needs, before it is written. */
+export type PlannedImport =
+	| { form: "import"; specifier: string; localName: string }
+	| { form: "from"; specifier: string; importedName: string; localName: string };
+
+type ImportBinding = PythonMoveFacts["importBindings"][number];
 
 type RenderedSpecifier = { specifier: string } | { reason: MoveBlockedReason; detail: string };
 
@@ -72,7 +82,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 		};
 	}
 
-	const blocked: Array<{ range?: Range; reason: MoveBlockedReason; detail: string }> = [];
+	const blocked: BlockedSite[] = [];
 	const edits: TextEdit[] = [];
 
 	if (request.role.removal !== undefined) {
@@ -123,64 +133,84 @@ function rebindEdits(
 	request: MoveEditsRequest,
 	coordinates: TextCoordinates,
 	facts: PythonMoveFacts,
-): { edits: TextEdit[]; blocked: Array<{ range?: Range; reason: MoveBlockedReason; detail: string }> } {
-	const blocked: Array<{ range?: Range; reason: MoveBlockedReason; detail: string }> = [];
+): { edits: TextEdit[]; blocked: BlockedSite[] } {
+	const blocked: BlockedSite[] = [];
 	const edits: TextEdit[] = [];
 
 	for (const site of request.importSites) {
-		const result = rewriteImportSite(request, coordinates, facts, site);
+		const located = locateImportSite(facts, site);
+		const result: { edit?: TextEdit; blocked?: BlockedSite } =
+			"blocked" in located
+				? located
+				: repointStatement(
+						request.module,
+						request.toModule,
+						coordinates,
+						facts,
+						located.statement,
+						[located.alias],
+						site.range,
+					);
 		if (result.blocked !== undefined) blocked.push(result.blocked);
 		if (result.edit !== undefined) edits.push(result.edit);
 	}
 
-	for (const site of request.sites) {
-		const literal = facts.literals.some(
-			(candidate) => candidate.kind === "string" && rangeContains(candidate.range, site),
-		);
-		blocked.push(
-			blockedSite(
-				site,
-				literal ? "StringLiteral" : "NotImplemented",
-				literal
-					? "the moved symbol occurs inside a string literal"
-					: "the moved symbol occurs outside an import statement",
-			),
-		);
-	}
+	blocked.push(...useSiteBlocks(facts, request.sites));
 
 	const pendingImports = new Set<string>();
 	for (const dependency of request.dependencies) {
-		const result = importForDependency(request, facts, dependency);
+		const result = plannedImportFor(request, facts, dependency);
 		if (result.blocked !== undefined) blocked.push(result.blocked);
-		if (result.statement !== undefined) pendingImports.add(result.statement);
+		if (result.planned !== undefined) pendingImports.add(importLine(result.planned));
 	}
 
-	if (pendingImports.size > 0) {
-		const point = facts.prologueEnd;
-		if (point === null || coordinates.offsetAt(point) === undefined) {
-			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });
-		} else {
-			// End an unterminated prologue line first.
-			const prefix = point.character > 0 ? "\n" : "";
-			edits.push({
-				range: { start: point, end: point },
-				newText: `${prefix}${[...pendingImports].join("\n")}\n`,
-			});
-		}
-	}
+	const inserted = importInsertion(coordinates, facts, [...pendingImports]);
+	if (inserted.blocked !== undefined) blocked.push(inserted.blocked);
+	if (inserted.edit !== undefined) edits.push(inserted.edit);
 
 	return { edits, blocked };
+}
+
+/** Imports written at the end of the prologue. */
+export function importInsertion(
+	coordinates: TextCoordinates,
+	facts: PythonMoveFacts,
+	statements: string[],
+): { edit?: TextEdit; blocked?: BlockedSite } {
+	if (statements.length === 0) return {};
+	const point = facts.prologueEnd;
+	if (point === null || coordinates.offsetAt(point) === undefined) {
+		return { blocked: { reason: "ParseError", detail: "the import insertion point is outside the module" } };
+	}
+	// End an unterminated prologue line first.
+	const prefix = point.character > 0 ? "\n" : "";
+	return { edit: { range: { start: point, end: point }, newText: `${prefix}${statements.join("\n")}\n` } };
+}
+
+/** Uses outside import statements, which no import rewrite repairs. */
+export function useSiteBlocks(facts: PythonMoveFacts, sites: Range[]): BlockedSite[] {
+	return sites.map((site) => {
+		const literal = facts.literals.some(
+			(candidate) => candidate.kind === "string" && rangeContains(candidate.range, site),
+		);
+		return blockedSite(
+			site,
+			literal ? "StringLiteral" : "NotImplemented",
+			literal
+				? "the moved symbol occurs inside a string literal"
+				: "the moved symbol occurs outside an import statement",
+		);
+	});
 }
 
 ////////////////////////////////
 //  Site Rewriting
 
-function rewriteImportSite(
-	request: MoveEditsRequest,
-	coordinates: TextCoordinates,
+/** The named `from` import a site points into. */
+export function locateImportSite(
 	facts: PythonMoveFacts,
 	site: MoveImportSite,
-): { edit?: TextEdit; blocked?: { range?: Range; reason: MoveBlockedReason; detail: string } } {
+): { statement: PythonImportStatement; alias: PythonImportAlias } | { blocked: BlockedSite } {
 	if (site.importKind === "namespace" || site.importKind === "wildcard" || site.importKind === "sideEffect") {
 		return {
 			blocked: blockedSite(
@@ -214,30 +244,63 @@ function rewriteImportSite(
 			blocked: blockedSite(site.range, "ParseError", "the range does not name a named Python import"),
 		};
 	}
+	return { statement, alias };
+}
 
-	const rendered = renderPythonSpecifier(request.module, request.toModule, site.specifier);
-	if ("reason" in rendered) return { blocked: blockedSite(site.range, rendered.reason, rendered.detail) };
-	if (rendered.specifier === site.specifier) return {};
+/** One statement with its `moved` aliases importing from `toModule`, split when others stay. */
+export function repointStatement(
+	module: string,
+	toModule: string,
+	coordinates: TextCoordinates,
+	facts: PythonMoveFacts,
+	statement: PythonImportStatement,
+	moved: PythonImportAlias[],
+	siteRange: Range,
+): { edit?: TextEdit; blocked?: BlockedSite } {
+	const rendered = renderPythonSpecifier(module, toModule, statement.specifier);
+	if ("reason" in rendered) return { blocked: blockedSite(siteRange, rendered.reason, rendered.detail) };
+	if (rendered.specifier === statement.specifier) return {};
 
 	if (coordinates.offsetsForRange(statement.range) === undefined) {
-		return { blocked: blockedSite(site.range, "ParseError", "the import statement range is outside the module") };
+		return { blocked: blockedSite(siteRange, "ParseError", "the import statement range is outside the module") };
 	}
 
-	if (statement.aliases.length === 1) {
+	const kept = statement.aliases.filter((candidate) => !moved.includes(candidate));
+	if (kept.length === 0) {
 		if (statement.moduleRange === null) {
-			return { blocked: blockedSite(site.range, "ParseError", "the import statement has no module name") };
+			return { blocked: blockedSite(siteRange, "ParseError", "the import statement has no module name") };
 		}
 		return { edit: { range: statement.moduleRange, newText: rendered.specifier } };
 	}
 
-	const kept = formatFromImport(
-		site.specifier,
-		statement.aliases.filter((candidate) => candidate !== alias),
+	const moving = statement.aliases.filter((candidate) => moved.includes(candidate));
+	return rewriteStatement(
+		facts,
+		statement,
+		[
+			{ specifier: statement.specifier, aliases: kept },
+			{ specifier: rendered.specifier, aliases: moving },
+		],
+		siteRange,
 	);
-	const moved = formatFromImport(rendered.specifier, [alias]);
+}
+
+/** `statement` replaced by one `from` import per group, unless that drops a comment. */
+export function rewriteStatement(
+	facts: PythonMoveFacts,
+	statement: PythonImportStatement,
+	groups: Array<{ specifier: string; aliases: PythonImportAlias[] }>,
+	blockedRange: Range,
+): { edit?: TextEdit; blocked?: BlockedSite } {
+	if (facts.comments.some((comment) => rangeContains(statement.range, comment.range))) {
+		return {
+			blocked: blockedSite(blockedRange, "NotImplemented", "the import holds a comment the rewrite would drop"),
+		};
+	}
 	// Keep a semicolon when the import shares a line.
 	const separator = statement.indent === null ? "; " : `\n${statement.indent}`;
-	return { edit: { range: statement.range, newText: `${kept}${separator}${moved}` } };
+	const newText = groups.map((group) => formatFromImport(group.specifier, group.aliases)).join(separator);
+	return { edit: { range: statement.range, newText } };
 }
 
 function aliasMatches(alias: PythonImportAlias, site: MoveImportSite): boolean {
@@ -260,11 +323,12 @@ function formatFromImport(specifier: string, aliases: PythonImportAlias[]): stri
 ////////////////////////////////
 //  Dependency Imports
 
-function importForDependency(
-	request: MoveEditsRequest,
+/** The import a dependency needs in `request.module`, or none when it is already bound. */
+export function plannedImportFor(
+	request: Pick<MoveEditsRequest, "module" | "fromModule">,
 	facts: PythonMoveFacts,
 	dependency: MoveDependency,
-): { statement?: string; blocked?: { range?: Range; reason: MoveBlockedReason; detail: string } } {
+): { planned?: PlannedImport; blocked?: BlockedSite } {
 	const origin = dependency.origin;
 	if (origin.kind === "insideClosure") return {};
 	if (origin.kind === "unresolved") {
@@ -291,16 +355,16 @@ function importForDependency(
 
 	if (hasExistingBinding(facts, dependency.name, specifier)) return {};
 
-	const statement = importStatementForDependency(dependency, specifier);
-	if (statement === undefined) {
+	const planned = plannedImport(dependency, specifier);
+	if (planned === undefined) {
 		return {
 			blocked: blockedSite(dependency.range, "NotImplemented", "the import form cannot bind a moved dependency"),
 		};
 	}
-	return { statement };
+	return { planned };
 }
 
-function importStatementForDependency(dependency: MoveDependency, specifier: string): string | undefined {
+function plannedImport(dependency: MoveDependency, specifier: string): PlannedImport | undefined {
 	const origin = dependency.origin;
 	const via = origin.kind === "workspaceModule" || origin.kind === "external" ? origin.via : undefined;
 	const importKind = via?.importKind ?? "named";
@@ -315,14 +379,24 @@ function importStatementForDependency(dependency: MoveDependency, specifier: str
 	}
 	if (importKind === "namespace") {
 		if (specifier.startsWith(".")) return undefined;
-		const moduleName = specifier.split(".").at(-1) ?? specifier;
-		return moduleName === dependency.name ? `import ${specifier}` : `import ${specifier} as ${dependency.name}`;
+		return { form: "import", specifier, localName: dependency.name };
 	}
 
 	const importedName = origin.kind === "sourceModule" ? origin.name : (via?.importedName ?? dependency.name);
 	if (importedName === undefined || importedName === "") return undefined;
-	const alias = importedName === dependency.name ? "" : ` as ${dependency.name}`;
-	return `from ${specifier} import ${importedName}${alias}`;
+	return { form: "from", specifier, importedName, localName: dependency.name };
+}
+
+/** One planned import as its own statement. */
+export function importLine(planned: PlannedImport): string {
+	if (planned.form === "import") {
+		const moduleName = planned.specifier.split(".").at(-1) ?? planned.specifier;
+		return moduleName === planned.localName
+			? `import ${planned.specifier}`
+			: `import ${planned.specifier} as ${planned.localName}`;
+	}
+	const alias = planned.importedName === planned.localName ? "" : ` as ${planned.localName}`;
+	return `from ${planned.specifier} import ${planned.importedName}${alias}`;
 }
 
 function hasExistingBinding(facts: PythonMoveFacts, name: string, specifier: string): boolean {
@@ -385,14 +459,21 @@ function packageParts(module: string): string[] {
 	return parts;
 }
 
-function declaresName(facts: PythonMoveFacts, name: string): boolean {
+/** Bound at module level, except by imports `exempt` names. */
+export function declaresName(
+	facts: PythonMoveFacts,
+	name: string,
+	exempt: (binding: ImportBinding) => boolean = () => false,
+): boolean {
 	return (
 		facts.declarations.some((declaration) => declaration.name === name && declaration.containerPath.length === 0) ||
-		facts.importBindings.some((binding) => binding.localName === name && binding.scopePath.length === 0)
+		facts.importBindings.some(
+			(binding) => binding.localName === name && binding.scopePath.length === 0 && !exempt(binding),
+		)
 	);
 }
 
-function sameModule(left: string, right: string): boolean {
+export function sameModule(left: string, right: string): boolean {
 	return path.posix.normalize(left.replace(/\\/g, "/")) === path.posix.normalize(right.replace(/\\/g, "/"));
 }
 
@@ -407,10 +488,10 @@ function rangeContains(outer: Range, inner: Range): boolean {
 ////////////////////////////////
 //  Validation
 
-function validateEdits(
+export function validateEdits(
 	coordinates: TextCoordinates,
 	edits: TextEdit[],
-	blocked: Array<{ range?: Range; reason: MoveBlockedReason; detail: string }>,
+	blocked: BlockedSite[],
 ): MoveEditsResponse {
 	const plan = planEdits(coordinates, edits);
 	for (const { edit, conflict } of plan.conflicts) {
@@ -422,10 +503,6 @@ function validateEdits(
 	return { status: "ready", edits: plan.edits, blocked };
 }
 
-function blockedSite(
-	range: Range | undefined,
-	reason: MoveBlockedReason,
-	detail: string,
-): { range?: Range; reason: MoveBlockedReason; detail: string } {
+export function blockedSite(range: Range | undefined, reason: MoveBlockedReason, detail: string): BlockedSite {
 	return range === undefined ? { reason, detail } : { range, reason, detail };
 }

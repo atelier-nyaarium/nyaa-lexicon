@@ -32,6 +32,7 @@ export interface ProviderMethods {
 	typeOf(params: Request<"typeOf">): Response<"typeOf">;
 	renameEdits(params: Request<"renameEdits">): Response<"renameEdits">;
 	moveEdits(params: Request<"moveEdits">): Response<"moveEdits">;
+	arrangeEdits(params: Request<"arrangeEdits">): Response<"arrangeEdits">;
 	shutdown?(): void;
 	/** The sender for what the provider tells core unasked, once it is served. */
 	connected?(events: ProviderEvents): void;
@@ -89,6 +90,7 @@ export function handlersFor<V extends ModuleValue, P, E>(
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),
 		moveEdits: (params) => provider.moveEdits(params),
+		arrangeEdits: (params) => provider.arrangeEdits(params),
 		shutdown: () => {
 			provider.shutdown?.();
 			return {};

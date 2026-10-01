@@ -4,6 +4,7 @@ import {
 	type CommittedFile,
 	type CommittedStep,
 	defined,
+	hashContent,
 	type InsertOutcome,
 	type MoveAnchor,
 	type MoveOutcome,
@@ -13,12 +14,14 @@ import {
 	type ReverseStep,
 	reverseOf,
 } from "@nyaa-lexicon/protocol";
+import type { ArrangePlacement, PlannedArrange } from "./arrangePlanner.js";
 import { type MoveMember, moveOrder } from "./moveOrder.js";
 import type { ReadContext } from "./readContext.js";
 import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
 import {
 	anchorNotTopLevel,
+	arrangeNotAsPreviewed,
 	changedWhilePlanned,
 	factsMovedWhilePlanned,
 	moveCycle,
@@ -61,6 +64,13 @@ export type StepResult =
 			issues: RefactorIssue[];
 	  }
 	| ({ done: false; reason: Refusal; issues: RefactorIssue[] } & RefusedWith);
+
+/** One file as a preview showed it: the hash it was planned over, and its text's hash. */
+export interface PreviewedFile {
+	module: string;
+	base: string | null;
+	result: string;
+}
 
 ////////////////////////////////
 //  Steps
@@ -396,6 +406,18 @@ function withRestore(reverse: ReverseStep, restore: MoveAnchor | undefined): Rev
 	return reverse.kind === "move" && restore !== undefined ? { ...reverse, anchor: restore } : reverse;
 }
 
+/** The first module planned differently from its preview, else null. */
+function previewDiffers(
+	expect: readonly PreviewedFile[],
+	files: ReadonlyArray<{ module: string; base: string | null; text: string }>,
+): string | null {
+	for (const file of files) {
+		const seen = expect.find((each) => each.module === file.module);
+		if (seen?.base !== file.base || seen.result !== hashContent(file.text)) return file.module;
+	}
+	return expect.find((each) => !files.some((file) => file.module === each.module))?.module ?? null;
+}
+
 export function renameStepOutcome(result: StepResult): RenameStepOutcome {
 	if (!result.done) return { renamed: false, issues: result.issues, reason: result.reason };
 	return { renamed: true, modules: result.modules, ...defined({ migrated: result.migrated }), issues: result.issues };
@@ -476,6 +498,102 @@ export async function refactorMoveTogether(
 	return { moved: true, ...defined({ toModule }), modules: [...modules], issues, order };
 }
 
+/**
+ * A previewed arrangement as one joined step, writing exactly the bytes the preview showed.
+ *
+ * Planned again from scratch and checked against the preview's hashes, so a file or a formatter
+ * that moved since refuses rather than writing text nobody saw.
+ */
+export function refactorArrange(
+	service: LexiconService,
+	transactions: TransactionManager,
+	write: <T>(work: () => Promise<T> | T) => Promise<T>,
+	args: { toModule: string; placements: readonly ArrangePlacement[]; expect: readonly PreviewedFile[] },
+): Promise<MoveOutcome> {
+	let touched: string[] = [];
+	let target = args.toModule;
+	let migrated: { answers: number; gaps: number } | undefined;
+	const idMap = new Map<string, string>();
+
+	return journaledStep<MoveOutcome>(
+		{ service, transactions, write },
+		{
+			kind: "move",
+			hold: "join",
+			refuse: (reason, issues) => ({ moved: false, issues, reason }),
+			succeed: (issues) => ({
+				moved: true,
+				toModule: target,
+				modules: touched,
+				...defined({ migrated }),
+				issues,
+			}),
+			plan: async () => {
+				const context = service.newReadContext();
+				const plan = await service.planArrange(args.toModule, args.placements, context);
+				if (!plan.ok) return { refused: plan.reason };
+				target = plan.toModule;
+				const arranged = await service.arrangedFiles(plan, context);
+				if (!arranged.ok) return { refused: arranged.reason, issues: arranged.issues };
+				const differs = previewDiffers(args.expect, arranged.files);
+				if (differs !== null) return { refused: arrangeNotAsPreviewed(differs) };
+				// Nothing to write, so no step.
+				if (arranged.files.length === 0) {
+					return { done: { moved: true, toModule: plan.toModule, modules: [], issues: arranged.issues } };
+				}
+				touched = arranged.files.map((file) => file.module);
+				const incoming = plan.members.filter((member) => member.incoming);
+				// Worked out before the write, since afterwards these ids resolve to nothing.
+				const bound = service
+					.modulesBoundTo(
+						incoming.flatMap((member) => member.closure),
+						context,
+					)
+					.filter((module) => !touched.includes(module));
+
+				return {
+					planned: {
+						modules: [...touched, ...bound],
+						writes: arranged.files.map((file) => ({
+							module: file.module,
+							base: file.base,
+							text: file.text,
+						})),
+						exact: true,
+						planRecord: {
+							from: plan.fromModule,
+							to: plan.toModule,
+							arranged: plan.members.map((member) => member.symbolId),
+						},
+						stale: () => arrangeStale(service, plan, context),
+						begin: () => {
+							for (const member of incoming) {
+								for (const id of member.closure) {
+									const rebased = service.rebaseIntoModule(id, member.symbolId, plan.toModule);
+									if (rebased !== null) idMap.set(id, rebased);
+								}
+							}
+						},
+						rebind: () => ({
+							entries: [...idMap].map(([from, to]) => ({ from, to })),
+							evidence: "journalMove",
+						}),
+						// Target first, so every other module rebinds against declarations already in their new home.
+						reindex: [plan.toModule, ...touched.filter((module) => module !== plan.toModule), ...bound],
+						issues: arranged.issues,
+						finish: (issues, rebound) => {
+							if (rebound !== undefined) migrated = { answers: rebound.answers, gaps: rebound.gaps };
+							for (const member of plan.members)
+								issues.push(...service.checkMoveLanded(member.name, touched));
+							issues.push(...service.notLanded(plan));
+						},
+					},
+				};
+			},
+		},
+	);
+}
+
 export function moveOutcome(result: StepResult): MoveOutcome {
 	if (!result.done) return { moved: false, issues: result.issues, reason: result.reason };
 	return {
@@ -553,4 +671,20 @@ export function moveStale(
 	// Equal hashes can hide reparses or upgrades.
 	const movedFacts = service.factsMoved(context.seen());
 	return movedFacts.length > 0 ? factsMovedWhilePlanned(movedFacts, "move") : null;
+}
+
+/** Every read module's base, the referencing modules' facts and the stamped rows, as planned. */
+export function arrangeStale(
+	service: LexiconService,
+	plan: Extract<PlannedArrange, { ok: true }>,
+	context: ReadContext,
+): Refusal | null {
+	for (const [module, base] of plan.bases) {
+		if (service.currentHashOf(module) !== base) return changedWhilePlanned(module, "arrangement");
+	}
+	// Import edits use stored ranges.
+	const stale = service.staleModules([...plan.referencing.keys()]);
+	if (stale.length > 0) return staleSincePlanned(stale, "arrangement");
+	const movedFacts = service.factsMoved(context.seen());
+	return movedFacts.length > 0 ? factsMovedWhilePlanned(movedFacts, "arrangement") : null;
 }

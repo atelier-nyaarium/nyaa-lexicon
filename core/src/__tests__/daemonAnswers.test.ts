@@ -398,6 +398,11 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		const preview = await ask("previewMove", { symbolId: cart, toModule: "item.ref" });
 		expect(Array.isArray(preview.blockers)).toBe(true);
 	},
+	previewArrange: async () => {
+		const preview = await ask("previewArrange", { toModule: "item.ref", placements: [{ symbolId: cart }] });
+		// The reference provider refuses arrange edits.
+		expect(preview.ok).toBe(false);
+	},
 	previewInsert: async () => {
 		expect((await ask("previewInsert", { module: "item.ref", text: "export const PREVIEW_STEP = 1" })).state).toBe(
 			"planned",
@@ -581,6 +586,11 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	refactorMove: async () => {
 		expect((await ask("refactorMove", { symbolId: cart, toModule: "item.ref" })).moved).toBe(false);
 	},
+	refactorArrange: async () => {
+		const request = { toModule: "item.ref", placements: [{ symbolId: cart }] };
+		const expected = [{ module: "item.ref", base: null, result: "0".repeat(32) }];
+		expect((await ask("refactorArrange", { ...request, expect: expected })).moved).toBe(false);
+	},
 	// A refactor is open here.
 	refactorRenameCommitted: async () => {
 		const bases = [{ module: "cart.ref", contentHash: null }];
@@ -688,6 +698,7 @@ const REFACTOR = [
 	"refactorInsert",
 	"refactorRename",
 	"refactorMove",
+	"refactorArrange",
 	"refactorRenameCommitted",
 	"refactorMoveCommitted",
 	"refactorStepOutcome",

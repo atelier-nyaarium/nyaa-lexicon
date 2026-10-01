@@ -121,6 +121,7 @@ export interface StoreProvider<V extends ModuleValue, P, E> {
 	typeOf(params: Request<"typeOf">): Maybe<Response<"typeOf">>;
 	renameEdits(params: Request<"renameEdits">): Maybe<Response<"renameEdits">>;
 	moveEdits(params: Request<"moveEdits">): Maybe<Response<"moveEdits">>;
+	arrangeEdits(params: Request<"arrangeEdits">): Maybe<Response<"arrangeEdits">>;
 	shutdown?(): void;
 }
 
@@ -759,6 +760,8 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 			ready(() => kit.transient(params.module, params.text, "full", () => provider.renameEdits(params))),
 		moveEdits: (params: Request<"moveEdits">) =>
 			ready(() => kit.transient(params.module, params.text, "full", () => provider.moveEdits(params))),
+		arrangeEdits: (params: Request<"arrangeEdits">) =>
+			ready(() => kit.transient(params.module, params.text, "full", () => provider.arrangeEdits(params))),
 		moduleAdmission: (verdict: ModuleAdmission) => kit.settle(verdict),
 		forgetModule: (params: { module: string }) => kit.forget(params.module),
 		releaseModule: (params: { module: string }) => kit.release(params.module),

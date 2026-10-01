@@ -25,11 +25,12 @@ import {
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import { stageAll } from "./applyEdits.js";
+import { ArrangePlanner } from "./arrangePlanner.js";
 import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
 import { bindsModule, type NamespaceTarget, namespaceTargetOf, sameTarget } from "./edges.js";
 import { describeScope, type FileScope, isExternalModule, readScopeConfig } from "./fileScope.js";
-import { runFix } from "./fixOnWrite.js";
+import { runFix, runFixText } from "./fixOnWrite.js";
 import {
 	coChangesFor,
 	commitsMentioning,
@@ -128,6 +129,9 @@ export class LexiconService {
 		this.source = new SourceWorkspace(store, readSource, workspaceRoot);
 		this.probe = liveProbe(supervisor);
 		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe);
+		this.arranger = new ArrangePlanner(store, this.imports, this.source, this.probe, this.planner, (module, text) =>
+			this.formatText(module, text),
+		);
 		this.paint = new PaintReads(store, this.probe, () => this.caches.facts.stats().generation);
 	}
 
@@ -155,6 +159,9 @@ export class LexiconService {
 
 	/** Plans; journaled steps write. */
 	readonly planner: RefactorPlanner;
+
+	/** Plans arrangements; a journaled step writes them. */
+	readonly arranger: ArrangePlanner;
 
 	/** Paint facts, stored or freshly parsed. */
 	readonly paint: PaintReads;
@@ -309,6 +316,12 @@ export class LexiconService {
 		return { ran: true, failed: await runFix(this.workspaceRoot, argv, modules) };
 	}
 
+	/** Runs `lexicon.json`'s `fixText` on one file's text; null when it is not set. */
+	async formatText(module: string, text: string): Promise<{ text: string } | { failed: string } | null> {
+		const argv = readScopeConfig(this.workspaceRoot).fixText;
+		return argv === undefined ? null : runFixText(this.workspaceRoot, argv, module, text);
+	}
+
 	////////////////////////////////
 	//  Refactor plans, answered by RefactorPlanner
 
@@ -341,6 +354,18 @@ export class LexiconService {
 
 	moveEdits(...args: Parameters<RefactorPlanner["moveEdits"]>): ReturnType<RefactorPlanner["moveEdits"]> {
 		return this.planner.moveEdits(...args);
+	}
+
+	planArrange(...args: Parameters<ArrangePlanner["plan"]>): ReturnType<ArrangePlanner["plan"]> {
+		return this.arranger.plan(...args);
+	}
+
+	arrangedFiles(...args: Parameters<ArrangePlanner["files"]>): ReturnType<ArrangePlanner["files"]> {
+		return this.arranger.files(...args);
+	}
+
+	notLanded(...args: Parameters<ArrangePlanner["notLanded"]>): ReturnType<ArrangePlanner["notLanded"]> {
+		return this.arranger.notLanded(...args);
 	}
 
 	renameIdMap(...args: Parameters<RefactorPlanner["renameIdMap"]>): ReturnType<RefactorPlanner["renameIdMap"]> {

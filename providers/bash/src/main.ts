@@ -3,6 +3,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
@@ -13,6 +14,7 @@ import {
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedMove,
 	type Position,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -308,6 +310,10 @@ export class BashProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "Bash move edits are not implemented" };
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("Bash arrange edits are not implemented");
 	}
 
 	private hasFile(module: string): boolean {

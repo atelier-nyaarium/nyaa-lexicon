@@ -20,6 +20,7 @@ const STAGED = [
 	"refactorInsert",
 	"refactorRename",
 	"refactorMove",
+	"refactorArrange",
 	"refactorRenameCommitted",
 	"refactorMoveCommitted",
 	"refactorStepOutcome",
@@ -27,7 +28,7 @@ const STAGED = [
 ];
 
 /** The background upgrade ungated, then the answer shared. */
-const UPGRADED = ["prepareRename", "renameEdits", "planMove", "previewMove", "previewInsert"];
+const UPGRADED = ["prepareRename", "renameEdits", "planMove", "previewMove", "previewArrange", "previewInsert"];
 
 /** Answered with no gate, so no batch or step holding it delays them. */
 const STATUS = ["indexStatus", "indexWorkspace", "cacheStats", "refactorStatus", "refactorSettlements"];

@@ -49,6 +49,7 @@ const IDS = "symbolIdsIn";
 const ID_READERS: Record<string, string> = {
 	"store.ts": "declares the read",
 	"readContext.ts": "stamps the module asked; the walk is the id grammar's own, not a containment question",
+	"arrangePlanner.ts": "walks the id grammar for an arrangement's closures and the target's ids, through the context",
 	"refactorPlanner.ts": "walks the id grammar for a rename's map or a move's closure, through the context",
 };
 

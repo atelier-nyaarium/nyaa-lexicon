@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+	type ArrangeEditsRequest,
 	type Binding,
 	discoverByWalk,
 	handlersFor,
@@ -107,6 +108,10 @@ export class MarkdownProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("markdown move edits are not implemented");
+	}
+
+	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {
+		return notImplementedMove("markdown arrange edits are not implemented");
 	}
 }
 

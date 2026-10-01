@@ -49,6 +49,7 @@ const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 	typeOf: () => notImplementedType("fixture"),
 	renameEdits: () => ({ status: "refused", reason: "NotImplemented", detail: "fixture" }),
 	moveEdits: () => notImplementedMove("fixture"),
+	arrangeEdits: () => notImplementedMove("fixture"),
 	shutdown: () => ({}),
 	forgetModule: ({ module }) => {
 		forgotten.push(module);
