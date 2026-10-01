@@ -448,8 +448,24 @@ export function noInsertionPoint(who: string): Refusal {
 	);
 }
 
-export function alreadyInModule(symbolId: string, module: string): Refusal {
-	return mint(`${symbolId} is already in ${module}, so there is nothing to move`);
+export function alreadyInModule(name: string, module: string): Refusal {
+	return mint(`${name} is already in ${module}. Pass an anchor to reorder it there`);
+}
+
+export function anchorNotTopLevel(anchor: string, module: string): Refusal {
+	return mint(
+		`${anchor} is not a top-level declaration of ${module} outside what moves. Anchor on one, or leave the anchor off to insert at the end`,
+	);
+}
+
+export function anchorNotSibling(anchor: string, name: string, module: string): Refusal {
+	return mint(`${anchor} is not a sibling of ${name} in ${module}. Anchor on a declaration at ${name}'s own level`);
+}
+
+export function anchorNeedsTopLevel(name: string, module: string): Refusal {
+	return mint(
+		`${name} sits inside another declaration, so its move to ${module} takes no anchor. Leave the anchor off to insert at the end`,
+	);
 }
 
 export function occurrencesBlocked(): Refusal {

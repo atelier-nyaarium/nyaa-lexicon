@@ -441,6 +441,8 @@ describe("corpus", () => {
 			"move/barrel-star-reexport-blocks",
 			"move/dynamic-dependency-blocks",
 			"move/tsconfig-alias-specifier",
+			"move/anchored-insertion-verbatim",
+			"move/reorder-within-module",
 		]);
 	});
 

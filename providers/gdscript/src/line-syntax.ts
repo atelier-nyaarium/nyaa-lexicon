@@ -1,8 +1,8 @@
 // Owns GDScript line-head syntax, read from each line's tokens.
 
-import { SourceCursor } from "@nyaa-lexicon/protocol";
+import { type Position, SourceCursor } from "@nyaa-lexicon/protocol";
 import type { ParsedKeyword, ParsedLine, ReferenceToken } from "./parse-model.js";
-import { isIgnorable, type LexedSource } from "./tokens.js";
+import { firstLineToken, isIgnorable, type LexedSource } from "./tokens.js";
 
 //////// Line scanner
 
@@ -94,6 +94,8 @@ export function annotationLine(lexed: LexedSource, line: number): AnnotationRun 
 export interface AnnotationsAbove {
 	/** First owned annotation's line. */
 	first: number;
+	/** Its column, when one is above. */
+	column?: number;
 	names: string[];
 }
 
@@ -114,11 +116,19 @@ export function annotationsAbove(lexed: LexedSource, line: number): AnnotationsA
 		if (run === null) break;
 		if (run.head !== null) {
 			above.first = index;
+			above.column = run.head;
 			above.names.unshift(...run.owned);
 		}
 		if (run.detached) break;
 	}
 	return above;
+}
+
+/** Where a declaration's text starts: its first owned annotation, unless code precedes `head` on `line`. */
+export function declarationStart(lexed: LexedSource, line: number, head: number): Position {
+	const first = firstLineToken(lexed, line);
+	const above = first === undefined || first.character >= head ? annotationsAbove(lexed, line) : undefined;
+	return above?.column === undefined ? { line, character: head } : { line: above.first, character: above.column };
 }
 
 /** Split at `;`. */

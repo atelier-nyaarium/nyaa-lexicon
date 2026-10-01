@@ -3,8 +3,7 @@
 
 import type * as A from "../syntax/ast.js";
 import { isFunction, NodeVisitor, parameters } from "./nodes.js";
-import type { Source } from "./source.js";
-import type { RawMetrics } from "./types.js";
+import type { Range, RawMetrics } from "./types.js";
 
 ////////////////////////////////
 //  Constants
@@ -53,8 +52,8 @@ class MetricsVisitor extends NodeVisitor {
 ////////////////////////////////
 //  Main
 
-export function metricsOf(source: Source, node: A.Node): RawMetrics {
-	const metrics: RawMetrics = { lines: Math.max(1, source.line(node.end) - source.line(node.pos) + 1) };
+export function metricsOf(node: A.Node, range: Range): RawMetrics {
+	const metrics: RawMetrics = { lines: range.end.line - range.start.line + 1 };
 	if (isFunction(node)) {
 		metrics.parameters = parameters(node.args).length;
 		const visitor = new MetricsVisitor();

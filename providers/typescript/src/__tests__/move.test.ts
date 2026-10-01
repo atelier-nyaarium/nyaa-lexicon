@@ -1247,6 +1247,43 @@ describe("move edits", () => {
 		}
 	});
 
+	it("reorders within one module, keeping every import and the framed insertion as written", () => {
+		const text = [
+			'import d, { a, b } from "./m";',
+			'import { c } from "./n";',
+			"",
+			"export const kept = b;",
+			"",
+			"export function moved() { return a + c + d; }",
+			"",
+		].join("\n");
+		const response = move(workspace({ "source.ts": text }), {
+			module: "source.ts",
+			text,
+			exists: true,
+			symbolId: "lexicon typescript source.ts moved().",
+			name: "moved",
+			fromModule: "source.ts",
+			toModule: "source.ts",
+			role: {
+				removal: { start: { line: 4, character: 0 }, end: { line: 6, character: 0 } },
+				insertion: {
+					text: "export function moved() { return a + c + d; }\n\n",
+					position: { line: 3, character: 0 },
+				},
+			},
+			importSites: [],
+			dependencies: [],
+			sites: [],
+		});
+
+		if (response.status !== "ready") throw new Error(`move was refused: ${JSON.stringify(response)}`);
+		expect(response.blocked).toEqual([]);
+		expect(applyEdits(text, response.edits)).toEqual({
+			text: 'import d, { a, b } from "./m";\nimport { c } from "./n";\n\nexport function moved() { return a + c + d; }\n\nexport const kept = b;\n',
+		});
+	});
+
 	// Moving a symbol back where a move left an import of it: the undo of that move.
 	it("takes the target's own import of the moved symbol out instead of refusing it as a collision", () => {
 		const cases = [

@@ -9,6 +9,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { ImportResolver, type ResolveSpecifier } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
+import { ReadContext } from "../readContext";
 import { RefactorPlanner } from "../refactorPlanner";
 import type { SourceWorkspace } from "../sourceWorkspace";
 import type { FactsStamp, IndexStore, StoredDeclaration, StoredImport, StoredReference } from "../store";
@@ -381,7 +382,7 @@ describe("writing a move only over the rows the plan read", () => {
 
 		expect(outcome).toMatchObject({ moved: true, toModule: TARGET });
 		expect(written).toEqual([
-			{ module: MODULE, text: "\n" },
+			{ module: MODULE, text: "" },
 			{ module: TARGET, text: "function alpha() {}\n" },
 		]);
 	});
@@ -679,7 +680,7 @@ describe("refusing a move when the importer's rows moved, covered by its referen
 		const { outcome, written } = await stepOver(world, () => {});
 
 		expect(outcome).toMatchObject({ moved: true, toModule: TARGET });
-		expect(written).toContainEqual({ module: MODULE, text: "\n" });
+		expect(written).toContainEqual({ module: MODULE, text: "" });
 		expect(written).toContainEqual({ module: TARGET, text: "function alpha() {}\n" });
 	});
 
@@ -741,5 +742,90 @@ describe("refusing a move when the importer's rows moved, covered by its referen
 
 			expect(answer).toMatchObject({ ok: false, files: [] });
 		}
+	});
+});
+
+describe("anchoring a move among its siblings", () => {
+	const text = [
+		"class Box {",
+		"\tfirst() {}",
+		"",
+		"\tsecond() {}",
+		"}",
+		"",
+		"namespace N {",
+		"\tfunction inner() {}",
+		"}",
+		"",
+		"function a() {} function b() {}",
+		"",
+		"function top() {}",
+		"",
+	].join("\n");
+	const at = (descriptors: Parameters<typeof composeSymbolId>[0]["descriptors"]) =>
+		composeSymbolId({ language: "test", module: MODULE, descriptors });
+	const box = at([{ kind: "type", name: "Box" }]);
+	const first = at([
+		{ kind: "type", name: "Box" },
+		{ kind: "method", name: "first" },
+	]);
+	const second = at([
+		{ kind: "type", name: "Box" },
+		{ kind: "method", name: "second" },
+	]);
+	const n = at([{ kind: "namespace", name: "N" }]);
+	const inner = at([
+		{ kind: "namespace", name: "N" },
+		{ kind: "method", name: "inner" },
+	]);
+	const a = at([{ kind: "method", name: "a" }]);
+	const b = at([{ kind: "method", name: "b" }]);
+	const top = at([{ kind: "method", name: "top" }]);
+	const declared = (symbolId: string, name: string, kind: string, span: Range, containerId?: string) =>
+		({
+			factId: `decl:${symbolId}`,
+			module: MODULE,
+			symbolId,
+			kind,
+			name,
+			range: span,
+			selectionRange: span,
+			visibility: "public",
+			...(containerId === undefined ? {} : { containerId }),
+		}) as StoredDeclaration;
+	const world: World = {
+		text,
+		declarations: [
+			declared(box, "Box", "class", range(0, 0, 4, 1)),
+			declared(first, "first", "method", range(1, 1, 1, 11), box),
+			declared(second, "second", "method", range(3, 1, 3, 12), box),
+			declared(n, "N", "namespace", range(6, 0, 8, 1)),
+			declared(inner, "inner", "function", range(7, 1, 7, 20), n),
+			declared(a, "a", "function", range(10, 0, 10, 15)),
+			declared(b, "b", "function", range(10, 16, 10, 31)),
+			declared(top, "top", "function", range(12, 0, 12, 17)),
+		],
+	};
+	const plan = (symbolId: string, anchor: { symbolId: string; side: "before" | "after" }) =>
+		plannerFor(world).planMove(symbolId, MODULE, new ReadContext(storeFor(world)), anchor);
+
+	it("lands a member beside its siblings, and restores it beside them", () => {
+		expect(plan(second, { symbolId: first, side: "before" })).toMatchObject({
+			ok: true,
+			insertion: { line: 1, character: 0 },
+			restore: { symbolId: first, side: "after" },
+		});
+	});
+
+	it("refuses an anchor at another level, or one sharing a line with the sibling it would split from", () => {
+		expect(
+			[
+				plan(top, { symbolId: inner, side: "before" }),
+				plan(second, { symbolId: top, side: "before" }),
+				plan(top, { symbolId: b, side: "before" }),
+				plan(top, { symbolId: a, side: "after" }),
+				plan(top, { symbolId: n, side: "after" }),
+			].map((planned) => planned.ok),
+		).toEqual([false, false, false, false, true]);
 	});
 });

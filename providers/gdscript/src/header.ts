@@ -1,7 +1,7 @@
 // Owns GDScript header spans, handed to the protocol's one renderer.
 
 import { type HeaderFold, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
-import { annotationLine, annotationsAbove } from "./line-syntax.js";
+import { declarationStart } from "./line-syntax.js";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
 import {
 	firstLineToken,
@@ -99,12 +99,12 @@ export class HeaderReader {
 		const head = tokenAt(this.lexed, line, request.head);
 		const name = tokenAt(this.lexed, line, request.name);
 		if (head < 0 || name < 0) return undefined;
-		const first = this.firstLine(line, request.head);
-		const start = first === line ? (this.starts[line] ?? 0) + request.head : this.codeStart(first);
+		const first = declarationStart(this.lexed, line, request.head);
+		const start = (this.starts[first.line] ?? 0) + first.character;
 		const scan = this.scan(head, name, request);
 		const omit = [...scan.joins];
 		const last = this.lineAt(scan.end);
-		for (let index = first; index <= last; index++) {
+		for (let index = first.line; index <= last; index++) {
 			const comment = this.comments.get(index);
 			if (comment !== undefined) omit.push(comment);
 		}
@@ -127,18 +127,6 @@ export class HeaderReader {
 			if (string.end <= end) found.push(string);
 		}
 		return found;
-	}
-
-	/** Line of the first owned annotation. */
-	private firstLine(line: number, head: number): number {
-		const first = firstLineToken(this.lexed, line);
-		return first !== undefined && first.character < head ? line : annotationsAbove(this.lexed, line).first;
-	}
-
-	/** Start of its owned annotations. */
-	private codeStart(line: number): number {
-		const column = annotationLine(this.lexed, line)?.head ?? firstLineToken(this.lexed, line)?.character ?? 0;
-		return (this.starts[line] ?? 0) + column;
 	}
 
 	private scan(from: number, name: number, request: HeaderRequest): Scan {

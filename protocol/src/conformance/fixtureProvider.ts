@@ -58,6 +58,8 @@ export function makeFixtureMoveEdits(request: MoveEditsRequest): MoveEditsRespon
 	if (removal === undefined && insertion === undefined) return makeReferenceMoveEdits(request);
 	if (
 		insertion !== undefined &&
+		// A reorder's module already holds the moved name.
+		request.fromModule !== request.toModule &&
 		request.exists &&
 		extractDeclarations(request.module, request.text).some((declaration) => declaration.name === request.name)
 	) {
@@ -79,7 +81,8 @@ export function makeFixtureMoveEdits(request: MoveEditsRequest): MoveEditsRespon
 		if (at === undefined) {
 			return { status: "refused", reason: "ParseError", detail: "the insertion point is outside the module" };
 		}
-		const leading = request.text.length > 0 && !request.text.endsWith("\n") ? "\n" : "";
+		const leading =
+			insertion.position === undefined && request.text.length > 0 && !request.text.endsWith("\n") ? "\n" : "";
 		const trailing = insertion.text.endsWith("\n") ? "" : "\n";
 		edits.push({ range: at, newText: `${leading}${insertion.text}${trailing}` });
 	}

@@ -1,11 +1,11 @@
 // Owns GDScript declaration extraction and declaration spans.
 
-import { defined, type Metrics, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import { defined, type Metrics, type Position, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
 import { type Blocks, blockHeader, bodyEndLine, hasCode, headerEndLine, indentedBodyEnd } from "./blocks.js";
 import type { LogicalLine } from "./expression.js";
-import { HeaderReader, type HeaderStop } from "./header.js";
+import { HeaderReader, type HeaderRequest, type HeaderStop } from "./header.js";
 import { withMemberInsertLines } from "./layout.js";
-import { annotationLine, basenameOf, parseLineHeads } from "./line-syntax.js";
+import { annotationLine, basenameOf, declarationStart, parseLineHeads } from "./line-syntax.js";
 import type {
 	ActiveFunctionHeader,
 	ComposeSymbolId,
@@ -35,17 +35,25 @@ import {
 /** Before a mid-line `var`: a pattern's bracket, brace, comma or entry colon, or an inline body's colon. */
 const BINDING_OPENERS = new Set(["[", "{", ",", ":"]);
 
-function rangeOf(coordinates: TextCoordinates, line: SourceLine): Range {
-	return rangeOfLines(coordinates, line, line);
+/** Its text's start, from column zero when only indentation precedes it. */
+function rangeStart(lexed: LexedSource, line: number, head: number): Position {
+	const start = declarationStart(lexed, line, head);
+	const first = firstLineToken(lexed, start.line);
+	return first !== undefined && first.character < start.character ? start : { line: start.line, character: 0 };
 }
 
-function rangeOfLines(coordinates: TextCoordinates, start: SourceLine, end: SourceLine): Range {
-	const startOffset = coordinates.offsetAt({ line: start.line, character: 0 });
+function rangeTo(coordinates: TextCoordinates, start: Position, end: SourceLine): Range {
+	const startOffset = coordinates.offsetAt(start);
 	const endOffset = coordinates.offsetAt({ line: end.line, character: end.end });
 	if (startOffset === undefined || endOffset === undefined) throw new Error("source line has no coordinate");
 	const range = coordinates.rangeAt(startOffset, endOffset);
 	if (range === undefined) throw new Error("source line range is invalid");
 	return range;
+}
+
+/** Its own start through `end`. */
+function extendTo(coordinates: TextCoordinates, declaration: DeclarationFact, end: SourceLine): void {
+	declaration.range = rangeTo(coordinates, declaration.range.start, end);
 }
 
 function selectionRangeOf(line: SourceLine, token: Token): Range {
@@ -61,7 +69,7 @@ function visibilityOf(name: string, local: boolean): Visibility {
 }
 
 /** Where the header stops, and whether its colon opens a type. */
-function lineHeader(headers: HeaderReader, line: SourceLine, parsed: ParsedLine, name: Token): string | undefined {
+function lineRequest(line: SourceLine, parsed: ParsedLine, name: Token): HeaderRequest {
 	const keyword = parsed.keyword;
 	const stop: HeaderStop =
 		keyword === "func" || keyword === "var" || keyword === "const" || keyword === "for" || keyword === "class"
@@ -70,11 +78,11 @@ function lineHeader(headers: HeaderReader, line: SourceLine, parsed: ParsedLine,
 				? "brace"
 				: "line";
 	const typed = keyword === "var" || keyword === "const" || keyword === "for";
-	return headers.header({ line, head: parsed.head, name: name.start, stop, typed });
+	return { line, head: parsed.head, name: name.start, stop, typed };
 }
 
-function memberHeader(headers: HeaderReader, line: SourceLine, member: Token): string | undefined {
-	return headers.header({ line, head: member.start, name: member.start, stop: "member" });
+function memberRequest(line: SourceLine, member: Token): HeaderRequest {
+	return { line, head: member.start, name: member.start, stop: "member" };
 }
 
 /** `get` or `set`, then its parameters, colon, or `=` and a function. */
@@ -135,30 +143,31 @@ function declarationKindFor(keyword: ParsedKeyword, local: boolean): Declaration
 	return "variable";
 }
 
+/** Its range and signature start from the one request. */
 function makeDeclaration(
-	compose: ComposeSymbolId,
-	module: string,
-	coordinates: TextCoordinates,
-	line: SourceLine,
-	token: Token,
+	script: ParsedScript,
+	headers: HeaderReader,
+	request: HeaderRequest,
 	keyword: ParsedKeyword,
 	name: string,
 	scope: Scope,
 	languageKind: string | undefined,
 	visibility: Visibility,
-	signature: string | undefined,
 	exported?: boolean,
 ): DeclarationFact {
+	const { compose, module, coordinates, lexed } = script;
+	const { line, head } = request;
 	const descriptors = [...scope.descriptors, descriptorFor(keyword, name)];
 	const symbolId = compose({ language: "gdscript", module, descriptors });
 	const local = scope.functionScope;
+	const signature = headers.header(request);
 	return {
 		symbolId,
 		kind: declarationKindFor(keyword, local),
 		...defined({ languageKind }),
 		name,
-		range: rangeOf(coordinates, line),
-		selectionRange: selectionRangeOf(line, token),
+		range: rangeTo(coordinates, rangeStart(lexed, line.line, head), line),
+		selectionRange: selectionRangeOf(line, { name, start: request.name }),
 		visibility,
 		...defined({ exported, signature }),
 		...(scope.containerId === "" ? {} : { containerId: scope.containerId }),
@@ -168,7 +177,7 @@ function makeDeclaration(
 function makeImplicitClass(
 	compose: ComposeSymbolId,
 	module: string,
-	coordinates: TextCoordinates,
+	range: Range,
 	line: SourceLine,
 	name: string,
 	className: Token | null,
@@ -185,7 +194,7 @@ function makeImplicitClass(
 		kind: "class",
 		languageKind: className === null ? "script" : "class_name",
 		name,
-		range: rangeOf(coordinates, line),
+		range,
 		selectionRange: selectionRangeOf(line, token),
 		visibility: visibilityOf(name, false),
 		...defined({ signature }),
@@ -374,13 +383,16 @@ function opensLambdaBlock(blocks: Blocks, statement: LogicalLine, name: number):
 /** A script's `class_name` and `extends` lines, which only annotations and strings may precede. */
 export interface ScriptHeader {
 	line: number;
+	/** Column of the first header line's head. */
+	head: number;
 	/** The `extends` target: a class name or a path. */
 	base?: string;
 }
 
-function isScriptHeader(lexed: LexedSource, line: SourceLine): boolean {
+/** A `class_name` or `extends` head at column zero. */
+function scriptHeadOn(lexed: LexedSource, line: SourceLine): ParsedLine | undefined {
 	const head = parseLineHeads(lexed, line.line)[0];
-	return line.indent === 0 && (head?.keyword === "class_name" || head?.keyword === "extends");
+	return line.indent === 0 && (head?.keyword === "class_name" || head?.keyword === "extends") ? head : undefined;
 }
 
 /** A header line's `extends` target. */
@@ -400,8 +412,9 @@ export function scriptHeaderOf(lexed: LexedSource): ScriptHeader | undefined {
 		if (isIgnorable(lexed, line.line)) continue;
 		if (header === undefined && annotationLine(lexed, line.line) !== null) continue;
 		if (firstLineToken(lexed, line.line)?.kind === "string") continue;
-		if (!isScriptHeader(lexed, line)) break;
-		header ??= { line: line.line };
+		const head = scriptHeadOn(lexed, line);
+		if (head === undefined) break;
+		header ??= { line: line.line, head: head.head };
 		const base = baseOn(lexed, line.line);
 		if (base !== undefined) header.base ??= base;
 	}
@@ -423,14 +436,17 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 	const classHeader =
 		classLine?.parsed === undefined || className === null
 			? undefined
-			: lineHeader(headers, classLine.line, classLine.parsed, className);
+			: headers.header(lineRequest(classLine.line, classLine.parsed, className));
 	const rootName = className?.name ?? basenameOf(module);
 	const rootLine = classLine?.line ?? { line: 0, start: 0, indent: 0, end: 0, hasString: false, endsInString: false };
-	const root = makeImplicitClass(compose, module, coordinates, rootLine, rootName, className, classHeader);
 	// Godot's class extents: header to end of file.
-	const firstLine = lines[scriptHeaderOf(lexed)?.line ?? 0] ?? rootLine;
-	const lastLine = lines[lines.length - 1] ?? firstLine;
-	root.range = rangeOfLines(coordinates, firstLine, lastLine);
+	const scriptHeader = scriptHeaderOf(lexed);
+	const rootStart =
+		scriptHeader === undefined
+			? { line: 0, character: 0 }
+			: rangeStart(lexed, scriptHeader.line, scriptHeader.head);
+	const rootRange = rangeTo(coordinates, rootStart, lines[lines.length - 1] ?? rootLine);
+	const root = makeImplicitClass(compose, module, rootRange, rootLine, rootName, className, classHeader);
 	const declarations: DeclarationFact[] = [root];
 	const scopes: Scope[] = [
 		{
@@ -447,17 +463,14 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 			const member = { name: token.value, start: token.character };
 			declarations.push(
 				makeDeclaration(
-					compose,
-					module,
-					coordinates,
-					memberLine,
-					member,
+					script,
+					headers,
+					memberRequest(memberLine, member),
 					"const",
 					member.name,
 					scope,
 					"enumMember",
 					visibilityOf(member.name, false),
-					memberHeader(headers, memberLine, member),
 				),
 			);
 		}
@@ -476,7 +489,7 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 		const line = lines[lineIndex] as SourceLine;
 		if (activeFunctionHeader !== null) {
 			if (line.line < activeFunctionHeader.endLine) continue;
-			activeFunctionHeader.declaration.range = rangeOfLines(coordinates, activeFunctionHeader.start, line);
+			extendTo(coordinates, activeFunctionHeader.declaration, line);
 			openFunction(activeFunctionHeader);
 			activeFunctionHeader = null;
 			continue;
@@ -511,17 +524,14 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 
 			if (parsed.keyword === "class") {
 				const declaration = makeDeclaration(
-					compose,
-					module,
-					coordinates,
-					line,
-					parsed.name,
+					script,
+					headers,
+					lineRequest(line, parsed, parsed.name),
 					parsed.keyword,
 					parsed.name.name,
 					scope,
 					"innerClass",
 					visibilityOf(parsed.name.name, false),
-					lineHeader(headers, line, parsed, parsed.name),
 				);
 				declarations.push(declaration);
 				scopes.push({
@@ -534,20 +544,17 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 			}
 			if (parsed.keyword === "enum") {
 				const declaration = makeDeclaration(
-					compose,
-					module,
-					coordinates,
-					line,
-					parsed.name,
+					script,
+					headers,
+					lineRequest(line, parsed, parsed.name),
 					parsed.keyword,
 					parsed.name.name,
 					scope,
 					"enum",
 					visibilityOf(parsed.name.name, false),
-					lineHeader(headers, line, parsed, parsed.name),
 				);
 				const body = enumBody(lexed, line.line);
-				declaration.range = rangeOfLines(coordinates, line, lines[body.lastLine] as SourceLine);
+				extendTo(coordinates, declaration, lines[body.lastLine] as SourceLine);
 				declarations.push(declaration);
 				addEnumMembers(body.members, {
 					...scope,
@@ -570,17 +577,14 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 							? undefined
 							: "property";
 			const declaration = makeDeclaration(
-				compose,
-				module,
-				coordinates,
-				line,
-				parsed.name,
+				script,
+				headers,
+				lineRequest(line, parsed, parsed.name),
 				parsed.keyword,
 				parsed.name.name,
 				scope,
 				languageKind,
 				visibilityOf(parsed.name.name, local),
-				lineHeader(headers, line, parsed, parsed.name),
 			);
 			const nameIndex = tokenAt(lexed, line.line, parsed.name.start);
 			const statementIndex = blocks.owner[nameIndex] ?? -1;
@@ -588,7 +592,7 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 			if ((parsed.keyword === "var" || parsed.keyword === "const") && statement !== undefined) {
 				if (opensLambdaBlock(blocks, statement, nameIndex)) {
 					const end = indentedBodyEnd(blocks, statementIndex, statement.indent, statement.lastLine);
-					declaration.range = rangeOfLines(coordinates, line, lines[end] as SourceLine);
+					extendTo(coordinates, declaration, lines[end] as SourceLine);
 					// A class-level lambda's locals are not members.
 					if (!local)
 						scopes.push({
@@ -598,12 +602,12 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 							functionScope: true,
 						});
 				} else if (parsed.keyword === "var" && !local) {
-					declaration.range = rangeOfLines(coordinates, line, accessorEndLine(lexed, lineIndex, indent));
+					extendTo(coordinates, declaration, accessorEndLine(lexed, lineIndex, indent));
 				}
 			}
 			declarations.push(declaration);
 			if (parsed.keyword !== "func") continue;
-			const header = { indent, scope, declaration, start: line, endLine: headerEndLine(blocks, declaration) };
+			const header = { indent, scope, declaration, endLine: headerEndLine(blocks, declaration) };
 			if (header.endLine > line.line) activeFunctionHeader = header;
 			else openFunction(header);
 		}
@@ -612,17 +616,14 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 		for (const binding of inlineBindings(lexed, line.line)) {
 			declarations.push(
 				makeDeclaration(
-					compose,
-					module,
-					coordinates,
-					line,
-					binding.name,
+					script,
+					headers,
+					{ line, head: binding.head, name: binding.name.start, stop: "member" },
 					"var",
 					binding.name.name,
 					scope,
 					undefined,
 					"local",
-					headers.header({ line, head: binding.head, name: binding.name.start, stop: "member" }),
 				),
 			);
 		}
@@ -630,11 +631,10 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 
 	const spanned = declarations.map((declaration) => {
 		if (declaration.kind !== "method" && declaration.languageKind !== "innerClass") return declaration;
-		const start = lines[declaration.range.start.line] as SourceLine | undefined;
 		const end = lines[bodyEndLine(blocks, declaration) - 1] as SourceLine | undefined;
-		return start === undefined || end === undefined
+		return end === undefined
 			? declaration
-			: { ...declaration, range: rangeOfLines(coordinates, start, end) };
+			: { ...declaration, range: rangeTo(coordinates, declaration.range.start, end) };
 	});
 	return withMemberInsertLines(spanned, blocks, coordinates);
 }
@@ -747,30 +747,21 @@ function metricsForDeclaration(blocks: Blocks, declaration: DeclarationFact): Me
 }
 
 function extractGeneric(script: ParsedScript): DeclarationFact[] {
-	const { coordinates, lexed, module, compose } = script;
+	const { lexed } = script;
 	const declarations: DeclarationFact[] = [];
 	const headers = new HeaderReader(script.text, lexed);
 	for (const line of lexed.lines) {
 		const parsed = parseLineHeads(lexed, line.line, true)[0];
 		if (parsed === undefined || parsed.name === null) continue;
-		const signature = headers.header({
-			line,
-			head: parsed.head,
-			name: parsed.name.start,
-			stop: parsed.keyword === "const" ? "line" : "brace",
-		});
 		const declaration = makeDeclaration(
-			compose,
-			module,
-			coordinates,
-			line,
-			parsed.name,
+			script,
+			headers,
+			{ line, head: parsed.head, name: parsed.name.start, stop: parsed.keyword === "const" ? "line" : "brace" },
 			parsed.keyword,
 			parsed.name.name,
 			{ indent: -1, descriptors: [], containerId: "", functionScope: false },
 			undefined,
 			"public",
-			signature,
 			true,
 		);
 		declarations.push({

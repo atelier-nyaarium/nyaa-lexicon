@@ -5,6 +5,7 @@ import {
 	type CommittedStep,
 	defined,
 	type InsertOutcome,
+	type MoveAnchor,
 	type MoveOutcome,
 	type RefactorIssue,
 	type RenameStepOutcome,
@@ -17,6 +18,7 @@ import type { ReadContext } from "./readContext.js";
 import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
 import {
+	anchorNotTopLevel,
 	changedWhilePlanned,
 	factsMovedWhilePlanned,
 	moveCycle,
@@ -74,7 +76,7 @@ export function refactorMove(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
-	args: { symbolId: string; toModule: string },
+	args: { symbolId: string; toModule: string; anchor?: MoveAnchor | undefined },
 	hold: StepPolicy,
 	cancelled?: () => Refusal | null,
 ): Promise<StepResult> {
@@ -82,6 +84,7 @@ export function refactorMove(
 	let touched: string[] = [];
 	let source = "";
 	let target = args.toModule;
+	let restore: MoveAnchor | undefined;
 	let migrated: { answers: number; gaps: number } | undefined;
 	const idMap = new Map<string, string>();
 
@@ -101,7 +104,10 @@ export function refactorMove(
 					modules: touched,
 					toModule: target,
 					files,
-					reverse: reverseOf("move", requested, root) ?? { kind: "move", symbolId: root, toModule: source },
+					reverse: withRestore(
+						reverseOf("move", requested, root) ?? { kind: "move", symbolId: root, toModule: source },
+						restore,
+					),
 					...defined({ migrated }),
 					issues,
 				};
@@ -109,11 +115,12 @@ export function refactorMove(
 			plan: async () => {
 				// Held past the call, so the stale check below asks what it stamped.
 				const context = service.newReadContext();
-				const plan = service.planMove(args.symbolId, args.toModule, context);
+				const plan = service.planMove(args.symbolId, args.toModule, context, args.anchor);
 				if (!plan.ok) return { refused: plan.reason };
 				requested = plan.symbolId;
 				source = plan.fromModule;
 				target = plan.toModule;
+				restore = plan.restore;
 				const edits = await service.moveEdits(plan, context);
 				if (!edits.ok) return { refused: edits.reason, issues: edits.issues };
 				touched = edits.files.map((file) => file.module);
@@ -384,6 +391,11 @@ export function refactorInsert(
 ////////////////////////////////
 //  Functions & Helpers
 
+/** A move's reverse lands where the declaration left. */
+function withRestore(reverse: ReverseStep, restore: MoveAnchor | undefined): ReverseStep {
+	return reverse.kind === "move" && restore !== undefined ? { ...reverse, anchor: restore } : reverse;
+}
+
 export function renameStepOutcome(result: StepResult): RenameStepOutcome {
 	if (!result.done) return { renamed: false, issues: result.issues, reason: result.reason };
 	return { renamed: true, modules: result.modules, ...defined({ migrated: result.migrated }), issues: result.issues };
@@ -399,13 +411,13 @@ export async function refactorMoveTogether(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
-	args: { symbolId: string; toModule: string; together: readonly string[] },
+	args: { symbolId: string; toModule: string; together: readonly string[]; anchor?: MoveAnchor | undefined },
 ): Promise<MoveOutcome> {
 	const context = service.newReadContext();
 	const members: MoveMember[] = [];
 	let from: string | undefined;
 	for (const symbolId of new Set([args.symbolId, ...args.together])) {
-		const plan = service.planMove(symbolId, args.toModule, context);
+		const plan = service.planMove(symbolId, args.toModule, context, args.anchor);
 		if (!plan.ok) return { moved: false, issues: [], reason: plan.reason };
 		from ??= plan.fromModule;
 		if (plan.fromModule !== from) {
@@ -421,20 +433,29 @@ export async function refactorMoveTogether(
 	const ordered = moveOrder(members);
 	if ("cycle" in ordered) return { moved: false, issues: [], reason: moveCycle(ordered.cycle) };
 
+	const anchored = args.anchor?.symbolId;
+	const mover = members.find((member) => anchored !== undefined && member.closure.includes(anchored));
+	if (mover !== undefined) return { moved: false, issues: [], reason: anchorNotTopLevel(mover.name, args.toModule) };
+
 	const order: string[] = [];
 	const modules = new Set<string>();
 	const issues: RefactorIssue[] = [];
 	let toModule: string | undefined;
+	let anchor = args.anchor;
 	for (const member of ordered.order) {
+		let root: string | undefined;
 		// A throw after earlier members landed must still name them.
 		const step = await refactorMove(
 			service,
 			transactions,
 			write,
-			{ symbolId: member.symbolId, toModule: args.toModule },
+			{ symbolId: member.symbolId, toModule: args.toModule, ...defined({ anchor }) },
 			"join",
 		).then(
-			moveOutcome,
+			(result) => {
+				if (result.done) root = result.root;
+				return moveOutcome(result);
+			},
 			(error: unknown): MoveOutcome => ({
 				moved: false,
 				issues: [],
@@ -449,6 +470,8 @@ export async function refactorMoveTogether(
 		for (const module of step.modules ?? []) modules.add(module);
 		toModule = step.toModule ?? toModule;
 		order.push(member.name);
+		// Each later member lands after the one before it, so their order holds.
+		if (anchor?.side === "after" && root !== undefined) anchor = { symbolId: root, side: "after" };
 	}
 	return { moved: true, ...defined({ toModule }), modules: [...modules], issues, order };
 }

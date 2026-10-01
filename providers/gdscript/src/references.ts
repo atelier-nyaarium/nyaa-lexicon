@@ -108,15 +108,17 @@ function referenceBlocks(lexed: LexedSource, bodies: Blocks, declarations: Decla
 	const lines = lexed.lines;
 	const blocks: ReferenceBlock[] = [];
 	for (const declaration of declarations.slice(1)) {
+		// From the name line: annotations above read in the enclosing scope.
+		const head = declaration.selectionRange.start.line;
 		// Accessors or a lambda's block.
-		if (declaration.kind === "property" && declaration.range.end.line > declaration.range.start.line) {
-			let bodyLine = declaration.range.start.line + 1;
+		if (declaration.kind === "property" && declaration.range.end.line > head) {
+			let bodyLine = head + 1;
 			while (bodyLine < lines.length && isIgnorable(lexed, bodyLine)) bodyLine++;
 			const body = lines[bodyLine] as SourceLine | undefined;
 			if (body === undefined) continue;
 			// A lambda's parameters sit on the header line.
 			blocks.push({
-				startLine: isAccessorHead(lexed, bodyLine) ? bodyLine : declaration.range.start.line,
+				startLine: isAccessorHead(lexed, bodyLine) ? bodyLine : head,
 				endLine: declaration.range.end.line,
 				indent: body.indent,
 				containerId: declaration.symbolId,
@@ -125,11 +127,11 @@ function referenceBlocks(lexed: LexedSource, bodies: Blocks, declarations: Decla
 			continue;
 		}
 		if (declaration.kind !== "method" && declaration.languageKind !== "innerClass") continue;
-		const line = lines[declaration.range.start.line] as SourceLine | undefined;
+		const line = lines[head] as SourceLine | undefined;
 		if (line === undefined) continue;
 		const indent = line.indent;
 		blocks.push({
-			startLine: declaration.range.start.line,
+			startLine: head,
 			endLine: bodyEndLine(bodies, declaration) - 1,
 			indent,
 			containerId: declaration.symbolId,
@@ -196,12 +198,13 @@ function opensParameterBlock(tokens: ReferenceToken[], index: number): boolean {
 	return after >= 0 && (tokens[after] as ReferenceToken).value === ":";
 }
 
-/** Lines a property's header and accessors span. */
+/** Lines from a property's name through its accessors. */
 function accessorLinesOf(declarations: readonly DeclarationFact[]): Set<number> {
 	const lines = new Set<number>();
 	for (const declaration of declarations) {
 		if (declaration.kind !== "property") continue;
-		for (let line = declaration.range.start.line; line <= declaration.range.end.line; line++) lines.add(line);
+		const head = declaration.selectionRange.start.line;
+		for (let line = head; line <= declaration.range.end.line; line++) lines.add(line);
 	}
 	return lines;
 }

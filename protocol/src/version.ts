@@ -112,7 +112,11 @@ export type Compatibility =
 // `FixFailed` issue: `lexicon.json`'s `fix` ran on a step's files and did not exit cleanly.
 // `refactorMove` takes `together`, more declarations moving with it, one step each, each after the
 // ones it uses; `MoveOutcome.order` names them. An older daemon ignores `together` and moves one.
-export const PROTOCOL_VERSION = "4.2.0" as const;
+// 4.3.0: `previewMove`, `planMove` and `refactorMove` take `anchor`, a top-level declaration in the
+// target the move lands before or after (for a reorder, a sibling); with it the target may be the
+// source, which reorders. An older daemon ignores it: a move to another module lands at the end, and
+// a reorder refuses.
+export const PROTOCOL_VERSION = "4.3.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 4;

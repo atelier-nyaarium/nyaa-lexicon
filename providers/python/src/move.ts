@@ -57,7 +57,14 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 		return { status: "refused", reason: "ParseError", detail: syntaxError.message };
 	}
 
-	if (sameModule(request.module, request.toModule) && request.exists && declaresName(facts, request.name)) {
+	// A reorder's module already declares the moved name.
+	const reorder = sameModule(request.fromModule, request.toModule);
+	if (
+		!reorder &&
+		sameModule(request.module, request.toModule) &&
+		request.exists &&
+		declaresName(facts, request.name)
+	) {
 		return {
 			status: "refused",
 			reason: "TargetCollision",
@@ -75,6 +82,50 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 			edits.push({ range: request.role.removal, newText: "" });
 		}
 	}
+
+	// A reorder keeps every binding.
+	if (!reorder) {
+		const rebound = rebindEdits(request, coordinates, facts);
+		edits.push(...rebound.edits);
+		blocked.push(...rebound.blocked);
+	}
+
+	if (request.role.insertion !== undefined) {
+		const position =
+			request.role.insertion.position === undefined
+				? request.text.length
+				: coordinates.offsetAt(request.role.insertion.position);
+		if (position === undefined) {
+			blocked.push(
+				blockedSite(
+					request.role.insertion.position === undefined
+						? undefined
+						: { start: request.role.insertion.position, end: request.role.insertion.position },
+					"ParseError",
+					"the insertion position is outside the module",
+				),
+			);
+		} else {
+			const point = coordinates.positionAt(position);
+			if (point === undefined) {
+				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
+			} else {
+				edits.push({ range: { start: point, end: point }, newText: request.role.insertion.text });
+			}
+		}
+	}
+
+	return validateEdits(coordinates, edits, blocked);
+}
+
+/** Binding edits for a move to another module. */
+function rebindEdits(
+	request: MoveEditsRequest,
+	coordinates: TextCoordinates,
+	facts: PythonMoveFacts,
+): { edits: TextEdit[]; blocked: Array<{ range?: Range; reason: MoveBlockedReason; detail: string }> } {
+	const blocked: Array<{ range?: Range; reason: MoveBlockedReason; detail: string }> = [];
+	const edits: TextEdit[] = [];
 
 	for (const site of request.importSites) {
 		const result = rewriteImportSite(request, coordinates, facts, site);
@@ -118,32 +169,7 @@ export function makeMoveEdits(request: MoveEditsRequest, facts: PythonMoveFacts)
 		}
 	}
 
-	if (request.role.insertion !== undefined) {
-		const position =
-			request.role.insertion.position === undefined
-				? request.text.length
-				: coordinates.offsetAt(request.role.insertion.position);
-		if (position === undefined) {
-			blocked.push(
-				blockedSite(
-					request.role.insertion.position === undefined
-						? undefined
-						: { start: request.role.insertion.position, end: request.role.insertion.position },
-					"ParseError",
-					"the insertion position is outside the module",
-				),
-			);
-		} else {
-			const point = coordinates.positionAt(position);
-			if (point === undefined) {
-				blocked.push({ reason: "ParseError", detail: "the insertion position is outside the module" });
-			} else {
-				edits.push({ range: { start: point, end: point }, newText: request.role.insertion.text });
-			}
-		}
-	}
-
-	return validateEdits(coordinates, edits, blocked);
+	return { edits, blocked };
 }
 
 ////////////////////////////////

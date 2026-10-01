@@ -431,6 +431,44 @@ describe("Python move edits", () => {
 		expect(response).toMatchObject({ status: "refused", reason: "TargetCollision" });
 	});
 
+	it("reorders within one module and keeps its imports as written", async () => {
+		const text =
+			"from math import floor\n\ndef helper(value):\n    return value\n\ndef total(value):\n    return value\n\ndef add(value):\n    return floor(helper(value))\n";
+		const request: MoveEditsRequest = {
+			module: "src/cart.py",
+			text,
+			exists: true,
+			symbolId: symbolId("src/cart.py", "add"),
+			name: "add",
+			fromModule: "src/cart.py",
+			toModule: "src/cart.py",
+			role: {
+				removal: { start: { line: 7, character: 0 }, end: { line: 10, character: 0 } },
+				insertion: {
+					text: "def add(value):\n    return floor(helper(value))\n\n",
+					position: { line: 5, character: 0 },
+				},
+			},
+			importSites: [],
+			dependencies: [
+				{
+					name: "helper",
+					origin: {
+						kind: "sourceModule",
+						symbolId: symbolId("src/cart.py", "helper"),
+						name: "helper",
+						exported: true,
+					},
+				},
+			],
+			sites: [],
+		};
+
+		expect(await apply(text, request, { "src/cart.py": text })).toBe(
+			"from math import floor\n\ndef helper(value):\n    return value\n\ndef add(value):\n    return floor(helper(value))\n\ndef total(value):\n    return value\n",
+		);
+	});
+
 	it("creates a new target file from the supplied insertion", async () => {
 		const text = "";
 		const request: MoveEditsRequest = {

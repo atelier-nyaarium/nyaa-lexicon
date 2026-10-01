@@ -136,6 +136,13 @@ export const MoveImportSiteSchema = z
 
 export type MoveImportSite = z.infer<typeof MoveImportSiteSchema>;
 
+/** A top-level declaration in the target that a moved declaration lands beside. */
+export const MoveAnchorSchema = z
+	.object({ symbolId: z.string().min(1), side: z.enum(["before", "after"]) })
+	.meta({ id: "MoveAnchor" });
+
+export type MoveAnchor = z.infer<typeof MoveAnchorSchema>;
+
 /** What this module gets: text removed, text inserted, or neither for a plain referencing module. */
 export const MoveRoleSchema = z
 	.object({

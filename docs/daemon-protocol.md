@@ -341,6 +341,21 @@ Two that use each other, or a member from another module, refuse the whole call 
 moves. A refused or failed step stops the rest and keeps the steps already taken. `MoveOutcome.order`
 names what moved, in order. `planMove` and `previewMove` take one declaration.
 
+### Placing a move
+
+`previewMove`, `planMove` and `refactorMove` take `anchor: { symbolId, side }`, a declaration that
+stays put: top-level in the target, or for a reorder a sibling of the moved one. A declaration
+inside another takes no anchor when it leaves its module. The move lands on whole lines before or
+after it, framed by a blank line where a neighbor is not blank; without one the target's end takes it. With an
+anchor the target may be the source module, which reorders: one request carries the removal and the
+insertion, and no import changes. A same-module move without one refuses. A removal alone on its
+lines takes them whole, with one blank line beside them.
+
+`MovePlan.insertion` is the anchored line. `MovePlan.restore` is the anchor that puts the
+declaration back: its next sibling, before it, else its previous, after it. A committed
+move's `reverse` carries it. With `together`, `before` keeps the members in order ahead of the
+anchor and `after` lands each after the one before it; an anchor inside the set refuses.
+
 ### Committed steps
 
 `refactorRenameCommitted` and `refactorMoveCommitted` take the `refactorRename` request or a

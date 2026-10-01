@@ -49,16 +49,6 @@ const STRING_CLOSERS: ReadonlySet<TokenType> = new Set(["FSTRING_END", "TSTRING_
 ////////////////////////////////
 //  Functions & Helpers
 
-/** The operator before an expression, past parentheses around it. */
-function operatorBefore(source: Source, offset: number, symbol: string): Token | undefined {
-	for (let index = source.tokenAt(offset) - 1; index >= 0; index--) {
-		const token = source.tokens[index] as Token;
-		if (token.type === "OP" && token.string === symbol) return token;
-		if (token.type !== "NL" && token.type !== "COMMENT" && token.string !== "(") return undefined;
-	}
-	return undefined;
-}
-
 /** The span widened over parentheses it closes or opens without holding both. */
 function balanced(source: Source, start: number, end: number): Span | undefined {
 	let first = source.tokenAt(start);
@@ -82,13 +72,6 @@ function balanced(source: Source, start: number, end: number): Span | undefined 
 		stop++;
 	}
 	return [(source.tokens[first] as Token).pos, (source.tokens[stop - 1] as Token).end];
-}
-
-function headerStart(source: Source, node: A.Node): number | undefined {
-	const decorators = node.type === "ClassDef" || isFunction(node) ? node.decoratorList : [];
-	const first = decorators[0];
-	if (first === undefined) return node.pos;
-	return operatorBefore(source, first.pos, "@")?.pos;
 }
 
 /** Expressions whose literal containers fold; targets, annotations and types stay whole. */
@@ -147,7 +130,7 @@ function headerShape(
 	// Unpacked: no value of its own.
 	if (!whole) return [undefined, target.pos, target.end, []];
 	if (node.type === "Assign" && node.targets.length > 1) {
-		const equals = operatorBefore(source, node.value.pos, "=");
+		const equals = source.operatorBefore(node.value.pos, "=");
 		if (equals === undefined) return undefined;
 		// Its own name leads the shared value.
 		return [[target.pos, target.end], equals.pos, node.end, [node.value]];
@@ -164,8 +147,7 @@ function headerShape(
 		if (own === undefined || word === undefined) return undefined;
 		return [[node.pos, word.end], own[0], own[1], [item.contextExpr]];
 	}
-	const start = headerStart(source, node);
-	if (start === undefined) return undefined;
+	const start = source.declarationStart(node);
 	if (COMPOUND.has(node.type)) {
 		const colon = source.headerColon(node);
 		return colon === undefined ? undefined : [undefined, start, colon.end, headerValues(node)];

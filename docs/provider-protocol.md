@@ -502,6 +502,15 @@ An insertion with `exported: true` must leave the target: code outside it still 
 declaration. A language that marks exports adds the mark. One whose top-level names are always
 importable ignores it.
 
+An insertion with a `position` is whole lines at a line start, framed by the core with a blank line
+where a neighbor is not blank. Insert its text there as written. Without one, the end of the file
+is yours to separate.
+
+A request whose `module` is both `fromModule` and `toModule` is a reorder: one module carries the
+removal and the insertion. The moved name is already the module's own, so it is no
+`TargetCollision`, and every import stays, since the moved code still uses them here. A removal
+alone on its lines arrives as those whole lines, with one blank line beside them.
+
 `BrokenImport` is the unbound reason for a local import that binds nothing: a missing export, a
 missing module, or a file that is not a module. It dangles, so a move that leaves one behind
 reports it.

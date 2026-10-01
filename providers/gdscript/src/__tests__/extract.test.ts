@@ -401,7 +401,7 @@ var face5 = "${face}"; var pathLoaded = load("res://other.gd")
 	);
 
 	expect(script?.range).toEqual({
-		start: { line: 1, character: 0 },
+		start: { line: 1, character: scriptLine.indexOf("const") },
 		end: { line: 1, character: scriptLine.length },
 	});
 	expect(script?.selectionRange).toEqual({

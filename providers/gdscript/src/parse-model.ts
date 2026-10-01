@@ -111,7 +111,6 @@ export interface ActiveFunctionHeader {
 	indent: number;
 	scope: Scope;
 	declaration: DeclarationFact;
-	start: SourceLine;
 	/** The block colon's line. */
 	endLine: number;
 }

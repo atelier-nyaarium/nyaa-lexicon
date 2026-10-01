@@ -8,6 +8,7 @@ import {
 	type DaemonMethod,
 	defined,
 	isDaemonMethod,
+	type MoveAnchor,
 	type RequestOf,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
@@ -86,7 +87,7 @@ export function gateOf(gate: WorkspaceGate): Gate {
 
 async function previewMove(
 	service: LexiconService,
-	args: { symbolId: string; toModule: string },
+	args: { symbolId: string; toModule: string; anchor?: MoveAnchor | undefined },
 ): Promise<ResponseOf<"previewMove">> {
 	const refused = (reason: Refusal): ResponseOf<"previewMove"> => ({
 		ok: false,
@@ -97,7 +98,7 @@ async function previewMove(
 	});
 
 	const context = service.newReadContext();
-	const plan = service.planMove(args.symbolId, args.toModule, context);
+	const plan = service.planMove(args.symbolId, args.toModule, context, args.anchor);
 	if (!plan.ok) return refused(plan.reason);
 	// Check stale sites before provider requests.
 	const stale = service.staleModules([plan.fromModule, ...plan.referencing]);
@@ -321,7 +322,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		// The edits a rename would make, for a caller that applies them itself.
 		renameEdits: upgradedRead((params) => service.renameEdits(params.symbolId, params.newName)),
 		planMove: upgradedRead((params) =>
-			service.planMove(params.symbolId, params.toModule, service.newReadContext()),
+			service.planMove(params.symbolId, params.toModule, service.newReadContext(), params.anchor),
 		),
 		// Upgrade outlines before preview reads.
 		previewMove: upgradedRead((params) => previewMove(service, params)),

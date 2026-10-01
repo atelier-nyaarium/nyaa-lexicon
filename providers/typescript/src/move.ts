@@ -92,7 +92,10 @@ export function makeMoveEdits(
 		binding.specifier !== undefined &&
 		(binding.imported ?? request.name) === request.name &&
 		sameModulePath(landingKey(binding.specifier), request.fromModule);
+	// A reorder: the module keeps the moved name and every import it uses.
+	const reorder = sameModulePath(request.fromModule, request.toModule);
 	if (
+		!reorder &&
 		sameModulePath(request.module, request.toModule) &&
 		request.exists &&
 		declaresName(source, request.name, movedImport)
@@ -127,7 +130,10 @@ export function makeMoveEdits(
 				),
 			);
 		} else {
-			edits.push({ range: request.role.removal, newText: "" }, ...orphanedImports(source, coordinates, removed));
+			edits.push(
+				{ range: request.role.removal, newText: "" },
+				...(reorder ? [] : orphanedImports(source, coordinates, removed)),
+			);
 		}
 	}
 

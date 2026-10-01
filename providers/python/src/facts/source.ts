@@ -4,7 +4,7 @@ import { coordinatesOf, type TextCoordinates } from "@nyaa-lexicon/protocol";
 import type * as A from "../syntax/ast.js";
 import { isKeyword, typeCommentText } from "../syntax/parser.js";
 import type { Token, TokenType } from "../syntax/tokenizer.js";
-import { docstringOf } from "./nodes.js";
+import { docstringOf, isDefinition } from "./nodes.js";
 import type { Position, Range } from "./types.js";
 
 ////////////////////////////////
@@ -100,6 +100,25 @@ export class Source {
 		const token = this.tokenAfter(index, type);
 		if (token === undefined) return undefined;
 		return token.string === "" ? this.position(token.pos) : { line: this.line(token.pos) + 1, character: 0 };
+	}
+
+	/** The operator before an expression, past parentheses around it. */
+	operatorBefore(offset: number, symbol: string): Token | undefined {
+		for (let index = this.tokenAt(offset) - 1; index >= 0; index--) {
+			const token = this.tokens[index] as Token;
+			if (token.type === "OP" && token.string === symbol) return token;
+			if (token.type !== "NL" && token.type !== "COMMENT" && token.string !== "(") return undefined;
+		}
+		return undefined;
+	}
+
+	/** A definition starts at its first decorator's `@`. */
+	declarationStart(node: A.Node): number {
+		const first = isDefinition(node) ? node.decoratorList[0] : undefined;
+		if (first === undefined) return node.pos;
+		const at = this.operatorBefore(first.pos, "@");
+		if (at === undefined) throw new Error("python decorator has no @ before it");
+		return at.pos;
 	}
 
 	/** The name token a node binds. */

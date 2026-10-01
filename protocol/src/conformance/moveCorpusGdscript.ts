@@ -204,6 +204,73 @@ const CASES: MoveCase[] = [
 			},
 		},
 	},
+	{
+		id: "move/gd-anchored-insertion-verbatim",
+		about: "An insertion with a position is whole lines the core already framed, and lands there as written.",
+		fixtures: {
+			[GDSCRIPT]: {
+				files: {
+					"source.gd": "extends Node\n\nfunc moved() -> void:\n\tpass\n",
+					"target.gd": "extends Node\n\nfunc last() -> void:\n\tpass\n",
+				},
+				request: {
+					module: "target.gd",
+					text: "extends Node\n\nfunc last() -> void:\n\tpass\n",
+					exists: true,
+					symbolId: methodId("source.gd", "source", "moved"),
+					name: "moved",
+					fromModule: "source.gd",
+					toModule: "target.gd",
+					role: {
+						insertion: { text: "func moved() -> void:\n\tpass\n\n", position: { line: 2, character: 0 } },
+					},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"target.gd": "extends Node\n\nfunc moved() -> void:\n\tpass\n\nfunc last() -> void:\n\tpass\n",
+					},
+				},
+			},
+		},
+	},
+	{
+		id: "move/gd-reorder-within-module",
+		about: "A request whose module is both source and target reorders, and the moved name is no collision.",
+		fixtures: {
+			[GDSCRIPT]: {
+				files: {
+					"source.gd": "extends Node\n\nfunc first() -> void:\n\tpass\n\nfunc second() -> void:\n\tpass\n",
+				},
+				request: {
+					module: "source.gd",
+					text: "extends Node\n\nfunc first() -> void:\n\tpass\n\nfunc second() -> void:\n\tpass\n",
+					exists: true,
+					symbolId: methodId("source.gd", "source", "second"),
+					name: "second",
+					fromModule: "source.gd",
+					toModule: "source.gd",
+					role: {
+						removal: { start: { line: 4, character: 0 }, end: { line: 7, character: 0 } },
+						insertion: { text: "func second() -> void:\n\tpass\n\n", position: { line: 2, character: 0 } },
+					},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"source.gd":
+							"extends Node\n\nfunc second() -> void:\n\tpass\n\nfunc first() -> void:\n\tpass\n",
+					},
+				},
+			},
+		},
+	},
 ];
 
 export const GDSCRIPT_MOVE_CASES: MoveCase[] = CASES.map((testCase) => MoveCaseSchema.parse(testCase));

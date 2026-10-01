@@ -75,6 +75,7 @@ import {
 } from "./daemonShapes.js";
 import { ModuleExclusionSchema } from "./moduleExclusion.js";
 import { ModulePathSchema as ModulePath } from "./modulePath.js";
+import { MoveAnchorSchema } from "./move.js";
 import {
 	ConfirmNoteRequestSchema,
 	DoubtNoteRequestSchema,
@@ -134,7 +135,12 @@ const KnowledgeScopeRequest = z
 	.meta({ id: "KnowledgeScopeRequest" });
 const Resolve = z.object({ fromModule: ModulePath, specifier: z.string().min(1) }).meta({ id: "ResolveRequest" });
 const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) }).meta({ id: "RenameRequest" });
-const MoveOne = z.object({ symbolId: z.string().min(1), toModule: ModulePath });
+const MoveOne = z.object({
+	symbolId: z.string().min(1),
+	toModule: ModulePath,
+	/** Absent: the target's end. With it, the target may be the source, which reorders. */
+	anchor: MoveAnchorSchema.optional(),
+});
 const Move = MoveOne.meta({ id: "MoveRequest" });
 const MoveTogether = MoveOne.extend({
 	/** More declarations moving to the same target; each moves after the ones it uses. */

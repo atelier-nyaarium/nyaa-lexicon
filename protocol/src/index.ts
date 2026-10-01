@@ -443,6 +443,8 @@ export {
 	type ImportOrigin,
 	ImportOriginSchema,
 	MOVE_EDIT_CONFLICT,
+	type MoveAnchor,
+	MoveAnchorSchema,
 	type MoveBlockedReason,
 	MoveBlockedReasonSchema,
 	type MoveBlockedSite,

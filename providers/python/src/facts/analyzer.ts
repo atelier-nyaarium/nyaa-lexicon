@@ -302,12 +302,13 @@ export class Analyzer {
 		item?: A.WithItem,
 	): void {
 		const exported = this.isExported(name, moduleScope, parentExported);
+		const range = this.source.range(this.source.declarationStart(node), node.end);
 		const raw: RawDeclaration = {
 			name,
 			kind,
 			descriptorPath: path,
 			containerPath: path.slice(0, -1),
-			range: this.source.rangeOf(node),
+			range,
 			selectionRange: this.source.selectionOf(selection),
 			visibility: visibilityOf(name, scopeKind, exported),
 			exported,
@@ -320,7 +321,7 @@ export class Analyzer {
 		) {
 			const header = headerOf(this.source, node, selection, whole, item);
 			if (header !== undefined) raw.header = header;
-			raw.metrics = metricsOf(this.source, node);
+			raw.metrics = metricsOf(node, range);
 		}
 		if (node.type === "ClassDef") {
 			const line = this.source.memberInsertLine(node);

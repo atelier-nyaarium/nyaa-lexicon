@@ -23,6 +23,9 @@ const FIXTURE = path.join(lexiconRoot(), "protocol", "src", "conformance", "fixt
 const CART = "lexicon reference a.ref Cart#";
 const MOVED = "lexicon reference b.ref Cart#";
 const RENAMED = "lexicon reference a.ref Basket#";
+const APPLE = "lexicon reference a.ref Apple#";
+const APPLE_B = "lexicon reference b.ref Apple#";
+const ZEBRA = "lexicon reference b.ref Zebra#";
 
 let root: string;
 let store: IndexStore;
@@ -471,4 +474,104 @@ describe("a rename through the daemon's handlers", () => {
 		expect(read("a.ref")).toBe("export class Cart {}\n");
 		expect(statusOf(CART)).toMatchObject({ state: "bound", evidence: "sameLocator" });
 	});
+});
+
+describe("an anchored move", () => {
+	async function files(entries: Record<string, string>): Promise<void> {
+		for (const [module, text] of Object.entries(entries)) {
+			put(module, text);
+			await service.indexFile(module);
+		}
+	}
+
+	it("lands beside the anchor in the target, framed by blank lines, whichever side names the spot", async () => {
+		await files({ "a.ref": "export class Cart\n", "b.ref": "export class Apple\n\nexport class Zebra\n" });
+		const landed: Array<string | undefined> = [];
+		for (const anchor of [
+			{ symbolId: APPLE_B, side: "after" },
+			{ symbolId: ZEBRA, side: "before" },
+		] as const) {
+			const preview = (await dispatch("previewMove", {
+				symbolId: CART,
+				toModule: "b.ref",
+				anchor,
+			})) as ResponseOf<"previewMove">;
+			if (!preview.ok) throw new Error(preview.reason);
+			landed.push(preview.files.find((file) => file.module === "b.ref")?.text);
+		}
+		expect(landed).toEqual(Array(2).fill("export class Apple\n\nexport class Cart\n\nexport class Zebra\n"));
+	}, 60_000);
+
+	it("reorders within its own module, and its restore anchor puts it back", async () => {
+		await files({ "a.ref": "export class Cart\n\nexport class Apple\n" });
+		const anchor = { symbolId: APPLE, side: "after" } as const;
+		const plan = (await dispatch("planMove", {
+			symbolId: CART,
+			toModule: "a.ref",
+			anchor,
+		})) as ResponseOf<"planMove">;
+		if (!plan.ok) throw new Error(plan.reason);
+		const moved = await dispatch("refactorMove", { symbolId: CART, toModule: "a.ref", anchor });
+		const after = read("a.ref");
+		const back = await dispatch("refactorMove", { symbolId: CART, toModule: "a.ref", anchor: plan.restore });
+
+		expect({
+			moved,
+			after,
+			back,
+			restored: read("a.ref"),
+			recalled: store.answer(CART, "describe")?.prose,
+		}).toMatchObject({
+			moved: { moved: true },
+			after: "export class Apple\n\nexport class Cart\n",
+			back: { moved: true },
+			restored: "export class Cart\n\nexport class Apple\n",
+			recalled: "A shopping cart.",
+		});
+	}, 60_000);
+
+	it("refuses an anchor outside the target or inside what moves, and a same-module move without one, naming declarations", async () => {
+		await files({ "a.ref": "export class Cart\n\nexport class Apple\n", "b.ref": "export class Zebra\n" });
+		const reasons: string[] = [];
+		for (const request of [
+			{ symbolId: CART, toModule: "b.ref", anchor: { symbolId: APPLE, side: "before" } },
+			{ symbolId: CART, toModule: "a.ref", anchor: { symbolId: CART, side: "after" } },
+			{ symbolId: CART, toModule: "a.ref" },
+		] as const) {
+			const preview = (await dispatch("previewMove", request)) as ResponseOf<"previewMove">;
+			reasons.push(preview.ok ? "moved" : preview.reason);
+		}
+
+		expect(reasons.map((reason) => reason === "moved" || reason.includes(CART))).toEqual([false, false, false]);
+		expect(read("a.ref")).toBe("export class Cart\n\nexport class Apple\n");
+	}, 60_000);
+
+	it("ends an unterminated last line before landing after it", async () => {
+		await files({ "a.ref": "export class Cart\n", "b.ref": "export class Apple" });
+		const preview = (await dispatch("previewMove", {
+			symbolId: CART,
+			toModule: "b.ref",
+			anchor: { symbolId: APPLE_B, side: "after" },
+		})) as ResponseOf<"previewMove">;
+		if (!preview.ok) throw new Error(preview.reason);
+
+		expect(preview.files.find((file) => file.module === "b.ref")?.text).toBe(
+			"export class Apple\n\nexport class Cart\n",
+		);
+	}, 60_000);
+
+	it("keeps a together move's order after an anchor", async () => {
+		await files({ "a.ref": "export class Cart\n\nexport class Apple\n", "b.ref": "export class Zebra\n" });
+		const outcome = (await dispatch("refactorMove", {
+			symbolId: CART,
+			toModule: "b.ref",
+			together: [APPLE],
+			anchor: { symbolId: ZEBRA, side: "after" },
+		})) as ResponseOf<"refactorMove">;
+
+		expect(outcome.moved).toBe(true);
+		expect(read("b.ref")).toBe(
+			["Zebra", ...(outcome.order ?? [])].map((name) => `export class ${name}\n`).join("\n"),
+		);
+	}, 60_000);
 });

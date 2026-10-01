@@ -81,7 +81,7 @@ describe("move edits", () => {
 	it("keeps the isolated GDScript corpus schema-valid", () => {
 		const cases = loadGdscriptMoveCases();
 
-		expect(cases).toHaveLength(6);
+		expect(cases).toHaveLength(8);
 		expect(cases.every((testCase) => MoveCaseSchema.parse(testCase).id.startsWith("move/gd-"))).toBe(true);
 	});
 
@@ -371,5 +371,46 @@ describe("move edits", () => {
 			],
 			blocked: [],
 		});
+	});
+
+	it("reorders within one module, keeping its loader and siblings", () => {
+		const loader = 'const Helper = preload("res://helper.gd")\n';
+		const first = "func first() -> void:\n\tpass\n";
+		const second = "func second() -> void:\n\tHelper.run()\n\tfirst()\n";
+		const source = `extends Node\n\n${loader}\n${first}\n${second}`;
+		const root = workspace({ "source.gd": source, "helper.gd": "extends Node\n" });
+		const result = apply(root, source, {
+			module: "source.gd",
+			text: source,
+			exists: true,
+			symbolId: methodId("source.gd", "source", "second"),
+			name: "second",
+			fromModule: "source.gd",
+			toModule: "source.gd",
+			role: {
+				removal: { start: { line: 6, character: 0 }, end: { line: 10, character: 0 } },
+				insertion: { text: `${second}\n`, position: { line: 4, character: 0 } },
+			},
+			importSites: [],
+			dependencies: [
+				{
+					name: "Helper",
+					origin: { kind: "workspaceModule", symbolId: classId("helper.gd", "helper"), module: "helper.gd" },
+				},
+				{
+					name: "first",
+					origin: {
+						kind: "sourceModule",
+						symbolId: methodId("source.gd", "source", "first"),
+						name: "first",
+						exported: false,
+					},
+				},
+			],
+			sites: [],
+		});
+
+		expect(result.response.blocked).toEqual([]);
+		expect(result.text).toBe(`extends Node\n\n${loader}\n${second}\n${first}`);
 	});
 });

@@ -7,12 +7,13 @@
 import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS } from "./factId.js";
-import { ImportKindSchema, MoveDependencySchema } from "./move.js";
+import { ImportKindSchema, MoveAnchorSchema, MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
 import { EntryRoleSchema, FileRoleSchema, IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
 import {
 	DeclarationSchema,
+	PositionSchema,
 	RangeSchema,
 	ReferenceRoleSchema,
 	type SymbolKind,
@@ -1446,6 +1447,10 @@ export const MovePlanSchema = z
 			usedAtSource: z.boolean(),
 			/** Used outside the target and not exported now. */
 			exportsAtTarget: z.boolean().optional(),
+			/** Where the target takes it, from the anchor; absent means the target's end. */
+			insertion: PositionSchema.optional(),
+			/** The source neighbor it leaves, as the anchor that puts it back. */
+			restore: MoveAnchorSchema.optional(),
 			baseHash: z.string(),
 		}),
 		z.object({ ok: z.literal(false), reason: z.string() }),
@@ -1791,7 +1796,12 @@ export type StepBase = z.infer<typeof StepBaseSchema>;
 export const ReverseStepSchema = z
 	.discriminatedUnion("kind", [
 		z.object({ kind: z.literal("rename"), symbolId: z.string(), newName: z.string() }),
-		z.object({ kind: z.literal("move"), symbolId: z.string(), toModule: z.string() }),
+		z.object({
+			kind: z.literal("move"),
+			symbolId: z.string(),
+			toModule: z.string(),
+			anchor: MoveAnchorSchema.optional(),
+		}),
 	])
 	.meta({ id: "ReverseStep" });
 

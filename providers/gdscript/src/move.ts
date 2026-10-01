@@ -45,7 +45,9 @@ export function makeMoveEdits(request: MoveEditsRequest, store: GDScriptStore): 
 	const insertionText = request.role.insertion?.text;
 	const carriesClassName =
 		insertionText === undefined ? false : hasClassNameDeclaration(request.toModule, insertionText);
-	if (request.exists && sameModule(request.module, request.toModule)) {
+	// Source and target at once: every binding stays.
+	const reorder = sameModule(request.module, request.fromModule) && sameModule(request.module, request.toModule);
+	if (request.exists && !reorder && sameModule(request.module, request.toModule)) {
 		const targetDeclarations = facts.declarations;
 		if (carriesClassName && hasClassNameDeclaration(request.module, request.text)) {
 			return {
@@ -103,7 +105,7 @@ export function makeMoveEdits(request: MoveEditsRequest, store: GDScriptStore): 
 
 	const dependencyInsertions: string[] = [];
 	const seenDependencyInsertions = new Set<string>();
-	for (const dependency of request.dependencies) {
+	for (const dependency of reorder ? [] : request.dependencies) {
 		const result = dependencyPlan(request, dependency, bindings, facts);
 		if (result.blocked !== undefined) blocked.push(result.blocked);
 		if (result.insertion !== undefined && !seenDependencyInsertions.has(result.insertion)) {

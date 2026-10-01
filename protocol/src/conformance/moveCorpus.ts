@@ -207,6 +207,27 @@ const PYTHON_TARGET_DYNAMIC_FILES = {
 	"src/items.py": "",
 };
 
+const ANCHORED_FILES = {
+	"src/cart.ts": "export function add(left: number, right: number) { return left + right; }\n",
+	"src/items.ts": "export const first = 1;\n\nexport const last = 2;\n",
+};
+
+const REORDER_FILES = {
+	"src/cart.ts":
+		'import { round } from "./math";\n\nexport function total(value: number) { return value; }\n\nexport function add(value: number) { return round(value); }\n',
+	"src/math.ts": "export function round(value: number) { return Math.round(value); }\n",
+};
+
+const PYTHON_ANCHORED_FILES = {
+	"src/cart.py": "def add(left, right):\n    return left + right\n",
+	"src/items.py": "first = 1\n\nlast = 2\n",
+};
+
+const PYTHON_REORDER_FILES = {
+	"src/cart.py":
+		"from math import floor\n\ndef total(value):\n    return value\n\ndef add(value):\n    return floor(value)\n",
+};
+
 const MOVE_CASES: MoveCase[] = [
 	{
 		id: "move/importer-named-import-repointed",
@@ -979,7 +1000,7 @@ const MOVE_CASES: MoveCase[] = [
 					kind: "ready",
 					files: {
 						"src/cart.ts":
-							'import { add } from "./items";\nexport const marker = 1;\nexport function total() { return add(1, 2); }\n',
+							'import { add } from "./items";\n\nexport const marker = 1;\nexport function total() { return add(1, 2); }\n',
 					},
 				},
 			},
@@ -1224,6 +1245,132 @@ const MOVE_CASES: MoveCase[] = [
 					kind: "ready",
 					files: {
 						"src/use.ts": 'import { add } from "@app/items";\nexport const total = add(1, 2);\n',
+					},
+				},
+			},
+		},
+	},
+	{
+		id: "move/anchored-insertion-verbatim",
+		about: "An insertion with a position is whole lines the core already framed, and lands there as written.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: ANCHORED_FILES,
+				request: {
+					module: "src/items.ts",
+					text: fileText(ANCHORED_FILES, "src/items.ts"),
+					exists: true,
+					symbolId: ADD_SYMBOL_ID,
+					name: "add",
+					fromModule: "src/cart.ts",
+					toModule: "src/items.ts",
+					role: {
+						insertion: {
+							text: "export function add(left: number, right: number) { return left + right; }\n\n",
+							position: { line: 2, character: 0 },
+						},
+					},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/items.ts":
+							"export const first = 1;\n\nexport function add(left: number, right: number) { return left + right; }\n\nexport const last = 2;\n",
+					},
+				},
+			},
+			[PYTHON]: {
+				files: PYTHON_ANCHORED_FILES,
+				request: {
+					module: "src/items.py",
+					text: fileText(PYTHON_ANCHORED_FILES, "src/items.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/items.py",
+					role: {
+						insertion: {
+							text: "def add(left, right):\n    return left + right\n\n",
+							position: { line: 2, character: 0 },
+						},
+					},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/items.py": "first = 1\n\ndef add(left, right):\n    return left + right\n\nlast = 2\n",
+					},
+				},
+			},
+		},
+	},
+	{
+		id: "move/reorder-within-module",
+		about: "A request whose module is both source and target reorders: the moved name is no collision, and its imports stay.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: REORDER_FILES,
+				request: {
+					module: "src/cart.ts",
+					text: fileText(REORDER_FILES, "src/cart.ts"),
+					exists: true,
+					symbolId: ADD_SYMBOL_ID,
+					name: "add",
+					fromModule: "src/cart.ts",
+					toModule: "src/cart.ts",
+					role: {
+						// As the core widens it: the declaration's lines and the blank line above them.
+						removal: { start: { line: 3, character: 0 }, end: { line: 5, character: 0 } },
+						insertion: {
+							text: "export function add(value: number) { return round(value); }\n\n",
+							position: { line: 2, character: 0 },
+						},
+					},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/cart.ts":
+							'import { round } from "./math";\n\nexport function add(value: number) { return round(value); }\n\nexport function total(value: number) { return value; }\n',
+					},
+				},
+			},
+			[PYTHON]: {
+				files: PYTHON_REORDER_FILES,
+				request: {
+					module: "src/cart.py",
+					text: fileText(PYTHON_REORDER_FILES, "src/cart.py"),
+					exists: true,
+					symbolId: pythonCallableId("src/cart.py", "add"),
+					name: "add",
+					fromModule: "src/cart.py",
+					toModule: "src/cart.py",
+					role: {
+						removal: { start: { line: 4, character: 0 }, end: { line: 7, character: 0 } },
+						insertion: {
+							text: "def add(value):\n    return floor(value)\n\n",
+							position: { line: 2, character: 0 },
+						},
+					},
+					importSites: [],
+					dependencies: [],
+					sites: [],
+				},
+				expect: {
+					kind: "ready",
+					files: {
+						"src/cart.py":
+							"from math import floor\n\ndef add(value):\n    return floor(value)\n\ndef total(value):\n    return value\n",
 					},
 				},
 			},
