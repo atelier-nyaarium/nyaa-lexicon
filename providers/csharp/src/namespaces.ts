@@ -11,6 +11,8 @@ export interface IndexedType {
 	module: string;
 	symbolId: string;
 	partial: boolean;
+	/** Declared `file`, or nested in a type that is: named from its own module alone. */
+	fileLocal: boolean;
 }
 
 /** A `global using`, which every file of its project reads. */
@@ -48,7 +50,7 @@ const GLOBAL_USINGS = "usings:global";
 ////////////////////////////////
 //  Functions & Helpers
 
-function isTypeKind(declaration: Declaration): boolean {
+export function isTypeKind(declaration: Declaration): boolean {
 	return TYPE_KINDS.has(declaration.kind) || declaration.languageKind === "delegate";
 }
 
@@ -72,6 +74,15 @@ export function namespaceLevels(namespace: string): string[] {
 
 export function joinNamespace(...parts: string[]): string {
 	return parts.filter((part) => part !== "").join(".");
+}
+
+/** A `file` type, or one nested in it. */
+export function inFileType(meta: DeclarationMeta, metadata: ReadonlyMap<string, DeclarationMeta>): boolean {
+	for (let current: DeclarationMeta | undefined = meta; current !== undefined; ) {
+		if (current.declaration.visibility === "fileLocal") return true;
+		current = current.parentId === undefined ? undefined : metadata.get(current.parentId);
+	}
+	return false;
 }
 
 function isIndexedType(entry: IndexEntry): entry is IndexedType {
@@ -106,7 +117,12 @@ export function namespaceEntries(module: string, facts: CsharpFacts): Iterable<r
 		else if (isTypeKind(declaration)) {
 			entries.push([
 				`type:${meta.namespaceName}\0${typeKey(meta)}`,
-				{ module, symbolId: declaration.symbolId, partial: meta.isPartial === true },
+				{
+					module,
+					symbolId: declaration.symbolId,
+					partial: meta.isPartial === true,
+					fileLocal: inFileType(meta, facts.metadata),
+				},
 			]);
 			entries.push([`name:${ownKey(meta)}`, `${meta.namespaceName}\0${typeKey(meta)}`]);
 		}
@@ -138,11 +154,6 @@ export class NamespaceIndex {
 		return namespace === "" || this.store.get(`ns:${namespace}`).length > 0;
 	}
 
-	/** Modules declaring a namespace, sorted. */
-	modulesOf(namespace: string): string[] {
-		return this.store.get(`ns:${namespace}`).filter((entry): entry is string => typeof entry === "string");
-	}
-
 	/** A namespace's declarations, sorted by module. */
 	declarationsOf(namespace: string): IndexedNamespace[] {
 		return this.store.get(`nsdecl:${namespace}`).filter(isIndexedNamespace);
@@ -153,9 +164,13 @@ export class NamespaceIndex {
 		return this.store.get(GLOBAL_USINGS).filter(isGlobalUsing);
 	}
 
-	/** Every declaration of one type identity, by its namespace and `typeKey`, sorted by module. */
-	types(namespace: string, key: string): IndexedType[] {
-		return this.store.get(`type:${namespace}\0${key}`).filter(isIndexedType);
+	/** Every declaration of one type identity `from` may name, by its namespace and `typeKey`, sorted by module. */
+	types(namespace: string, key: string, from: string): IndexedType[] {
+		return this.store
+			.get(`type:${namespace}\0${key}`)
+			.filter(
+				(entry): entry is IndexedType => isIndexedType(entry) && (!entry.fileLocal || entry.module === from),
+			);
 	}
 
 	/** The type identities whose own name with its type parameters is `own`, in any namespace or type. */

@@ -16,12 +16,13 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { ArrangePlacement, PlannedArrange } from "./arrangePlanner.js";
 import { type MoveMember, moveOrder } from "./moveOrder.js";
-import type { ReadContext } from "./readContext.js";
+import { type ReadContext, UNREAD_FILE } from "./readContext.js";
 import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
 import {
 	anchorNotTopLevel,
 	arrangeNotAsPreviewed,
+	bindingsHeld,
 	changedWhilePlanned,
 	factsMovedWhilePlanned,
 	moveCycle,
@@ -61,6 +62,8 @@ export type StepResult =
 			files: CommittedFile[];
 			reverse: ReverseStep;
 			migrated?: { answers: number; gaps: number };
+			/** A rename's export fact ids kept at the old name. */
+			stops?: string[];
 			issues: RefactorIssue[];
 	  }
 	| ({ done: false; reason: Refusal; issues: RefactorIssue[] } & RefusedWith);
@@ -184,7 +187,7 @@ export function refactorRename(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
-	args: { symbolId: string; newName: string },
+	args: { symbolId: string; newName: string; stops?: readonly string[] | undefined },
 	hold: StepPolicy,
 	cancelled?: () => Refusal | null,
 ): Promise<StepResult> {
@@ -214,20 +217,31 @@ export function refactorRename(
 						symbolId: root,
 						newName: oldName,
 					},
-					...defined({ migrated }),
+					...defined({ migrated, stops: args.stops?.length ? [...args.stops] : undefined }),
 					issues,
 				};
 			},
 			plan: async () => {
 				// One context, so the plan and the two follow-up reads below stamp and share one set.
 				const context = service.newReadContext();
-				const edits = await service.renameEdits(args.symbolId, args.newName, context);
+				const { edits, relied } = await service.planRenameEdits(
+					args.symbolId,
+					args.newName,
+					context,
+					args.stops,
+				);
 				if (!edits.ok) {
 					return {
 						refused: edits.reason,
 						issues: edits.plan.blockers.map((blocker) => ({ kind: blocker.kind, detail: blocker.detail })),
 					};
 				}
+				// Payable debt drained before planning; what a failure still holds back may bind as before a move.
+				const held = service.heldDebts(
+					context.seen().flatMap((entry) => ("module" in entry ? [entry.module] : [])),
+					edits.plan.oldName,
+				);
+				if (held.length > 0) return { refused: bindingsHeld(held, "rename") };
 				const plan = edits.plan;
 				oldName = plan.oldName;
 				const planned = service.renameWrites(edits.files);
@@ -247,15 +261,20 @@ export function refactorRename(
 					planned: {
 						modules: [...edited, ...alsoBound],
 						writes: planned.writes,
-						planRecord: plan,
-						stale: () => {
+						planRecord: { ...plan, stops: [...(args.stops ?? [])] },
+						stale: async () => {
 							// Every site was chosen from stored ranges; a changed module has moved
 							// them, so rewriting would hit some occurrences and miss others.
 							const stale = service.staleModules(edited);
 							if (stale.length > 0) return staleSincePlanned(stale, "rename");
 							// Rows re-committed under an equal hash: a re-parse or an upgrade.
 							const moved = service.factsMoved(context.seen());
-							return moved.length > 0 ? factsMovedWhilePlanned(moved, "rename") : null;
+							// Only the pinned index moved: no module the plan read did, so a new plan may hold.
+							const outrun = moved.length === 1 && moved[0] === UNREAD_FILE;
+							if (moved.length > 0 && !outrun) return factsMovedWhilePlanned(moved, "rename");
+							// A specifier may land elsewhere though no fact moved, e.g. after a config edit.
+							const landed = (await service.landingsMoved(relied))[0]?.detail ?? null;
+							return landed ?? (outrun ? { again: true } : null);
 						},
 						rebind: () => ({
 							entries: [...idMap].map(([from, to]) => ({ from, to })),
@@ -420,7 +439,12 @@ function previewDiffers(
 
 export function renameStepOutcome(result: StepResult): RenameStepOutcome {
 	if (!result.done) return { renamed: false, issues: result.issues, reason: result.reason };
-	return { renamed: true, modules: result.modules, ...defined({ migrated: result.migrated }), issues: result.issues };
+	return {
+		renamed: true,
+		modules: result.modules,
+		...defined({ migrated: result.migrated, stops: result.stops }),
+		issues: result.issues,
+	};
 }
 
 /**
@@ -622,7 +646,7 @@ export function committedOutcome(kind: "rename" | "move"): (result: StepResult) 
 			files: result.files,
 			forwarded: result.forwarded,
 			reverse: result.reverse,
-			...defined({ migrated: result.migrated }),
+			...defined({ migrated: result.migrated, stops: result.stops }),
 			issues: result.issues,
 		};
 	};

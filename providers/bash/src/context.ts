@@ -42,7 +42,7 @@ export interface BashReference {
 
 export interface SourceImport {
 	specifier: string;
-	/** False when the path holds an expansion, so nothing static resolves it. */
+	/** False when the path expands or globs, so nothing static resolves it. */
 	literal: boolean;
 	range: Range;
 }
@@ -171,6 +171,29 @@ export function staticValue(word: Word | undefined): string | undefined {
 	const parts = word.parts;
 	if (parts === undefined) return word.value;
 	return parts.every(isStatic) ? word.value : undefined;
+}
+
+/** A path word whose file only the run knows: an expansion, an unquoted pattern, or a leading `~`. */
+export function expandsPath(word: Word): boolean {
+	if (staticValue(word) === undefined) return true;
+	const parts = word.parts;
+	const runs =
+		parts === undefined ? [word.text] : parts.flatMap((part) => (part.type === "Literal" ? [part.text] : []));
+	const first = parts === undefined ? word.text : parts[0]?.type === "Literal" ? parts[0].text : "";
+	return new SourceCursor(first).peek() === "~" || runs.some(globs);
+}
+
+/** Whether a literal run, as written, holds an unescaped `*`, `?` or `[...]`. */
+function globs(text: string): boolean {
+	const cursor = new SourceCursor(text);
+	let open = false;
+	while (cursor.good()) {
+		const character = cursor.next();
+		if (character === "\\") cursor.next();
+		else if (character === "*" || character === "?" || (character === "]" && open)) return true;
+		else if (character === "[") open = true;
+	}
+	return false;
 }
 
 function isStatic(part: WordPart): boolean {

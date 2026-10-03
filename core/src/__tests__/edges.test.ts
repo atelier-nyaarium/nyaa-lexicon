@@ -8,6 +8,7 @@ import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
 import { fakeSupervisor } from "./fakeProvider";
+import { edge, landed } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -213,25 +214,28 @@ describe("a recursive function's edges", () => {
 describe("namespace imports", () => {
 	it("count a namespace or require name toward its module and a package's toward library; a default or twice-bound name stays unresolved", async () => {
 		const RUN = "lexicon ts src/app.ts run().";
-		const binding = (local: string, kind?: "namespace" | "require" | "default") => ({
-			local,
-			localRange: at(0),
-			...(kind === undefined ? {} : { kind }),
+		const binding = (
+			specifier: string,
+			local: string,
+			kind: "namespace" | "require" | "default",
+			line: number,
+		) => ({
+			specifier,
+			edges: [edge(kind, at(line), { local, localRange: at(line) })],
 		});
 		store.replaceFile({
 			module: "src/app.ts",
 			contentHash: "s1",
 			declarations: [declared(RUN, "function", "run", 2)],
-			references: ["lib", "anon", "fs", "dflt", "twice"].map((name, line) =>
+			references: ["lib", "fs", "dflt", "twice"].map((name, line) =>
 				use(name, "read", RUN, line + 3, { status: "unbound", reason: "NotIndexed" }),
 			),
 			imports: [
-				{ specifier: "./lib", imported: [binding("lib", "namespace")], reExport: false },
-				{ specifier: "./anon", imported: [binding("anon")], reExport: false },
-				{ specifier: "fs", imported: [binding("fs", "require")], reExport: false },
-				{ specifier: "./dflt", imported: [binding("dflt", "default")], reExport: false },
-				{ specifier: "./one", imported: [binding("twice", "namespace")], reExport: false },
-				{ specifier: "./two", imported: [binding("twice", "namespace")], reExport: false },
+				binding("./lib", "lib", "namespace", 10),
+				binding("fs", "fs", "require", 11),
+				binding("./dflt", "dflt", "default", 12),
+				binding("./one", "twice", "namespace", 13),
+				binding("./two", "twice", "namespace", 14),
 			],
 		});
 		const service = new LexiconService(
@@ -241,7 +245,7 @@ describe("namespace imports", () => {
 				answers: {
 					resolveImport: (params) =>
 						params.specifier.startsWith(".")
-							? { status: "resolved", module: `src/${params.specifier.slice(2)}.ts` }
+							? landed(`src/${params.specifier.slice(2)}.ts`)
 							: { status: "external", packageName: params.specifier },
 				},
 			}),
@@ -255,6 +259,6 @@ describe("namespace imports", () => {
 			modules: outgoing.modules.map((entry) => entry.module),
 			library: outgoing.library.names.map((entry) => entry.name),
 			unresolved: outgoing.unresolved.names.map((entry) => entry.name),
-		}).toEqual({ modules: ["src/anon.ts", "src/lib.ts"], library: ["fs"], unresolved: ["dflt", "twice"] });
+		}).toEqual({ modules: ["src/lib.ts"], library: ["fs"], unresolved: ["dflt", "twice"] });
 	});
 });

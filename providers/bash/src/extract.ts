@@ -69,7 +69,7 @@ function walkCommand(w: Walk, scope: Scope, node: Command): void {
 		} else if (builtin === "alias") {
 			aliases(w, scope, name, words);
 		} else if (builtin === "source" || builtin === ".") {
-			sourced(w, scope, words[0]);
+			sourced(w, scope, name, words[0]);
 			walkWords(w, scope, words.slice(1));
 		} else {
 			if (builtin !== undefined && FUNCTION_NAME_RE.test(builtin)) {

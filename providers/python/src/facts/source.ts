@@ -149,6 +149,18 @@ export class Source {
 		return this.range((this.tokens[first] as Token).pos, (this.tokens[last - 1] as Token).end);
 	}
 
+	/** Each prefix of an import alias's dotted name as written: `a`, `a.b`, `a.b.c` for `a.b.c`. */
+	dottedPrefixes(alias: A.Alias): Range[] {
+		const prefixes: Range[] = [];
+		for (let index = this.tokenAt(alias.pos); index < this.tokens.length; index++) {
+			const token = this.tokens[index] as Token;
+			if (token.pos >= alias.end || token.string === "as") break;
+			if (token.type === "NAME") prefixes.push(this.range(alias.pos, token.end));
+			else if (token.string !== ".") break;
+		}
+		return prefixes;
+	}
+
 	/** The suite's indent when the statement starts its line. */
 	statementIndent(node: A.Node): string | null {
 		const index = this.tokenAt(node.pos);

@@ -39,14 +39,14 @@ export function isEdgeRole(role: ReferenceRole): role is EdgeRole {
 	return (EDGE_ROLES as readonly string[]).includes(role);
 }
 
-/** With no kind, a nameless import binds the module. */
+/** A namespace or require import binds the module. */
 export function bindsModule(statement: StoredImport): boolean {
-	if (statement.kind === undefined) return statement.name === undefined;
 	return statement.kind === "namespace" || statement.kind === "require";
 }
 
 export function namespaceTargetOf(landed: ImportResolution | null): NamespaceTarget | null {
-	if (landed?.status === "resolved") return { module: landed.module };
+	if (landed?.status === "resolved")
+		return landed.landing.kind === "module" ? { module: landed.landing.module } : null;
 	return landed?.status === "external" ? { external: true } : null;
 }
 

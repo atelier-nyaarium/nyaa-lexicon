@@ -31,7 +31,7 @@ describe("C++ comment spans", () => {
 		const facts = parseCppFile("include.cpp", '#include "api.hpp" // needed\nint value = 1;\n');
 
 		expect(facts.comments.map((comment) => comment.text)).toEqual(["// needed"]);
-		expect(facts.imports.map((item) => item.specifier)).toEqual(["api.hpp"]);
+		expect(facts.importFacts.map((item) => item.specifier)).toEqual(["api.hpp"]);
 	});
 
 	test("does not report a marker inside a string, a character, or a raw string", () => {

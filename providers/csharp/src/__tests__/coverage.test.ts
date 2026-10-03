@@ -72,6 +72,15 @@ function parse(text: string, module = "main.cs") {
 	return { provider, facts };
 }
 
+function scope(kind: "packageScope" | "symbolScope", scopeId: string, anchorSymbolId?: string) {
+	return {
+		kind,
+		providerId: "csharp-provider",
+		scopeId,
+		...(anchorSymbolId === undefined ? {} : { anchorSymbolId }),
+	};
+}
+
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -121,13 +130,18 @@ describe("C# import-driven type answers", () => {
 		);
 		const count = generic("Count");
 		const touch = generic("Touch");
+		// An alias's name stands in its namespace; `using static` opens the type itself.
 		expect(provider.resolveImport({ fromModule: "src/plain.cs", specifier: "Lib" })).toEqual({
 			status: "resolved",
-			module: "src/box.cs",
+			landing: scope("packageScope", "Lib"),
 		});
 		expect(provider.resolveImport({ fromModule: "src/alias.cs", specifier: "Lib.Box" })).toEqual({
 			status: "resolved",
-			module: "src/box.cs",
+			landing: scope("packageScope", "Lib"),
+		});
+		expect(provider.resolveImport({ fromModule: "src/static.cs", specifier: "Lib.Box" })).toEqual({
+			status: "resolved",
+			landing: scope("symbolScope", "Lib.Box`1", box.symbolId),
 		});
 		const plainType = reference(plainFacts, "Box", "typeUse");
 		const aliasType = reference(aliasFacts, "Alias", "typeUse");
@@ -198,7 +212,7 @@ describe("C# import-driven type answers", () => {
 		BindingSchema.parse(aliasType.binding);
 	});
 
-	it("reads a namespace several files declare as one, though no single module answers its import", () => {
+	it("reads a namespace several files declare as one package scope", () => {
 		const files = {
 			"src/one.cs": "namespace Shared { public class One {} }\n",
 			"src/two.cs": "namespace Shared { public class Two {} }\n",
@@ -207,7 +221,7 @@ describe("C# import-driven type answers", () => {
 		const { provider, facts } = indexed(files, "src/use.cs");
 		const resolution = provider.resolveImport({ fromModule: "src/use.cs", specifier: "Shared" });
 		ImportResolutionSchema.parse(resolution);
-		expect(resolution).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+		expect(resolution).toEqual({ status: "resolved", landing: scope("packageScope", "Shared") });
 		expect(["One", "Two"].map((name) => reference(facts, name, "typeUse").binding)).toEqual([
 			{ status: "bound", symbolId: "lexicon csharp src/one.cs Shared/One#", provenance: "bound" },
 			{ status: "bound", symbolId: "lexicon csharp src/two.cs Shared/Two#", provenance: "bound" },
@@ -273,7 +287,7 @@ describe("C# role-specific binding", () => {
 		const { provider, facts } = indexed(files, "src/use.cs");
 		expect(provider.resolveImport({ fromModule: "src/use.cs", specifier: "N.Outer.Inner" })).toEqual({
 			status: "resolved",
-			module: "src/generic.cs",
+			landing: scope("symbolScope", "N.Outer`1", "lexicon csharp src/generic.cs N/Outer(1)#"),
 		});
 		expect(reference(facts, "Alias", "typeUse").binding).toEqual({
 			status: "bound",
@@ -297,7 +311,7 @@ describe("C# role-specific binding", () => {
 		const use = reference(facts, "Item", "typeUse");
 		expect(provider.resolveImport({ fromModule: "src/use.cs", specifier: "Outer.Inner" })).toEqual({
 			status: "resolved",
-			module: "src/item.cs",
+			landing: scope("packageScope", "Outer.Inner"),
 		});
 		expect(use.binding).toEqual({ status: "bound", symbolId: item.symbolId, provenance: "bound" });
 		const value = declaration(facts, "Value");
@@ -542,7 +556,7 @@ describe("C# type queries and declaration identity", () => {
 });
 
 describe("C# protocol-shaped facts", () => {
-	it("reports imported-name ranges and valid facts for global using", () => {
+	it("reports a directive as one edge spanning it, `global` included, with its name and alias ranges", () => {
 		const text = [
 			"global using Lib;",
 			"using Alias = Lib.Box;",
@@ -550,18 +564,45 @@ describe("C# protocol-shaped facts", () => {
 			"public class Use { public Alias Value; }",
 		].join("\n");
 		const { facts } = parse(text);
-		const imports = facts.imports;
-		expect(imports).toHaveLength(2);
-		expect(imports[0]).toMatchObject({ specifier: "Lib", imported: [], reExport: false });
-		expect(imports[1]).toMatchObject({
-			specifier: "Lib.Box",
-			imported: [{ local: "Alias" }],
-			reExport: false,
+		const range = (line: number, start: number, end: number) => ({
+			start: { line, character: start },
+			end: { line, character: end },
 		});
-		const local = imports[1]?.imported[0]?.localRange;
-		if (local === undefined) throw new Error("alias range missing");
-		expect(local.start.line).toBe(1);
-		expect(local.end.character).toBeGreaterThan(local.start.character);
+		expect(facts.imports).toEqual([
+			{
+				specifier: "Lib",
+				edges: [
+					{
+						kind: "injection",
+						span: range(0, 0, 17),
+						bindsLocally: true,
+						visibility: "internal",
+						order: 0,
+						selector: { kind: "visible" },
+						conflict: { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" },
+						certainty: { status: "known" },
+					},
+				],
+			},
+			{
+				specifier: "Lib.Box",
+				edges: [
+					{
+						kind: "named",
+						span: range(1, 0, 22),
+						bindsLocally: true,
+						visibility: "fileLocal",
+						order: 1,
+						name: "Box",
+						range: range(1, 18, 21),
+						local: "Alias",
+						localRange: range(1, 6, 11),
+						conflict: { priority: 1, amongTransfers: "exclude", againstLocal: "localWins" },
+						certainty: { status: "known" },
+					},
+				],
+			},
+		]);
 		FileFactsSchema.parse(facts);
 	});
 

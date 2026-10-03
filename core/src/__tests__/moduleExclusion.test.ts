@@ -15,6 +15,7 @@ import type { AttachedComment } from "../commentAttach";
 import { ImportResolver } from "../imports";
 import { IndexReadModel, REGEX_SCAN_LIMIT } from "../indexReads";
 import { IndexStore } from "../store";
+import { sideEffect } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -63,7 +64,7 @@ function put(module: string, facts: Facts): void {
 		anchorId: null,
 	}));
 	const docs: DocRegion[] = (facts.docs ?? []).map((text, line) => ({ range: at(line), text, fenced: false }));
-	const written: Import[] = (facts.imports ?? []).map((specifier) => ({ specifier, imported: [], reExport: false }));
+	const written: Import[] = (facts.imports ?? []).map((specifier, line) => sideEffect(specifier, at(line), line));
 	store.replaceFile({
 		module,
 		contentHash: module,

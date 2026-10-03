@@ -1,6 +1,6 @@
 // Separate from analysis cases: a verdict lands between two parses, so a case is a script.
 
-import { type LifecycleCase, LifecycleCaseSchema } from "./types.js";
+import { type LifecycleCase, LifecycleCaseSchema, type ProbeBatchCase, ProbeBatchCaseSchema } from "./types.js";
 
 ////////////////////////////////
 //  Constants
@@ -148,9 +148,64 @@ const CASES = [
 	},
 ];
 
+/** `a` gains `two` and `b` uses it, in the proposed texts only. */
+const PROBE_BATCH_CASES: ProbeBatchCase[] = [
+	{
+		id: "probe-batch-reads-one-view",
+		about: "A batch probe reads every proposed text as one view, answers exactly the modules asked, lands every import, and leaves the provider holding what it held.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"src/a.ts": "export function one() {}\n",
+					"src/b.ts": 'import { one } from "./a";\none();\n',
+				},
+				probe: {
+					"src/a.ts": "export function two() {}\n",
+					"src/b.ts": 'import { two } from "./a";\nexport function seen() {}\ntwo();\n',
+				},
+				answer: ["src/b.ts"],
+				sees: [{ module: "src/b.ts", declaration: "seen" }],
+				bound: [{ module: "src/b.ts", name: "two" }],
+			},
+			[PYTHON]: {
+				files: {
+					"pkg/__init__.py": "",
+					"pkg/a.py": "def one():\n    pass\n",
+					"pkg/b.py": "from .a import one\n\none()\n",
+				},
+				probe: {
+					"pkg/a.py": "def two():\n    pass\n",
+					"pkg/b.py": "from .a import two\n\n\ndef seen():\n    pass\n\n\ntwo()\n",
+				},
+				answer: ["pkg/b.py"],
+				sees: [{ module: "pkg/b.py", declaration: "seen" }],
+				bound: [{ module: "pkg/b.py", name: "two" }],
+			},
+			[GDSCRIPT]: {
+				files: {
+					"project.godot": 'config_version=5\n\n[application]\nconfig/name="probe"\n',
+					"a.gd": "class_name One\nextends Node\n",
+					"b.gd": "extends Node\n\n\nfunc run() -> void:\n\tOne.new()\n",
+				},
+				probe: {
+					"a.gd": "class_name Two\nextends Node\n",
+					"b.gd": 'extends Node\n\nconst Base = preload("res://a.gd")\n\n\nfunc seen() -> void:\n\tpass\n\n\nfunc run() -> void:\n\tTwo.new()\n',
+				},
+				answer: ["b.gd"],
+				sees: [{ module: "b.gd", declaration: "seen" }],
+				bound: [{ module: "b.gd", name: "Two" }],
+			},
+		},
+	},
+];
+
 ////////////////////////////////
 //  Functions & Helpers
 
 export function loadLifecycleCases(): LifecycleCase[] {
 	return CASES.map((testCase) => LifecycleCaseSchema.parse(testCase));
+}
+
+export function loadProbeBatchCases(): ProbeBatchCase[] {
+	return PROBE_BATCH_CASES.map((testCase) => ProbeBatchCaseSchema.parse(testCase));
 }

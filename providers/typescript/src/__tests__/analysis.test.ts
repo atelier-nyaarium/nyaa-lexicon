@@ -374,7 +374,7 @@ describe("checker-backed analysis", () => {
 
 		const first = discover();
 		expect(first.configFiles.sort()).toEqual(["package.json", "tsconfig.base.json", "tsconfig.json"]);
-		expect(lands()).toMatchObject({ status: "resolved", module: "one/value.ts" });
+		expect(lands()).toMatchObject({ status: "resolved", landing: { module: "one/value.ts" } });
 		const edits: [string, string, boolean][] = [
 			["tsconfig.json", config({ paths: { "@lib/*": ["./one/*"] }, outDir: "out" }), false],
 			["package.json", JSON.stringify({ name: "app", scripts: { test: "bun test --watch" } }), false],
@@ -397,7 +397,7 @@ describe("checker-backed analysis", () => {
 			expect(next !== fingerprint, `${file} ${text}`).toBe(moves);
 			fingerprint = next;
 		}
-		expect(lands()).toMatchObject({ status: "resolved", module: "two/value.ts" });
+		expect(lands()).toMatchObject({ status: "resolved", landing: { module: "two/value.ts" } });
 		provider.shutdown();
 	});
 
@@ -430,8 +430,8 @@ describe("checker-backed analysis", () => {
 			expect(first.configFiles).toEqual(
 				expect.arrayContaining(["vendor/lib/package.json", "vendor/new/package.json"]),
 			);
-			expect(lands("@lib")).toMatchObject({ status: "resolved", module: "vendor/lib/a.d.ts" });
-			expect(lands("@new")).toMatchObject({ status: "resolved", module: "vendor/new/index.d.ts" });
+			expect(lands("@lib")).toMatchObject({ status: "resolved", landing: { module: "vendor/lib/a.d.ts" } });
+			expect(lands("@new")).toMatchObject({ status: "resolved", landing: { module: "vendor/new/index.d.ts" } });
 			// An edited manifest, then one created where resolution found none.
 			for (const [manifest, specifier] of [
 				["vendor/lib", "@lib"],
@@ -441,7 +441,10 @@ describe("checker-backed analysis", () => {
 				const next = discover().fingerprint;
 				expect(next, `${manifest} linked=${linked}`).not.toBe(fingerprint);
 				fingerprint = next;
-				expect(lands(specifier)).toMatchObject({ status: "resolved", module: `${manifest}/b.d.ts` });
+				expect(lands(specifier)).toMatchObject({
+					status: "resolved",
+					landing: { module: `${manifest}/b.d.ts` },
+				});
 			}
 			provider.shutdown();
 		}
@@ -738,6 +741,54 @@ describe("checker-backed analysis", () => {
 		// A getter and its setter are one property, which its first declaration names.
 		const getter = idOf("area")[0] as string;
 		expect(targetsOf("area")).toEqual([getter, getter]);
+		provider.shutdown();
+	});
+
+	it("binds a value and a type sharing a name by the use's position, and keeps a merge one symbol", () => {
+		const files = {
+			"d.ts": "export const N = 1;\nexport type N = number;\n",
+			"use.ts": ['import { N } from "./d";', "let x = N;", "let y: N = x;", "type Q = typeof N;"].join("\n"),
+			"user.ts": [
+				'export const User = { name: "" };',
+				"export type User = typeof User;",
+				"export function check(u: User): User { return { name: User.name + u.name }; }",
+				"export type Name = typeof User.name;",
+			].join("\n"),
+			"merge.ts": [
+				"export interface Box {}",
+				"export class Box {}",
+				"const box: Box = new Box();",
+				"export function Space() {}",
+				"export namespace Space { export interface Item {} }",
+				"let item: Space.Item;",
+				"class Holder implements Space.Item {}",
+				"Space();",
+			].join("\n"),
+		};
+		const provider = harness();
+		provider.initialize(workspace(files));
+		const bindings = (module: keyof typeof files, name: string) =>
+			provider
+				.parseFile({ module, contentHash: module, text: files[module] })
+				.references.filter((reference) => reference.name === name)
+				.map(({ range, binding }) => {
+					if (binding.status !== "bound") return `${range.start.line} ${binding.status}`;
+					return `${range.start.line} ${binding.symbolId.slice(binding.symbolId.lastIndexOf(" ") + 1)}`;
+				});
+		provider.parseFile({ module: "d.ts", contentHash: "d.ts", text: files["d.ts"] });
+
+		expect(bindings("use.ts", "N")).toEqual(["1 N.", "2 N#", "3 N."]);
+		expect(bindings("user.ts", "User")).toEqual(["1 User.", "2 User#", "2 User#", "2 User.", "3 User."]);
+		// A merge stays one symbol; a namespace position reads every meaning of a function and namespace pair.
+		expect(bindings("merge.ts", "Box")).toEqual(["2 Box#", "2 Box#"]);
+		expect(bindings("merge.ts", "Space")).toEqual(["5 ambiguous", "7 Space()."]);
+		// A heritage receiver is no reference, though a caller may still bind its position.
+		const heritage = files["merge.ts"].indexOf("Space.Item {}");
+		const range = {
+			start: rangeAt(files["merge.ts"], heritage).start,
+			end: rangeAt(files["merge.ts"], heritage).start,
+		};
+		expect(provider.bind({ module: "merge.ts", name: "Space", range }).status).toBe("ambiguous");
 		provider.shutdown();
 	});
 

@@ -35,6 +35,7 @@ const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 	}),
 	discoverProject: () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),
 	probeFile: (params) => handlers.parseFile(params),
+	probeBatch: () => ({ status: "unsupported" }),
 	parseFile: (params) => ({
 		module: params.module,
 		contentHash: params.contentHash,

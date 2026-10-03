@@ -2,7 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { coordinatesOf, handlersFor, PROTOCOL_VERSION, type Range, TOO_DEEP } from "@nyaa-lexicon/protocol";
+import {
+	type Binding,
+	coordinatesOf,
+	FileFactsSchema,
+	handlersFor,
+	PROTOCOL_VERSION,
+	type Range,
+	TOO_DEEP,
+} from "@nyaa-lexicon/protocol";
 import { parseBash } from "../extract.js";
 import { BashProvider } from "../main.js";
 import { parseBashScript } from "../syntax/parser.js";
@@ -273,7 +281,7 @@ describe("sourcing", () => {
 		]);
 		expect(bash.resolveImport({ fromModule: "bin/main.sh", specifier: "./lib.sh" })).toEqual({
 			status: "resolved",
-			module: "bin/lib.sh",
+			landing: { kind: "module", module: "bin/lib.sh" },
 		});
 		expect(bash.resolveImport({ fromModule: "bin/main.sh", specifier: "/etc/profile" })).toMatchObject({
 			status: "external",
@@ -285,6 +293,111 @@ describe("sourcing", () => {
 		expect(bash.resolveImport({ fromModule: "bin/main.sh", specifier: "./gone.sh" })).toMatchObject({
 			status: "unresolved",
 		});
+	});
+
+	test("each source is one injection edge over its command and path, a later definition winning", () => {
+		const text = "source ./lib.sh quiet\nf() { . ./lib.sh; }\n";
+		const parsed = bash.parseFile({ module: "bin/main.sh", contentHash: "h", text });
+		expect(FileFactsSchema.safeParse(parsed).success).toBe(true);
+		expect(
+			parsed.imports.flatMap(({ edges }) => edges.map((edge) => ({ ...edge, span: sliceOf(text, edge.span) }))),
+		).toEqual(
+			["source ./lib.sh", ". ./lib.sh"].map((span, order) => ({
+				kind: "injection",
+				span,
+				bindsLocally: true,
+				selector: { kind: "visible" },
+				conflict: { priority: 0, amongTransfers: "laterWins", againstLocal: "sourceOrder" },
+				certainty: { status: "known" },
+				order,
+			})),
+		);
+		expect(
+			bash.probeBatch({ files: [{ module: "bin/main.sh", contentHash: "h", text }], answer: ["bin/main.sh"] }),
+		).toEqual({
+			status: "unsupported",
+		});
+	});
+
+	test("a sourced path that expands, globs or opens with ~ is unproved, and binds nothing", () => {
+		const text = [
+			"source ./lib*.sh",
+			'source "./lib*.sh"',
+			"source ./lib\\*.sh",
+			"source ./lib?.sh",
+			"source ./lib[1].sh",
+			"source ~/lib.sh",
+			'source "$HOME/rc"',
+			"",
+		].join("\n");
+		const parsed = bash.parseFile({ module: "bin/edges.sh", contentHash: "h", text });
+		const known = { status: "known" } as const;
+		const runtime = { status: "unknown", reason: "RuntimeConstructed" } as const;
+		expect(
+			parsed.imports.flatMap(({ edges }) => edges.map((edge) => [sliceOf(text, edge.span), edge.certainty])),
+		).toEqual([
+			["source ./lib*.sh", runtime],
+			['source "./lib*.sh"', known],
+			["source ./lib\\*.sh", known],
+			["source ./lib?.sh", runtime],
+			["source ./lib[1].sh", runtime],
+			["source ~/lib.sh", runtime],
+			['source "$HOME/rc"', runtime],
+		]);
+		const glob = "source ./lib*.sh\necho $SHARED\n";
+		const globbing = provider({ "glob.sh": glob, "lib1.sh": "SHARED=1\n" });
+		const shared = globbing
+			.parseFile({ module: "glob.sh", contentHash: "h", text: glob })
+			.references.find((reference) => reference.name === "SHARED");
+		expect([
+			globbing.resolveImport({ fromModule: "glob.sh", specifier: "./lib*.sh" }),
+			shared?.binding,
+		]).toMatchObject([
+			{ status: "unresolved", reason: "RuntimeConstructed" },
+			{ status: "unbound", reason: "RuntimeConstructed" },
+		]);
+	});
+
+	test("where a name is read, the last source before it wins; a function body may see any", () => {
+		const files = {
+			"a.sh": "helper() { :; }\nVALUE=a\n",
+			"b.sh": "helper() { :; }\nVALUE=b\n",
+			// Its own definition follows its source; d's precedes its source.
+			"c.sh": "source ./a.sh\nhelper() { :; }\n",
+			"d.sh": "helper() { :; }\nsource ./b.sh\n",
+			"main.sh": [
+				"source ./a.sh",
+				"helper",
+				"source ./b.sh",
+				"helper",
+				"echo $VALUE",
+				"run() { helper; }",
+				"source ./c.sh",
+				"helper",
+				"source ./d.sh",
+				"helper",
+				"",
+			].join("\n"),
+		};
+		const facts = provider(files).parseFile({ module: "main.sh", contentHash: "h", text: files["main.sh"] });
+		const reached = (binding: Binding) =>
+			binding.status === "bound"
+				? binding.symbolId.split(" ").slice(-2).join(" ")
+				: binding.status === "ambiguous"
+					? binding.candidates.map((candidate) => candidate.split(" ").slice(-2).join(" "))
+					: binding.status;
+		expect(
+			facts.references
+				.filter((reference) => reference.role !== "import")
+				.map((reference) => [reference.name, reached(reference.binding)]),
+		).toEqual([
+			["helper", "a.sh helper()."],
+			["helper", "b.sh helper()."],
+			["VALUE", "b.sh VALUE."],
+			["helper", ["a.sh helper().", "b.sh helper().", "c.sh helper()."]],
+			["helper", "c.sh helper()."],
+			["helper", "b.sh helper()."],
+		]);
 	});
 
 	test("a function and a variable from the sourced file bind across the boundary", () => {
@@ -1015,10 +1128,19 @@ describe("the wire face", () => {
 		});
 	});
 
-	test("a name declared in the file wins over the same name in a sourced file", () => {
-		const lib = "helper() { :; }\nSHARED=lib\n";
-		const main = "source ./lib.sh\nhelper() { :; }\nhelper\nSHARED=main\necho $SHARED\n";
-		const facts = provider({ "main.sh": main, "lib.sh": lib }).parseFile({
+	test("at the top level, the file's own definition or a source, whichever came last, binds a read", () => {
+		const lib = "helper() { :; }\nSHARED=lib\nLATE=lib\n";
+		const wrap = "SHARED=wrap; source ./lib.sh; SHARED=again\n";
+		const main = [
+			"helper() { :; }; SHARED=main; source ./lib.sh; helper; echo $SHARED $LATE",
+			"SHARED=again; echo $SHARED",
+			"helper() { :; }; helper",
+			"run() { helper; echo $SHARED; }",
+			"LATE=main",
+			"source ./wrap.sh; echo $SHARED",
+			"",
+		].join("\n");
+		const facts = provider({ "main.sh": main, "lib.sh": lib, "wrap.sh": wrap }).parseFile({
 			module: "main.sh",
 			contentHash: "h",
 			text: main,
@@ -1026,12 +1148,21 @@ describe("the wire face", () => {
 		const bindings = facts.references
 			.filter((reference) => reference.role !== "import")
 			.map((reference) => [
+				reference.role,
 				reference.name,
-				reference.binding.status === "bound" ? reference.binding.symbolId : null,
+				reference.binding.status === "bound" ? reference.binding.symbolId.split(" ").slice(-2).join(" ") : null,
 			]);
+		// A write keeps its own variable, and a body sees the file's own definitions.
 		expect(bindings).toEqual([
-			["helper", "lexicon bash main.sh helper()."],
-			["SHARED", "lexicon bash main.sh SHARED."],
+			["call", "helper", "lib.sh helper()."],
+			["read", "SHARED", "lib.sh SHARED."],
+			["read", "LATE", "lib.sh LATE."],
+			["write", "SHARED", "main.sh SHARED."],
+			["read", "SHARED", "main.sh SHARED."],
+			["call", "helper", "main.sh helper()[2]."],
+			["call", "helper", "main.sh helper()[2]."],
+			["read", "SHARED", "main.sh SHARED."],
+			["read", "SHARED", "wrap.sh SHARED."],
 		]);
 	});
 });

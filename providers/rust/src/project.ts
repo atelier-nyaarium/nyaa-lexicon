@@ -86,16 +86,21 @@ const LOOSE_ROOTS = new Map<string, TargetKind>([
 ////////////////////////////////
 //  Functions & Helpers
 
-/** A path's segments, to its first `{`, `*` or `as`, and whether a leading `::` starts it at the crates. */
-export function pathSegments(specifier: string): { absolute: boolean; segments: string[] } {
+/**
+ * A path's segments, to its first `{`, `*` or `as`; whether a leading `::` starts it at the crates,
+ * and whether a `*` ends it.
+ */
+export function pathSegments(specifier: string): { absolute: boolean; segments: string[]; glob: boolean } {
 	const segments: string[] = [];
 	const tokens = tokenize(specifier).tokens;
+	let glob = false;
 	for (const token of tokens) {
 		if (isValueToken(token, "::")) continue;
+		glob = isValueToken(token, "*");
 		if (token.kind !== "identifier" || isValueToken(token, "as")) break;
 		segments.push(token.value);
 	}
-	return { absolute: isValueToken(tokens[0], "::"), segments };
+	return { absolute: isValueToken(tokens[0], "::"), segments, glob };
 }
 
 /**

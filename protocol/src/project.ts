@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { ImportKindSchema } from "./move.js";
-import { DeclarationSchema, DiagnosticSchema, RangeSchema, ReferenceSchema } from "./symbols.js";
+import { DeclarationSchema, DiagnosticSchema, RangeSchema, ReferenceSchema, VisibilitySchema } from "./symbols.js";
 import { UnknownReasonSchema } from "./values.js";
 
 ////////////////////////////////
@@ -17,6 +17,32 @@ export const IndexDepthSchema = z.enum(["full", "surface", "outline"]).meta({ id
 export type IndexDepth = z.infer<typeof IndexDepthSchema>;
 
 /**
+ * Where a specifier lands: a module, a scope inside declarations, or a package spanning files.
+ *
+ * A scope is named by its id, never by a member list: core unions the files' `scopeContributions`
+ * and stamps the result.
+ */
+export const LandingSchema = z
+	.discriminatedUnion("kind", [
+		/** Workspace-relative, matching the symbol id grammar's module field. */
+		z.object({ kind: z.literal("module"), module: z.string().min(1) }),
+		/** e.g. a Rust enum a glob opens, a C# static class, a partial type. */
+		z.object({
+			kind: z.literal("symbolScope"),
+			/** The answering provider's id; core refuses another. */
+			providerId: z.string().min(1),
+			scopeId: z.string().min(1),
+			/** The declaration that opens it, for display. */
+			anchorSymbolId: z.string().min(1).optional(),
+		}),
+		/** e.g. Kotlin `p.*`, C# `using N;`. */
+		z.object({ kind: z.literal("packageScope"), providerId: z.string().min(1), scopeId: z.string().min(1) }),
+	])
+	.meta({ id: "Landing" });
+
+export type Landing = z.infer<typeof LandingSchema>;
+
+/**
  * Where an import specifier landed.
  *
  * `external` and `unresolved` are different answers on purpose: a dependency we chose not to index
@@ -26,8 +52,7 @@ export const ImportResolutionSchema = z
 	.discriminatedUnion("status", [
 		z.object({
 			status: z.literal("resolved"),
-			/** Workspace-relative, matching the symbol id grammar's module field. */
-			module: z.string().min(1),
+			landing: LandingSchema,
 			/** Surface constrains generated or shipped code without changing resolution truth. */
 			depth: IndexDepthSchema.optional(),
 		}),
@@ -49,9 +74,62 @@ export const ImportResolutionSchema = z
 
 export type ImportResolution = z.infer<typeof ImportResolutionSchema>;
 
-/** One import as written, before resolution. */
+/** Namespaces a name binds in, as opaque atoms such as `value`, `type`, `macro` or `tag`. */
+export const MeaningSchema = z.array(z.string().min(1)).min(1).meta({ id: "Meaning" });
+
+export type Meaning = z.infer<typeof MeaningSchema>;
+
+export const CertaintySchema = z
+	.discriminatedUnion("status", [
+		z.object({ status: z.literal("known") }),
+		z.object({ status: z.literal("unknown"), reason: UnknownReasonSchema }),
+	])
+	.meta({ id: "Certainty" });
+
+export type Certainty = z.infer<typeof CertaintySchema>;
+
+/** How a name one edge brings resolves against another binding of it. */
+export const ConflictSchema = z
+	.object({
+		/** Higher wins among transfers bringing one name. */
+		priority: z.number().int(),
+		/** Between transfers of equal priority. */
+		amongTransfers: z.enum(["exclude", "earlierWins", "laterWins"]),
+		againstLocal: z.enum(["localWins", "transferWins", "sourceOrder"]),
+	})
+	.meta({ id: "Conflict" });
+
+export type Conflict = z.infer<typeof ConflictSchema>;
+
+/** `*` matches any run, `?` one character, `[...]` a class, `[!...]` its complement. */
+const GLOB = { glob: z.string().min(1), caseInsensitive: z.boolean() };
+
+/** Which names a wildcard, an injection or a star brings. Core expands it with no language test. */
+export const SelectorSchema = z
+	.discriminatedUnion("kind", [
+		/** Every name the target exports but `default`. */
+		z.object({ kind: z.literal("allButDefault") }),
+		/** The target's static `allList`, else the names its `fallback` matches. Dynamic: unknown. */
+		z.object({ kind: z.literal("allList") }),
+		/**
+		 * Every member of the landing: a module's exports, or a scope's admitted members. A language
+		 * that restricts further reports `names`.
+		 */
+		z.object({ kind: z.literal("visible") }),
+		/** Empty is proved to select nothing. */
+		z.object({ kind: z.literal("names"), names: z.array(z.string().min(1)) }),
+		z.object({ kind: z.literal("pattern"), ...GLOB }),
+	])
+	.meta({ id: "Selector" });
+
+export type Selector = z.infer<typeof SelectorSchema>;
+
+const NAMING_KINDS: readonly string[] = ["default", "namespace", "require"];
+
+const SELECTING_KINDS: readonly string[] = ["wildcard", "injection"];
+
 /**
- * One name an import brings in, and where it is written.
+ * One transfer an import makes, and where it is written.
  *
  * The position is what separates reading from rewriting. Without it an import is a statement that
  * some names crossed a module boundary, and a rename cannot reach the text that says so: measured
@@ -65,27 +143,54 @@ export type ImportResolution = z.infer<typeof ImportResolutionSchema>;
  * default import and a GDScript `const Foo = preload(...)` all write a local binding and name no
  * export at all. Requiring `name` made three providers reach for the local binding to fill it,
  * which would have had a rename of the source symbol rewrite a local alias: a rewrite that still
- * parses and no longer works. At least one of the two must be present, because an entry carrying
- * neither describes nothing.
+ * parses and no longer works. A wildcard, an injection and a side-effect import write neither.
  */
-export const ImportedNameSchema = z
+export const ImportEdgeSchema = z
 	.object({
+		kind: ImportKindSchema,
+		/**
+		 * The edge as written: `x as y`, `*`, a default or namespace clause, an injection or
+		 * side-effect statement. Export targets and reference origins name an edge by it.
+		 */
+		span: RangeSchema,
 		/** The name as the source module spells it. Absent when the import names no export. */
 		name: z.string().min(1).optional(),
 		range: RangeSchema.optional(),
 		/** The binding written in THIS file. Absent when the import writes no local name. */
 		local: z.string().min(1).optional(),
 		localRange: RangeSchema.optional(),
-		/**
-		 * The form that binds it. Absent reads as `named` when `name` is present and `namespace`
-		 * otherwise, which cannot tell a default import from a namespace one.
-		 */
-		kind: ImportKindSchema.optional(),
+		/** Python `from .m import N` binds N here; TypeScript `export { N } from` does not. */
+		bindsLocally: z.boolean(),
 		/** Erased at runtime, e.g. TypeScript's `import type`, in any form. */
 		typeOnly: z.boolean().optional(),
+		selector: SelectorSchema.optional(),
+		conflict: ConflictSchema.optional(),
+		meaning: MeaningSchema.optional(),
+		/** The edge's own reach, e.g. C#'s `global using`. */
+		visibility: VisibilitySchema.optional(),
+		certainty: CertaintySchema,
+		/** Source order, shared with this file's exports. */
+		order: z.number().int().nonnegative(),
 	})
-	.refine((entry) => entry.name !== undefined || entry.local !== undefined, {
-		message: "an imported name must carry a source name, a local binding, or both",
+	.refine((edge) => edge.kind !== "named" || edge.name !== undefined, {
+		message: "a named edge names its source",
+	})
+	.refine((edge) => !NAMING_KINDS.includes(edge.kind) || edge.local !== undefined, {
+		message: "a default, namespace or require edge writes a local binding",
+	})
+	.refine((edge) => !SELECTING_KINDS.includes(edge.kind) || edge.selector !== undefined, {
+		message: "a wildcard or injection edge carries a selector",
+	})
+	.refine((edge) => !SELECTING_KINDS.includes(edge.kind) || (edge.name === undefined && edge.local === undefined), {
+		message: "a wildcard or injection edge writes no name",
+	})
+	.refine(
+		(edge) =>
+			edge.kind !== "sideEffect" || (!edge.bindsLocally && edge.name === undefined && edge.local === undefined),
+		{ message: "a side-effect edge binds nothing" },
+	)
+	.refine((edge) => !edge.bindsLocally || edge.conflict !== undefined, {
+		message: "a binding edge states its conflict policy",
 	})
 	.refine((entry) => entry.name === undefined || entry.range !== undefined, {
 		message: "a source name without its range cannot be rewritten, which is the point of carrying it",
@@ -93,21 +198,121 @@ export const ImportedNameSchema = z
 	.refine((entry) => entry.local === undefined || entry.localRange !== undefined, {
 		message: "a local binding without its range cannot be rewritten",
 	})
-	.meta({ id: "ImportedName" });
+	.meta({ id: "ImportEdge" });
 
-export type ImportedName = z.infer<typeof ImportedNameSchema>;
+export type ImportEdge = z.infer<typeof ImportEdgeSchema>;
 
+/** One import as written, before resolution. Whether it re-exports is an export fact's to say. */
 export const ImportSchema = z
-	.object({
-		specifier: z.string().min(1),
-		/** Names taken from it, each with where it is written. Empty for a side-effect import. */
-		imported: z.array(ImportedNameSchema),
-		/** Whether this re-exports rather than consumes, which is what makes a barrel a barrel. */
-		reExport: z.boolean(),
-	})
+	.object({ specifier: z.string().min(1), edges: z.array(ImportEdgeSchema).min(1) })
 	.meta({ id: "Import" });
 
 export type Import = z.infer<typeof ImportSchema>;
+
+export const ExportFormSchema = z
+	.enum([
+		/** Exported where declared, e.g. `export function N`, or a Python module-level binding. */
+		"direct",
+		/** A local binding exported by name, e.g. `export { x as y }`. */
+		"local",
+		/** A name an import edge brings, e.g. `export { x } from "./m"`, or Python `from .m import x`. */
+		"forward",
+		/** Every name an import edge brings, e.g. `export * from "./m"`, or Python `from .m import *`. */
+		"star",
+		/** A module namespace under one name, e.g. `export * as ns from "./m"`. Never its members. */
+		"namespace",
+		/** e.g. `export default N`. */
+		"default",
+		/** The module's whole value, e.g. `export = N`. */
+		"assignment",
+	])
+	.meta({ id: "ExportForm" });
+
+export type ExportForm = z.infer<typeof ExportFormSchema>;
+
+export const ExportTargetSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("symbol"), symbolId: z.string().min(1) }),
+		/** The import edge with exactly this span in this module. */
+		z.object({ kind: z.literal("import"), span: RangeSchema }),
+		/** e.g. `export default 42`, which is NotIndexed. */
+		z.object({ kind: z.literal("unknown"), reason: UnknownReasonSchema }),
+	])
+	.meta({ id: "ExportTarget" });
+
+export type ExportTarget = z.infer<typeof ExportTargetSchema>;
+
+const UNNAMED_FORMS: readonly string[] = ["star", "assignment"];
+
+const FORWARDING_FORMS: readonly string[] = ["forward", "star", "namespace"];
+
+/** One export edge: a name this module, or a scope in it, exposes. The authority on exposure. */
+export const ExportSchema = z
+	.object({
+		form: ExportFormSchema,
+		/** The edge as written. */
+		span: RangeSchema,
+		/** `default` for a default export. */
+		name: z.string().min(1).optional(),
+		/** The exported name's token, when written. */
+		range: RangeSchema.optional(),
+		/** The local or source name's token, when written apart from the exported one. */
+		sourceRange: RangeSchema.optional(),
+		target: ExportTargetSchema,
+		/** The scope it exports from. Absent: the module. */
+		scopeId: z.string().min(1).optional(),
+		/** A star's further filter. Absent: every name its target edge brings. */
+		selector: SelectorSchema.optional(),
+		conflict: ConflictSchema,
+		meaning: MeaningSchema.optional(),
+		visibility: VisibilitySchema.optional(),
+		certainty: CertaintySchema,
+		/** Source order, shared with this file's imports. */
+		order: z.number().int().nonnegative(),
+	})
+	.refine((edge) => UNNAMED_FORMS.includes(edge.form) === (edge.name === undefined), {
+		message: "only a star and an assignment export no name",
+	})
+	.refine((edge) => edge.form !== "default" || edge.name === "default", {
+		message: "a default export is named `default`",
+	})
+	.refine((edge) => !FORWARDING_FORMS.includes(edge.form) || edge.target.kind === "import", {
+		message: "a forward, star or namespace export targets an import edge",
+	})
+	.refine((edge) => edge.selector === undefined || edge.form === "star", {
+		message: "only a star export carries a selector",
+	})
+	.meta({ id: "Export" });
+
+export type Export = z.infer<typeof ExportSchema>;
+
+/** Which names a star import of this module brings, e.g. Python's `__all__`. */
+export const AllListSchema = z
+	.discriminatedUnion("state", [
+		/** A star brings the exported names `fallback` matches, e.g. `[!_]*`. */
+		z.object({ state: z.literal("absent"), fallback: z.object(GLOB) }),
+		z.object({
+			state: z.literal("static"),
+			entries: z.array(z.object({ name: z.string().min(1), range: RangeSchema, target: ExportTargetSchema })),
+		}),
+		/** Built or changed at runtime, e.g. `__all__ += [...]`. */
+		z.object({ state: z.literal("dynamic"), reason: UnknownReasonSchema }),
+	])
+	.meta({ id: "AllList" });
+
+export type AllList = z.infer<typeof AllListSchema>;
+
+/** Members one file adds to a scope spanning declarations or files. */
+export const ScopeContributionSchema = z
+	.object({
+		kind: z.enum(["symbolScope", "packageScope"]),
+		scopeId: z.string().min(1),
+		/** Direct members visible outside this file. */
+		members: z.array(z.string().min(1)),
+	})
+	.meta({ id: "ScopeContribution" });
+
+export type ScopeContribution = z.infer<typeof ScopeContributionSchema>;
 
 /**
  * A literal value written in source, with where it is written.
@@ -258,6 +463,11 @@ export const FileFactsSchema = z
 		declarations: z.array(DeclarationSchema),
 		references: z.array(ReferenceSchema),
 		imports: z.array(ImportSchema),
+		/** Absent reads as the `exports` tier being false: unknown coverage, not no exports. */
+		exports: z.array(ExportSchema).optional(),
+		/** Absent when the language has no star-export list. */
+		allList: AllListSchema.optional(),
+		scopeContributions: z.array(ScopeContributionSchema).optional(),
 		/** Empty is honest only when the provider declares the tier false, like every other list here. */
 		literals: z.array(LiteralSchema),
 		/** Absent reads as the `comments` tier being false. */

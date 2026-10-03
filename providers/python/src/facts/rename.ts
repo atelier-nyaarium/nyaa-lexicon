@@ -8,6 +8,7 @@ import {
 	planEdits,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
+	type RenameSite,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import type * as A from "../syntax/ast.js";
@@ -45,6 +46,8 @@ interface Candidate {
 	binding: boolean;
 	scopePath: RawDescriptor[];
 	dynamic: boolean;
+	/** A `from` import's whole alias, and its `as` name when one is written. */
+	alias?: { span: Range; local: string | undefined };
 }
 
 interface EditGroup {
@@ -102,6 +105,16 @@ function allStrings(tree: A.Module): Set<A.Node> {
 	return found;
 }
 
+/** Where a string literal spells `name` between its quotes, unescaped; undefined otherwise. */
+function literalBody(literal: Range, coordinates: ReturnType<typeof coordinatesOf>, name: string): Range | undefined {
+	const offsets = coordinates.offsetsForRange(literal);
+	const text = coordinates.sliceRange(literal);
+	const open = text === undefined ? null : /^[A-Za-z]*('''|"""|'|")/.exec(text);
+	if (offsets === undefined || open === null || text !== `${open[0]}${name}${open[1]}`) return undefined;
+	const start = offsets.start + open[0].length;
+	return coordinates.rangeAt(start, start + name.length);
+}
+
 /** The scopes a read in `scope` looks through, innermost first; a method's class is skipped. */
 function outwardScopes(scope: RawDescriptor[]): RawDescriptor[][] {
 	const chain: RawDescriptor[][] = [];
@@ -153,34 +166,52 @@ function matches(
 /** The edit a site makes, or why it makes none; undefined when it already reads the new name. */
 function siteOutcome(
 	candidates: Candidate[],
-	site: Range,
+	site: RenameSite,
 	coordinates: ReturnType<typeof coordinatesOf>,
 	oldName: string,
 	newName: string,
 ): TextEdit | BlockedSite | undefined {
+	const keep = site.keep === true;
 	if (candidates.length === 0) {
-		const siteText = coordinates.sliceRange(site);
-		if (siteText === undefined) return blocked(site, "ParseError", "the supplied range does not address text");
+		const siteText = coordinates.sliceRange(site.range);
+		if (siteText === undefined)
+			return blocked(site.range, "ParseError", "the supplied range does not address text");
 		if (siteText === newName) return undefined;
-		return blocked(site, "NotImplemented", "the supplied range does not match a supported Python rename site");
+		return blocked(
+			site.range,
+			"NotImplemented",
+			"the supplied range does not match a supported Python rename site",
+		);
 	}
 	if (candidates.length !== 1) {
-		return blocked(site, "NotImplemented", "the supplied range matches multiple Python rename sites");
+		return blocked(site.range, "NotImplemented", "the supplied range matches multiple Python rename sites");
 	}
 	const candidate = candidates[0] as Candidate;
+	// A kept export keeps its old string.
+	if (candidate.kind === "allString" && keep) return undefined;
 	if (candidate.kind === "allString" && candidate.name === oldName) {
-		return { range: candidate.range, newText: stringRepr(newName) };
+		const body = literalBody(candidate.range, coordinates, oldName);
+		return body === undefined
+			? { range: candidate.range, newText: stringRepr(newName) }
+			: { range: body, newText: newName };
 	}
 	if (STRING_KINDS.has(candidate.kind)) {
-		return blocked(site, "StringLiteral", "renaming inside a string could change unrelated text");
+		return blocked(site.range, "StringLiteral", "renaming inside a string could change unrelated text");
 	}
-	if (candidate.kind === "attribute") {
-		return blocked(site, "NotImplemented", "attribute names may be created or read dynamically");
+	if (keep && candidate.kind !== "sourceImport") {
+		return blocked(site.range, "NotImplemented", "only a from-import keeps its old name as an alias");
 	}
 	if (candidate.kind === "keyword") {
-		return blocked(site, "NotImplemented", "keyword argument names are not a closed reference set");
+		return blocked(site.range, "NotImplemented", "keyword argument names are not a closed reference set");
 	}
-	if (candidate.dynamic) return blocked(site, "NotImplemented", "exec or eval can change this scope");
+	if (candidate.dynamic) return blocked(site.range, "NotImplemented", "exec or eval can change this scope");
+	if (candidate.alias !== undefined) {
+		if (keep && candidate.alias.local === undefined) {
+			return { range: candidate.range, newText: `${newName} as ${oldName}` };
+		}
+		// `N2 as N` renamed to N is plain `N`.
+		if (candidate.alias.local === newName) return { range: candidate.alias.span, newText: newName };
+	}
 	return { range: candidate.range, newText: newName };
 }
 
@@ -220,7 +251,7 @@ class RenameVisitor extends NodeVisitor {
 		return this.analyzer.source;
 	}
 
-	private add(name: string, range: Range, kind: CandidateKind, binding = false): void {
+	private add(name: string, range: Range, kind: CandidateKind, binding = false, alias?: Candidate["alias"]): void {
 		const info = this.analyzer.scopes.info(this.scopePath);
 		this.candidates.push({
 			name,
@@ -229,6 +260,7 @@ class RenameVisitor extends NodeVisitor {
 			binding,
 			scopePath: [...this.scopePath],
 			dynamic: this.unsupportedDepth > 0 || info?.dynamic === true,
+			...(alias === undefined ? {} : { alias }),
 		});
 	}
 
@@ -372,9 +404,15 @@ class RenameVisitor extends NodeVisitor {
 	private visitImportFrom(node: A.ImportFrom): void {
 		for (const alias of node.names) {
 			if (alias.name === "*" || alias.name.includes(".")) continue;
-			// A differently named local is its own binding; the source name binds only when unaliased.
-			const aliased = alias.asname !== undefined && alias.asname !== alias.name;
-			this.add(alias.name, this.source.range(alias.pos, alias.pos + alias.name.length), "sourceImport", !aliased);
+			// A written `as` name is its own binding; the source name binds only when unaliased.
+			const aliased = alias.asname !== undefined;
+			this.add(
+				alias.name,
+				this.source.range(alias.pos, alias.pos + alias.name.length),
+				"sourceImport",
+				!aliased,
+				{ span: this.source.rangeOf(alias), local: alias.asname },
+			);
 			if (aliased) {
 				const asname = alias.asname as string;
 				this.add(asname, this.source.range(alias.end - asname.length, alias.end), "localImport", true);
@@ -396,7 +434,7 @@ class RenameVisitor extends NodeVisitor {
 //  Main
 
 export function renameEdits(request: RenameEditsRequest): RenameEditsResponse {
-	const { module, text, oldName, newName, sites, ownerCalls } = request;
+	const { text, oldName, newName, sites, ownerCalls } = request;
 	if (!isIdentifier(oldName) || !isIdentifier(newName)) {
 		return { status: "refused", reason: "InvalidName", detail: "Python names must be identifiers" };
 	}
@@ -413,7 +451,7 @@ export function renameEdits(request: RenameEditsRequest): RenameEditsResponse {
 	if (oldName === newName) return { status: "ready", edits: [], blocked: [] };
 
 	const source = new Source(text, parsed.tokens);
-	const analyzer = new Analyzer(module, source, parsed.module);
+	const analyzer = new Analyzer(source, parsed.module);
 	analyzer.analyze();
 	const visitor = new RenameVisitor(analyzer);
 	visitor.visit(parsed.module);
@@ -476,9 +514,11 @@ export function renameEdits(request: RenameEditsRequest): RenameEditsResponse {
 
 	const targetScopes = new Map<string, RawDescriptor[]>();
 	const renamed = new Set<Candidate>();
-	for (const { candidates } of matched) {
+	for (const { site, candidates } of matched) {
 		if (candidates.length !== 1) continue;
 		const candidate = candidates[0] as Candidate;
+		// A kept site leaves this file's binding as written, and a member token binds in no scope.
+		if (site.keep === true || candidate.kind === "attribute") continue;
 		const scope = candidate.binding ? candidate.scopePath : resolveScope(analyzer, candidate.scopePath, oldName);
 		if (scope === undefined) continue;
 		targetScopes.set(pathKey(scope), scope);
@@ -527,7 +567,7 @@ export function renameEdits(request: RenameEditsRequest): RenameEditsResponse {
 		groups.set(key, found);
 	};
 	for (const [index, { site, candidates }] of matched.entries()) {
-		const outcome = siteOutcome(candidates, site.range, coordinates, oldName, newName);
+		const outcome = siteOutcome(candidates, site, coordinates, oldName, newName);
 		if (outcome === undefined) continue;
 		if ("newText" in outcome) group(outcome, ["site", index]);
 		else blockedBySite.set(index, outcome);

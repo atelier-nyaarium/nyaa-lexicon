@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
+import type { Declaration, IndexDepth } from "@nyaa-lexicon/protocol";
 import type { FileEvent } from "../invalidation";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
@@ -11,9 +11,10 @@ import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, type SourceReader, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
-import { fakeClasses, fakeImports } from "./fakeGrammar";
-import { parseFake, resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
+import { fakeClasses } from "./fakeGrammar";
+import { importsFrom, parseFake, resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
 import { gitAdd, gitInit } from "./gitFixture";
+import { landed } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -67,10 +68,6 @@ function declaration(module: string, name: string): Declaration {
 		visibility: "public",
 		exported: true,
 	};
-}
-
-function importsFrom(text: string): Import[] {
-	return fakeImports(text).map((specifier) => ({ specifier, imported: [], reExport: false }));
 }
 
 /** `lazyEvidence: false` ignores the indexer's registered source, so only a scan's own observation routes a header. */
@@ -535,9 +532,7 @@ describe("a config edit that restates a project", () => {
 					return { files: [], externalRoots: [], configFiles, diagnostics: [], fingerprint };
 				},
 				resolveImport: (request) =>
-					request.specifier === "lib"
-						? { status: "resolved" as const, module: lines()[1] as string }
-						: resolveFake(request),
+					request.specifier === "lib" ? landed(lines()[1] as string) : resolveFake(request),
 			},
 		});
 		service = new LexiconService(store, port, sourceReader(root), root);

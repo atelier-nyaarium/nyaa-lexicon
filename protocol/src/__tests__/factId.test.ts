@@ -5,6 +5,7 @@ import {
 	declarationFactId,
 	docFactId,
 	doubtFactId,
+	exportFactId,
 	factKindOf,
 	factModuleOf,
 	importFactId,
@@ -15,7 +16,7 @@ import {
 	parseFactId,
 	referenceFactId,
 } from "../factId";
-import type { Literal } from "../project";
+import type { Export, ImportEdge, Literal } from "../project";
 import type { Declaration, Range, Reference } from "../symbols";
 
 ////////////////////////////////
@@ -46,6 +47,50 @@ const LIT: Literal = {
 	kind: "string",
 	value: "thing_happened",
 	range: { start: { line: 4, character: 8 }, end: { line: 4, character: 24 } },
+};
+
+const SPAN: Range = { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } };
+
+const EDGE: ImportEdge = {
+	kind: "namespace",
+	span: SPAN,
+	local: "os",
+	localRange: { start: { line: 0, character: 7 }, end: { line: 0, character: 9 } },
+	bindsLocally: true,
+	conflict: { priority: 0, amongTransfers: "laterWins", againstLocal: "sourceOrder" },
+	certainty: { status: "known" },
+	order: 0,
+};
+
+const EXPORT: Export = {
+	form: "forward",
+	span: SPAN,
+	name: "add",
+	range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
+	target: { kind: "import", span: SPAN },
+	conflict: { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" },
+	certainty: { status: "known" },
+	order: 0,
+};
+
+/** `from os import *`: no name, no local. */
+const WILDCARD: ImportEdge = {
+	kind: "wildcard",
+	span: SPAN,
+	bindsLocally: true,
+	selector: { kind: "allList" },
+	conflict: EDGE.conflict,
+	certainty: { status: "known" },
+	order: 0,
+};
+
+const STAR: Export = {
+	form: "star",
+	span: SPAN,
+	target: { kind: "import", span: SPAN },
+	conflict: EXPORT.conflict,
+	certainty: { status: "known" },
+	order: 0,
 };
 
 function shifted(range: Range, lines: number, characters = 0): Range {
@@ -287,27 +332,111 @@ describe("what each kind counts as its identity", () => {
 		expect(dynamic).not.toBe(notIndexed);
 	});
 
+	it("separates a qualified reference from a bare one, and an unstated one from both", () => {
+		const ids = [undefined, false, true].map((qualified) =>
+			referenceFactId("src/b.ts", { ...REF, ...(qualified === undefined ? {} : { qualified }) }, NO_OWNERS),
+		);
+
+		expect(new Set(ids).size).toBe(3);
+	});
+
 	it("separates the source name of an import from its local alias", () => {
-		const source = importFactId("src/b.ts", "./a.js", false, {
-			name: "add",
-			range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
-		});
-		const alias = importFactId("src/b.ts", "./a.js", false, {
+		const range = { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } };
+		const { local: _local, localRange: _localRange, ...unbound } = EDGE;
+		const source = importFactId("src/b.ts", "./a.js", { ...unbound, kind: "named", name: "add", range });
+		const alias = importFactId("src/b.ts", "./a.js", {
+			...unbound,
+			kind: "default",
 			local: "add",
-			localRange: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
+			localRange: range,
 		});
 
 		expect(alias).not.toBe(source);
 	});
 
 	// A bare `import os` names no export and still has to be citable, since it is what carries the
-	// edge. Two of them in one file are the same fact stated twice, so one id is the right answer.
-	it("gives a nameless import an id, and the same one when it is written twice", () => {
-		const first = importFactId("src/b.ts", "os", false);
+	// edge. Its span tells two statements of it apart.
+	it("gives a nameless import an id, and another one where it is written again", () => {
+		const first = importFactId("src/b.ts", "os", EDGE);
 
 		expect(isFactId(first)).toBe(true);
-		expect(importFactId("src/b.ts", "os", false)).toBe(first);
-		expect(importFactId("src/b.ts", "os", true)).not.toBe(first);
+		expect(importFactId("src/b.ts", "os", EDGE)).toBe(first);
+		expect(importFactId("src/b.ts", "os", { ...EDGE, span: shifted(SPAN, 1) })).not.toBe(first);
+	});
+
+	it("changes an import edge's id with every field that changes what it transfers", () => {
+		const variants: ImportEdge[] = [
+			EDGE,
+			{ ...EDGE, typeOnly: true },
+			{ ...EDGE, bindsLocally: false },
+			WILDCARD,
+			{ ...WILDCARD, selector: { kind: "names", names: [] } },
+			{ ...WILDCARD, selector: { kind: "names", names: ["os"] } },
+			{ ...WILDCARD, selector: { kind: "names", names: ["sys"] } },
+			{ ...WILDCARD, selector: { kind: "pattern", glob: "[!_]*", caseInsensitive: false } },
+			{ ...EDGE, conflict: { priority: 1, amongTransfers: "laterWins", againstLocal: "sourceOrder" } },
+			{ ...EDGE, meaning: ["value"] },
+			{ ...EDGE, meaning: ["type"] },
+			{ ...EDGE, visibility: "internal" },
+			{ ...EDGE, certainty: { status: "unknown", reason: "RuntimeConstructed" } },
+			{ ...EDGE, order: 1 },
+		];
+		const ids = new Set(variants.map((edge) => importFactId("src/b.ts", "os", edge)));
+
+		expect(ids.size).toBe(variants.length);
+	});
+
+	it("changes an export edge's id with every field that changes what it exposes", () => {
+		const variants: Export[] = [
+			EXPORT,
+			{ ...EXPORT, span: shifted(SPAN, 1) },
+			{ ...EXPORT, range: shifted(SPAN, 2) },
+			{ ...EXPORT, form: "local", target: { kind: "symbol", symbolId: ADD_ID } },
+			{ ...EXPORT, form: "local", target: { kind: "unknown", reason: "NotIndexed" } },
+			{ ...EXPORT, target: { kind: "import", span: shifted(SPAN, 1) } },
+			{ ...EXPORT, name: "plus" },
+			{ ...EXPORT, sourceRange: SPAN },
+			{ ...EXPORT, scopeId: "p" },
+			STAR,
+			{ ...STAR, selector: { kind: "names", names: ["add"] } },
+			{ ...STAR, selector: { kind: "names", names: ["sub"] } },
+			{ ...EXPORT, conflict: { priority: 0, amongTransfers: "exclude", againstLocal: "sourceOrder" } },
+			{ ...EXPORT, meaning: ["type"] },
+			{ ...EXPORT, meaning: ["value"] },
+			{ ...EXPORT, visibility: "internal" },
+			{ ...EXPORT, certainty: { status: "unknown", reason: "Ambiguous" } },
+			{ ...EXPORT, order: 1 },
+		];
+		const ids = variants.map((edge) => exportFactId("src/b.ts", edge));
+
+		expect(new Set(ids).size).toBe(variants.length);
+		expect(ids.every((id) => factKindOf(id) === "export")).toBe(true);
+	});
+
+	it("tells a reference's origin by the edge it names, never by where that edge sits", () => {
+		const viaImport = (path: string[] | undefined, edge: ImportEdge, occurrence = 0) =>
+			referenceFactId(
+				"src/b.ts",
+				{ ...REF, origin: { kind: "import", span: edge.span, ...(path === undefined ? {} : { path }) } },
+				NO_OWNERS,
+				{ specifier: "os", edge, occurrence },
+			);
+		const ids = [
+			referenceFactId("src/b.ts", REF, NO_OWNERS),
+			referenceFactId("src/b.ts", { ...REF, origin: { kind: "declaration" } }, NO_OWNERS),
+			viaImport(undefined, EDGE),
+			viaImport(["add"], EDGE),
+			viaImport(["sub"], EDGE),
+			viaImport(undefined, { ...EDGE, local: "system" }),
+			viaImport(undefined, { ...EDGE, typeOnly: true }),
+			viaImport(undefined, EDGE, 1),
+		];
+
+		expect(new Set(ids).size).toBe(ids.length);
+		expect(viaImport(undefined, { ...EDGE, span: shifted(SPAN, 1) })).toBe(viaImport(undefined, EDGE));
+		expect(() =>
+			referenceFactId("src/b.ts", { ...REF, origin: { kind: "import", span: SPAN } }, NO_OWNERS),
+		).toThrow();
 	});
 
 	it("separates a number from the string that spells it", () => {

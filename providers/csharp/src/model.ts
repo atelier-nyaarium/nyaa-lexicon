@@ -6,7 +6,6 @@ import type {
 	Descriptor,
 	Diagnostic,
 	FileRole,
-	ImportedName,
 	Literal,
 	Range,
 	Reference,
@@ -19,14 +18,15 @@ import type { Token } from "./tokens.js";
 
 export const LANGUAGE = "csharp";
 
+export const PROVIDER_ID = "csharp-provider";
+
 ////////////////////////////////
 //  Interfaces & Types
 
 export interface CsharpImport {
 	specifier: string;
-	imported: ImportedName[];
-	reExport: false;
 	alias?: string;
+	aliasRange?: Range;
 	static: boolean;
 	/** `global using`: in every file of the project. */
 	global: boolean;
@@ -36,9 +36,12 @@ export interface CsharpImport {
 	target: Segment[];
 	/** The alias left of a `::` opening the target: `global`, or an extern alias's assembly. */
 	qualifier?: string;
-	range: Range;
+	/** The whole directive, `global` through `;`. */
+	span: Range;
 	/** The specifier's first name, where its reference stands. */
 	specifierToken: Token;
+	/** The specifier's last name. */
+	nameToken: Token;
 }
 
 export interface DeclarationMeta {
@@ -54,6 +57,8 @@ export interface DeclarationMeta {
 	typeSegments?: Segment[];
 	/** The alias left of a `::` opening the declared type. */
 	typeQualifier?: string;
+	/** The declared type is more than a name: nullable, array, pointer, tuple or constructed. */
+	typeComposed?: true;
 	inferredType?: string;
 	isPartial?: boolean;
 	bodyStartOffset?: number;
@@ -188,6 +193,7 @@ export interface RawDeclaration {
 	typeText?: string | undefined;
 	typeSegments?: Segment[] | undefined;
 	typeQualifier?: string | undefined;
+	typeComposed?: true | undefined;
 	inferredType?: string | undefined;
 	isPartial?: boolean | undefined;
 	bodyStartToken?: Token | undefined;
@@ -251,11 +257,14 @@ export interface TypeFacts {
 	typeText?: string;
 	typeSegments?: Segment[];
 	typeQualifier?: string;
+	typeComposed?: true;
 }
 
 export interface TypeShape {
 	/** Past its last token. */
 	end: number;
+	/** Read a `?`, array rank, pointer, tuple or type argument list. */
+	composed: boolean;
 	/** Rightmost simple name; none for tuples. */
 	name: Token | undefined;
 	/** The qualified name ending at `name`, its `::` qualifier aside, each name with its type arguments. */

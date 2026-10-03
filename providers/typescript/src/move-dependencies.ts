@@ -239,14 +239,14 @@ export function moduleBindings(source: ts.SourceFile, removed: readonly OffsetRa
 			(ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference));
 		const imported = external ? importOf(statement, source) : undefined;
 		if (imported !== undefined) {
-			for (const entry of imported.imported) {
-				const local = entry.local ?? entry.name;
-				if (local === undefined) continue;
+			for (const edge of imported.edges) {
+				const local = edge.local ?? edge.name;
+				if (local === undefined || !edge.bindsLocally) continue;
 				bind(local, {
 					specifier: imported.specifier,
-					form: entry.kind ?? "named",
-					...(entry.name === undefined ? {} : { imported: entry.name }),
-					typeOnly: entry.typeOnly === true,
+					form: edge.kind,
+					...(edge.name === undefined ? {} : { imported: edge.name }),
+					typeOnly: edge.typeOnly === true,
 				});
 			}
 			continue;

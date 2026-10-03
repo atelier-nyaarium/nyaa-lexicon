@@ -14,6 +14,7 @@ import {
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
 import type { ArrangePlacement } from "./arrangePlanner.js";
+import { reindexOwed } from "./refactorStep.js";
 import { changedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
 import {
@@ -364,10 +365,12 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		// Read-only, and kept because the editor asks it to decide whether to offer a rename.
 		prepareRename: upgradedRead((params) =>
-			service.prepareRename(params.symbolId, params.newName, service.newReadContext()),
+			service.prepareRename(params.symbolId, params.newName, service.newReadContext(), params.stops),
 		),
 		// The edits a rename would make, for a caller that applies them itself.
-		renameEdits: upgradedRead((params) => service.renameEdits(params.symbolId, params.newName)),
+		renameEdits: upgradedRead((params) =>
+			service.renameEdits(params.symbolId, params.newName, service.newReadContext(), params.stops),
+		),
 		planMove: upgradedRead((params) =>
 			service.planMove(params.symbolId, params.toModule, service.newReadContext(), params.anchor),
 		),
@@ -411,13 +414,13 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		// of a version that no longer exists on disk.
 		refactorUndo: write(async (params) => {
 			const outcome = transactions().undo(params.expect);
-			for (const module of outcome.modules ?? []) await service.indexFile(module);
-			return outcome;
+			const issues = await reindexOwed(service, outcome.modules ?? []);
+			return issues.length === 0 ? outcome : { ...outcome, issues };
 		}),
 		refactorRevert: write(async (params) => {
 			const outcome = transactions().revert(params.drifted, params.expect);
-			for (const module of outcome.modules) await service.indexFile(module);
-			return outcome;
+			const issues = await reindexOwed(service, outcome.modules);
+			return issues.length === 0 ? outcome : { ...outcome, issues };
 		}),
 		refactorCommit: write((params) => transactions().commit(params)),
 		refactorReplace: staged((params, gate) => refactorReplace(service, transactions(), gate.write, params)),

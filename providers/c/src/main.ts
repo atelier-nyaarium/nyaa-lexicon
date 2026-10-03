@@ -5,12 +5,14 @@ import type { IncludeSearch } from "@nyaa-lexicon/formats/compile-commands";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
+	type Conflict,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
 	defined,
 	discoverByWalk,
 	type FileRole,
 	handlersFor,
+	type Import,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -84,6 +86,9 @@ interface Reach {
 const MAX_MEMBER_CHAIN = 16;
 
 const TAG_KINDS: ReadonlySet<string> = new Set(["struct", "enum"]);
+
+/** A name two headers declare is no single declaration; a local one hides an included one. */
+const INCLUDE_CONFLICT: Conflict = { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" };
 
 const LANGUAGE = "c";
 const EXTENSIONS = [".c", ".h"];
@@ -295,9 +300,28 @@ function headerName(specifier: string): string {
 	return specifier;
 }
 
+/** An include writes the header's declarations into this file: one injection of all it declares. */
+function includeImport({ specifier, span }: CImportFact, order: number): Import {
+	return {
+		specifier,
+		edges: [
+			{
+				kind: "injection",
+				span,
+				selector: { kind: "visible" },
+				bindsLocally: true,
+				conflict: INCLUDE_CONFLICT,
+				certainty: { status: "known" },
+				order,
+			},
+		],
+	};
+}
+
 /** What finding `name`, or not, means for an include of `kind`. */
 function resolutionOf(found: Found | undefined, name: string, kind: IncludeKind | undefined): ImportResolution {
-	if (found !== undefined && "module" in found) return { status: "resolved", module: found.module };
+	if (found !== undefined && "module" in found)
+		return { status: "resolved", landing: { kind: "module", module: found.module } };
 	if (found !== undefined || kind === "angle") return { status: "external", packageName: name };
 	const common =
 		COMMON_HEADERS.has(name) || name.startsWith("sys/") || name.startsWith("linux/") || name.startsWith("windows/");
@@ -373,11 +397,7 @@ export class CProvider {
 			references: parsed.references.map((reference) =>
 				referenceWire(reference, this.bindingForReference(params.module, parsed, reference, bindingCache)),
 			),
-			imports: parsed.imports.map(({ specifier, imported, reExport }) => ({
-				specifier,
-				imported,
-				reExport,
-			})),
+			imports: parsed.imports.map(includeImport),
 			literals: parsed.literals,
 			comments: parsed.comments,
 			blankLines: parsed.blankLines,
@@ -650,16 +670,18 @@ export class CProvider {
 				reach.reason = resolution.reason;
 				reach.detail = resolution.detail ?? `no workspace header matches ${written}`;
 			}
-			if (resolution.status !== "resolved" || seen.has(resolution.module)) return;
-			seen.add(resolution.module);
-			const header = this.factsForModule(resolution.module);
+			if (resolution.status !== "resolved" || resolution.landing.kind !== "module") return;
+			const { module: landed } = resolution.landing;
+			if (seen.has(landed)) return;
+			seen.add(landed);
+			const header = this.factsForModule(landed);
 			if (header === null) {
 				reach.reason = "NotIndexed";
-				reach.detail = `the included module ${resolution.module} is not indexed`;
+				reach.detail = `the included module ${landed} is not indexed`;
 				reach.incomplete = true;
 				return;
 			}
-			frontier.push({ from: resolution.module, imports: header.imports });
+			frontier.push({ from: landed, imports: header.imports });
 			for (const declaration of header.declarations) {
 				const lexical = lexicalScope(header, declaration);
 				const fileScope =

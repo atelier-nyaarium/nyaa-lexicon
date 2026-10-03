@@ -5,7 +5,7 @@
 // A provider team runs this without the core existing, which is the point of the suite.
 
 import { loadCorpus } from "./corpus.js";
-import { loadLifecycleCases } from "./lifecycleCorpus.js";
+import { loadLifecycleCases, loadProbeBatchCases } from "./lifecycleCorpus.js";
 import { loadMoveCases } from "./moveCorpus.js";
 import { loadGdscriptMoveCases } from "./moveCorpusGdscript.js";
 import { formatReport, runSuite } from "./runner.js";
@@ -21,6 +21,7 @@ async function main(argv: string[]): Promise<void> {
 		cases: loadCorpus(),
 		moveCases: [...loadMoveCases(), ...loadGdscriptMoveCases()],
 		lifecycleCases: loadLifecycleCases(),
+		probeBatchCases: loadProbeBatchCases(),
 	});
 	console.log(formatReport(report));
 	// Skipped is not failure. Stalled is neither pass nor failure: 3.

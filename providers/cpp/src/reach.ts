@@ -94,9 +94,9 @@ export function reachesOf(
 	const enter = (resolution: ImportResolution, depth: number, count: number, into: string[]) => {
 		if (resolution.status === "external") externalAt = Math.min(externalAt, count);
 		if (resolution.status === "unresolved") unresolvedAt = Math.min(unresolvedAt, count);
-		if (resolution.status !== "resolved" || resolution.module === unit) return;
-		const module = resolution.module;
-		if (unread.has(module) || walked.has(module)) return;
+		if (resolution.status !== "resolved" || resolution.landing.kind !== "module") return;
+		const module = resolution.landing.module;
+		if (module === unit || unread.has(module) || walked.has(module)) return;
 		const header = sources.load(module);
 		if (header === undefined) {
 			unread.add(module);

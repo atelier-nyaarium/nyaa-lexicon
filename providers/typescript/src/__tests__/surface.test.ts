@@ -198,7 +198,7 @@ describe("registered declaration surfaces", () => {
 			expect(parsed[index]?.imports).toContainEqual(
 				expect.objectContaining({
 					specifier,
-					imported: [expect.objectContaining({ local: specifier, kind: "require" })],
+					edges: [expect.objectContaining({ local: specifier, kind: "require" })],
 				}),
 			);
 		}
@@ -342,7 +342,11 @@ describe("registered declaration surfaces", () => {
 				specifier: "/runtime/widget.js",
 				surfaceGlobs: ["opaque/runtime/**"],
 			}),
-		).toEqual({ status: "resolved", module: "opaque/runtime/widget.d.ts", depth: "surface" });
+		).toEqual({
+			status: "resolved",
+			landing: { kind: "module", module: "opaque/runtime/widget.d.ts" },
+			depth: "surface",
+		});
 		provider.shutdown();
 	});
 });

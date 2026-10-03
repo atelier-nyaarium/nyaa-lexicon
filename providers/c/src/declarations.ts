@@ -93,11 +93,12 @@ export class CDeclarationParser extends CStatementParser {
 			firstPath === undefined || lastPath === undefined
 				? undefined
 				: { start: firstPath.start, end: lastPath.end };
+		// An unclosed `<` ends the directive at its last path token.
+		const last = this.tokens[cursor < directive.end ? cursor : pathEnd] as CToken;
 		this.imports.push({
 			specifier,
-			imported: [],
-			reExport: false,
 			kind,
+			span: { start: (this.tokens[index] as CToken).start, end: last.end },
 			...defined({ range: pathRange }),
 		});
 	}

@@ -55,7 +55,7 @@ export function locateImportSite(
 			blocked: blockedSite(
 				site.range,
 				"NotImplemented",
-				`a ${site.importKind} ${site.reExport ? "re-export" : "import"} binds the whole module, and splitting it is not implemented`,
+				`a ${site.importKind} edge binds the whole module, and splitting it is not implemented`,
 			),
 		};
 	}

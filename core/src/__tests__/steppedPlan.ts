@@ -42,7 +42,7 @@ const journal = {
 	beginStep: () => ({ ok: true, stepNo: 1 }),
 	completeStep: () => {},
 	recordIssues: () => {},
-	rebind: () => ({ subjects: 0, answers: 0, gaps: 0, applied: [] }),
+	rebind: () => ({ subjects: 0, answers: 0, gaps: 0, applied: [], blocked: [] }),
 	stepFiles: () => [],
 	tracks: () => true,
 } as unknown as TransactionManager;
@@ -120,6 +120,8 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 			world.planner.rebaseIntoModule(...args),
 		checkMoveLanded: (): unknown[] => [],
 		renameEdits: (...args: Parameters<RefactorPlanner["renameEdits"]>) => world.planner.renameEdits(...args),
+		planRenameEdits: (...args: Parameters<RefactorPlanner["planRenameEdits"]>) =>
+			world.planner.planRenameEdits(...args),
 		renameWrites: (files: FileEdits[]) => ({
 			writes: files.map((file) => ({ ...editedText(file), base: file.contentHash })),
 		}),
@@ -131,6 +133,7 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 			return answer;
 		},
 		factsMoved: (...args: Parameters<RefactorPlanner["factsMoved"]>) => world.planner.factsMoved(...args),
+		landingsMoved: (...args: Parameters<RefactorPlanner["landingsMoved"]>) => world.planner.landingsMoved(...args),
 		currentHashOf: (module: string) => world.currentHashOf(module),
 		staleModules: (modules: string[]) => world.staleModules?.(modules) ?? [],
 		declarationsIn: (module: string) => world.declarationsIn(module),
@@ -140,5 +143,9 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 			return true;
 		},
 		indexFile: async (module: string) => ({ module, action: "indexed" }),
+		heldDebts: (): string[] => [],
+		oweParses: () => {},
+		payOwed: () => {},
+		declarationOf: (symbolId: string) => ({ symbolId }),
 	} as unknown as LexiconService;
 }

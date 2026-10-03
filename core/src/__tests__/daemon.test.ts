@@ -14,6 +14,8 @@ import {
 	workspacePaths,
 } from "@nyaa-lexicon/client";
 import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
+import { nodesIn, parseSource, stringsIn, usesName } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { resumeAbandonedDelete } from "../daemonCli";
 import { ownSource } from "../ownSource";
@@ -528,12 +530,15 @@ describe("staying up", () => {
 	// Enforces WHERE the decision lives, not that it exists: a timer here is one no test could
 	// decide, since a 150ms test passes just as happily against a 30 minute default.
 	it("keeps lifetime decisions out of the transport, where no test could reach them", () => {
-		const source = readFileSync(join(import.meta.dirname, "..", "daemon.ts"), "utf8")
-			.replace(/\/\*[\s\S]*?\*\//g, " ")
-			.replace(/\/\/[^\n]*/g, " ");
+		const { source } = parseSource("daemon.ts", readFileSync(join(import.meta.dirname, "..", "daemon.ts"), "utf8"));
+		// Named anywhere, so an alias of the timer counts.
+		const timers = ["setTimeout", "setInterval"].filter((name) => usesName(source, name));
+		const lifetime = [
+			...nodesIn(source).flatMap((node) => (ts.isIdentifier(node) ? [node.text] : [])),
+			...stringsIn(source).map(({ text }) => text),
+		].filter((text) => /linger|idle/i.test(text));
 
-		expect(source).not.toMatch(/setTimeout|setInterval/);
-		expect(source.toLowerCase()).not.toMatch(/linger|idle/);
+		expect({ timers, lifetime }).toEqual({ timers: [], lifetime: [] });
 	});
 });
 

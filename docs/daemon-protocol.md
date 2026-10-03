@@ -273,8 +273,51 @@ set refuses before restoration. A request resuming a recorded revert intent uses
 states without repeating this comparison. Accepted restores and recovery checks follow
 `docs/architecture.md`, which also covers file and link handling.
 
+Every step reindexes what it wrote, owing each module a parse first, durably. A parse that does not
+land stays owed to the pump through a restart, and answers a `ReindexFailed` issue. Knowledge follows
+the ids a step re-mints, except into an id another subject holds or one the reindexed step does not
+declare, such as after the fix command; each is a `KnowledgeKept` issue. `refactorUndo` and
+`refactorRevert` reindex what they restore the same way and answer those issues as `issues`. One that
+stops partway answers the modules it put back. Recovery owes every module of a step it recovers,
+including modules bound to a re-minted id whose bytes it kept.
+
 `refactorTrack` answers `refactor: { id }` for the transaction it tracked into, or `refactor: null`
 when none is open. It also returns `ledger`. Older daemons may omit either field.
+
+### Renaming
+
+`prepareRename`, `renameEdits`, `refactorRename` and `refactorRenameCommitted` take `stops`: export
+fact ids of re-exports that keep the old name. A stopped edge writes the source name with the old
+name as its alias, `export { N2 as N } from` or Python's `from .m import N2 as N`, so its consumers
+stay unedited. Both rename answers echo `stops`.
+
+The plan answers `routes` and `mentions`:
+
+- `routes.edges`: each export or import fact the rename crosses, with its `state`: `renamed`, `fixed`
+  where an alias keeps its name, `stopped`, or `unknown`. Its `landing` is absent for a local target
+  or an unknown route. A `stoppable` export edge's `id` is its stop id.
+- `routes.modules`: each module's `roles` (`declares`, `imports`, `reExports`, `uses`), its `edited`
+  and `kept` site counts, and `unknown`, the uses and routes no fact proves.
+- `mentions`: the old name as a whole word in comment prose and string values. Counted, never
+  edited. `incomplete` when a module lacks either tier.
+
+Blockers refuse it: `RouteUnknown` for a use or route no fact proves, `RouteChanged` for a specifier
+that lands elsewhere than planned, `StopNotReExport` and `StopUnsupported` for a stop off the route,
+not keepable or without its provider's `renameKeep`, `NameTaken` and `NoExportPath` for a collision
+or a route that loses the name, `NameImported` for a new name already imported or newly brought by a
+wildcard where it is bound or read, and `ProofUnavailable`.
+
+Before writing, every rename is proved. Each provider answers one read-only batch (`probeBatch`) of
+the proposed texts it owns, with the facts of the modules it answers for. Core recomputes effective
+exports over those facts and checks their bindings and origins against the plan. A use, declaration
+or exposure that would bind differently than planned refuses, as does an unavailable proof.
+
+Inside the write gate, the step rechecks each module it edits by its bytes, each module the plan
+read by its fact stamps, each landing it relied on, and the index's facts generation pinned at
+planning. When only that generation moved, from indexing a file the plan never read, it plans again,
+up to twice, then refuses with `Plan again in a moment`. A module that owes a parse its provider
+failed refuses when the plan read it or its text spells the old name: its bindings may predate a
+move.
 
 ### Settlements
 
@@ -401,7 +444,8 @@ back. To undo, a client previews `reverse` with `renameEdits` or `previewMove` a
 method with those bases; redo is the reverse's reverse. After a lost answer, `reverseOf` in
 `protocol/src/symbolId.ts` rebuilds `reverse` from the requested id and
 `diagnoseSubject(requestedId).forwardedTo`. It answers null for a local, whose id carries no name. A
-reverse is not byte-exact: a re-pointed import may format differently, and a module the forward move
+rename's reverse collapses an alias its forward wrote at a stop, `N2 as N` back to `N`. A reverse is
+otherwise not byte-exact: a re-pointed import may format differently, and a module the forward move
 created stays.
 
 A client that names the step with `stepId` can ask after it instead. The daemon records the id
@@ -620,9 +664,10 @@ that no longer serves this client. The rules, in the order they are applied:
 costs a protocol major: a client connects to a newer daemon on the premise that everything in its
 table is still answered. A daemon states how far back that holds as `OLDEST_CLIENT_MAJOR`, and a
 major that removes a method raises it, so an older client is told to update rather than meeting
-`unknown method`. A new method or a new optional field is a minor. `PROTOCOL_VERSION` and
-`oldestClientMajor` are what both rules read, and the welcome frame carries both so a client that
-reached the socket some other way still learns what it is talking to.
+`unknown method`. Protocol 5.0.0 raised it to 5: a scope landing, the `export` fact kind and the
+rename issue kinds fail a 4.x client's parse. A new method or a new optional field is a minor.
+`PROTOCOL_VERSION` and `oldestClientMajor` are what both rules read, and the welcome frame carries
+both so a client that reached the socket some other way still learns what it is talking to.
 
 `ensureDaemon` carries the decision out. A replace first asks the outgoing daemon `refactorStatus`
 and retires it only on a clear `open: false`, since an open transaction holds the only copy of the

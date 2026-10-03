@@ -29,6 +29,7 @@ test("every handler answers, the notifications included, and write operations re
 		"moduleAdmission",
 		"moveEdits",
 		"parseFile",
+		"probeBatch",
 		"probeFile",
 		"releaseModule",
 		"renameEdits",
@@ -37,6 +38,9 @@ test("every handler answers, the notifications included, and write operations re
 		"typeOf",
 	]);
 	expect(handlers.shutdown({})).toEqual({});
+	expect(
+		handlers.probeBatch({ files: [{ module: "a.kt", contentHash: "h", text: "" }], answer: ["a.kt"] }),
+	).toMatchObject({ status: "unsupported" });
 	expect(handlers.renameEdits({ module: "a.kt", text: "", oldName: "a", newName: "b", sites: [] })).toMatchObject({
 		status: "refused",
 		reason: "NotImplemented",

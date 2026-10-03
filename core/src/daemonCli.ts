@@ -42,6 +42,7 @@ import { startLiveIndex } from "./liveIndex.js";
 import { ownSource } from "./ownSource.js";
 import { finishAbandonedDelete, pruneProjectStores } from "./projectStores.js";
 import { describeStart, startProviders } from "./providers.js";
+import { recoverSteps } from "./refactorStep.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
@@ -380,16 +381,10 @@ async function main(argv: string[]): Promise<void> {
 
 		// Before the handler is published, so nothing can ask about a workspace still holding a
 		// half-applied step. The lock is already claimed, so no other daemon is writing here.
-		const recovered = await service.gate.exclusive(async () => {
-			const outcome = journal.recover();
-			// Restoring puts back text the index does not describe, so the facts for those files are of
-			// a version that no longer exists. Reindexed here rather than left to the warm scan, which
-			// is opt-in and may never run.
-			for (const module of outcome.restored) await service.indexFile(module);
-			return outcome;
-		});
+		const recovered = await service.gate.exclusive(() => recoverSteps(service, journal));
 		if (recovered.recovered) {
 			log(`recovered refactor ${recovered.transactionId}: restored ${recovered.restored.length} file(s)`);
+			for (const issue of recovered.unlanded) log(issue.detail);
 			if (recovered.closed !== undefined) log(`closed a step's own transaction as ${recovered.closed}`);
 			if (recovered.conflicts.length > 0) {
 				log(`left alone, changed by someone else: ${recovered.conflicts.join(", ")}`);

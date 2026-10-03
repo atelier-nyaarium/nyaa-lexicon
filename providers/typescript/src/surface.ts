@@ -5,16 +5,17 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	type Export,
 	type FileRole,
 	type Import,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { isDeclarationModule } from "./bundle.js";
+import { moduleEdges } from "./edges.js";
 import { LANGUAGE } from "./extract.js";
 import { fileRoleOf } from "./file-role.js";
 import { scriptKindOf } from "./file-types.js";
 import { headerOf } from "./header.js";
-import { importOf } from "./imports.js";
 import { ownedTypeLiterals } from "./members.js";
 
 ////////////////////////////////
@@ -24,6 +25,7 @@ export interface SurfaceFacts {
 	declarations: Declaration[];
 	references: [];
 	imports: Import[];
+	exports: Export[];
 	literals: [];
 	comments: [];
 	diagnostics: Diagnostic[];
@@ -47,19 +49,36 @@ interface Owner {
 type SurfaceCallable = ts.FunctionLikeDeclaration | ts.MethodSignature;
 type SurfaceCallableKind = "function" | "method" | "constructor";
 
+/** Each exported node's id, by the name it is exported as. */
+type SurfaceIds = Map<ts.Node, Map<string, string>>;
+
 ////////////////////////////////
 //  Extraction
 
 /** Extracts only an external module's callable API or its declaration-file surface. */
 export function extractSurfaceFile(module: string, text: string): SurfaceFacts {
 	const source = ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, scriptKindOf(module));
-	const declarations = isDeclarationModule(module)
-		? declarationSurface(module, source)
-		: runtimeSurface(module, source);
+	const declarationFile = isDeclarationModule(module);
+	const ids: SurfaceIds = new Map();
+	const declarations = declarationFile
+		? declarationSurface(module, source, ids)
+		: runtimeSurface(module, source, ids);
+	const kind = scriptKindOf(module);
+	const edges = moduleEdges(source, {
+		idsOf: (node, name) => {
+			const named = ids.get(node);
+			if (named === undefined) return [];
+			const exact = named.get(name);
+			return exact === undefined ? [...named.values()] : [exact];
+		},
+		javascript: kind === ts.ScriptKind.JS || kind === ts.ScriptKind.JSX,
+		// A bundle's own imports are implementation; only what it re-exports is surface.
+		reExportsOnly: !declarationFile,
+	});
 	return {
 		declarations,
 		references: [],
-		imports: isDeclarationModule(module) ? declarationImports(source) : [],
+		...edges,
 		literals: [],
 		comments: [],
 		diagnostics: syntaxDiagnostics(module, source),
@@ -67,28 +86,41 @@ export function extractSurfaceFile(module: string, text: string): SurfaceFacts {
 	};
 }
 
-function runtimeSurface(module: string, source: ts.SourceFile): Declaration[] {
+/** Notes the declaration a record call pushed at `at`, under the exported node and name. */
+function noteId(ids: SurfaceIds, declarations: readonly Declaration[], at: number, item: ExportedNode): void {
+	const declaration = declarations[at];
+	if (declaration === undefined) return;
+	const named = ids.get(item.node) ?? new Map<string, string>();
+	named.set(item.name, declaration.symbolId);
+	ids.set(item.node, named);
+}
+
+function runtimeSurface(module: string, source: ts.SourceFile, ids: SurfaceIds): Declaration[] {
 	const exported = exportedNodes(source, false).filter((item) => callableOf(item.node) !== undefined);
 	const declarations: Declaration[] = [];
 	const occurrences = new Map<string, number>();
 	for (const item of exported) {
 		const callable = callableOf(item.node);
 		if (callable === undefined) continue;
+		const at = declarations.length;
 		recordFunction(module, source, declarations, occurrences, item.name, callable, item.selection, item.node);
+		noteId(ids, declarations, at, item);
 	}
 	return declarations;
 }
 
-function declarationSurface(module: string, source: ts.SourceFile): Declaration[] {
+function declarationSurface(module: string, source: ts.SourceFile, ids: SurfaceIds): Declaration[] {
 	const declarations: Declaration[] = [];
 	const occurrences = new Map<string, number>();
 	for (const item of [...exportedNodes(source, true), ...ambientNodes(source)]) {
+		const at = declarations.length;
 		const callable = callableOf(item.node);
 		if (callable !== undefined) {
 			recordFunction(module, source, declarations, occurrences, item.name, callable, item.selection, item.node);
-			continue;
+		} else {
+			recordDeclaration(module, source, declarations, occurrences, item);
 		}
-		recordDeclaration(module, source, declarations, occurrences, item);
+		noteId(ids, declarations, at, item);
 	}
 	return declarations;
 }
@@ -601,30 +633,6 @@ function holderOf(node: ts.Node): ts.Node {
 	if (ts.isExportAssignment(parent) || ts.isPropertyAssignment(parent)) return parent;
 	if (ts.isBinaryExpression(parent) && parent.right === value) return parent;
 	return node;
-}
-
-/** The file's imports, and those inside its namespace and `declare module` bodies. */
-function declarationImports(source: ts.SourceFile): Import[] {
-	const imports: Import[] = [];
-	const visit = (statements: readonly ts.Statement[]): void => {
-		for (const statement of statements) {
-			if (ts.isModuleDeclaration(statement)) {
-				let body = statement.body;
-				while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
-				if (body !== undefined && ts.isModuleBlock(body)) visit(body.statements);
-				continue;
-			}
-			const importing =
-				ts.isImportDeclaration(statement) ||
-				ts.isExportDeclaration(statement) ||
-				ts.isImportEqualsDeclaration(statement);
-			if (!importing) continue;
-			const read = importOf(statement, source);
-			if (read !== undefined) imports.push(read);
-		}
-	};
-	visit(source.statements);
-	return imports;
 }
 
 function syntaxDiagnostics(module: string, source: ts.SourceFile): Diagnostic[] {

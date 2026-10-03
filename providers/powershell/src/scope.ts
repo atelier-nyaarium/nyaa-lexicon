@@ -380,19 +380,33 @@ export function settle(w: Walk): void {
 				? typeOfExpression(w, scope, receiver, reference.range.start)
 				: undefined;
 		const read = typed === undefined ? reference : { ...reference, of: { ...of, typeName: typed } };
-		const target = read.target ?? settled(w, scope, read)?.symbolId;
-		w.out.references.push(target === undefined ? read : { ...read, target });
+		const callee = calleeOf(w, scope, read);
+		const target = read.target ?? settled(w, scope, read, callee)?.symbolId;
+		w.out.references.push({ ...read, ...defined({ target, callee: callee?.symbolId }) });
 	}
 	for (const declaration of w.out.declarations) typeOfDeclaration(w, declaration);
 }
 
-function settled(w: Walk, scope: Scope, reference: PowerShellReference): PowerShellDeclaration | undefined {
+/** The function a command or a named argument reaches. */
+function calleeOf(w: Walk, scope: Scope, reference: PowerShellReference): PowerShellDeclaration | undefined {
+	const at = reference.range.start;
+	if (reference.of.kind === "command") return functionFor(w, scope, reference.name, at);
+	if (reference.of.kind === "parameter") return functionFor(w, scope, reference.of.command, at);
+	return undefined;
+}
+
+function settled(
+	w: Walk,
+	scope: Scope,
+	reference: PowerShellReference,
+	callee: PowerShellDeclaration | undefined,
+): PowerShellDeclaration | undefined {
 	const at = reference.range.start;
 	switch (reference.of.kind) {
 		case "variable":
 			return resolveVariable(w, scope, reference.name, reference.of.scope, at);
 		case "command":
-			return functionFor(w, scope, reference.name, at);
+			return callee;
 		case "type":
 			return w.out.typesByName.get(keyOf(reference.name));
 		case "member": {
@@ -401,6 +415,6 @@ function settled(w: Walk, scope: Scope, reference: PowerShellReference): PowerSh
 			return members.length === 1 ? members[0] : undefined;
 		}
 		case "parameter":
-			return parameterOf(functionFor(w, scope, reference.of.command, at), reference.name);
+			return parameterOf(callee, reference.name);
 	}
 }

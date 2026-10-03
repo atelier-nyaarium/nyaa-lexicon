@@ -4,22 +4,18 @@ import {
 	type ArrangeEditsRequest,
 	asyncModuleStore,
 	type Binding,
-	type CommentSpan,
 	comparePositions,
-	composeSymbolId,
-	coordinatesOf,
-	type Declaration,
-	type Diagnostic,
 	defined,
 	discoverByWalk,
-	type FileRole,
+	type FileFacts,
 	handlersFor,
 	type ImportResolution,
-	type Literal,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedImport,
 	PROTOCOL_VERSION,
+	type ProbeBatchRequest,
+	type ProbeBatchResponse,
 	type ProjectModel,
 	parseSymbolId,
 	projectDiagnostic,
@@ -36,25 +32,17 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { makeArrangeEdits } from "./arrange";
+import { Binder, type Resolution } from "./binding";
 import { extractFacts } from "./facts/extract";
 import { renameEdits } from "./facts/rename";
-import type {
-	Range,
-	RawDescriptor,
-	RawFacts,
-	RawImportBinding,
-	RawInferredType,
-	RawScopeInfo,
-	RawTypeAnnotation,
-	RawTypeReference,
-} from "./facts/types";
-import { signatureOf } from "./header";
+import type { Range, RawTypeReference } from "./facts/types";
+import { LANGUAGE, type MappedFacts, mapFacts, type TypeAnswer } from "./mapped";
 import { isValidTargetModule, makeMoveEdits } from "./move";
 import { Python3Dispatch } from "./python3";
+import { wireAllList, wireImports } from "./wiring";
 
 //////// Constants
 
-const LANGUAGE = "python";
 const EXTENSIONS = [".py"];
 const EXCLUDED_DIRECTORIES = new Set([
 	".git",
@@ -82,6 +70,8 @@ export const TIERS = {
 	metrics: true,
 	syntaxDiagnostics: true,
 	fileRoles: true,
+	exports: true,
+	renameKeep: true,
 } as const;
 
 /** Python 3.12 hard and soft keywords (`keyword.kwlist` and `keyword.softkwlist`), merged. */
@@ -144,177 +134,54 @@ export const WORDS = {
 
 export const REFERENCE_ROLES = ["call", "read", "write", "extends", "typeUse"] as const;
 
-/** Kinds a typeUse reference may bind to. */
-const TYPE_USE_KINDS = new Set<Declaration["kind"]>(["class", "variable", "function", "interface", "typeParameter"]);
-
-//////// Types
-
-type TypeAnswer =
-	| {
-			kind: "declared";
-			text: string;
-			forwardReference: boolean;
-			symbolId?: string;
-			typeReference?: RawTypeReference;
-	  }
-	| {
-			kind: "inferred";
-			display: string;
-			basis: string;
-			symbolId?: string;
-			typeReference?: RawTypeReference;
-	  }
-	| { kind: "unknown"; reason: UnknownReason; detail?: string };
-
-type MappedTypeAnnotation = RawTypeAnnotation & { symbolId?: string };
-
-interface MappedFacts {
-	declarations: Declaration[];
-	references: Reference[];
-	role: FileRole;
-	referenceScopes: Map<Reference, RawDescriptor[]>;
-	imports: RawFacts["imports"];
-	importBindings: RawImportBinding[];
-	scopeInfos: RawScopeInfo[];
-	diagnostics: Diagnostic[];
-	typeAnnotations: MappedTypeAnnotation[];
-	inferredTypes: RawInferredType[];
-	literals: Literal[];
-	comments: CommentSpan[];
-	blankLines?: number[];
-	typeAnswers: Map<string, TypeAnswer>;
-}
-
 //////// Helpers
 
-function idFor(module: string, descriptors: RawDescriptor[]): string {
-	return composeSymbolId({ language: LANGUAGE, module, descriptors });
+/** The directories a module sits in, outermost first. */
+function directoriesOf(module: string): string[] {
+	const parts = module.replace(/\\/g, "/").split("/");
+	parts.pop();
+	return parts;
 }
 
-function mapFacts(module: string, text: string, raw: RawFacts): MappedFacts {
-	const coordinates = coordinatesOf(text);
-	const declarations: Declaration[] = raw.declarations.map((declaration) => ({
-		symbolId: idFor(module, declaration.descriptorPath),
-		kind: declaration.kind,
-		name: declaration.name,
-		range: declaration.range,
-		selectionRange: declaration.selectionRange,
-		visibility: declaration.visibility,
-		exported: declaration.exported,
-		...defined({
-			signature:
-				declaration.header === undefined ? undefined : signatureOf(text, coordinates, declaration.header),
-			memberInsertLine: declaration.memberInsertLine,
-			metrics: declaration.metrics,
-		}),
-		...(declaration.containerPath.length === 0 ? {} : { containerId: idFor(module, declaration.containerPath) }),
-	}));
-	const typeAnnotations: MappedTypeAnnotation[] = raw.typeAnnotations.map((annotation) => ({
-		...annotation,
-		...(annotation.typeDescriptorPath === undefined
-			? {}
-			: { symbolId: idFor(module, annotation.typeDescriptorPath) }),
-	}));
-	const literals: Literal[] = raw.literals.map((literal) => ({
-		kind: literal.kind,
-		value: literal.value,
-		...defined({ number: literal.number }),
-		range: literal.range,
-		...(literal.containerPath === undefined || literal.containerPath.length === 0
-			? {}
-			: { containerId: idFor(module, literal.containerPath) }),
-	}));
-	const typeAnswers = new Map<string, TypeAnswer>();
-	for (const declaration of raw.declarations) {
-		if (declaration.typeText !== undefined) {
-			typeAnswers.set(idFor(module, declaration.descriptorPath), {
-				kind: "declared",
-				text: declaration.typeText,
-				forwardReference: declaration.typeForwardReference === true,
-				...(declaration.typeDescriptorPath === undefined
-					? {}
-					: { symbolId: idFor(module, declaration.typeDescriptorPath) }),
-				...defined({ typeReference: declaration.typeReference }),
-			});
-		}
-	}
-	for (const inferred of raw.inferredTypes) {
-		const symbolId = idFor(module, inferred.descriptorPath);
-		if (inferred.display !== undefined && inferred.basis !== undefined) {
-			typeAnswers.set(symbolId, {
-				kind: "inferred",
-				display: inferred.display,
-				basis: inferred.basis,
-				...(inferred.typeDescriptorPath === undefined
-					? {}
-					: { symbolId: idFor(module, inferred.typeDescriptorPath) }),
-			});
-		} else if (inferred.reason !== undefined) {
-			typeAnswers.set(symbolId, {
-				kind: "unknown",
-				reason: inferred.reason,
-				...defined({ detail: inferred.detail }),
-			});
-		}
-	}
-	const referenceScopes = new Map<Reference, RawDescriptor[]>();
-	const references: Reference[] = raw.references.map((reference) => {
-		const mapped: Reference = {
-			name: reference.name,
-			range: reference.range,
-			role: reference.role,
-			qualified: reference.qualified,
-			binding:
-				reference.binding.status === "bound"
-					? {
-							status: "bound",
-							symbolId: idFor(module, reference.binding.descriptorPath),
-							provenance: "bound",
-						}
-					: reference.binding,
-			...(reference.ownerPath.length === 0 ? {} : { fromId: idFor(module, reference.ownerPath) }),
-		};
-		referenceScopes.set(mapped, reference.scopePath);
-		return mapped;
-	});
-	return {
-		declarations,
-		references,
-		role: raw.role,
-		referenceScopes,
-		imports: raw.imports,
-		importBindings: raw.importBindings,
-		scopeInfos: raw.scopeInfos,
-		diagnostics: raw.diagnostics,
-		typeAnnotations,
-		inferredTypes: raw.inferredTypes,
-		literals,
-		comments: raw.comments,
-		...defined({ blankLines: raw.blankLines ?? undefined }),
-		typeAnswers,
-	};
-}
-
-function importParts(fromModule: string, specifier: string): string[] {
-	const fromParts = fromModule.replace(/\\/g, "/").split("/");
-	fromParts.pop();
+/** Null when a relative specifier climbs above the workspace root. */
+function importParts(fromModule: string, specifier: string): string[] | null {
+	const fromParts = directoriesOf(fromModule);
 	if (!specifier.startsWith(".")) return specifier.split(".").filter(Boolean);
 	const dots = specifier.match(/^\.+/)?.[0].length ?? 0;
 	const remainder = specifier.slice(dots).replace(/^\/+/, "");
 	const levels = Math.max(0, dots - 1);
-	const base = fromParts.slice(0, Math.max(0, fromParts.length - levels));
+	if (levels > fromParts.length) return null;
+	const base = fromParts.slice(0, fromParts.length - levels);
 	return [...base, ...remainder.split(/[/.]/).filter(Boolean)];
 }
 
-function fileCandidates(root: string, parts: string[]): string[] {
+/**
+ * Modules the parts name, in Python's order: a package before a module, then stubs. One the store
+ * shows counts though not yet on disk.
+ */
+function moduleCandidates(root: string, parts: string[], shown: ReadonlySet<string>): string[] {
 	const relative = parts.join("/");
-	const candidates = [`${relative}.py`, `${relative}.pyi`, `${relative}/__init__.py`];
-	return candidates
-		.map((candidate) => workspaceFile(root, candidate))
-		.filter(
-			(candidate): candidate is string =>
-				candidate !== null && existsSync(candidate) && statSync(candidate).isFile(),
-		);
+	return existingModules(
+		root,
+		[`${relative}/__init__.py`, `${relative}.py`, `${relative}/__init__.pyi`, `${relative}.pyi`],
+		shown,
+	);
+}
+
+/** A module at the workspace root has a parent package only when the root holds an `__init__`. */
+function hasParentPackage(root: string, fromModule: string, shown: ReadonlySet<string>): boolean {
+	if (directoriesOf(fromModule).length > 0) return true;
+	return existingModules(root, ["__init__.py", "__init__.pyi"], shown).length > 0;
+}
+
+function existingModules(root: string, candidates: readonly string[], shown: ReadonlySet<string>): string[] {
+	return candidates.flatMap((candidate) => {
+		const file = workspaceFile(root, candidate);
+		if (file === null) return [];
+		const module = workspaceModule(root, file);
+		if (module === null) return [];
+		return shown.has(module) || (existsSync(file) && statSync(file).isFile()) ? [module] : [];
+	});
 }
 
 function packageNameOf(specifier: string): string {
@@ -384,24 +251,6 @@ function containsPosition(range: Range, position: Range["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
 
-function samePath(left: RawDescriptor[], right: RawDescriptor[]): boolean {
-	return (
-		left.length === right.length &&
-		left.every((descriptor, index) => {
-			const other = right[index];
-			return other?.kind === descriptor.kind && other.name === descriptor.name;
-		})
-	);
-}
-
-function isPathPrefix(prefix: RawDescriptor[], pathValue: RawDescriptor[]): boolean {
-	return prefix.length <= pathValue.length && samePath(prefix, pathValue.slice(0, prefix.length));
-}
-
-function unboundBinding(reason: UnknownReason, detail: string): Binding {
-	return { status: "unbound", reason, detail };
-}
-
 //////// Provider
 
 export class PythonProvider {
@@ -455,14 +304,19 @@ export class PythonProvider {
 		}
 	}
 
-	async parseFile(params: { module: string; contentHash: string; text: string }, facts: MappedFacts) {
+	async parseFile(
+		params: { module: string; contentHash: string; text: string },
+		facts: MappedFacts,
+	): Promise<FileFacts> {
+		const binder = this.binder();
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
 			declarations: facts.declarations,
-			references: await this.wireReferences(params.module, facts),
+			references: await this.wireReferences(params.module, facts, binder),
 			role: facts.role,
-			imports: facts.imports,
+			imports: await wireImports(params.module, facts, binder),
+			...defined({ exports: facts.exports, allList: await wireAllList(params.module, facts, binder) }),
 			literals: facts.literals,
 			comments: facts.comments,
 			...defined({ blankLines: facts.blankLines }),
@@ -470,22 +324,58 @@ export class PythonProvider {
 		};
 	}
 
+	/** Every proposed text read as one view, as the store shows it while the batch is open. */
+	async probeBatch(params: ProbeBatchRequest): Promise<ProbeBatchResponse> {
+		const proposed = new Map(params.files.map((file) => [file.module, file.contentHash]));
+		const facts: FileFacts[] = [];
+		for (const module of params.answer) {
+			const held = await this.store.text(module);
+			const value = await this.store.load(module);
+			if (held === undefined || value === undefined) {
+				return { status: "unsupported", detail: `${module} is neither proposed nor held` };
+			}
+			const contentHash = proposed.get(module) ?? held.contentHash;
+			facts.push(await this.parseFile({ module, contentHash, text: held.text }, value));
+		}
+		const asked = new Map<string, { module: string; specifier: string }>();
+		for (const each of facts) {
+			for (const { specifier } of each.imports) {
+				asked.set(JSON.stringify([each.module, specifier]), { module: each.module, specifier });
+			}
+		}
+		const landings = await Promise.all(
+			[...asked.values()].map(async ({ module, specifier }) => ({
+				module,
+				specifier,
+				resolution: await this.resolveImport({ fromModule: module, specifier }),
+			})),
+		);
+		return { status: "ready", facts, landings };
+	}
+
 	private async factsForModule(module: string): Promise<MappedFacts | null> {
 		return (await this.store.load(module)) ?? null;
 	}
 
-	private async wireReferences(module: string, facts: ReturnType<typeof mapFacts>): Promise<Reference[]> {
+	private binder(): Binder {
+		return new Binder({
+			load: (module) => this.factsForModule(module),
+			resolve: (fromModule, specifier) => this.resolveImport({ fromModule, specifier }),
+		});
+	}
+
+	private async wireReferences(module: string, facts: MappedFacts, binder: Binder): Promise<Reference[]> {
 		return Promise.all(
-			facts.references.map(async (reference) => ({
-				...reference,
-				binding: await this.bindingForReference(module, facts, reference),
-			})),
+			facts.references.map(async (reference) => {
+				const { binding, origin } = await binder.resolve(module, facts, reference);
+				return { ...reference, binding, ...defined({ origin }) };
+			}),
 		);
 	}
 
 	private async typeSymbolForReference(
 		module: string,
-		facts: ReturnType<typeof mapFacts>,
+		facts: MappedFacts,
 		target: RawTypeReference,
 	): Promise<string | undefined> {
 		const matches = facts.references.filter(
@@ -497,123 +387,34 @@ export class PythonProvider {
 		if (matches.length !== 1) return undefined;
 		const reference = matches[0];
 		if (reference === undefined) return undefined;
-		const binding = await this.bindingForReference(module, facts, reference);
+		const { binding } = await this.resolution(module, facts, reference);
 		return binding.status === "bound" ? binding.symbolId : undefined;
 	}
 
-	private async bindingForReference(
-		module: string,
-		facts: ReturnType<typeof mapFacts>,
-		reference: Reference,
-	): Promise<Binding> {
-		if (reference.binding.status !== "unbound") return reference.binding;
-		if (reference.binding.reason === "Ambiguous" || reference.binding.reason === "RuntimeConstructed") {
-			return reference.binding;
-		}
-		return (await this.crossFileBinding(module, facts, reference)) ?? reference.binding;
-	}
-
-	private async crossFileBinding(
-		module: string,
-		facts: ReturnType<typeof mapFacts>,
-		reference: Reference,
-	): Promise<Binding | null> {
-		const referencePath = facts.referenceScopes.get(reference) ?? [];
-		const visible = facts.importBindings.filter((importBinding) =>
-			this.importVisible(facts, importBinding, reference.name, referencePath),
-		);
-		const direct = visible.filter(
-			(importBinding) => !importBinding.star && importBinding.localName === reference.name,
-		);
-		const stars = visible.filter((importBinding) => importBinding.star);
-		if (
-			direct.some((importBinding) => importBinding.conditional) ||
-			stars.some((importBinding) => importBinding.conditional)
-		) {
-			return unboundBinding("Ambiguous", "a conditional import can supply this name");
-		}
-		if (direct.length === 0) {
-			return stars.length === 0 ? null : unboundBinding("Ambiguous", "a star import can supply this name");
-		}
-		if (direct.length !== 1 || stars.length !== 0) {
-			return unboundBinding("Ambiguous", "multiple imports can supply this name");
-		}
-		const imported = direct[0];
-		if (imported === undefined || imported.importedName === null) {
-			return unboundBinding("Ambiguous", "module imports require receiver lookup");
-		}
-
-		const resolution = await this.resolveImport({ fromModule: module, specifier: imported.specifier });
-		if (resolution.status === "external") {
-			return unboundBinding("ExternalDependency", "the imported declaration is outside the workspace");
-		}
-		if (resolution.status === "unresolved") {
-			return unboundBinding(resolution.reason, resolution.detail ?? "the import target is unresolved");
-		}
-		const targetFacts = await this.factsForModule(resolution.module);
-		if (targetFacts === null) return unboundBinding("NotIndexed", "the imported module is not indexed");
-		const declarations = targetFacts.declarations.filter(
-			(declaration) =>
-				declaration.name === imported.importedName &&
-				declaration.containerId === undefined &&
-				(reference.role !== "typeUse" || TYPE_USE_KINDS.has(declaration.kind)),
-		);
-		if (declarations.length > 1) {
-			return unboundBinding("Ambiguous", "multiple declarations match the imported name");
-		}
-		const declaration = declarations[0];
-		return declaration === undefined
-			? unboundBinding("NotIndexed", "the imported declaration is not indexed")
-			: { status: "bound", symbolId: declaration.symbolId, provenance: "bound" };
-	}
-
-	private importVisible(
-		facts: ReturnType<typeof mapFacts>,
-		importBinding: RawImportBinding,
-		name: string,
-		referencePath: RawDescriptor[],
-	): boolean {
-		const importPath = importBinding.scopePath;
-		if (!isPathPrefix(importPath, referencePath)) return false;
-		const afterImport = referencePath.slice(importPath.length);
-		if (
-			importPath.some((descriptor) => descriptor.kind === "type") ||
-			(importPath.length > 0 && afterImport.some((descriptor) => descriptor.kind === "type"))
-		) {
-			return afterImport.length === 0 && samePath(importPath, referencePath);
-		}
-		for (const info of facts.scopeInfos) {
-			if (!isPathPrefix(importPath, info.scopePath) || !isPathPrefix(info.scopePath, referencePath)) continue;
-			if (info.globals.includes(name)) continue;
-			if (info.nonlocals.includes(name)) return false;
-			const sameImportScope = samePath(info.scopePath, importPath);
-			if (sameImportScope) {
-				if (info.parameters.includes(name) || this.hasWriteInScope(facts, name, info.scopePath)) return false;
-				continue;
-			}
-			if (info.locals.includes(name) || info.parameters.includes(name)) return false;
-		}
-		return true;
-	}
-
-	private hasWriteInScope(facts: ReturnType<typeof mapFacts>, name: string, scopePath: RawDescriptor[]): boolean {
-		return facts.references.some(
-			(reference) =>
-				reference.name === name &&
-				reference.role === "write" &&
-				samePath(facts.referenceScopes.get(reference) ?? [], scopePath),
-		);
+	private resolution(module: string, facts: MappedFacts, reference: Reference): Promise<Resolution> {
+		return this.binder().resolve(module, facts, reference);
 	}
 
 	async resolveImport(params: { fromModule: string; specifier: string }): Promise<ImportResolution> {
 		const root = this.store.root;
-		const parts = importParts(params.fromModule, params.specifier);
-		const candidates = fileCandidates(root, parts);
-		const firstCandidate = candidates[0];
-		if (firstCandidate !== undefined) {
-			const module = workspaceModule(root, firstCandidate);
-			if (module !== null) return { status: "resolved" as const, module };
+		const shown = new Set(this.store.modules());
+		if (params.specifier.startsWith(".") && !hasParentPackage(root, params.fromModule, shown)) {
+			return {
+				status: "unresolved" as const,
+				reason: "BrokenImport" as const,
+				detail: "a relative import needs a parent package, and this module is in none",
+			};
 		}
+		const parts = importParts(params.fromModule, params.specifier);
+		if (parts === null) {
+			return {
+				status: "unresolved" as const,
+				reason: "ExternalDependency" as const,
+				detail: "the relative import climbs above the workspace root",
+			};
+		}
+		const module = moduleCandidates(root, parts, shown)[0];
+		if (module !== undefined) return { status: "resolved" as const, landing: { kind: "module" as const, module } };
 		if (!params.specifier.startsWith(".")) {
 			const packageName = packageNameOf(params.specifier);
 			const stdlibModuleNames = await pythonStdlibModuleNames(this.python3);
@@ -637,7 +438,7 @@ export class PythonProvider {
 		};
 	}
 
-	async bind(params: { module: string; name: string; range: Range }) {
+	async bind(params: { module: string; name: string; range: Range }): Promise<Binding> {
 		const facts = await this.factsForModule(params.module);
 		if (facts === null) {
 			return { status: "unbound" as const, reason: "NotIndexed" as const, detail: "module is not indexed" };
@@ -645,7 +446,7 @@ export class PythonProvider {
 		const reference = facts.references.find(
 			(candidate) => candidate.name === params.name && containsPosition(candidate.range, params.range.start),
 		);
-		if (reference !== undefined) return this.bindingForReference(params.module, facts, reference);
+		if (reference !== undefined) return (await this.resolution(params.module, facts, reference)).binding;
 		const declaration = facts.declarations.find(
 			(candidate) =>
 				candidate.name === params.name &&

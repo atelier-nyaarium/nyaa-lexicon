@@ -31,6 +31,8 @@ export const ImportKindSchema = z
 		"wildcard",
 		/** Imported for effect, binding no name. */
 		"sideEffect",
+		/** The target's visible declarations, and those it injects in turn, enter this scope unbound, e.g. a C include. */
+		"injection",
 		/** The module's whole exported value through a require form, e.g. TypeScript's `import x = require("m")`. */
 		"require",
 	])
@@ -129,8 +131,6 @@ export const MoveImportSiteSchema = z
 		typeOnly: z.boolean().optional(),
 		importedName: z.string().min(1).optional(),
 		localName: z.string().min(1).optional(),
-		/** Set when this statement re-exports rather than consumes, which rewrites differently. */
-		reExport: z.boolean(),
 	})
 	.meta({ id: "MoveImportSite" });
 

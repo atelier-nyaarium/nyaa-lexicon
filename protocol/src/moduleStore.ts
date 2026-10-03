@@ -122,6 +122,8 @@ export interface StoreProvider<V extends ModuleValue, P, E> {
 	renameEdits(params: Request<"renameEdits">): Maybe<Response<"renameEdits">>;
 	moveEdits(params: Request<"moveEdits">): Maybe<Response<"moveEdits">>;
 	arrangeEdits(params: Request<"arrangeEdits">): Maybe<Response<"arrangeEdits">>;
+	/** Facts and landings with every proposed text in the store's view; absent answers unsupported. */
+	probeBatch?(params: Request<"probeBatch">): Maybe<Response<"probeBatch">>;
 	shutdown?(): void;
 }
 
@@ -377,23 +379,42 @@ class Kit<V extends ModuleValue, P, E> {
 
 	/** Candidate view; removed when the callback settles. */
 	transient<R>(module: string, text: string, depth: IndexDepth, run: (value: V) => Maybe<R>): Maybe<R> {
+		return this.transientAll([{ module, text }], depth, ([value]) => run(value as V));
+	}
+
+	/** Candidate views of several modules at once, opened in order; all removed when the callback settles. */
+	transientAll<R>(
+		files: ReadonlyArray<{ module: string; text: string }>,
+		depth: IndexDepth,
+		run: (values: V[]) => Maybe<R>,
+	): Maybe<R> {
 		if (this.transientOpen) throw new Error("a transient layer is already open");
 		this.transientOpen = true;
-		const slot = this.slot(module);
+		const opened: string[] = [];
 		const pop = () => {
-			this.change(module, () => {
-				slot.transient = undefined;
-			});
+			for (const module of opened) {
+				const slot = this.slot(module);
+				this.change(module, () => {
+					slot.transient = undefined;
+				});
+			}
 			this.transientOpen = false;
+		};
+		const open = (at: number, values: V[]): Maybe<R> => {
+			const file = files[at];
+			if (file === undefined) return run(values);
+			return after(this.layerFor(file.module, file.text, depth, "parse"), (layer) => {
+				const slot = this.slot(file.module);
+				this.change(file.module, () => {
+					slot.transient = layer;
+				});
+				opened.push(file.module);
+				return open(at + 1, [...values, layer.value]);
+			});
 		};
 		let result: Maybe<R>;
 		try {
-			result = after(this.layerFor(module, text, depth, "parse"), (layer) => {
-				this.change(module, () => {
-					slot.transient = layer;
-				});
-				return run(layer.value);
-			});
+			result = open(0, []);
 		} catch (error) {
 			pop();
 			throw error;
@@ -753,6 +774,11 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 					provider.parseFile(params, value),
 				),
 			),
+		probeBatch: (params: Request<"probeBatch">) => {
+			const probe = provider.probeBatch?.bind(provider);
+			if (probe === undefined) return { status: "unsupported" as const };
+			return ready(() => kit.transientAll(params.files, "full", () => probe(params)));
+		},
 		resolveImport: (params: Request<"resolveImport">) => ready(() => provider.resolveImport(params)),
 		bind: (params: Request<"bind">) => ready(() => provider.bind(params)),
 		typeOf: (params: Request<"typeOf">) => ready(() => provider.typeOf(params)),

@@ -4,12 +4,15 @@ import {
 	type ArrangeEditsRequest,
 	type Declaration,
 	defined,
+	type FileFacts,
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
+	type ProbeBatchRequest,
+	type ProbeBatchResponse,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	runProviderOnStdio,
@@ -165,10 +168,11 @@ export class GDScriptProvider {
 		value: GDScriptValue,
 	) {
 		const outline = params.depth === "outline";
-		const references = value.references.map((reference) => ({
-			...reference,
-			binding: this.bindingIndex.bindReference(params.module, reference),
-		}));
+		const references = value.references.map((reference) => {
+			const { binding, origin } = this.bindingIndex.resolveReference(params.module, reference);
+			// A preload receiver's import origin stands.
+			return { ...reference, binding, ...defined({ origin: reference.origin ?? origin }) };
+		});
 		return {
 			module: params.module,
 			contentHash: params.contentHash,
@@ -187,6 +191,33 @@ export class GDScriptProvider {
 			role: scriptRole(params.module, value, this.store.project),
 			...(outline ? { depth: "outline" as const } : {}),
 		};
+	}
+
+	/** Every proposed text read as one view, as the store shows it while the batch is open. */
+	probeBatch(params: ProbeBatchRequest): ProbeBatchResponse {
+		const proposed = new Map(params.files.map((file) => [file.module, file.contentHash]));
+		const facts: FileFacts[] = [];
+		for (const module of params.answer) {
+			const held = this.store.text(module);
+			const value = this.store.load(module, "full");
+			if (held === undefined || value === undefined) {
+				return { status: "unsupported", detail: `${module} is neither proposed nor held` };
+			}
+			const contentHash = proposed.get(module) ?? held.contentHash;
+			facts.push(this.parseFile({ module, contentHash, text: held.text }, value));
+		}
+		const asked = new Map<string, { module: string; specifier: string }>();
+		for (const each of facts) {
+			for (const { specifier } of each.imports) {
+				asked.set(JSON.stringify([each.module, specifier]), { module: each.module, specifier });
+			}
+		}
+		const landings = [...asked.values()].map(({ module, specifier }) => ({
+			module,
+			specifier,
+			resolution: this.resolveImport({ fromModule: module, specifier }),
+		}));
+		return { status: "ready", facts, landings };
 	}
 
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {

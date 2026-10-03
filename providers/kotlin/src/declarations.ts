@@ -126,7 +126,7 @@ class DeclarationWalker implements DeclarationWalk {
 	}
 
 	private importDirective(node: SyntaxNode): void {
-		const directive = importDirectiveOf(this.text, this.lines, node);
+		const directive = importDirectiveOf(this.text, this.lines, node, this.imports.length);
 		if (directive === undefined) return;
 		this.imports.push(directive.info);
 		if (directive.source !== undefined) this.importNames.set(directive.source, directive.info);

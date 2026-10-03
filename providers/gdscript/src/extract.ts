@@ -4,12 +4,13 @@ import {
 	composeSymbolId,
 	type Declaration,
 	type Diagnostic,
+	type Import,
 	type Literal,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import { declarationsOf, scriptHeaderOf } from "./declarations.js";
 import { diagnosticsOf } from "./diagnostics.js";
-import { type ImportFact, importsOf, loaderCallsOf } from "./imports.js";
+import { importsOf, loaderCallsOf } from "./imports.js";
 import { layoutOf } from "./layout.js";
 import type { CommentSpan } from "./lexer.js";
 import { literalsOf } from "./literal-tokens.js";
@@ -32,7 +33,7 @@ export interface OutlineFacts {
 
 export interface FileFacts extends OutlineFacts {
 	references: Reference[];
-	imports: ImportFact[];
+	imports: Import[];
 	literals: Literal[];
 	comments: CommentSpan[];
 	blankLines: number[];

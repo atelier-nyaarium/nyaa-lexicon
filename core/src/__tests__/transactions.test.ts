@@ -546,6 +546,70 @@ describe("reverting a transaction", () => {
 	});
 });
 
+// Restored bytes outrun the facts until a parse lands, and a crash can come between the two.
+describe("owing parses before restoring", () => {
+	/** Modules the index owes a parse, in module order. */
+	function owed(): string[] {
+		const modules: string[] = [];
+		for (let at = store.owedRebindAfter(null); at !== null; at = store.owedRebindAfter(at)) modules.push(at);
+		return modules;
+	}
+
+	/** A step that writes a.ts and only binds b.ts, left written. */
+	function renameStep(): number {
+		const begun = manager.beginStep("rename", ["a.ts", "b.ts"]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("a.ts", "renamed\n");
+		manager.completeStep(begun.stepNo, "written");
+		return begun.stepNo;
+	}
+
+	beforeEach(() => {
+		write("a.ts", "original\n");
+		write("b.ts", "bound\n");
+		manager.start();
+	});
+
+	for (const operation of ["undo", "revert"] as const) {
+		it(`owes every module ${operation} restores, so a crash before the reindex leaves the work`, () => {
+			manager.completeStep(renameStep(), "finalized");
+			const dying = new TransactionManager(store, root, undefined, () => {
+				throw new Error("died after restoring");
+			});
+			expect(() => (operation === "undo" ? dying.undo() : dying.revert(dying.status().drifted))).toThrow(
+				"died after restoring",
+			);
+
+			store.close();
+			store = IndexStore.open(path.join(root, ".index.sqlite")).store;
+			expect(read("a.ts")).toBe("original\n");
+			expect(owed()).toEqual(["a.ts", "b.ts"]);
+		});
+	}
+
+	it("owes every module of an unfinished step it recovers, even one whose bytes it kept", () => {
+		renameStep();
+
+		expect(manager.recover().restored).toEqual(["a.ts"]);
+		expect(owed()).toEqual(["a.ts", "b.ts"]);
+	});
+
+	it("answers the modules a restore put back before a disk error stopped it", () => {
+		write("sub/c.ts", "c original\n");
+		step("replace", { "a.ts": "edited\n", "sub/c.ts": "c edited\n" });
+		chmodSync(path.join(root, "sub"), 0o555);
+		let outcome: ReturnType<TransactionManager["undo"]>;
+		try {
+			outcome = manager.undo();
+		} finally {
+			chmodSync(path.join(root, "sub"), 0o755);
+		}
+
+		expect(outcome).toMatchObject({ undone: false, modules: ["a.ts"] });
+		expect(read("a.ts")).toBe("original\n");
+	});
+});
+
 describe("committing", () => {
 	beforeEach(() => {
 		write("a.ts", "original\n");

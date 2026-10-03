@@ -162,7 +162,7 @@ interface ImporterIndex {
 }
 
 /** Outcomes that leave a module's facts unread under the reading asked for. */
-const UNREAD: ReadonlySet<IndexCause | undefined> = new Set(["parseFailed", "providerDown", "fault"]);
+export const UNREAD: ReadonlySet<IndexCause | undefined> = new Set(["parseFailed", "providerDown", "fault"]);
 
 /** What `followImports` needs beyond the frontier, so no positional default decides the gate. */
 interface ImportWalk {
@@ -237,6 +237,8 @@ export class WorkspaceIndexer {
 
 	/** Modules a single-file road wrote, whose dependents the pump asks after once that road lets go. */
 	private readonly unasked = new Set<string>();
+	/** Modules whose exports a settlement moved, joined to the next moves a road reads. */
+	private readonly projected = new Set<string>();
 	/** Debt was owed since the pump last started through it; a run tries each owed module once. */
 	private rebindQueued = false;
 	private rebindCursor: string | null = null;
@@ -445,9 +447,8 @@ export class WorkspaceIndexer {
 		// Attachment happens here rather than in the store, because "nothing between these two" is a
 		// question only the source text answers, and this is the last place holding it.
 		const generatedVerdict = await this.verdictFor(module);
-		// Where a re-export lands is what its importers bind through, so it is part of the surface; where
-		// any import landed names this module once that target goes.
-		const importTargets = await this.importTargets(module, facts.imports);
+		// Where each specifier lands: what its edges bind to, and what a forward reads through.
+		const resolutions = await this.resolutions(module, facts.imports);
 		try {
 			this.store.replaceFile({
 				module,
@@ -474,7 +475,10 @@ export class WorkspaceIndexer {
 						: [],
 				generated: generatedVerdict,
 				role: facts.role,
-				importTargets,
+				resolutions,
+				exports: facts.exports,
+				allList: facts.allList,
+				scopeContributions: facts.scopeContributions,
 			});
 		} catch (error) {
 			// An answer the store refuses is the provider's answer for THIS file, so it is the file's failure.
@@ -499,6 +503,7 @@ export class WorkspaceIndexer {
 		// Committed, so the provider is told what the index holds rather than what it is about to.
 		this.publish(answered, { module, contentHash: readHash, outcome: { status: "admitted" } });
 		this.importsWritten.add(module);
+		this.settleProjections();
 		// The provider answers again, so what its outage held back is tried again.
 		if (this.store.unblockOutages(parser.providerId) > 0) this.queueRebinds();
 		if (fresh) this.newInPass.add(module);
@@ -528,16 +533,17 @@ export class WorkspaceIndexer {
 		}
 	}
 
-	/** Where each of a write's imports lands, when the resolver can say. */
-	private async importTargets(module: string, imports: readonly Import[]): Promise<Map<string, string>> {
-		const targets = new Map<string, string>();
+	/** Where each of a write's specifiers lands, resolved once each; null when the resolver cannot say. */
+	private async resolutions(
+		module: string,
+		imports: readonly Import[],
+	): Promise<Map<string, ImportResolution | null>> {
+		const resolved = new Map<string, ImportResolution | null>();
 		for (const statement of imports) {
-			if (targets.has(statement.specifier)) continue;
-			const landed = await this.resolve(module, statement.specifier).catch(() => null);
-			const target = landed === null ? null : importTarget(landed);
-			if (target !== null) targets.set(statement.specifier, target.module);
+			if (resolved.has(statement.specifier)) continue;
+			resolved.set(statement.specifier, await this.resolve(module, statement.specifier).catch(() => null));
 		}
-		return targets;
+		return resolved;
 	}
 
 	/**
@@ -798,6 +804,11 @@ export class WorkspaceIndexer {
 		});
 	}
 
+	/** Starts paying owed parses, as after a restart that left some. */
+	payOwed(): void {
+		if (this.store.owedRebindAfter(null) !== null) this.queueRebinds();
+	}
+
 	/** Drains the outline backlog, yielding between files. */
 	upgradeRemaining(): Promise<void> {
 		this.upgradeWanted = true;
@@ -918,6 +929,8 @@ export class WorkspaceIndexer {
 			if (this.store.depthOf(module) !== "outline") return;
 			this.depths.set(module, "full");
 			try {
+				// A restarted daemon may be asked to upgrade before any scan computed the scope.
+				if (this.scope === null) await this.currentScope();
 				const outcome = await this.indexOne(module, "full");
 				// A row skipped for scope or ownership stays outline in the store, so it must leave the
 				// backlog or the pump spins on it forever.
@@ -1194,19 +1207,31 @@ export class WorkspaceIndexer {
 
 	private forgetFile(module: string): boolean {
 		const removed = this.store.forgetFile(module);
+		this.settleProjections();
 		this.importsWritten.add(module);
 		// Told regardless: a provider may still hold the file.
 		this.supervisor.forget(module);
 		this.caches.facts.invalidate();
+		// A specifier that landed on it may land elsewhere now.
+		if (removed) this.caches.resolutions.invalidate();
 		return removed;
 	}
 
 	/**
-	 * The moves still pending for `modules`, or for every module when null. Read, not taken: a road
-	 * acknowledges them only with the debt it owes for them, so a stop in between loses neither.
+	 * The moves still pending for `modules`, or for every module when null, with every module whose
+	 * exports a settlement moved since. Read, not taken: a road acknowledges them only with the debt it
+	 * owes for them, so a stop in between loses neither.
 	 */
 	private pendingMoves(modules: Iterable<string> | null): Map<string, SurfaceChange> {
-		return this.store.surfaceMovesOf(modules === null ? null : [...modules]);
+		this.settleProjections();
+		const asked = modules === null ? null : [...modules, ...this.projected];
+		this.projected.clear();
+		return this.store.surfaceMovesOf(asked);
+	}
+
+	/** Recomputes the export projections writes owe, so a route read or a rebind sees what they moved. */
+	private settleProjections(): void {
+		for (const module of this.store.settleProjections()) this.projected.add(module);
 	}
 
 	/** Writes the debt and acknowledges the moves it answers in one transaction, then starts the pump. */
@@ -1354,6 +1379,9 @@ export class WorkspaceIndexer {
 		// The import index answers where specifiers land now; a module that went, or that a specifier
 		// stopped landing on, is still named by the import written against it.
 		for (const module of this.store.importersLandedOn([...moves.keys()])) importers.add(module);
+		// A scope it joined or left is read by every import landing on that scope.
+		const scopes = [...moves.values()].flatMap((change) => change.scopes);
+		for (const module of this.store.importersOfScopes(scopes)) importers.add(module);
 		const names = new Set<string>();
 		for (const change of moves.values()) {
 			for (const module of change.boundInto) importers.add(module);
@@ -1459,6 +1487,8 @@ export class WorkspaceIndexer {
 			if (depth === "outline") this.depths.set(module, "full");
 			let outcome: IndexOutcome;
 			try {
+				// A restarted daemon's pump can run before any scan computed the scope.
+				if (this.scope === null) await this.currentScope();
 				outcome = await this.indexOne(module, depth === "outline" ? "full" : depth);
 			} catch (error) {
 				outcome = this.faultOutcome(module, error);

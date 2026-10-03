@@ -7,6 +7,8 @@ import type {
 	FileFacts,
 	MoveEditsRequest,
 	MoveEditsResponse,
+	ProbeBatchRequest,
+	ProbeBatchResponse,
 	ProviderTiers,
 	ProviderWords,
 	RenameEditsRequest,
@@ -33,6 +35,8 @@ export interface ProviderProbe {
 	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
 	moveEdits(module: string, request: MoveEditsRequest): Promise<MoveEditsResponse>;
 	arrangeEdits(module: string, request: ArrangeEditsRequest): Promise<MoveEditsResponse>;
+	/** Facts for `request.answer` with every proposed text as one view, asked of `module`'s owner. */
+	probeBatch(module: string, request: ProbeBatchRequest): Promise<ProbeBatchResponse>;
 }
 
 ////////////////////////////////
@@ -62,6 +66,7 @@ export function liveProbe(supervisor: ProviderPort): ProviderProbe {
 
 		moveEdits: (module, request) => supervisor.ask(module, "moveEdits", request),
 		arrangeEdits: (module, request) => supervisor.ask(module, "arrangeEdits", request),
+		probeBatch: (module, request) => supervisor.ask(module, "probeBatch", request),
 
 		async parseCandidate(module, text) {
 			try {

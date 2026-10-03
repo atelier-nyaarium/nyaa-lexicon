@@ -27,7 +27,7 @@ import {
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { CsharpBinder } from "./binding.js";
 import { unbound } from "./imports.js";
-import { type DeclarationMeta, LANGUAGE } from "./model.js";
+import { type DeclarationMeta, LANGUAGE, PROVIDER_ID } from "./model.js";
 import { type IndexEntry, NamespaceIndex, namespaceEntries } from "./namespaces.js";
 import { CsharpParser } from "./parser.js";
 import { type CsharpProjectState, contextFor, discoverContexts, EMPTY_PROJECT_STATE } from "./project.js";
@@ -235,7 +235,7 @@ export class CsharpProvider extends CsharpBinder {
 
 	initialize(_workspaceRoot: string) {
 		return {
-			providerId: "csharp-provider",
+			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: [...EXTENSIONS],
 			protocolVersion: PROTOCOL_VERSION,
@@ -302,7 +302,8 @@ export class CsharpProvider extends CsharpBinder {
 						const binding = this.bindingForReference(facts, reference);
 						return { ...reference, role: this.baseRole(facts, reference, binding), binding };
 					}),
-			imports: facts.imports.map(({ specifier, imported, reExport }) => ({ specifier, imported, reExport })),
+			imports: this.importFacts(facts),
+			scopeContributions: this.scopeContributions(facts),
 			role: facts.role,
 			literals: outline ? [] : facts.literals,
 			comments: outline ? [] : facts.comments,

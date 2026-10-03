@@ -9,6 +9,7 @@ import {
 	handlersFor,
 	type ImportResolution,
 	type IndexDepth,
+	type Landing,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
@@ -47,7 +48,6 @@ import {
 	type Place,
 	placeOf,
 	ScopeResolver,
-	type Site,
 	sameBlock,
 	samePath,
 	type Tiers,
@@ -72,7 +72,13 @@ export const TIERS = {
 	metrics: true,
 	syntaxDiagnostics: true,
 	fileRoles: true,
+	exports: true,
 } as const;
+
+export const PROVIDER_ID = "rust-provider";
+
+/** Path heads that name a module relative to the current one, never a crate. */
+const PATH_KEYWORDS: ReadonlySet<string> = new Set(["crate", "self", "super", "Self"]);
 
 /** Rust 2021 strict and reserved keywords. Builtins are the primitive types, never real keywords. */
 export const WORDS = {
@@ -294,6 +300,7 @@ function parseFailure(module: string, detail: string): ParsedFile {
 		declarations: [],
 		references: [],
 		imports: [],
+		scopeContributions: [],
 		literals: [],
 		comments: [],
 		diagnostics: [diagnostic],
@@ -372,7 +379,7 @@ export class RustProvider {
 
 	initialize(_workspaceRoot: string) {
 		return {
-			providerId: "rust-provider",
+			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: [...EXTENSIONS],
 			protocolVersion: PROTOCOL_VERSION,
@@ -399,6 +406,8 @@ export class RustProvider {
 			declarations: facts.declarations,
 			references,
 			imports: facts.imports,
+			...defined({ exports: facts.exports }),
+			scopeContributions: facts.scopeContributions,
 			literals: facts.literals,
 			comments: facts.comments,
 			...defined({ blankLines: facts.blankLines }),
@@ -408,9 +417,12 @@ export class RustProvider {
 		};
 	}
 
-	/** Where a specifier lands from a module's top, through the module tree its crate's declarations build. */
+	/**
+	 * Where a specifier's names are looked up, from a module's top, through the module tree its crate's
+	 * declarations build: what a glob opens, what holds a named leaf, or the crate a lone segment binds.
+	 */
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
-		const { absolute, segments } = pathSegments(params.specifier);
+		const { absolute, segments, glob } = pathSegments(params.specifier);
 		if (segments.length === 0)
 			return { status: "unresolved", reason: "ParseError", detail: "the import path is empty" };
 		const facts = this.factsForModule(params.fromModule);
@@ -421,26 +433,39 @@ export class RustProvider {
 		};
 		if (facts === null) return missing;
 		const site = { containerId: undefined, offset: -1 };
+		const name = segments.at(-1) as string;
+		const whole = glob || segments.length === 1;
 		const external = this.scopes.externalHead(facts, segments, site, absolute);
 		if (external !== undefined) return { status: "external", packageName: external };
-		const module = this.landingModule(facts, segments, site, absolute);
-		return module === undefined ? missing : { status: "resolved", module };
+		const placed = this.scopes.place(facts, whole ? segments : segments.slice(0, -1), site, [], absolute);
+		if (placed === undefined || placed === null) {
+			// Through this file's own import of an outside crate, such as `extern crate` or the import itself.
+			const head = segments[0] as string;
+			const root: Place = { facts, path: [], kind: "module" };
+			const crate = absolute || PATH_KEYWORDS.has(head) ? undefined : this.scopes.externalImport(root, head);
+			return crate === undefined ? missing : { status: "external", packageName: crate };
+		}
+		if (
+			!whole &&
+			this.scopes.itemsIn(placed, name).length === 0 &&
+			this.scopes.externalImport(placed, name) === undefined
+		)
+			return missing;
+		const landing = this.landingAt(placed);
+		return landing === undefined ? missing : { status: "resolved", landing };
 	}
 
-	/** The module file a path names, or the one holding the item it names. */
-	private landingModule(
-		facts: ParsedFile,
-		segments: readonly string[],
-		site: Site,
-		absolute: boolean,
-	): string | undefined {
-		const placed = this.scopes.place(facts, segments, site, [], absolute);
-		if (placed !== undefined && placed !== null) return this.scopes.moduleFileName(placed) ?? placed.facts.module;
-		const name = segments.at(-1);
-		if (segments.length < 2 || name === undefined) return undefined;
-		const parent = this.scopes.place(facts, segments.slice(0, -1), site, [], absolute);
-		if (parent === undefined || parent === null || parent.kind !== "module") return undefined;
-		return this.scopes.itemsIn(parent, name)[0]?.facts.module;
+	/** A file module lands on its file; an inline module or a type on its own scope. */
+	private landingAt(place: Place): Landing | undefined {
+		const raw = place.raw;
+		if (raw === undefined)
+			return place.kind === "module" ? { kind: "module", module: place.facts.module } : undefined;
+		if (raw.fileModule !== undefined) {
+			const file = this.scopes.moduleFileName(place);
+			return file === undefined ? undefined : { kind: "module", module: file };
+		}
+		const scopeId = raw.declaration.symbolId;
+		return { kind: "symbolScope", providerId: PROVIDER_ID, scopeId, anchorSymbolId: scopeId };
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {

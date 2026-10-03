@@ -1,5 +1,6 @@
-// Toy language for test doubles: `export class X { ... }` declares and `import "./x"` imports.
-// One lexer ignores declarations in strings and braces inside bodies.
+// Toy language for test doubles: `export class X { ... }` declares, `import "./x"` imports, `use X`
+// uses and `reexport X from "./x"` forwards. One lexer ignores declarations in strings and braces
+// inside bodies.
 
 import { type ToyToken, toySpelled, toyStringValue, toyTokens } from "@nyaa-lexicon/protocol/toy";
 
@@ -12,6 +13,24 @@ export interface FakeClass {
 	start: number;
 	nameStart: number;
 	end: number;
+}
+
+export interface FakeImport {
+	specifier: string;
+	/** Offsets of `import` and one past the specifier. */
+	start: number;
+	end: number;
+}
+
+export interface FakeName {
+	name: string;
+	/** Offsets of the name. */
+	start: number;
+	end: number;
+}
+
+export interface FakeReExport extends FakeName {
+	specifier: string;
 }
 
 ////////////////////////////////
@@ -52,11 +71,42 @@ export function fakeClasses(text: string): FakeClass[] {
 }
 
 /** Each `import "specifier"`. */
-export function fakeImports(text: string): string[] {
+export function fakeImports(text: string): FakeImport[] {
 	const tokens = toyTokens(text);
 	return tokens.flatMap((token, at) => {
 		const specifier = tokens[at + 1];
 		if (!toySpelled(token, "word", "import") || !toySpelled(specifier, "string")) return [];
-		return [toyStringValue(specifier as ToyToken)];
+		const written = specifier as ToyToken;
+		return [{ specifier: toyStringValue(written), start: token.start, end: written.end }];
+	});
+}
+
+/** Each `use Name`. */
+export function fakeUses(text: string): FakeName[] {
+	const tokens = toyTokens(text);
+	return tokens.flatMap((token, at) => {
+		const name = tokens[at + 1];
+		if (!toySpelled(token, "word", "use") || !toySpelled(name, "word")) return [];
+		const written = name as ToyToken;
+		return [{ name: written.text, start: written.start, end: written.end }];
+	});
+}
+
+/** Each `reexport Name from "specifier"`. */
+export function fakeReExports(text: string): FakeReExport[] {
+	const tokens = toyTokens(text);
+	return tokens.flatMap((token, at) => {
+		const [name, from, specifier] = tokens.slice(at + 1, at + 4);
+		if (!toySpelled(token, "word", "reexport") || !toySpelled(name, "word")) return [];
+		if (!toySpelled(from, "word", "from") || !toySpelled(specifier, "string")) return [];
+		const written = name as ToyToken;
+		return [
+			{
+				name: written.text,
+				start: written.start,
+				end: written.end,
+				specifier: toyStringValue(specifier as ToyToken),
+			},
+		];
 	});
 }

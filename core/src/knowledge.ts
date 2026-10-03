@@ -205,6 +205,9 @@ export class KnowledgeLedger {
 		for (const site of await this.imports.importSitesFor(declaration.module, declaration.name, this.store)) {
 			add(site.factId, "import", site.module, `imported by ${site.module}`);
 		}
+		for (const edge of this.store.exportsOf(symbolId)) {
+			add(edge.factId, "export", edge.module, `exported as ${edge.name ?? edge.form} by ${edge.module}`);
+		}
 
 		// The subject's own recorded answers, so a SECOND author can cite what a first one wrote.
 		// Without this the answers-cite-answers cascade only worked inside one session's memory,

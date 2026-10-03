@@ -42,7 +42,6 @@ export interface PythonImportStatement {
 	range: Range;
 	moduleRange: Range | null;
 	indent: string | null;
-	reExport: boolean;
 	aliases: PythonImportAlias[];
 }
 
@@ -213,11 +212,7 @@ export function locateImportSite(
 ): { statement: PythonImportStatement; alias: PythonImportAlias } | { blocked: BlockedSite } {
 	if (site.importKind === "namespace" || site.importKind === "wildcard" || site.importKind === "sideEffect") {
 		return {
-			blocked: blockedSite(
-				site.range,
-				"NotImplemented",
-				`a ${site.importKind} ${site.reExport ? "re-export" : "import"} binds the whole module`,
-			),
+			blocked: blockedSite(site.range, "NotImplemented", `a ${site.importKind} import binds the whole module`),
 		};
 	}
 	if (site.importKind !== "named") {

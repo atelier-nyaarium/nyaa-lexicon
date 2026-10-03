@@ -61,6 +61,7 @@ import {
 	renderFileHistory,
 	renderImports,
 	renderInsertOutcome,
+	renderIssues,
 	renderLiterals,
 	renderMentions,
 	renderMostReferenced,
@@ -97,7 +98,7 @@ export interface ToolBackend {
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
 	refactorStart: () => Promise<RefactorStartResult>;
 	refactorStatus: () => Promise<TransactionStatus>;
-	prepareRename: (symbolId: string, newName: string) => Promise<RenamePlan>;
+	prepareRename: (symbolId: string, newName: string, stops?: string[]) => Promise<RenamePlan>;
 	planMove: (symbolId: string, toModule: string) => Promise<MovePlan>;
 	refactorTrack: (module: string) => Promise<RefactorTrackResult>;
 	refactorUndo: () => Promise<RefactorUndoResult>;
@@ -122,7 +123,7 @@ export interface ToolBackend {
 		text: string;
 	}) => Promise<InsertOutcome>;
 	refactorMove: (symbolId: string, toModule: string, together: string[]) => Promise<MoveOutcome>;
-	refactorRename: (symbolId: string, newName: string) => Promise<RenameStepOutcome>;
+	refactorRename: (symbolId: string, newName: string, stops?: string[]) => Promise<RenameStepOutcome>;
 	indexStatus: (concerning?: string) => Promise<IndexStatus>;
 	findLiterals: (query: RequestOf<"findLiterals">) => Promise<LiteralsResult>;
 	findComments: (query: RequestOf<"findComments">) => Promise<CommentsResult>;
@@ -263,12 +264,19 @@ export const RefactorInsertInput = {
 
 const RE2_NOTE = `RE2 syntax: linear time, no lookaround or backreferences.`;
 
+const STOPS = z
+	.array(z.string().min(1))
+	.max(4096)
+	.optional()
+	.describe(`Stop ids from a rename preview: keeps the old name at those re-exports.`);
+
 export const RefactorPreviewInput = {
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path, to say which \`name\`.`),
 	newName: z.string().min(1).optional().describe(`Preview a rename to this name.`),
 	toModule: z.string().min(1).optional().describe(`Preview a move to this module path.`),
+	stops: STOPS,
 };
 
 export const FindLiteralsInput = {
@@ -399,6 +407,7 @@ export const RefactorRenameInput = {
 	symbolId: z.string().min(1).optional().describe(`Exact \`symbolId\` from an earlier result.`),
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 	newName: z.string().min(1).describe(`Replacement symbol name.`),
+	stops: STOPS,
 };
 
 ////////////////////////////////
@@ -453,6 +462,8 @@ Rename a bound symbol across declarations, uses, imports, and re-exports, as a t
 Nothing is written unless every occurrence can be. Recorded knowledge follows the symbol and its
 members, whose ids are re-minted too. Files that only used the old name through a member are
 reindexed even though their text does not change.
+
+\`stops\` keeps the old name at re-exports a preview offers, by stop id.
 `.trim();
 
 export const SYMBOL_SOURCE_DESCRIPTION = `
@@ -477,7 +488,7 @@ export const REFACTOR_PREVIEW_DESCRIPTION = `
 
 What a rename or a move would touch. Read-only, no transaction.
 
-\`newName\` previews a rename: files, sites per file, every blocker and warning.
+\`newName\` previews a rename: files, sites per file, routes with their stop ids, blockers, warnings, mentions.
 \`toModule\` previews a move: the removal, the insertion, the imports re-pointed, and what the moved text depends on.
 `.trim();
 
@@ -900,16 +911,18 @@ export async function refactorMove(
 
 export async function refactorRename(
 	backend: ToolBackend,
-	args: SymbolArgs & { newName: string },
+	args: SymbolArgs & { newName: string; stops?: string[] | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
-	const outcome = await backend.refactorRename(resolved.symbolId, args.newName).catch((error: unknown) => ({
-		renamed: false,
-		issues: [] as RefactorIssue[],
-		reason: error instanceof Error ? error.message : String(error),
-	}));
+	const outcome = await backend
+		.refactorRename(resolved.symbolId, args.newName, args.stops)
+		.catch((error: unknown) => ({
+			renamed: false,
+			issues: [] as RefactorIssue[],
+			reason: error instanceof Error ? error.message : String(error),
+		}));
 	return text(renderRenameStep(args.newName, outcome), !outcome.renamed);
 }
 
@@ -953,7 +966,7 @@ export async function refactorStatus(backend: ToolBackend): Promise<ToolResult> 
 
 export async function refactorPreview(
 	backend: ToolBackend,
-	args: SymbolArgs & { newName?: string | undefined; toModule?: string | undefined },
+	args: SymbolArgs & { newName?: string | undefined; toModule?: string | undefined; stops?: string[] | undefined },
 ): Promise<ToolResult> {
 	if ((args.newName === undefined) === (args.toModule === undefined)) {
 		return text(`Give \`newName\` for a rename preview or \`toModule\` for a move preview, not both.`, true);
@@ -964,7 +977,7 @@ export async function refactorPreview(
 
 		const body =
 			args.newName !== undefined
-				? renderRenamePlan(await backend.prepareRename(resolved.symbolId, args.newName))
+				? renderRenamePlan(await backend.prepareRename(resolved.symbolId, args.newName, args.stops))
 				: renderMovePlan(await backend.planMove(resolved.symbolId, args.toModule ?? ""));
 		return text(await withIndexState(backend, body, moduleOf(resolved.symbolId)));
 	} catch (error) {
@@ -1002,10 +1015,12 @@ function unreversedLines(unreversed: UnreversedRebind[] | undefined): string[] {
 export async function refactorUndo(backend: ToolBackend): Promise<ToolResult> {
 	return rendered(async () => {
 		const outcome = await backend.refactorUndo();
-		if (!outcome.undone) return `Nothing was undone. ${outcome.reason ?? ""}`.trim();
+		const issues = renderIssues(outcome.issues ?? []);
+		if (!outcome.undone) return [`Nothing was undone. ${outcome.reason ?? ""}`.trim(), ...issues].join("\n");
 		return [
 			`Undid step ${outcome.stepNo}, restoring ${(outcome.modules ?? []).map((m) => `\`${m}\``).join(", ")}.`,
 			...unreversedLines(outcome.unreversed),
+			...issues,
 		].join("\n");
 	});
 }
@@ -1016,14 +1031,15 @@ export async function refactorRevert(
 ): Promise<ToolResult> {
 	return rendered(async () => {
 		const outcome = await backend.refactorRevert(args);
-		if (!outcome.reverted) return `Nothing was reverted. ${outcome.reason ?? ""}`.trim();
+		const issues = renderIssues(outcome.issues ?? []);
+		if (!outcome.reverted) return [`Nothing was reverted. ${outcome.reason ?? ""}`.trim(), ...issues].join("\n");
 		const reverted =
 			outcome.modules.length === 0
 				? `Reverted. No file had been changed.`
 				: `Reverted ${outcome.modules.length} file(s) to how the transaction found them: ${outcome.modules
 						.map((m) => `\`${m}\``)
 						.join(", ")}.`;
-		return [reverted, ...unreversedLines(outcome.unreversed)].join("\n");
+		return [reverted, ...unreversedLines(outcome.unreversed), ...issues].join("\n");
 	});
 }
 
@@ -1279,7 +1295,12 @@ export async function resolveImport(
 	const resolution = await backend.resolveImport(args.fromModule, args.specifier);
 
 	if (resolution.status === "resolved") {
-		return text(`# Import resolved\n\n\`${args.specifier}\` resolves to \`${resolution.module}\`.`);
+		const { landing } = resolution;
+		const target =
+			landing.kind === "module"
+				? `\`${landing.module}\``
+				: `the ${landing.kind === "packageScope" ? "package" : "symbol"} scope \`${landing.scopeId}\``;
+		return text(`# Import resolved\n\n\`${args.specifier}\` resolves to ${target}.`);
 	}
 	if (resolution.status === "external") {
 		const version = resolution.version ? `@${resolution.version}` : "";

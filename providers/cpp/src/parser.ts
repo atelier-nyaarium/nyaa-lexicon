@@ -24,7 +24,7 @@ import {
 	LANGUAGE,
 	type Receiver,
 } from "./model.js";
-import { indexScopes, scopeIdOf } from "./scopes.js";
+import { indexScopes, scopeContributionsOf, scopeIdOf } from "./scopes.js";
 import type { Token } from "./tokens.js";
 import { directiveTokenIndexes, isSignificant, rangeOfToken, tokenize } from "./tokens.js";
 import { codeText, joinTokens, rangeFrom, significantAfter, significantBefore, tokenAt } from "./tokenWalk.js";
@@ -169,10 +169,17 @@ class CppParser extends CppBodyParser {
 				answer.status === "known" ? { ...answer, provenance: "declared" } : answer,
 			);
 		}
+		const referencesByToken = new Map(references.map((reference) => [reference.tokenIndex, reference]));
+		const transfers = this.transfers.map(({ lastName, ...transfer }) => ({
+			...transfer,
+			// A using-declarator names its namespace before its last name.
+			scopeToken: transfer.kind === "named" ? (referencesByToken.get(lastName)?.qualifierToken ?? -1) : lastName,
+		}));
 		return {
 			declarations: reported.map((record) => record.declaration),
 			references,
-			imports: this.imports.map((item) => item.imported),
+			transfers,
+			scopeContributions: scopeContributionsOf(reported),
 			literals,
 			comments,
 			blankLines: this.blankLines,
@@ -180,7 +187,7 @@ class CppParser extends CppBodyParser {
 			role: fileRoleFor(this.module, reported),
 			...indexScopes(records),
 			usingsByScope,
-			referencesByToken: new Map(references.map((reference) => [reference.tokenIndex, reference])),
+			referencesByToken,
 			declarationsByToken: new Map(reported.map((record) => [record.nameTokenStart, record])),
 			importFacts: this.imports,
 			typeAnswers,

@@ -26,6 +26,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { CppBinder } from "./binder.js";
+import { importsOf } from "./imports.js";
 import { type CppFacts, LANGUAGE } from "./model.js";
 import { parseCppFile } from "./parser.js";
 import {
@@ -44,6 +45,8 @@ import { type Reaches, reachesOf } from "./reach.js";
 
 ////////////////////////////////
 //  Constants
+
+const PROVIDER_ID = "cpp-provider";
 
 const EXTENSIONS = [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"];
 const EXCLUDED_DIRECTORIES = new Set([
@@ -217,12 +220,21 @@ function looksLikeWorkspacePath(name: string): boolean {
 	return name.startsWith(".") || name.includes("/") || EXTENSIONS.some((extension) => name.endsWith(extension));
 }
 
+/** The one answer every reading gives, else Ambiguous. */
+function agreed(answers: readonly ImportResolution[], detail: string): ImportResolution {
+	const first = answers[0] as ImportResolution;
+	return answers.every((answer) => isDeepStrictEqual(answer, first))
+		? first
+		: { status: "unresolved", reason: "Ambiguous", detail };
+}
+
 /**
  * What finding `name`, or not, means for an include of `kind`: a bare name found nowhere is
  * external unless it reads like a workspace path.
  */
 function resolutionOf(found: FoundInclude | undefined, name: string, kind: IncludeKind | undefined): ImportResolution {
-	if (found !== undefined && "module" in found) return { status: "resolved", module: found.module };
+	if (found !== undefined && "module" in found)
+		return { status: "resolved", landing: { kind: "module", module: found.module } };
 	if (found !== undefined || kind === "angle") return { status: "external", packageName: name };
 	if (kind === undefined && !looksLikeWorkspacePath(name)) return { status: "external", packageName: name };
 	return { status: "unresolved", reason: "NotIndexed", detail: `no workspace header matches ${name}` };
@@ -237,7 +249,7 @@ export class CppProvider {
 
 	initialize(_workspaceRoot: string) {
 		return {
-			providerId: "cpp-provider",
+			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
 			sharedExtensions: [{ extension: ".h", beside: EXTENSIONS }],
@@ -294,7 +306,8 @@ export class CppProvider {
 				binding: binder.bind(params.module, reference),
 				...(reference.from === null ? {} : { fromId: reference.from.declaration.symbolId }),
 			})),
-			imports: facts.imports,
+			imports: importsOf(facts, (specifier) => this.namespaceLanding(params.module, facts, binder, specifier)),
+			scopeContributions: facts.scopeContributions,
 			literals: facts.literals,
 			comments: facts.comments,
 			blankLines: facts.blankLines,
@@ -312,23 +325,45 @@ export class CppProvider {
 				: undefined;
 		const context = contextOf(this.store.project, params.fromModule);
 		if (delimited !== undefined) return this.resolveInclude(context, params.fromModule, name, delimited);
+		const facts = this.store.load(params.fromModule);
+		if (facts?.transfers.some((transfer) => transfer.specifier === name))
+			return this.namespaceLanding(params.fromModule, facts, this.binder(params.fromModule, facts), name);
 		// A bare name takes the kinds its includes are written with; two finding different files, neither.
 		const kinds = new Set(
-			(this.store.load(params.fromModule)?.importFacts ?? [])
-				.filter((item) => item.imported.specifier === name)
+			(facts?.importFacts ?? [])
+				.filter((item) => item.specifier === name)
 				.map((item): IncludeKind => (item.quoted ? "quoted" : "angle")),
 		);
 		const answers = (kinds.size === 0 ? [undefined] : [...kinds]).map((kind) =>
 			this.resolveInclude(context, params.fromModule, name, kind),
 		);
-		const first = answers[0] as ImportResolution;
-		return answers.every((answer) => isDeepStrictEqual(answer, first))
-			? first
-			: {
-					status: "unresolved",
-					reason: "Ambiguous",
-					detail: `the file includes ${name} both ways, finding different files`,
-				};
+		return agreed(answers, `the file includes ${name} both ways, finding different files`);
+	}
+
+	/**
+	 * The scope the namespace `specifier` written in `module` opens, the same for every using and
+	 * alias writing it; external when only an external header can hold it.
+	 */
+	private namespaceLanding(module: string, facts: CppFacts, binder: CppBinder, specifier: string): ImportResolution {
+		if (facts.importFacts.some((include) => include.specifier === specifier))
+			return {
+				status: "unresolved",
+				reason: "Ambiguous",
+				detail: `the file writes ${specifier} as a header and as a namespace`,
+			};
+		const answers = facts.transfers
+			.filter((transfer) => transfer.specifier === specifier)
+			.map((transfer): ImportResolution => {
+				const found = binder.namespaceAt(module, transfer.scopeToken);
+				if ("scopeId" in found)
+					return {
+						status: "resolved",
+						landing: { kind: "packageScope", providerId: PROVIDER_ID, scopeId: found.scopeId },
+					};
+				if (found.reason === "ExternalDependency") return { status: "external", packageName: specifier };
+				return { status: "unresolved", reason: found.reason, detail: found.detail };
+			});
+		return agreed(answers, `the file's uses of ${specifier} land differently`);
 	}
 
 	bind(params: { module: string; name: string; range: Range }): Binding {
@@ -418,14 +453,7 @@ export class CppProvider {
 			const answers = searchOrders(project, context, includer, kind ?? "quoted").map((directories) =>
 				resolutionOf(findInclude(project, this.store.policy, directories, written), name, kind),
 			);
-			const first = answers[0] as ImportResolution;
-			return answers.every((answer) => isDeepStrictEqual(answer, first))
-				? first
-				: {
-						status: "unresolved",
-						reason: "Ambiguous",
-						detail: `the entries find different headers for ${name}`,
-					};
+			return agreed(answers, `the entries find different headers for ${name}`);
 		});
 	}
 
@@ -481,7 +509,7 @@ export class CppProvider {
 				];
 		return reachesOf(unit, forced, facts, {
 			resolve: (includer, include) =>
-				this.resolveInclude(context, includer, include.imported.specifier, include.quoted ? "quoted" : "angle"),
+				this.resolveInclude(context, includer, include.specifier, include.quoted ? "quoted" : "angle"),
 			load: (module) => this.store.load(module),
 		});
 	}

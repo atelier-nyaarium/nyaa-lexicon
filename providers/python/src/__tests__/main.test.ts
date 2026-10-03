@@ -10,10 +10,12 @@ import {
 	type Declaration,
 	PROTOCOL_VERSION,
 	parseSymbolId,
+	type Range,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import { PythonProvider, wireHandlers } from "../main";
 import { Python3Dispatch } from "../python3";
+import { tokenize } from "../syntax/tokenizer";
 
 const roots: string[] = [];
 
@@ -38,6 +40,13 @@ function spanAt(text: string, index: number, value: string) {
 	const range = coordinatesOf(text).rangeAt(index, index + value.length);
 	if (range === undefined) throw new Error(`invalid test range for ${value}`);
 	return range;
+}
+
+/** Every NAME token spelling `name`, as rename sites. */
+function nameSites(text: string, name: string): Array<{ range: Range }> {
+	return tokenize(text)
+		.tokens.filter((token) => token.type === "NAME" && token.string === name)
+		.map((token) => ({ range: spanAt(text, token.pos, name) }));
 }
 
 function ownerOf(reference: Reference | undefined): string {
@@ -131,7 +140,13 @@ describe("Python provider project behavior", () => {
 		});
 
 		expect(info.referenceRoles).toEqual(["call", "read", "write", "extends", "typeUse"]);
-		expect(info.tiers).toMatchObject({ fileRoles: true, literals: true, metrics: true });
+		expect(info.tiers).toMatchObject({
+			fileRoles: true,
+			literals: true,
+			metrics: true,
+			exports: true,
+			renameKeep: true,
+		});
 		expect(facts.role).toEqual({ kind: "library" });
 		const helper = facts.references.find((reference) => reference.name === "helper");
 		expect(helper?.binding).toMatchObject({
@@ -557,25 +572,22 @@ describe("Python provider project behavior", () => {
 			range: { start: { line: 5, character: 14 }, end: { line: 5, character: 18 } },
 		});
 
-		expect(facts.imports).toContainEqual({
-			specifier: "os",
-			imported: [
-				{ local: "alias", localRange: { start: { line: 2, character: 23 }, end: { line: 2, character: 28 } } },
-			],
-			reExport: false,
-		});
-		expect(facts.imports).toContainEqual({
-			specifier: "item",
-			imported: [
-				{
-					name: "thing",
-					range: { start: { line: 3, character: 27 }, end: { line: 3, character: 32 } },
-					local: "alias2",
-					localRange: { start: { line: 3, character: 36 }, end: { line: 3, character: 42 } },
-				},
-			],
-			reExport: false,
-		});
+		expect(facts.imports.find((statement) => statement.specifier === "os")?.edges).toMatchObject([
+			{
+				span: { start: { line: 2, character: 17 }, end: { line: 2, character: 28 } },
+				local: "alias",
+				localRange: { start: { line: 2, character: 23 }, end: { line: 2, character: 28 } },
+			},
+		]);
+		expect(facts.imports.find((statement) => statement.specifier === "item")?.edges).toMatchObject([
+			{
+				span: { start: { line: 3, character: 27 }, end: { line: 3, character: 42 } },
+				name: "thing",
+				range: { start: { line: 3, character: 27 }, end: { line: 3, character: 32 } },
+				local: "alias2",
+				localRange: { start: { line: 3, character: 36 }, end: { line: 3, character: 42 } },
+			},
+		]);
 		expect(facts.literals.find((literal) => literal.value === "target")).toMatchObject({
 			range: { start: { line: 4, character: 16 }, end: { line: 4, character: 24 } },
 		});
@@ -985,29 +997,40 @@ describe("Python provider project behavior", () => {
 		});
 	});
 
-	it("rewrites static __all__ strings without touching the declaration", async () => {
+	it("rewrites a static __all__ string in its written quotes without touching the declaration", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
 		initializeProvider(provider, root);
-		const text = '__all__ = ["old"]\ndef old():\n    pass\n';
-		const site = spanAt(text, text.indexOf('"old"'), '"old"');
-		const response = await provider.renameEdits({
-			module: "main.py",
-			text,
-			oldName: "old",
-			newName: "new",
-			sites: [{ range: site }],
-		});
+		const module = (literal: string) => `__all__ = [${literal}]\ndef old():\n    pass\n`;
+		const rewrite = async (literal: string): Promise<string> => {
+			const text = module(literal);
+			const response = await provider.renameEdits({
+				module: "main.py",
+				text,
+				oldName: "old",
+				newName: "new",
+				sites: [{ range: spanAt(text, text.indexOf(literal), literal) }],
+			});
+			if (response.status !== "ready" || response.blocked.length > 0)
+				throw new Error(`${literal} was not renamed`);
+			const rewritten = applyEdits(text, response.edits);
+			if ("problem" in rewritten) throw new Error(rewritten.problem);
+			return rewritten.text;
+		};
+		// An escaped spelling falls back to repr.
+		const renamed: Record<string, string> = {
+			'"old"': '"new"',
+			"'old'": "'new'",
+			'r"old"': 'r"new"',
+			'"""old"""': '"""new"""',
+			'"\\x6fld"': "'new'",
+		};
 
-		expect(response).toEqual({
-			status: "ready",
-			edits: [{ range: spanAt(text, text.indexOf('"old"'), '"old"'), newText: "'new'" }],
-			blocked: [],
-		});
-		if (response.status !== "ready") throw new Error("rename was refused");
-		const rewritten = applyEdits(text, response.edits);
-		if ("problem" in rewritten) throw new Error(rewritten.problem);
-		expect(rewritten.text).toContain("__all__ = ['new']");
+		const written: Record<string, string> = {};
+		for (const literal of Object.keys(renamed)) written[literal] = await rewrite(literal);
+		expect(written).toEqual(
+			Object.fromEntries(Object.entries(renamed).map(([literal, after]) => [literal, module(after)])),
+		);
 	});
 
 	it("refuses parameter renames and collisions", async () => {
@@ -1025,8 +1048,6 @@ describe("Python provider project behavior", () => {
 			}),
 		).toMatchObject({ status: "refused", reason: "NotImplemented" });
 
-		const everyOld = (text: string) =>
-			[...text.matchAll(/old/g)].map((match) => ({ range: spanAt(text, match.index, "old") }));
 		for (const text of [
 			"def old():\n    pass\ndef new():\n    pass\n",
 			// An inner local of the new name would capture the renamed read.
@@ -1040,7 +1061,7 @@ describe("Python provider project behavior", () => {
 					text,
 					oldName: "old",
 					newName: "new",
-					sites: everyOld(text),
+					sites: nameSites(text, "old"),
 				}),
 			).toMatchObject({ status: "refused", reason: "Collision" });
 		}
@@ -1166,7 +1187,7 @@ describe("Python provider project behavior", () => {
 		});
 	});
 
-	it("blocks string, attribute, and dynamic scope sites", async () => {
+	it("blocks string and dynamic scope sites", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();
 		initializeProvider(provider, root);
@@ -1174,10 +1195,6 @@ describe("Python provider project behavior", () => {
 			{
 				text: 'value: "old"\n',
 				reason: "StringLiteral",
-			},
-			{
-				text: "obj.old\n",
-				reason: "NotImplemented",
 			},
 			{
 				text: 'def run():\n    exec("x=1")\n    return old\n',
@@ -1202,14 +1219,17 @@ describe("Python provider project behavior", () => {
 		}
 	});
 
-	it("keeps star and conditional imports unbound and binds parameter shadowing", async () => {
-		const root = workspace({ "src/item.py": "class Item:\n    pass\n" });
+	it("keeps unproved star and conditional imports unbound and binds parameter shadowing", async () => {
+		const root = workspace({
+			"src/item.py": "class Item:\n    pass\n",
+			"src/listed.py": "__all__ = names()\nclass Item:\n    pass\n",
+		});
 		const provider = new PythonProvider();
 		initializeProvider(provider, root);
 		const cases = [
 			{
 				module: "src/star.py",
-				text: ["from .item import *", "def make():", "    return Item()"].join("\n"),
+				text: ["from .listed import *", "def make():", "    return Item()"].join("\n"),
 				name: "star",
 				reason: "Ambiguous",
 			},
@@ -1550,7 +1570,7 @@ describe("Python provider project behavior", () => {
 			"    return value",
 			"",
 		].join("\n");
-		const sites = [...text.matchAll(/Old/g)].map((match) => ({ range: spanAt(text, match.index, "Old") }));
+		const sites = nameSites(text, "Old");
 		const response = await provider.renameEdits({ module: "main.py", text, oldName: "Old", newName: "New", sites });
 
 		expect(sites).toHaveLength(3);
@@ -1663,7 +1683,7 @@ describe("Python provider project behavior", () => {
 		const provider = new PythonProvider();
 		initializeProvider(provider, root);
 		const text = ["def wrap[T](value: T) -> T:", "    return value", ""].join("\n");
-		const sites = [...text.matchAll(/\bT\b/g)].map((match) => ({ range: spanAt(text, match.index, "T") }));
+		const sites = nameSites(text, "T");
 		const response = await provider.renameEdits({
 			module: "main.py",
 			text,
@@ -2167,9 +2187,7 @@ describe("Python provider project behavior", () => {
 		initializeProvider(provider, root);
 
 		const functionText = "def f[T, U](x: T, y: U) -> T:\n    return x\n";
-		const functionSites = [...functionText.matchAll(/\bT\b/g)].map((match) => ({
-			range: spanAt(functionText, match.index, "T"),
-		}));
+		const functionSites = nameSites(functionText, "T");
 		expect(
 			await provider.renameEdits({
 				module: "main.py",
@@ -2193,9 +2211,7 @@ describe("Python provider project behavior", () => {
 		).toMatchObject({ status: "refused", reason: "Collision" });
 
 		const aliasText = "type A[T, U] = dict[T, U]\n";
-		const aliasSites = [...aliasText.matchAll(/\bT\b/g)].map((match) => ({
-			range: spanAt(aliasText, match.index, "T"),
-		}));
+		const aliasSites = nameSites(aliasText, "T");
 		expect(
 			await provider.renameEdits({
 				module: "main.py",
@@ -2565,7 +2581,7 @@ describe("Python provider project behavior", () => {
 
 		expect(await provider.resolveImport({ fromModule: "main.py", specifier: "local" })).toEqual({
 			status: "resolved",
-			module: "local.py",
+			landing: { kind: "module", module: "local.py" },
 		});
 		const stdlib = await provider.resolveImport({ fromModule: "main.py", specifier: "ast" });
 		const missing = await provider.resolveImport({

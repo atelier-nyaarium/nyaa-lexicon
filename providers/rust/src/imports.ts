@@ -1,5 +1,6 @@
-import { defined, type Import, type ImportedName } from "@nyaa-lexicon/protocol";
+import { type Certainty, defined, type Export, type ImportEdge, type Range } from "@nyaa-lexicon/protocol";
 import { Declarations, type ParseContext } from "./declarations.js";
+import { EXPLICIT, GLOBBED, KNOWN, type Placed, type PlacedEdge, VISIBLE } from "./edges.js";
 import type { ImportBinding } from "./model.js";
 import type { Prefix } from "./prefixes.js";
 import type { SpanRange } from "./references.js";
@@ -15,15 +16,33 @@ interface UseEntry {
 	sourceIndex?: number;
 	localIndex?: number;
 	glob: boolean;
+	/** The leaf as written, by token index, both inclusive. */
+	first: number;
+	last: number;
+	/** The token spelling the source name; a `self` leaf's is its module's segment. */
+	nameIndex?: number;
 }
+
+/** A path segment and the token spelling it. */
+interface Segment {
+	name: string;
+	index: number;
+}
+
+////////////////////////////////
+//  Constants
+
+/** Resolution starts at the file's top, so a relative path inside an inline module lands elsewhere. */
+const UNPLACED: Certainty = { status: "unknown", reason: "NotImplemented" };
 
 ////////////////////////////////
 //  Classes
 
-/** `use` and `extern crate` items: each leaf an import and a binding. */
+/** `use` and `extern crate` items: each leaf an import edge and a binding, a `pub` one also an export. */
 export abstract class Imports extends Declarations {
 	protected readonly importBindings: ImportBinding[] = [];
-	protected readonly imports: Import[] = [];
+	protected readonly importEdges: PlacedEdge[] = [];
+	protected readonly forwardExports: Placed<Export>[] = [];
 	protected readonly useRanges: SpanRange[] = [];
 
 	/** A written path's last segment, through the imports of its scope that rename its first. */
@@ -78,6 +97,9 @@ export abstract class Imports extends Declarations {
 					sourceIndex: nameIndex,
 					localIndex,
 					glob: false,
+					first: nameIndex,
+					last: localIndex,
+					nameIndex,
 				},
 				prefix,
 				context,
@@ -104,17 +126,8 @@ export abstract class Imports extends Declarations {
 		const written = entry.glob ? [...entry.path, "*"].join("::") : entry.path.join("::");
 		if (written === "") return;
 		const specifier = spelled ? `::${written}` : written;
-		const sourceRange = source === undefined ? undefined : { start: source.start, end: source.end };
-		const localRange = local === undefined ? undefined : { start: local.start, end: local.end };
-		const imported: ImportedName[] = [];
-		if (sourceRange !== undefined) {
-			const aliased = localRange !== undefined && entry.localIndex !== entry.sourceIndex;
-			imported.push({
-				name: entry.glob ? "*" : (entry.sourceName ?? "*"),
-				range: sourceRange,
-				...(aliased && entry.localName !== null ? { local: entry.localName, localRange } : {}),
-			});
-		}
+		const sourceRange = source === undefined ? undefined : rangeOf(source);
+		const localRange = local === undefined ? undefined : rangeOf(local);
 		this.importBindings.push({
 			specifier,
 			path: entry.path,
@@ -130,13 +143,97 @@ export abstract class Imports extends Declarations {
 			...(absolute ? { absolute } : {}),
 			ambiguous: entry.glob,
 		});
-		this.imports.push({ specifier, imported, reExport: prefix.exported });
+		const edge = this.edgeOf(entry, context, absolute);
+		const offset = (this.tokens[entry.first] as RustToken).startOffset;
+		this.importEdges.push({ specifier, fact: edge, offset });
+		const forward = prefix.exported ? this.forwardOf(edge, prefix, context) : undefined;
+		if (forward !== undefined) this.forwardExports.push({ fact: forward, offset });
 	}
 
-	private useTree(start: number, end: number, prefix: string[]): UseEntry[] {
+	/**
+	 * A glob is a wildcard; a lone segment binds a crate or module whole; any other leaf names one
+	 * item. `as _` binds no name, and on a lone segment only links the crate.
+	 */
+	private edgeOf(entry: UseEntry, context: ParseContext, absolute: boolean): ImportEdge {
+		const span = {
+			start: (this.tokens[entry.first] as RustToken).start,
+			end: (this.tokens[entry.last] as RustToken).end,
+		};
+		const anchored = absolute || entry.path[0] === "crate";
+		const nested = context.descriptors.some((descriptor) => descriptor.kind === "namespace");
+		const certainty = nested && !anchored ? UNPLACED : KNOWN;
+		if (entry.glob)
+			return {
+				kind: "wildcard",
+				span,
+				bindsLocally: true,
+				selector: VISIBLE,
+				conflict: GLOBBED,
+				certainty,
+				order: 0,
+			};
+		const nameToken = this.tokens[entry.nameIndex ?? entry.sourceIndex ?? entry.first] as RustToken;
+		const aliasToken = entry.localIndex === entry.sourceIndex ? undefined : this.tokens[entry.localIndex ?? -1];
+		const anonymous = aliasToken?.value === "_";
+		if (entry.path.length === 1) {
+			if (anonymous) return { kind: "sideEffect", span, bindsLocally: false, certainty, order: 0 };
+			const binding = aliasToken ?? nameToken;
+			return {
+				kind: "namespace",
+				span,
+				local: binding.value,
+				localRange: rangeOf(binding),
+				bindsLocally: true,
+				conflict: EXPLICIT,
+				certainty,
+				order: 0,
+			};
+		}
+		return {
+			kind: "named",
+			span,
+			name: entry.sourceName ?? nameToken.value,
+			range: rangeOf(nameToken),
+			...(aliasToken === undefined || anonymous
+				? {}
+				: { local: aliasToken.value, localRange: rangeOf(aliasToken) }),
+			bindsLocally: !anonymous,
+			...(anonymous ? {} : { conflict: EXPLICIT }),
+			certainty,
+			order: 0,
+		};
+	}
+
+	/** A `pub use` leaf at a module's top re-exports what its edge binds; one in a body exposes nothing. */
+	private forwardOf(edge: ImportEdge, prefix: Prefix, context: ParseContext): Export | undefined {
+		if (context.kind !== "root" && context.kind !== "module") return undefined;
+		const shared = {
+			span: edge.span,
+			target: { kind: "import" as const, span: edge.span },
+			...defined({ scopeId: context.kind === "module" ? context.containerId : undefined }),
+			visibility: prefix.visibility,
+			certainty: KNOWN,
+			order: 0,
+		};
+		if (edge.kind === "wildcard") return { form: "star", ...shared, conflict: GLOBBED };
+		if (!edge.bindsLocally) return undefined;
+		if (edge.kind === "namespace")
+			return { form: "namespace", name: edge.local, range: edge.localRange, ...shared, conflict: EXPLICIT };
+		return {
+			form: "forward",
+			name: edge.local ?? edge.name,
+			range: edge.localRange ?? edge.range,
+			...(edge.local === undefined ? {} : { sourceRange: edge.range }),
+			...shared,
+			conflict: EXPLICIT,
+		};
+	}
+
+	private useTree(start: number, end: number, prefix: readonly Segment[]): UseEntry[] {
 		const entries: UseEntry[] = [];
 		let index = start;
 		let path = [...prefix];
+		let first = start;
 		let guard = -1;
 		while (index < end) {
 			if (index <= guard) throw new Error("use tree parser failed to advance");
@@ -145,6 +242,7 @@ export abstract class Imports extends Declarations {
 			if (isValueToken(token, ",")) {
 				path = [...prefix];
 				index++;
+				first = index;
 				continue;
 			}
 			if (isValueToken(token, "{")) {
@@ -155,7 +253,15 @@ export abstract class Imports extends Declarations {
 				continue;
 			}
 			if (isValueToken(token, "*")) {
-				entries.push({ path, sourceName: null, localName: null, sourceIndex: index, glob: true });
+				entries.push({
+					path: path.map((segment) => segment.name),
+					sourceName: null,
+					localName: null,
+					sourceIndex: index,
+					glob: true,
+					first,
+					last: index,
+				});
 				index++;
 				continue;
 			}
@@ -164,24 +270,35 @@ export abstract class Imports extends Declarations {
 				continue;
 			}
 			if (isValueToken(this.tokens[index + 1], "::")) {
-				path = [...path, token.value];
+				path = [...path, { name: token.value, index }];
 				index += 2;
 				continue;
 			}
-			const sourcePath = token.value === "self" && path.length > 0 ? path : [...path, token.value];
-			const sourceName = sourcePath.at(-1) ?? token.value;
+			const sourcePath =
+				token.value === "self" && path.length > 0 ? path : [...path, { name: token.value, index }];
+			const named = sourcePath.at(-1) ?? { name: token.value, index };
 			const aliased = isValueToken(this.tokens[index + 1], "as") && isNameToken(this.tokens[index + 2]);
 			const localIndex = aliased ? index + 2 : index;
 			entries.push({
-				path: sourcePath,
-				sourceName,
-				localName: aliased ? (this.tokens[localIndex] as RustToken).value : sourceName,
+				path: sourcePath.map((segment) => segment.name),
+				sourceName: named.name,
+				localName: aliased ? (this.tokens[localIndex] as RustToken).value : named.name,
 				sourceIndex: index,
 				localIndex,
 				glob: false,
+				first,
+				last: localIndex,
+				nameIndex: named.index,
 			});
 			index = localIndex + 1;
 		}
 		return entries;
 	}
+}
+
+////////////////////////////////
+//  Functions & Helpers
+
+function rangeOf(token: RustToken): Range {
+	return { start: token.start, end: token.end };
 }

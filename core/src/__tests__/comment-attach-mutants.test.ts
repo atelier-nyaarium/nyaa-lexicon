@@ -2,6 +2,8 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseSource } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 import type { attachComments } from "../commentAttach";
 import { lexiconRoot } from "../providers";
 import { CASES } from "./commentAttachCases";
@@ -62,6 +64,29 @@ afterAll(() => {
 	if (runDir !== undefined) rmSync(runDir, { recursive: true, force: true });
 });
 
+/** Each relative or workspace-package import specifier, made absolute. */
+function relocatedImports(text: string): string {
+	const { source } = parseSource(SOURCE, text);
+	const edits = source.statements.flatMap((statement) => {
+		const specifier =
+			ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)
+				? statement.moduleSpecifier
+				: undefined;
+		if (specifier === undefined || !ts.isStringLiteral(specifier)) return [];
+		const written = specifier.text;
+		const target = written.startsWith("./")
+			? join(import.meta.dirname, "..", written.slice("./".length))
+			: /^@nyaa-lexicon\/[a-z-]+$/.test(written)
+				? join(lexiconRoot(), written.slice("@nyaa-lexicon/".length), "src", "index.ts")
+				: undefined;
+		return target === undefined ? [] : [{ start: specifier.getStart(source), end: specifier.end, target }];
+	});
+	return edits.reduceRight(
+		(out, edit) => `${out.slice(0, edit.start)}${JSON.stringify(edit.target)}${out.slice(edit.end)}`,
+		text,
+	);
+}
+
 async function mutated(index: number, mutant: Mutant): Promise<typeof attachComments> {
 	const source = readFileSync(SOURCE, "utf8");
 	expect(source.split(mutant.find).length - 1, `mutant site for: ${mutant.name}`).toBe(1);
@@ -70,17 +95,7 @@ async function mutated(index: number, mutant: Mutant): Promise<typeof attachComm
 	const file = join(runDir, `commentAttach.mutant-${index}.ts`);
 	// Every import becomes absolute, so the copy resolves what the source does. Workspace packages
 	// are rewritten too: the copy lives outside any node_modules that would otherwise resolve them.
-	const relocated = source
-		.replace(
-			/(from|import)\s+(["'])\.\/([^"']+)\2/g,
-			(_, keyword: string, quote: string, sibling: string) =>
-				`${keyword} ${quote}${join(import.meta.dirname, "..", sibling)}${quote}`,
-		)
-		.replace(
-			/(["'])@nyaa-lexicon\/([a-z-]+)\1/g,
-			(_, quote: string, workspacePackage: string) =>
-				`${quote}${join(lexiconRoot(), workspacePackage, "src", "index.ts")}${quote}`,
-		);
+	const relocated = relocatedImports(source);
 	writeFileSync(file, relocated.replace(mutant.find, mutant.replace));
 	// A fresh query each load, so a rewritten mutant is never served from the module cache.
 	const loaded = (await import(/* @vite-ignore */ `${pathToFileURL(file).href}?run=${++loads}`)) as {

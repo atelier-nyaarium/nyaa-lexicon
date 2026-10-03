@@ -4,6 +4,7 @@ import {
 	composeSymbolId,
 	hashContent,
 	type ImportResolution,
+	type Landing,
 	type Range,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
@@ -11,8 +12,11 @@ import { ImportResolver, type ResolveSpecifier } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
 import { ReadContext } from "../readContext";
 import { RefactorPlanner } from "../refactorPlanner";
+import { routeChanged } from "../refusals";
 import type { SourceWorkspace } from "../sourceWorkspace";
 import type { FactsStamp, IndexStore, StoredDeclaration, StoredImport, StoredReference } from "../store";
+import { EMPTY_READS } from "./emptyReads";
+import { edge, landed } from "./importEdges";
 import { askWith, stepWith } from "./steppedPlan";
 
 ////////////////////////////////
@@ -22,6 +26,9 @@ const MODULE = "src/mod.ts";
 const TARGET = "src/moved.ts";
 
 const INDEXED: FactsStamp = { depth: "full", indexedAt: 1 };
+
+/** The candidate proof has its own tests; these test what surrounds it. */
+const PROVED = async () => [];
 
 function id(name: string, module: string = MODULE): string {
 	return composeSymbolId({ language: "test", module, descriptors: [{ kind: "term", name }] });
@@ -49,13 +56,11 @@ interface World {
 
 function storeFor(world: World): IndexStore {
 	return {
+		...EMPTY_READS,
 		declaration: (symbolId: string) => world.declarations.find((d) => d.symbolId === symbolId) ?? null,
 		declarationsIn: (module: string) => world.declarations.filter((d) => d.module === module),
-		declarationsNamed: () => [],
 		referencesTo: (symbolId: string) => (world.references ?? []).filter((row) => row.targetId === symbolId),
 		referencesIn: (module: string) => (world.references ?? []).filter((row) => row.module === module),
-		referencesSpelled: () => [],
-		importsBinding: () => [],
 		symbolIdsIn: (module: string) => world.declarations.filter((d) => d.module === module).map((d) => d.symbolId),
 		contentHashOf: (module: string) => (module === MODULE ? hashContent(world.text) : null),
 		stampOf: () => (world.stamp === undefined ? INDEXED : world.stamp),
@@ -127,11 +132,12 @@ function plannerFor(world: World): RefactorPlanner {
 			return { status: "ready", edits: [], blocked: [] };
 		},
 		arrangeEdits: () => Promise.reject(new Error("not asked")),
+		probeBatch: () => Promise.reject(new Error("not asked")),
 	};
 
 	const imports = { importSitesFor: async () => [], importSitesForMove: () => [] } as unknown as ImportResolver;
 
-	return new RefactorPlanner(storeFor(world), imports, source as unknown as SourceWorkspace, probe);
+	return new RefactorPlanner(storeFor(world), imports, source as unknown as SourceWorkspace, probe, PROVED);
 }
 
 ////////////////////////////////
@@ -171,6 +177,7 @@ describe("writing a rename only over the rows the plan read", () => {
 					startCharacter: 0,
 					endLine: 2,
 					endCharacter: 5,
+					origin: { kind: "declaration" },
 				},
 			],
 		};
@@ -244,6 +251,7 @@ describe("moving a declaration something left behind still uses", () => {
 					startCharacter: 0,
 					endLine: 2,
 					endCharacter: 5,
+					origin: null,
 				},
 			],
 		};
@@ -298,6 +306,7 @@ describe("moving a declaration into a module that imports it", () => {
 				return { status: "ready", edits, blocked: [] };
 			},
 			arrangeEdits: () => Promise.reject(new Error("not asked")),
+			probeBatch: () => Promise.reject(new Error("not asked")),
 		};
 		const imports = {
 			importSitesForMove: (module: string) => (module === TARGET ? [site] : []),
@@ -425,13 +434,11 @@ function staleIn(world: ImportWorld, modules: string[]): string[] {
 
 function multiStoreFor(world: ImportWorld): IndexStore {
 	return {
+		...EMPTY_READS,
 		declaration: (symbolId: string) => world.declarations.find((d) => d.symbolId === symbolId) ?? null,
 		declarationsIn: (module: string) => world.declarations.filter((d) => d.module === module),
-		declarationsNamed: () => [],
 		referencesTo: (symbolId: string) => (world.references ?? []).filter((row) => row.targetId === symbolId),
 		referencesIn: (module: string) => (world.references ?? []).filter((row) => row.module === module),
-		referencesSpelled: () => [],
-		importsBinding: () => [],
 		importsNamed: (name: string) => world.imports.filter((row) => row.name === name),
 		importsIn: (module: string) => world.imports.filter((row) => row.module === module),
 		symbolIdsIn: (module: string) => world.declarations.filter((d) => d.module === module).map((d) => d.symbolId),
@@ -439,6 +446,21 @@ function multiStoreFor(world: ImportWorld): IndexStore {
 			const text = world.texts[module];
 			return text === undefined ? null : hashContent(text);
 		},
+		modulesExposing: (symbolId: string) =>
+			world.declarations.filter((d) => d.symbolId === symbolId).map((d) => d.module),
+		fileOf: () => ({ exportsKnown: false, allList: null }),
+		exportedDeclarations: (module: string) =>
+			world.declarations.filter((d) => d.module === module).map((d) => ({ symbolId: d.symbolId, name: d.name })),
+		importEdgesLandingOn: (landing: Landing) =>
+			world.imports.filter(
+				(row) =>
+					landing.kind === "module" &&
+					row.landing?.kind === "module" &&
+					row.landing.module === landing.module,
+			),
+		importEdgeAt: (module: string, span: Range) =>
+			world.imports.find((row) => row.module === module && JSON.stringify(row.span) === JSON.stringify(span)) ??
+			null,
 		stampOf: (module: string) => world.stamps?.[module] ?? INDEXED,
 	} as unknown as IndexStore;
 }
@@ -512,11 +534,12 @@ function multiPlannerFor(world: ImportWorld, resolve: ResolveSpecifier): Refacto
 			return { status: "ready", edits: [], blocked: [] };
 		},
 		arrangeEdits: () => Promise.reject(new Error("not asked")),
+		probeBatch: () => Promise.reject(new Error("not asked")),
 	};
 
 	const imports = new ImportResolver(multiStoreFor(world), resolve);
 
-	return new RefactorPlanner(multiStoreFor(world), imports, source as unknown as SourceWorkspace, probe);
+	return new RefactorPlanner(multiStoreFor(world), imports, source as unknown as SourceWorkspace, probe, PROVED);
 }
 
 // An import-only site is still a plan dependency.
@@ -525,6 +548,7 @@ describe("writing a rename only over the import row the plan read", () => {
 	const helper = id("helper", LIB);
 	const libText = "export function helper() {}\n";
 	const importerText = "import { helper } from './lib.ts';\n";
+	const HELPER_NAME = { start: { line: 0, character: 9 }, end: { line: 0, character: 15 } };
 
 	function worldFor(): ImportWorld {
 		return {
@@ -543,20 +567,21 @@ describe("writing a rename only over the import row the plan read", () => {
 			],
 			imports: [
 				{
+					...edge("named", HELPER_NAME, { name: "helper", range: HELPER_NAME }),
 					factId: "import:helper",
 					module: MODULE,
 					specifier: "./lib.ts",
-					reExport: false,
-					name: "helper",
-					range: { start: { line: 0, character: 9 }, end: { line: 0, character: 15 } },
+					landing: { kind: "module", module: LIB },
 				},
 			],
 		};
 	}
 
+	/** Set to move the import's landing after the plan reads it. */
+	let elsewhere = false;
 	const resolve: ResolveSpecifier = async (fromModule, specifier) =>
 		fromModule === MODULE && specifier === "./lib.ts"
-			? ({ status: "resolved", module: LIB } satisfies ImportResolution)
+			? landed(elsewhere ? "src/other.ts" : LIB)
 			: ({ status: "unresolved", reason: "NotIndexed" } satisfies ImportResolution);
 
 	const stepOver = (world: ImportWorld, between: () => void) =>
@@ -603,6 +628,19 @@ describe("writing a rename only over the import row the plan read", () => {
 		expect(outcome).toMatchObject({ renamed: false, reason: expect.stringMatching(/indexed again/) });
 		expect(written).toEqual([]);
 	});
+
+	// A config edit moves a landing without re-committing a row.
+	it("refuses when an import on its routes lands elsewhere by the write", async () => {
+		const world = worldFor();
+
+		const { outcome, written } = await stepOver(world, () => {
+			elsewhere = true;
+		});
+		elsewhere = false;
+
+		expect(outcome).toMatchObject({ renamed: false, reason: routeChanged(1) });
+		expect(written).toEqual([]);
+	});
 });
 
 // The importer's reference stamp covers its import row too.
@@ -611,6 +649,7 @@ describe("refusing a move when the importer's rows moved, covered by its referen
 	const alpha = id("alpha", MODULE);
 	const moduleText = "function alpha() {}\n";
 	const importerText = "import { alpha } from './mod.ts';\n\nalpha();\n";
+	const ALPHA_NAME = { start: { line: 0, character: 9 }, end: { line: 0, character: 14 } };
 
 	function worldFor(): ImportWorld {
 		return {
@@ -641,16 +680,16 @@ describe("refusing a move when the importer's rows moved, covered by its referen
 					startCharacter: 0,
 					endLine: 2,
 					endCharacter: 5,
+					origin: null,
 				},
 			],
 			imports: [
 				{
+					...edge("named", ALPHA_NAME, { name: "alpha", range: ALPHA_NAME }),
 					factId: "import:alpha",
 					module: IMPORTER,
 					specifier: "./mod.ts",
-					reExport: false,
-					name: "alpha",
-					range: { start: { line: 0, character: 9 }, end: { line: 0, character: 14 } },
+					landing: { kind: "module", module: MODULE },
 				},
 			],
 		};
@@ -658,7 +697,7 @@ describe("refusing a move when the importer's rows moved, covered by its referen
 
 	const resolve: ResolveSpecifier = async (fromModule, specifier) =>
 		fromModule === IMPORTER && specifier === "./mod.ts"
-			? ({ status: "resolved", module: MODULE } satisfies ImportResolution)
+			? landed(MODULE)
 			: ({ status: "unresolved", reason: "NotIndexed" } satisfies ImportResolution);
 
 	const stepOver = (world: ImportWorld, between: () => void) =>

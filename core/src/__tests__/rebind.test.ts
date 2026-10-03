@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type Binding, type Declaration, hashContent, type Range } from "@nyaa-lexicon/protocol";
+import {
+	type Binding,
+	type Declaration,
+	hashContent,
+	type Range,
+	type ScopeContribution,
+} from "@nyaa-lexicon/protocol";
 import type { Clock } from "../clock";
 import { type IndexOutcome, REBIND_CAP, RESOLVE_RETRY_MS } from "../indexer";
 import type { MethodRequest, MethodResponse } from "../providerPort";
@@ -14,9 +20,10 @@ import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
 import { TransactionManager } from "../transactions";
 import { fakeClock } from "./fakeClock";
-import { fakeImports } from "./fakeGrammar";
-import { fakeSupervisor, parseClasses, parseFake, resolveFake } from "./fakeProvider";
+import { fakeImports, fakeReExports, fakeUses } from "./fakeGrammar";
+import { fakeSupervisor, parseClasses, parseFake, rangesOf, resolveFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { direct, forward, landed } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -47,29 +54,20 @@ function put(module: string, text: string): void {
 	writeFileSync(full, text);
 }
 
-/** Each `use Name` line, as a use of that name. */
+/** Each `use Name`, as a use of that name. */
 function usesIn(text: string): Array<{ name: string; range: Range }> {
-	return text.split("\n").flatMap((line, at) => {
-		const name = /^use (\w+)$/.exec(line)?.[1];
-		if (name === undefined) return [];
-		return [{ name, range: { start: { line: at, character: 4 }, end: { line: at, character: 4 + name.length } } }];
-	});
+	const rangeOf = rangesOf(text);
+	return fakeUses(text).map(({ name, start, end }) => ({ name, range: rangeOf(start, end) }));
 }
 
-/** Each `reexport Name from "specifier"` line. */
+/** Each `reexport Name from "specifier"`. */
 function reExportsIn(text: string): Array<{ name: string; specifier: string; range: Range }> {
-	return text.split("\n").flatMap((line, at) => {
-		const match = /^reexport (\w+) from "([^"]+)"$/.exec(line);
-		if (match === null) return [];
-		const [, name = "", specifier = ""] = match;
-		return [
-			{
-				name,
-				specifier,
-				range: { start: { line: at, character: 9 }, end: { line: at, character: 9 + name.length } },
-			},
-		];
-	});
+	const rangeOf = rangesOf(text);
+	return fakeReExports(text).map(({ name, specifier, start, end }) => ({
+		name,
+		specifier,
+		range: rangeOf(start, end),
+	}));
 }
 
 /** Where a relative specifier written in `from` lands. */
@@ -122,6 +120,8 @@ interface BindingOptions {
 	clock?: Clock;
 	/** The index it writes, when not the test's own. */
 	over?: IndexStore;
+	/** The scopes each module contributes to. */
+	scopes?: (module: string) => ScopeContribution[];
 }
 
 /**
@@ -145,6 +145,7 @@ function bindingService(parses: string[] = [], options: BindingOptions = {}): Le
 		respawns,
 		clock,
 		over = store,
+		scopes,
 	} = options;
 	const declared = new Map<string, Declaration[]>();
 	const reExported = new Map<string, Array<{ name: string; specifier: string }>>();
@@ -152,7 +153,7 @@ function bindingService(parses: string[] = [], options: BindingOptions = {}): Le
 	const reExportsOf = (module: string) => reExported.get(module) ?? reExportsIn(onDisk(module));
 	const landing = lands ?? joined;
 	const bindingOf = (name: string, from: string, text: string): Binding => {
-		for (const specifier of fakeImports(text)) {
+		for (const { specifier } of fakeImports(text)) {
 			const via = landing(from, specifier);
 			const declared = heldBy(via).find((found) => found.name === name);
 			if (declared !== undefined) return { status: "bound", symbolId: declared.symbolId, provenance: "bound" };
@@ -162,7 +163,7 @@ function bindingService(parses: string[] = [], options: BindingOptions = {}): Le
 				return { status: "bound", symbolId: `lexicon fake ${target} ${name}#`, provenance: "bound" };
 			}
 		}
-		const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((file) => /\.fake/.test(file));
+		const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((file) => file.includes(".fake"));
 		const owners = files.flatMap((module) =>
 			heldBy(module)
 				.filter((found) => found.name === name)
@@ -182,24 +183,27 @@ function bindingService(parses: string[] = [], options: BindingOptions = {}): Le
 				if (unresolvable?.() === true) throw new ProviderUnavailableError("provider is gone");
 				if (resolves !== undefined) return resolves(request);
 				if (lands === undefined) return resolveFake(request);
-				return { status: "resolved", module: lands(request.fromModule, request.specifier) };
+				return landed(lands(request.fromModule, request.specifier));
 			},
 			parseFile: (request, providerId) => {
 				if (down?.(request) === true) throw new ProviderUnavailableError("provider is gone");
 				parses.push(request.module);
 				const reExports = reExportsIn(request.text);
 				const parsed = parseFake(request);
+				const declarations = declares(request, providerId);
+				const forwards = reExports.map(({ name, specifier, range }, at) =>
+					forward(specifier, name, range, parsed.imports.length + at),
+				);
 				const facts = {
 					...parsed,
-					declarations: declares(request, providerId),
-					imports: [
-						...parsed.imports,
-						...reExports.map(({ name, specifier, range }) => ({
-							specifier,
-							imported: [{ name, range }],
-							reExport: true,
-						})),
+					declarations,
+					imports: [...parsed.imports, ...forwards.flatMap((each) => each.imports)],
+					// Stated exports replace the declarations' own flags, so each exported class states one.
+					exports: [
+						...declarations.filter((each) => each.exported === true).map((each) => direct(each)),
+						...forwards.flatMap((each) => each.exports),
 					],
+					scopeContributions: scopes?.(request.module) ?? [],
 				};
 				if (refusing?.has(request.module) === true) {
 					return { ...facts, diagnostics: [{ severity: "error" as const, message: "refused" }] };
@@ -733,6 +737,20 @@ describe("rebind debt", () => {
 		});
 	});
 
+	// A restarted daemon may be asked to upgrade before any scan computed its scope.
+	it("upgrades an outline a stopped daemon left, before any scan", async () => {
+		await gitInit(root);
+		put("x.fake", "export class Foo {}\n");
+		service = bindingService();
+		await service.gate.exclusive(() => service.indexFile("x.fake", "outline"));
+		const left = store.depthOf("x.fake");
+		service = bindingService();
+
+		await service.upgradeRemaining();
+
+		expect({ left, depth: store.depthOf("x.fake") }).toEqual({ left: "outline", depth: "full" });
+	});
+
 	// A parse that reads references binds against every move before it.
 	it("settles a debt with any parse that reads references, rather than parsing it again", async () => {
 		await gitInit(root);
@@ -812,6 +830,76 @@ describe("what a surface carries", () => {
 		expect({ before, after: targetOf("user.fake") }).toEqual({
 			before: "lexicon fake a.fake Foo#",
 			after: "lexicon fake b.fake Foo#",
+		});
+	});
+
+	// Moving between scopes changes no declaration, so only the scope names who reads it.
+	it("parses again, in the batch, an importer of a scope a module left", async () => {
+		await gitInit(root);
+		put("com/a.fake", "export class Foo {}\n");
+		put("user.fake", 'import "com"\nuse Foo\n');
+		let scopeId = "com";
+		const scopes = (module: string): ScopeContribution[] =>
+			module === "com/a.fake"
+				? [{ kind: "packageScope", scopeId, members: ["lexicon fake com/a.fake Foo#"] }]
+				: [];
+		const resolves = (request: MethodRequest<"resolveImport">): MethodResponse<"resolveImport"> =>
+			request.specifier === "com"
+				? { status: "resolved", landing: { kind: "packageScope", providerId: "fake", scopeId: "com" } }
+				: resolveFake(request);
+		service = bindingService([], { resolves, scopes });
+		await service.indexWorkspace();
+
+		scopeId = "org";
+		put("com/a.fake", "export class Foo {}\n\n");
+		const batch = parsedIn(
+			await service.applyBatch([{ kind: "changed", module: "com/a.fake", contentHash: "a-2" }]),
+		);
+
+		expect(batch).toEqual(["com/a.fake", "user.fake"]);
+	});
+
+	// A standalone road forgets a module; the specifiers that landed on it are asked again.
+	it("asks again where a specifier lands once the module it landed on is forgotten", async () => {
+		await gitInit(root);
+		put("old.fake", "export class Foo {}\n");
+		put("user.fake", 'import "./old.fake"\nuse Foo\n');
+		let asked = 0;
+		const resolves = (request: MethodRequest<"resolveImport">): MethodResponse<"resolveImport"> => {
+			if (request.specifier === "./old.fake") asked++;
+			return resolveFake(request);
+		};
+		service = bindingService([], { resolves });
+		await service.indexWorkspace();
+		await service.indexFile("user.fake");
+		const cached = asked;
+
+		rmSync(path.join(root, "old.fake"));
+		await service.indexFile("old.fake");
+		await service.indexFile("user.fake");
+
+		expect(asked).toBeGreaterThan(cached);
+	});
+
+	// Only the refused barrel's projection says the name now reaches through it: its parse is held.
+	it("parses again, in the batch, a user binding through a refused barrel to a name its source gained", async () => {
+		await gitInit(root);
+		put("a.fake", "export class Bar {}\n");
+		put("api.fake", 'reexport Foo from "./a.fake"\n');
+		put("user.fake", 'import "./api.fake";\nuse Foo\n');
+		const refusing = new Set<string>();
+		service = bindingService([], { refusing });
+		await service.indexWorkspace();
+		refusing.add("api.fake");
+		put("api.fake", 'reexport Foo from "./a.fake"\nSYNTAX\n');
+		await service.applyBatch([{ kind: "changed", module: "api.fake", contentHash: "api-2" }]);
+
+		put("a.fake", "export class Bar {}\nexport class Foo {}\n");
+		const batch = parsedIn(await service.applyBatch([{ kind: "changed", module: "a.fake", contentHash: "a-2" }]));
+
+		expect({ batch, bound: targetOf("user.fake") }).toEqual({
+			batch: ["a.fake", "user.fake"],
+			bound: "lexicon fake a.fake Foo#",
 		});
 	});
 
@@ -993,7 +1081,7 @@ describe("what wakes the pump", () => {
 					release = resume;
 				});
 			}
-			return { status: "resolved", module: answer };
+			return landed(answer);
 		};
 		const clock = fakeClock();
 		service = bindingService(parses, { resolves, clock });

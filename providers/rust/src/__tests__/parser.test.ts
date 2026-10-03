@@ -2,7 +2,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { coordinatesOf, handlersFor, PROTOCOL_VERSION, parseSymbolId } from "@nyaa-lexicon/protocol";
+import {
+	type Conflict,
+	coordinatesOf,
+	type ExportTarget,
+	handlersFor,
+	PROTOCOL_VERSION,
+	parseSymbolId,
+	type Range,
+} from "@nyaa-lexicon/protocol";
 import { RustProvider } from "../main.js";
 
 const roots: string[] = [];
@@ -37,6 +45,10 @@ function declaration(facts: ReturnType<typeof parse>["facts"], name: string) {
 	const found = facts.declarations.find((candidate) => candidate.name === name);
 	if (found === undefined) throw new Error(`missing declaration ${name}`);
 	return found;
+}
+
+function declarationName(facts: ReturnType<typeof parse>["facts"], symbolId: string) {
+	return facts.declarations.find((candidate) => candidate.symbolId === symbolId)?.name ?? symbolId;
 }
 
 test("extracts Rust declarations and their ownership", () => {
@@ -466,13 +478,23 @@ fn local() {}Inner;
 	expect(fromOf("Inner", 8)).toBeUndefined();
 });
 
-test("imports each use-tree leaf by its whole path, an alias alone writing a local name", () => {
-	const { facts } = parse(`use crate::util::{Thing, Other as Alias, *};
+test("imports each use-tree leaf by its whole path as one edge spanning the leaf, an alias alone writing a local name", () => {
+	const text = `use crate::util::{Thing, Other as Alias, *};
 use self::local::Value;
 use super::parent::{Parent, deep::{self, Leaf}};
 extern crate alloc as heap;
 fn run() { use std::mem::drop;drop(1); }
-`);
+use serde as _;
+use crate::ext::Trait as _;
+`;
+	const { facts } = parse(text);
+	const coordinates = coordinatesOf(text);
+	const edges = facts.imports.map((entry) => {
+		expect(entry.edges).toHaveLength(1);
+		return entry.edges[0] as (typeof entry.edges)[number];
+	});
+	const named = (edge: (typeof edges)[number]) =>
+		edge.range === undefined ? "" : `${edge.name}@${coordinates.sliceRange(edge.range)}`;
 
 	expect(facts.diagnostics).toEqual([]);
 	expect(facts.imports.map((entry) => entry.specifier)).toEqual([
@@ -485,23 +507,175 @@ fn run() { use std::mem::drop;drop(1); }
 		"super::parent::deep::Leaf",
 		"alloc",
 		"std::mem::drop",
+		"serde",
+		"crate::ext::Trait",
 	]);
-	expect(facts.imports.map((entry) => entry.imported.map((name) => `${name.name}>${name.local ?? ""}`))).toEqual([
-		["Thing>"],
-		["Other>Alias"],
-		["*>"],
-		["Value>"],
-		["Parent>"],
-		["deep>"],
-		["Leaf>"],
-		["alloc>heap"],
-		["drop>"],
+	expect(edges.map((edge) => [edge.kind, coordinates.sliceRange(edge.span), named(edge), edge.local ?? ""])).toEqual([
+		["named", "Thing", "Thing@Thing", ""],
+		["named", "Other as Alias", "Other@Other", "Alias"],
+		["wildcard", "*", "", ""],
+		["named", "self::local::Value", "Value@Value", ""],
+		["named", "Parent", "Parent@Parent", ""],
+		// A `self` leaf names its module by the segment spelling it.
+		["named", "self", "deep@deep", ""],
+		["named", "Leaf", "Leaf@Leaf", ""],
+		["namespace", "alloc as heap", "", "heap"],
+		["named", "std::mem::drop", "drop@drop", ""],
+		["sideEffect", "serde as _", "", ""],
+		["named", "crate::ext::Trait as _", "Trait@Trait", ""],
 	]);
-	expect(facts.references.filter((reference) => reference.role === "import")).toHaveLength(8);
+	expect(edges.map((edge) => edge.bindsLocally)).toEqual([
+		true,
+		true,
+		true,
+		true,
+		true,
+		true,
+		true,
+		true,
+		true,
+		false,
+		false,
+	]);
+	expect(edges.find((edge) => edge.kind === "wildcard")?.selector).toEqual({ kind: "visible" });
+	expect(facts.references.filter((reference) => reference.role === "import")).toHaveLength(10);
 	expect(facts.references.filter((reference) => reference.name === "Other")).toHaveLength(1);
 	expect(
 		facts.references.filter((reference) => reference.name === "drop").map((reference) => reference.role),
 	).toEqual(["import", "call"]);
+});
+
+const EXPORTING = `pub struct Item;
+pub(crate) fn internal() {}
+fn private() {}
+pub mod inner {
+    pub fn helper() {}
+    pub use crate::item::Moved as Renamed;
+    use super::Item;
+}
+pub use crate::item::{Other as Alias, Plain, *};
+pub extern crate alloc as heap;
+fn run() { pub use std::mem::drop; }
+impl Item {}
+pub enum Color { Red }
+`;
+
+test("exports each top-level pub item where declared and each pub use leaf through its own edge", () => {
+	const { facts } = parse(EXPORTING);
+	const coordinates = coordinatesOf(EXPORTING);
+	const edges = facts.imports.flatMap((entry) => entry.edges);
+	const exports = facts.exports ?? [];
+	const inner = declaration(facts, "inner").symbolId;
+	const text = (range: Range | undefined) => (range === undefined ? "" : coordinates.sliceRange(range));
+	const targetOf = (target: ExportTarget) =>
+		target.kind === "symbol"
+			? declarationName(facts, target.symbolId)
+			: target.kind === "import"
+				? text(target.span)
+				: target.reason;
+
+	expect(
+		exports.map((edge) => [
+			edge.form,
+			edge.name ?? "*",
+			targetOf(edge.target),
+			text(edge.sourceRange),
+			edge.scopeId === inner ? "inner" : (edge.scopeId ?? ""),
+			edge.visibility,
+		]),
+	).toEqual([
+		["direct", "Item", "Item", "", "", "public"],
+		["direct", "internal", "internal", "", "", "internal"],
+		["direct", "inner", "inner", "", "", "public"],
+		["forward", "Renamed", "crate::item::Moved as Renamed", "Moved", "inner", "public"],
+		["forward", "Alias", "Other as Alias", "Other", "", "public"],
+		["forward", "Plain", "Plain", "", "", "public"],
+		["star", "*", "*", "", "", "public"],
+		["namespace", "heap", "alloc as heap", "", "", "public"],
+		["direct", "Color", "Color", "", "", "public"],
+	]);
+	// Each forward names exactly one edge, and shares its place in source order.
+	for (const edge of exports) {
+		if (edge.target.kind !== "import") continue;
+		const span = edge.target.span;
+		const targets = edges.filter((candidate) => JSON.stringify(candidate.span) === JSON.stringify(span));
+		expect(targets).toHaveLength(1);
+		expect(targets[0]?.order).toBe(edge.order);
+	}
+	const orders = [...edges, ...exports].map((edge) => edge.order);
+	expect(new Set(orders).size).toBe(edges.length + exports.filter((edge) => edge.form === "direct").length);
+	expect(exports.map((edge) => edge.order)).toEqual([...exports.map((edge) => edge.order)].sort((a, b) => a - b));
+});
+
+test("shadows a glob with an explicit import or item, and marks a relative path inside an inline module unproved", () => {
+	const { facts } = parse(EXPORTING);
+	const edges = facts.imports.flatMap((entry) => entry.edges);
+	const explicit: Conflict = { priority: 1, amongTransfers: "exclude", againstLocal: "localWins" };
+	const globbed: Conflict = { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" };
+
+	expect(edges.map((edge) => edge.conflict)).toEqual([
+		explicit,
+		explicit,
+		explicit,
+		explicit,
+		globbed,
+		explicit,
+		explicit,
+	]);
+	expect((facts.exports ?? []).map((edge) => edge.conflict)).toEqual([
+		explicit,
+		explicit,
+		explicit,
+		explicit,
+		explicit,
+		explicit,
+		globbed,
+		explicit,
+		explicit,
+	]);
+	// `super::Item` resolves from the file's top, which is not the inline module it is written in.
+	expect(edges.map((edge) => edge.certainty.status)).toEqual([
+		"known",
+		"unknown",
+		"known",
+		"known",
+		"known",
+		"known",
+		"known",
+	]);
+});
+
+test("contributes an inline module's pub items and an enum's variants to scopes named by their declarations", () => {
+	const { facts } = parse(`mod inner { pub fn shown() {} fn hidden() {} pub(crate) struct Crated; }
+pub enum Color { Red, Green(u8) }
+enum Empty {}
+mod file;
+`);
+	const named = (ids: readonly string[]) => ids.map((id) => declarationName(facts, id));
+
+	expect(
+		(facts.scopeContributions ?? []).map((scope) => [
+			scope.kind,
+			declarationName(facts, scope.scopeId),
+			named(scope.members),
+		]),
+	).toEqual([
+		["symbolScope", "inner", ["shown", "Crated"]],
+		["symbolScope", "Color", ["Red", "Green"]],
+		["symbolScope", "Empty", []],
+	]);
+});
+
+test("reports the same import edges, exports and scopes at outline depth as in full", () => {
+	const text = `${EXPORTING}fn body() { use std::fmt::Write; pub fn nested() {} }\n`;
+	const full = parse(text).facts;
+	const outline = parse(text, "src/lib.rs", "outline").facts;
+
+	expect(outline.depth).toBe("outline");
+	expect(outline.exports).toEqual(full.exports);
+	expect(outline.imports).toEqual(full.imports);
+	expect(outline.scopeContributions).toEqual(full.scopeContributions);
+	expect(full.exports?.length).toBeGreaterThan(0);
 });
 
 test("owns declarations in inline modules and gives fields and variants descriptor paths, a repeat its occurrence", () => {

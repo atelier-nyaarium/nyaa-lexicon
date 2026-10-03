@@ -47,6 +47,10 @@ export const ProviderTiersSchema = z
 		syntaxDiagnostics: z.boolean().optional(),
 		/** Every code parse returns a role; absent reads as false. */
 		fileRoles: z.boolean().optional(),
+		/** `FileFacts.exports` at every depth; absent reads as false, which is unknown coverage. */
+		exports: z.boolean().optional(),
+		/** Writes a `keep` rename site as an alias; absent reads as false. */
+		renameKeep: z.boolean().optional(),
 	})
 	.meta({ id: "ProviderTiers" });
 
@@ -141,6 +145,49 @@ export const ParseFileRequestSchema = z
 	})
 	.meta({ id: "ParseFileRequest" });
 
+/** Every file not listed reads as the index holds it. */
+export const ProbeBatchRequestSchema = z
+	.object({
+		files: z
+			.array(z.object({ module: z.string().min(1), contentHash: z.string().min(1), text: z.string() }))
+			.min(1),
+		/** Modules this provider owns, to answer facts for. */
+		answer: z.array(z.string().min(1)).min(1),
+	})
+	.refine(
+		(request) =>
+			new Set(request.files.map((file) => file.module)).size === request.files.length &&
+			new Set(request.answer).size === request.answer.length,
+		{ message: "a module repeats" },
+	)
+	.meta({ id: "ProbeBatchRequest" });
+
+export type ProbeBatchRequest = z.infer<typeof ProbeBatchRequestSchema>;
+
+/**
+ * Ready holds exactly one FileFacts per answer module, at its proposed or admitted hash, and one
+ * resolution per distinct module and specifier in them, all derived under the whole view. Core
+ * checks the correspondence, which no schema can.
+ */
+export const ProbeBatchResponseSchema = z
+	.discriminatedUnion("status", [
+		z.object({
+			status: z.literal("ready"),
+			facts: z.array(FileFactsSchema),
+			landings: z.array(
+				z.object({
+					module: z.string().min(1),
+					specifier: z.string().min(1),
+					resolution: ImportResolutionSchema,
+				}),
+			),
+		}),
+		z.object({ status: z.literal("unsupported"), detail: z.string().optional() }),
+	])
+	.meta({ id: "ProbeBatchResponse" });
+
+export type ProbeBatchResponse = z.infer<typeof ProbeBatchResponseSchema>;
+
 export const ResolveImportRequestSchema = z
 	.object({
 		fromModule: z.string().min(1),
@@ -226,6 +273,7 @@ export const PROVIDER_METHODS = [
 	"discoverProject",
 	"parseFile",
 	"probeFile",
+	"probeBatch",
 	"resolveImport",
 	"bind",
 	"typeOf",
@@ -244,6 +292,8 @@ export const METHOD_SCHEMAS = {
 	parseFile: { request: ParseFileRequestSchema, response: FileFactsSchema },
 	/** A parse the index never rules on: the provider answers, then holds what it held before. */
 	probeFile: { request: ParseFileRequestSchema, response: FileFactsSchema },
+	/** Proposed texts read as one view; the provider answers, then holds what it held before. */
+	probeBatch: { request: ProbeBatchRequestSchema, response: ProbeBatchResponseSchema },
 	resolveImport: { request: ResolveImportRequestSchema, response: ImportResolutionSchema },
 	bind: { request: BindRequestSchema, response: BindingSchema },
 	typeOf: { request: TypeOfRequestSchema, response: TypeInfoSchema },

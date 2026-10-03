@@ -2,13 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { hashContent } from "@nyaa-lexicon/protocol";
+import { type Conflict, hashContent } from "@nyaa-lexicon/protocol";
 import type { MethodResponse } from "../providerPort";
+import { landingUnchecked } from "../refusals";
 import { LexiconService } from "../service";
 import { fromText, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
 import { fakeSupervisor } from "./fakeProvider";
+import { forward, landed, named, sideEffect } from "./importEdges";
 
 /** Owns the `.ts` modules these fixtures plant, so an ask routes the way it does live. */
 const TS_CLAIMS = { providerId: "fake", language: "fake", extensions: [".ts"] };
@@ -56,8 +58,10 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-/** A fresh planning context off the current `service`; a plan's context is required, never defaulted. */
+/** A fresh planning context off the current `service`; a plan's context is required, never defaulted.
+ * Settles what fixtures wrote straight to the store, as the indexer does after every commit. */
 function ctx() {
+	store.settleProjections();
 	return service.newReadContext();
 }
 
@@ -769,19 +773,16 @@ describe("planning a move", () => {
 				used("Local", 0, { symbolId: remote }),
 			],
 			[
-				{
-					specifier: "./b",
-					reExport: false,
-					imported: [
-						{
-							name: "Remote",
-							range: { start: { line: 9, character: 14 }, end: { line: 9, character: 20 } },
-							local: "Local",
-							localRange: { start: { line: 9, character: 24 }, end: { line: 9, character: 29 } },
-							typeOnly: true,
-						},
-					],
-				},
+				named(
+					"./b",
+					"Remote",
+					{ start: { line: 9, character: 14 }, end: { line: 9, character: 20 } },
+					{
+						local: "Local",
+						localRange: { start: { line: 9, character: 24 }, end: { line: 9, character: 29 } },
+						typeOnly: true,
+					},
+				),
 			],
 		);
 
@@ -1041,6 +1042,7 @@ describe("planning a rename", () => {
 					range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
 					role: "call",
 					binding: { status: "bound", symbolId: target, provenance: "bound" },
+					origin: { kind: "declaration" },
 				},
 			],
 		});
@@ -1188,9 +1190,11 @@ describe("planning a rename", () => {
 						range: span(3, 0, 3),
 						role: "call",
 						binding: { status: "bound", symbolId: owner, provenance: "bound" },
+						origin: { kind: "declaration" },
 					},
 				],
 			});
+			store.settleProjections();
 			return new LexiconService(
 				store,
 				new ProviderSupervisor(),
@@ -1254,6 +1258,7 @@ describe("planning a rename", () => {
 					},
 				],
 			});
+			store.settleProjections();
 
 			const warning = (await built.prepareRename(parameter, "amount", built.newReadContext())).warnings.find(
 				(w) => w.kind === "OwnerCallsUnresolved",
@@ -1291,6 +1296,7 @@ describe("planning a rename", () => {
 						range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
 						role: "call",
 						binding: { status: "bound", symbolId: target, provenance: "bound" },
+						origin: { kind: "declaration" },
 					},
 				],
 			});
@@ -1298,8 +1304,38 @@ describe("planning a rename", () => {
 			const plan = await service.prepareRename(target, "append", ctx());
 			const blocker = plan.blockers.find((b) => b.kind === "NameTaken");
 
-			expect(blocker?.sites).toEqual([{ module: "src/uses.ts", line: 20 }]);
+			expect(blocker?.sites).toEqual([{ module: "src/uses.ts", line: 21 }]);
 			expect(blocker?.detail).toContain("Rename that declaration first, or pick another name.");
+		});
+
+		// A value and a type of one name stand together, so renaming a value onto a type's name is no clash.
+		it("passes a declaration whose meaning the subject does not share, and blocks one it does", async () => {
+			const module = "src/meanings.ts";
+			const declared = [planted(module, "foo", 0), planted(module, "Bar", 3), planted(module, "Baz", 6)];
+			const meanings: Record<string, string[]> = { foo: ["value"], Bar: ["type"], Baz: ["value"] };
+			store.replaceFile({
+				module,
+				contentHash: "h1",
+				declarations: declared,
+				references: [],
+				exports: declared.map((each, order) => ({
+					form: "direct" as const,
+					span: each.selectionRange,
+					name: each.name,
+					range: each.selectionRange,
+					target: { kind: "symbol" as const, symbolId: each.symbolId },
+					conflict: { priority: 0, amongTransfers: "exclude" as const, againstLocal: "localWins" as const },
+					meaning: meanings[each.name] ?? [],
+					certainty: { status: "known" as const },
+					order,
+				})),
+			});
+			const taken = async (name: string) =>
+				(await service.prepareRename(`lexicon ts ${module} foo().`, name, ctx())).blockers.map(
+					({ kind }) => kind,
+				);
+
+			expect({ type: await taken("Bar"), value: await taken("Baz") }).toEqual({ type: [], value: ["NameTaken"] });
 		});
 
 		// Scopes and member access come from the index. A local in another function is out of scope, a
@@ -1355,6 +1391,7 @@ describe("planning a rename", () => {
 				range,
 				role,
 				binding: { status: "bound" as const, symbolId: id(target), provenance: "bound" as const },
+				origin: { kind: "declaration" as const },
 			});
 			store.replaceFile({
 				module,
@@ -1379,6 +1416,7 @@ describe("planning a rename", () => {
 					bound("named", at(19, 7, 19, 12), "tally().named.", "read"),
 				],
 			});
+			store.settleProjections();
 			const reading = new LexiconService(
 				store,
 				supervisor,
@@ -1397,8 +1435,8 @@ describe("planning a rename", () => {
 			}).toEqual({
 				member: [],
 				otherFunction: [],
-				captured: [{ module, line: 13 }],
-				afterSentence: [{ module, line: 17 }],
+				captured: [{ module, line: 14 }],
+				afterSentence: [{ module, line: 18 }],
 			});
 		});
 
@@ -1414,19 +1452,14 @@ describe("planning a rename", () => {
 						range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
 						role: "call",
 						binding: { status: "bound", symbolId: target, provenance: "bound" },
+						origin: { kind: "declaration" },
 					},
 				],
 				imports: [
-					{
-						specifier: "./elsewhere.js",
-						reExport: false,
-						imported: [
-							{
-								name: "append",
-								range: { start: { line: 0, character: 9 }, end: { line: 0, character: 15 } },
-							},
-						],
-					},
+					named("./elsewhere.js", "append", {
+						start: { line: 0, character: 9 },
+						end: { line: 0, character: 15 },
+					}),
 				],
 			});
 
@@ -1434,7 +1467,7 @@ describe("planning a rename", () => {
 				(b) => b.kind === "NameImported",
 			);
 
-			expect(blocker?.sites).toEqual([{ module: "src/uses.ts", line: 0 }]);
+			expect(blocker?.sites).toEqual([{ module: "src/uses.ts", line: 1 }]);
 			expect(blocker?.detail).toContain("pick another name");
 		});
 
@@ -1452,21 +1485,19 @@ describe("planning a rename", () => {
 						range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } },
 						role: "call",
 						binding: { status: "bound", symbolId: target, provenance: "bound" },
+						origin: { kind: "declaration" },
 					},
 				],
 				imports: [
-					{
-						specifier: "./elsewhere.js",
-						reExport: false,
-						imported: [
-							{
-								name: "push",
-								range: { start: { line: 0, character: 9 }, end: { line: 0, character: 13 } },
-								local: "append",
-								localRange: { start: { line: 0, character: 17 }, end: { line: 0, character: 23 } },
-							},
-						],
-					},
+					named(
+						"./elsewhere.js",
+						"push",
+						{ start: { line: 0, character: 9 }, end: { line: 0, character: 13 } },
+						{
+							local: "append",
+							localRange: { start: { line: 0, character: 17 }, end: { line: 0, character: 23 } },
+						},
+					),
 				],
 			});
 
@@ -1488,6 +1519,133 @@ describe("planning a rename", () => {
 
 			expect((await service.prepareRename(target, "append", ctx())).blockers).toEqual([]);
 		});
+
+		// A forward's token and an aliased import's source name bind nothing in their file, and the
+		// subject's own alias already binds the new name to it.
+		it("checks only tokens that bind, and names a binding import on its own line", async () => {
+			const target = plant();
+			const span = (line: number, start: number, length: number) => ({
+				start: { line, character: start },
+				end: { line, character: start + length },
+			});
+			const toCart = new Map([["./cart", landed("src/cart.ts")]]);
+			const use = (name: string, line: number, edge: number) => ({
+				name,
+				range: span(line, 0, name.length),
+				role: "call" as const,
+				binding: { status: "bound" as const, symbolId: target, provenance: "bound" as const },
+				origin: { kind: "import" as const, span: span(0, edge, 3) },
+			});
+			store.replaceFile({
+				module: "src/alias.ts",
+				contentHash: "h1",
+				declarations: [planted("src/alias.ts", "append", 3)],
+				references: [],
+				imports: [named("./cart", "add", span(0, 9, 3), { local: "X", localRange: span(0, 16, 1) })],
+				resolutions: toCart,
+			});
+			store.replaceFile({
+				module: "src/fwd.ts",
+				contentHash: "h1",
+				declarations: [planted("src/fwd.ts", "append", 3)],
+				references: [],
+				...forward("./cart", "add", span(0, 9, 3)),
+				resolutions: toCart,
+			});
+			store.replaceFile({
+				module: "src/mine.ts",
+				contentHash: "h1",
+				declarations: [],
+				references: [use("append", 2, 9)],
+				imports: [named("./cart", "add", span(0, 9, 3), { local: "append", localRange: span(0, 16, 6) })],
+				resolutions: toCart,
+			});
+			store.replaceFile({
+				module: "src/ns.ts",
+				contentHash: "h1",
+				declarations: [],
+				references: [use("add", 2, 9)],
+				imports: [
+					named("./cart", "add", span(0, 9, 3)),
+					{
+						specifier: "./x",
+						edges: [
+							{
+								kind: "namespace",
+								span: span(4, 7, 11),
+								local: "append",
+								localRange: span(4, 12, 6),
+								bindsLocally: true,
+								conflict: { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" },
+								certainty: { status: "known" },
+								order: 1,
+							},
+						],
+					},
+				],
+				resolutions: toCart,
+			});
+
+			// Each import resolves live where it was stored, so the landing recheck passes.
+			service = new LexiconService(
+				store,
+				fakeSupervisor({ claims: [TS_CLAIMS], answers: { resolveImport: () => landed("src/cart.ts") } }),
+				fromText(() => null),
+			);
+			expect(
+				(await service.prepareRename(target, "append", ctx())).blockers.map(({ kind, sites }) => ({
+					kind,
+					sites,
+				})),
+			).toEqual([{ kind: "NameImported", sites: [{ module: "src/ns.ts", line: 5 }] }]);
+		});
+
+		// Where a later binding replaces an earlier one, importing the subject under the new name twice is no clash.
+		it("lets a rebinding import of the subject bind the new name, and blocks one that cannot rebind", async () => {
+			const target = plant();
+			const span = (line: number, start: number, length: number) => ({
+				start: { line, character: start },
+				end: { line, character: start + length },
+			});
+			const twice = (module: string, conflict: Conflict) =>
+				store.replaceFile({
+					module,
+					contentHash: "h1",
+					declarations: [],
+					references: [
+						{
+							name: "add",
+							range: span(2, 0, 3),
+							role: "call",
+							binding: { status: "bound", symbolId: target, provenance: "bound" },
+							origin: { kind: "import", span: span(1, 9, 3) },
+						},
+					],
+					imports: [
+						named("./cart", "add", span(0, 9, 3), {
+							local: "append",
+							localRange: span(0, 16, 6),
+							conflict,
+						}),
+						named("./cart", "add", span(1, 9, 3), { conflict, order: 1 }),
+					],
+					resolutions: new Map([["./cart", landed("src/cart.ts")]]),
+				});
+			twice("src/rebind.ts", { priority: 0, amongTransfers: "laterWins", againstLocal: "sourceOrder" });
+			twice("src/dup.ts", { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" });
+			service = new LexiconService(
+				store,
+				fakeSupervisor({ claims: [TS_CLAIMS], answers: { resolveImport: () => landed("src/cart.ts") } }),
+				fromText(() => null),
+			);
+
+			expect(
+				(await service.prepareRename(target, "append", ctx())).blockers.map(({ kind, sites }) => ({
+					kind,
+					sites,
+				})),
+			).toEqual([{ kind: "NameImported", sites: [{ module: "src/dup.ts", line: 1 }] }]);
+		});
 	});
 });
 
@@ -1497,11 +1655,11 @@ describe("planning a rename", () => {
 describe("renaming a symbol that other files import", () => {
 	const target = "lexicon ts src/cart.ts add().";
 
-	/** Resolves every specifier to the declaring module, which is what makes the import a site. */
+	/** Resolves every specifier to `module`, as the live landing check reads it. */
 	function resolvingTo(module: string) {
 		return fakeSupervisor({
 			claims: [TS_CLAIMS],
-			answers: { resolveImport: () => ({ status: "resolved", module }) },
+			answers: { resolveImport: () => landed(module) },
 		});
 	}
 
@@ -1517,7 +1675,7 @@ describe("renaming a symbol that other files import", () => {
 					range: { start: { line: 0, character: 0 }, end: { line: 2, character: 1 } },
 					selectionRange: { start: { line: 0, character: 16 }, end: { line: 0, character: 19 } },
 					visibility: "public",
-					exported: false,
+					exported: true,
 				},
 			],
 			references: [],
@@ -1531,15 +1689,8 @@ describe("renaming a symbol that other files import", () => {
 			contentHash: "h1",
 			declarations: [],
 			references: [],
-			imports: [
-				{
-					specifier: "./cart",
-					reExport: false,
-					imported: [
-						{ name: "add", range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } } },
-					],
-				},
-			],
+			imports: [named("./cart", "add", { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } })],
+			resolutions: new Map([["./cart", landed("src/cart.ts")]]),
 		});
 		service = new LexiconService(
 			store,
@@ -1565,19 +1716,17 @@ describe("renaming a symbol that other files import", () => {
 			declarations: [],
 			references: [],
 			imports: [
-				{
-					specifier: "./cart",
-					reExport: false,
-					imported: [
-						{
-							name: "add",
-							range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
-							local: "plus",
-							localRange: { start: { line: 0, character: 16 }, end: { line: 0, character: 20 } },
-						},
-					],
-				},
+				named(
+					"./cart",
+					"add",
+					{ start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
+					{
+						local: "plus",
+						localRange: { start: { line: 0, character: 16 }, end: { line: 0, character: 20 } },
+					},
+				),
 			],
+			resolutions: new Map([["./cart", landed("src/cart.ts")]]),
 		});
 		service = new LexiconService(
 			store,
@@ -1606,15 +1755,18 @@ describe("renaming a symbol that other files import", () => {
 			contentHash: "h1",
 			declarations: [],
 			references: [],
-			imports: [{ specifier: "./cart", reExport: true, imported: [{ name: "add", range: span }] }],
+			...forward("./cart", "add", span),
+			resolutions: new Map([["./cart", landed("src/cart.ts")]]),
 		});
+		store.settleProjections();
 		// The consumer imports the package, which lands on the barrel and not on the declaration.
 		store.replaceFile({
 			module: "src/far.ts",
 			contentHash: "h1",
 			declarations: [],
 			references: [],
-			imports: [{ specifier: "@scope/pkg", reExport: false, imported: [{ name: "add", range: span }] }],
+			imports: [named("@scope/pkg", "add", span)],
+			resolutions: new Map([["@scope/pkg", landed("src/index.ts")]]),
 		});
 
 		service = new LexiconService(
@@ -1622,10 +1774,7 @@ describe("renaming a symbol that other files import", () => {
 			fakeSupervisor({
 				claims: [TS_CLAIMS],
 				answers: {
-					resolveImport: (params) => ({
-						status: "resolved",
-						module: params.specifier === "./cart" ? "src/cart.ts" : "src/index.ts",
-					}),
+					resolveImport: (params) => landed(params.specifier === "./cart" ? "src/cart.ts" : "src/index.ts"),
 				},
 			}),
 			fromText(() => null),
@@ -1644,15 +1793,7 @@ describe("renaming a symbol that other files import", () => {
 			contentHash: "h1",
 			declarations: [],
 			references: [],
-			imports: [
-				{
-					specifier: "./other",
-					reExport: false,
-					imported: [
-						{ name: "add", range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } } },
-					],
-				},
-			],
+			imports: [named("./other", "add", { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } })],
 		});
 		service = new LexiconService(
 			store,
@@ -1662,6 +1803,97 @@ describe("renaming a symbol that other files import", () => {
 
 		const plan = await service.prepareRename(target, "append", ctx());
 		expect(plan.files.map((f) => f.module)).not.toContain("src/elsewhere.ts");
+	});
+
+	it("keeps the old name at a stop the caller names, where the provider keeps names", async () => {
+		declare();
+		const span = { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } };
+		store.replaceFile({
+			module: "src/index.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			...forward("./cart", "add", span),
+			resolutions: new Map([["./cart", landed("src/cart.ts")]]),
+		});
+		const plans = async (renameKeep: boolean) => {
+			service = new LexiconService(
+				store,
+				fakeSupervisor({
+					claims: [TS_CLAIMS],
+					tiers: { renameKeep },
+					answers: { resolveImport: () => landed("src/cart.ts") },
+				}),
+				fromText(() => null),
+			);
+			const open = await service.prepareRename(target, "append", ctx());
+			const stop = open.routes.edges.find((edge) => edge.fact === "export" && edge.from === "src/index.ts");
+			const stopped = await service.prepareRename(target, "append", ctx(), [stop?.id ?? ""]);
+			return {
+				kept: stopped.files
+					.find((file) => file.module === "src/index.ts")
+					?.sites.map((site) => site.keep === true),
+				blockers: stopped.blockers.map((blocker) => blocker.kind),
+			};
+		};
+
+		expect([await plans(true), await plans(false)]).toEqual([
+			{ kept: [true], blockers: [] },
+			{ kept: [false], blockers: ["StopUnsupported"] },
+		]);
+	});
+
+	it("refuses while projections are unsettled, and when an import on its routes now lands elsewhere", async () => {
+		declare();
+		store.replaceFile({
+			module: "src/uses.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [named("./cart", "add", { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } })],
+			resolutions: new Map([["./cart", landed("src/cart.ts")]]),
+		});
+		service = new LexiconService(
+			store,
+			resolvingTo("src/other.ts"),
+			fromText(() => null),
+		);
+		const kinds = async () =>
+			(await service.prepareRename(target, "append", service.newReadContext())).blockers.map((b) => b.kind);
+
+		const unsettled = await kinds();
+		store.settleProjections();
+
+		expect([unsettled, await kinds()]).toEqual([["RouteUnknown"], ["RouteChanged"]]);
+	});
+
+	it("refuses with a check it could not make when the provider cannot say where an import lands", async () => {
+		declare();
+		store.replaceFile({
+			module: "src/uses.ts",
+			contentHash: "h1",
+			declarations: [],
+			references: [],
+			imports: [named("./cart", "add", { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } })],
+			resolutions: new Map([["./cart", landed("src/cart.ts")]]),
+		});
+		const failing = fakeSupervisor({
+			claims: [TS_CLAIMS],
+			answers: {
+				resolveImport: () => {
+					throw new Error("provider is down");
+				},
+			},
+		});
+		service = new LexiconService(
+			store,
+			failing,
+			fromText(() => null),
+		);
+
+		expect((await service.prepareRename(target, "append", ctx())).blockers.map((b) => b.detail)).toEqual([
+			landingUnchecked("src/uses.ts", "./cart"),
+		]);
 	});
 });
 
@@ -1744,8 +1976,8 @@ describe("searching imports", () => {
 			declarations: [],
 			references: [],
 			imports: [
-				{ specifier: "@scope/one", imported: [], reExport: false },
-				{ specifier: "./two", imported: [], reExport: false },
+				sideEffect("@scope/one", { start: { line: 0, character: 0 }, end: { line: 0, character: 20 } }),
+				sideEffect("./two", { start: { line: 1, character: 0 }, end: { line: 1, character: 15 } }, 1),
 			],
 		});
 	});
@@ -1760,10 +1992,7 @@ describe("searching imports", () => {
 		const resolving = fakeSupervisor({
 			claims: [TS_CLAIMS],
 			answers: {
-				resolveImport: (params) => ({
-					status: "resolved",
-					module: params.specifier === "@scope/one" ? "src/one.ts" : "src/two.ts",
-				}),
+				resolveImport: (params) => landed(params.specifier === "@scope/one" ? "src/one.ts" : "src/two.ts"),
 			},
 		});
 		service = new LexiconService(
@@ -1784,6 +2013,7 @@ describe("planning a rename's writes", () => {
 
 	/** Returns planned writes only. */
 	async function planned(service: LexiconService, newName: string) {
+		store.settleProjections();
 		const edits = await service.renameEdits(target, newName);
 		if (!edits.ok) return { planned: false as const, plan: edits.plan, reason: edits.reason };
 		const staged = service.renameWrites(edits.files);
@@ -1799,6 +2029,35 @@ describe("planning a rename's writes", () => {
 			answers: {
 				renameEdits: (_params, module) => reply(module) as MethodResponse<"renameEdits">,
 				resolveImport: () => ({ status: "unresolved", reason: "NotImplemented" }),
+				// Proves what it is shown: the renamed declaration, and no use binding either way.
+				probeBatch: (params) => ({
+					status: "ready",
+					facts: params.answer.map((module) => ({
+						module,
+						contentHash: params.files.find((file) => file.module === module)?.contentHash ?? "held",
+						declarations: params.files.some((file) => file.module === module)
+							? [
+									{
+										symbolId: "lexicon ts cart.ts append().",
+										kind: "function" as const,
+										name: "append",
+										range: { start: { line: 0, character: 0 }, end: { line: 0, character: 27 } },
+										selectionRange: {
+											start: { line: 0, character: 16 },
+											end: { line: 0, character: 22 },
+										},
+										visibility: "public" as const,
+										exported: false,
+									},
+								]
+							: [],
+						references: [],
+						imports: [],
+						literals: [],
+						diagnostics: [],
+					})),
+					landings: [],
+				}),
 			},
 		});
 	}
@@ -1873,7 +2132,7 @@ describe("planning a rename's writes", () => {
 		expect(outcome.plan.blockers.map((b) => b.kind)).toEqual(["StringLiteral"]);
 	});
 
-	it("plans nothing when the provider refuses the whole request", async () => {
+	it("plans nothing when the provider refuses the whole request, and names it a blocker", async () => {
 		plant();
 		const refused = { status: "refused", reason: "Collision", detail: "append already exists here" };
 
@@ -1882,7 +2141,11 @@ describe("planning a rename's writes", () => {
 			"append",
 		);
 
-		expect(outcome).toMatchObject({ planned: false, reason: expect.stringContaining("Collision") });
+		expect(outcome).toMatchObject({
+			planned: false,
+			reason: expect.stringContaining("Collision"),
+			plan: { blockers: [{ kind: "NameTaken", sites: [{ module: "cart.ts", line: 1 }] }] },
+		});
 	});
 
 	it("plans nothing when one file it would rewrite is not valid UTF-8", async () => {
@@ -1900,6 +2163,7 @@ describe("planning a rename's writes", () => {
 					range: call,
 					role: "call",
 					binding: { status: "bound", symbolId: target, provenance: "bound" },
+					origin: { kind: "declaration" },
 				},
 			],
 		});

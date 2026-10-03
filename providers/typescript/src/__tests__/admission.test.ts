@@ -182,7 +182,7 @@ describe("a use follows what the index holds, not what the parse emitted", () =>
 		settle(provider, "src/cart.ts", CART["src/cart.ts"], "cart-1");
 		expect(provider.resolveImport({ fromModule: "src/use.ts", specifier: "./cart" })).toMatchObject({
 			status: "resolved",
-			module: "src/cart.ts",
+			landing: { kind: "module", module: "src/cart.ts" },
 		});
 
 		provider.forgetModule({ module: "src/cart.ts" });

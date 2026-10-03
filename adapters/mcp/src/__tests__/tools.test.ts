@@ -14,6 +14,7 @@ import {
 	refactorReplace,
 	refactorRevert,
 	refactorStatus,
+	refactorUndo,
 	resolveImport,
 	searchDocs,
 	searchSymbols,
@@ -150,6 +151,8 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 			occurrences: 0,
 			blockers: [],
 			warnings: [],
+			routes: { edges: [], modules: [] },
+			mentions: { comments: 0, strings: 0 },
 		}),
 		planMove: async (symbolId) => ({ ok: false, reason: `${symbolId} is not in the index` }),
 		refactorTrack: async () => ({ tracked: true }),
@@ -403,7 +406,9 @@ describe("the note tools", () => {
 describe("resolving an import", () => {
 	it("names the module a specifier landed on", async () => {
 		const result = await resolveImport(
-			backend({ resolveImport: async () => ({ status: "resolved", module: "src/item.ts" }) }),
+			backend({
+				resolveImport: async () => ({ status: "resolved", landing: { kind: "module", module: "src/item.ts" } }),
+			}),
 			{ fromModule: "src/cart.ts", specifier: "./item" },
 		);
 		expect(result.isError).toBeUndefined();
@@ -734,6 +739,8 @@ describe("previewing a refactor without a transaction", () => {
 						occurrences: 3,
 						blockers: [],
 						warnings: [{ kind: "ExportedBeyondIndex", detail: "exported past the index" }],
+						routes: { edges: [], modules: [] },
+						mentions: { comments: 0, strings: 0 },
 					};
 				},
 			}),
@@ -744,6 +751,50 @@ describe("previewing a refactor without a transaction", () => {
 		expect(result.isError).toBeUndefined();
 		expect(text).toContain("Rename Cart to Basket");
 		expect(text).toContain("ExportedBeyondIndex");
+	});
+
+	it("passes stops to a preview and to the step, and names each route's stop id", async () => {
+		const stop = "lexicon export src/index.ts 0:9";
+		const asked: Array<string[] | undefined> = [];
+		const routed = backend({
+			findByName: async () => [summary("Cart")],
+			prepareRename: async (symbolId, newName, stops) => {
+				asked.push(stops);
+				return {
+					symbolId,
+					oldName: "Cart",
+					newName,
+					files: [{ module: "src/index.ts", sites: [] }],
+					occurrences: 1,
+					blockers: [],
+					warnings: [],
+					routes: {
+						edges: [
+							{
+								fact: "export",
+								id: stop,
+								from: "src/index.ts",
+								form: "forward",
+								name: "Cart",
+								state: "stopped",
+								stoppable: true,
+							},
+						],
+						modules: [],
+					},
+					mentions: { comments: 0, strings: 0 },
+				};
+			},
+			refactorRename: async (_symbolId, _newName, stops) => {
+				asked.push(stops);
+				return { renamed: true, modules: ["src/index.ts"], issues: [] };
+			},
+		});
+		const preview = await refactorPreview(routed, { name: "Cart", newName: "Basket", stops: [stop] });
+		await refactorRename(routed, { name: "Cart", newName: "Basket", stops: [stop] });
+
+		expect(asked).toEqual([[stop], [stop]]);
+		expect((preview.content[0] as { text: string }).text).toContain(stop);
 	});
 
 	it("previews a move, naming the files it would touch", async () => {
@@ -860,6 +911,19 @@ describe("reverting a refactor", () => {
 
 		expect(received).toEqual(expected);
 		expect(result.isError).toBeUndefined();
+	});
+
+	it("names a restored file undo or revert could not reindex", async () => {
+		const issues = [{ kind: "ReindexFailed", detail: "provider down", module: "src/a.ts" }];
+		const undone = await refactorUndo(
+			backend({ refactorUndo: async () => ({ undone: true, stepNo: 1, modules: ["src/a.ts"], issues }) }),
+		);
+		const reverted = await refactorRevert(
+			backend({ refactorRevert: async () => ({ reverted: true, modules: ["src/a.ts"], issues }) }),
+			{ drifted: [] },
+		);
+
+		for (const result of [undone, reverted]) expect(result.content[0]?.text).toContain("ReindexFailed");
 	});
 
 	it("renders the reviewed disk hash in refactor status", async () => {

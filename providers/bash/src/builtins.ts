@@ -1,8 +1,9 @@
 // The builtins that declare or write a variable, and the assignment prefix before a command.
 
-import { defined, type Range, SourceCursor } from "@nyaa-lexicon/protocol";
+import { type Conflict, defined, type ImportEdge, type Range, SourceCursor } from "@nyaa-lexicon/protocol";
 import {
 	assignmentOf,
+	expandsPath,
 	FUNCTION_NAME_RE,
 	IDENTIFIER_RE,
 	pushLiteral,
@@ -51,6 +52,9 @@ const READ_VALUED = new Set(["a", "d", "i", "n", "N", "p", "t", "u"]);
 const MAPFILE_VALUED = new Set(["d", "n", "O", "s", "u", "C", "c"]);
 const PRINTF_VALUED = new Set(["v"]);
 const BLANK_RE = /^\s$/;
+
+/** A later definition replaces an earlier one, sourced or local. */
+const LATER_WINS: Conflict = { priority: 0, amongTransfers: "laterWins", againstLocal: "sourceOrder" };
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -280,13 +284,23 @@ export function aliases(w: Walk, scope: Scope, command: Word, words: Word[]): vo
 	}
 }
 
-export function sourced(w: Walk, scope: Scope, word: Word | undefined): void {
+/** `source f` or `. f`: the sourced file's definitions run in this scope. */
+export function sourced(w: Walk, scope: Scope, command: Word, word: Word | undefined): void {
 	if (word === undefined) return;
-	const value = staticValue(word);
-	const specifier = value ?? word.text;
+	const specifier = staticValue(word) ?? word.text;
 	const range = wordRange(w, word);
-	w.out.sources.push({ specifier, literal: value !== undefined, range });
-	w.out.imports.push({ specifier, imported: [], reExport: false });
+	const literal = !expandsPath(word);
+	w.out.sources.push({ specifier, literal, range });
+	const edge: ImportEdge = {
+		kind: "injection",
+		span: rangeAt(w, command.pos, word.end),
+		bindsLocally: true,
+		selector: { kind: "visible" },
+		conflict: LATER_WINS,
+		certainty: literal ? { status: "known" } : { status: "unknown", reason: "RuntimeConstructed" },
+		order: w.out.imports.length,
+	};
+	w.out.imports.push({ specifier, edges: [edge] });
 	pushReference(w, scope, { name: specifier, range, role: "import" });
 	walkWord(w, scope, word, false);
 }

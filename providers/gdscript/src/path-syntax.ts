@@ -23,17 +23,27 @@ export interface PathLiteral {
 	token: ReferenceToken;
 }
 
+/** An `extends` path, with its keyword. */
+export interface ExtendsPath extends PathLiteral {
+	/** `extends` through the closing quote. */
+	span: Range;
+}
+
 /** The const or var initialized. */
 export interface LoaderBinding {
 	name: string;
 	range: Range;
 	keyword: "const" | "var";
+	/** The call, parentheses aside, is the whole initializer, so the name holds the loaded resource. */
+	whole: boolean;
 }
 
 export interface LoaderCall {
 	loader: Loader;
 	/** The loader word. */
 	range: Range;
+	/** The loader word, or its `ResourceLoader` receiver, through its closing parenthesis or unclosed literal. */
+	span: Range;
 	/** Absent when computed. */
 	literal?: PathLiteral;
 	/** The path, or call source. */
@@ -115,15 +125,31 @@ export function nodePathNames(tokens: ReferenceToken[]): Set<number> {
 	return names;
 }
 
-export function extendsPaths(tokens: ReferenceToken[]): PathLiteral[] {
-	const paths: PathLiteral[] = [];
+export function extendsPaths(tokens: ReferenceToken[]): ExtendsPath[] {
+	const paths: ExtendsPath[] = [];
 	for (let index = 0; index < tokens.length; index++) {
 		const token = tokens[index] as ReferenceToken;
 		if (token.kind !== "identifier" || token.value !== "extends") continue;
 		const literal = pathLiteral(tokens[index + 1], [""]);
-		if (literal !== undefined) paths.push(literal);
+		if (literal === undefined) continue;
+		paths.push({ ...literal, span: { start: tokenRange(token).start, end: tokenRange(literal.token).end } });
 	}
 	return paths;
+}
+
+/** A newline, `;` or the end. */
+function endsStatement(token: ReferenceToken | undefined): boolean {
+	return token === undefined || token.kind === "newline" || token.value === ";";
+}
+
+/** The call, inside `wrapped` parentheses, ends the statement. */
+function wholeInitializer(tokens: ReferenceToken[], loader: number, wrapped: number): boolean {
+	let end = matchingReferenceToken(tokens, nextReferenceToken(tokens, loader), "(", ")");
+	for (let left = wrapped; left > 0 && end >= 0; left--) {
+		end = nextReferenceToken(tokens, end);
+		if (tokens[end]?.value !== ")") return false;
+	}
+	return end >= 0 && endsStatement(tokens[end + 1]);
 }
 
 /** Keyed by loader token index. */
@@ -140,11 +166,28 @@ function loaderBindings(tokens: ReferenceToken[], declarations: DeclarationFact[
 		if (index === undefined) continue;
 		const keyword = tokens[previousReferenceToken(tokens, index)]?.value;
 		if (keyword !== "const" && keyword !== "var") continue;
-		const value = initializerStart(tokens, index);
-		if (value >= 0 && isLoaderCall(tokens, value))
-			bindings.set(value, { name: declaration.name, range: declaration.selectionRange, keyword });
+		let value = initializerStart(tokens, index);
+		let wrapped = 0;
+		for (; tokens[value]?.value === "("; wrapped++) value = nextReferenceToken(tokens, value);
+		if (isResourceLoader(tokens[value]) && tokens[value + 1]?.value === ".") value += 2;
+		if (value < 0 || !isLoaderCall(tokens, value)) continue;
+		bindings.set(value, {
+			name: declaration.name,
+			range: declaration.selectionRange,
+			keyword,
+			whole: wholeInitializer(tokens, value, wrapped),
+		});
 	}
 	return bindings;
+}
+
+/** The loader word, or its `ResourceLoader` receiver. */
+function callStart(tokens: ReferenceToken[], loader: number): ReferenceToken {
+	const dot = previousReferenceToken(tokens, loader);
+	const receiver = tokens[previousReferenceToken(tokens, dot)];
+	return tokens[dot]?.value === "." && isResourceLoader(receiver)
+		? (receiver as ReferenceToken)
+		: (tokens[loader] as ReferenceToken);
 }
 
 export function loaderCalls(
@@ -159,17 +202,20 @@ export function loaderCalls(
 		const token = tokens[index] as ReferenceToken;
 		const open = nextReferenceToken(tokens, index);
 		const literal = literalArgument(tokens, open);
+		const close = tokens[matchingReferenceToken(tokens, open, "(", ")")];
+		const end = close ?? literal?.token;
+		if (end === undefined) continue;
 		const binding = bindings.get(index);
 		const base = {
 			loader: token.value as Loader,
 			range: tokenRange(token),
+			span: { start: tokenRange(callStart(tokens, index)).start, end: tokenRange(end).end },
 			...(binding === undefined ? {} : { binding }),
 		};
 		if (literal !== undefined) {
 			calls.push({ ...base, literal, specifier: literal.path });
 			continue;
 		}
-		const close = tokens[matchingReferenceToken(tokens, open, "(", ")")];
 		const specifier = close === undefined ? undefined : sourceBetween(coordinates, token, close)?.trim();
 		if (specifier !== undefined && specifier !== "") calls.push({ ...base, specifier });
 	}

@@ -1,13 +1,7 @@
 // C# using directives: what each brings at each namespace level around a use, and what a directive's
 // target names in the workspace.
 
-import {
-	type Binding,
-	defined,
-	type ImportResolution,
-	type Reference,
-	type UnknownReason,
-} from "@nyaa-lexicon/protocol";
+import { type Binding, defined, type Reference, type UnknownReason } from "@nyaa-lexicon/protocol";
 import { type CsharpImport, type DeclarationMeta, positionKey, type Segment, segmentKey } from "./model.js";
 import { type GlobalUsing, type IndexedType, joinNamespace, namespaceLevels, typeKey } from "./namespaces.js";
 import { CsharpWorkspace, type IndexedFacts } from "./workspace.js";
@@ -68,7 +62,7 @@ export function isExternalSpecifier(specifier: string): boolean {
 }
 
 /** An extern alias names another assembly, so nothing in the workspace. */
-function isExternAlias(qualifier: string | undefined): boolean {
+export function isExternAlias(qualifier: string | undefined): boolean {
 	return qualifier !== undefined && qualifier !== "global";
 }
 
@@ -82,46 +76,6 @@ function readLevels(base: string, qualifier: string | undefined): string[] {
 //  Classes
 
 export abstract class CsharpImports extends CsharpWorkspace {
-	/** One module, the protocol's answer, only when one file declares the namespace or type; binding reads them all. */
-	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
-		const specifier = params.specifier;
-		const facts = this.factsForModule(params.fromModule);
-		// The directive that wrote it: where it stands, what opens it, and the type arguments each name takes.
-		const directive = facts?.imports.find((item) => item.specifier === specifier);
-		if (directive?.qualifier !== undefined && isExternAlias(directive.qualifier))
-			return { status: "external", packageName: directive.qualifier };
-		const target: Target = directive ?? {
-			specifier,
-			target: specifier.split(".").map((name) => ({ name, arity: 0 })),
-		};
-		const scope = directive?.scopeId === undefined ? undefined : facts?.metadata.get(directive.scopeId);
-		const base = scope === undefined ? "" : joinNamespace(scope.namespaceName, scope.declaration.name);
-		const namespaces = this.index.modulesOf(this.usedNamespace(target, base) ?? specifier);
-		const modules =
-			namespaces.length > 0
-				? namespaces
-				: [
-						...new Set(
-							this.resolveFrom(base, target.target, target.qualifier, params.fromModule).flatMap((type) =>
-								this.declaringModules(type),
-							),
-						),
-					];
-		if (modules.length === 1) return { status: "resolved", module: modules[0] as string };
-		if (modules.length > 1)
-			return {
-				status: "unresolved",
-				reason: "Ambiguous",
-				detail: `${specifier} spans ${modules.length} workspace files`,
-			};
-		if (isExternalSpecifier(specifier)) return { status: "external", packageName: specifier };
-		return {
-			status: "unresolved",
-			reason: "NotIndexed",
-			detail: `no workspace declaration matches namespace ${specifier}`,
-		};
-	}
-
 	/** A using directive's namespace, named by its first declaration; a type for `using static` or an alias. */
 	protected importBinding(facts: IndexedFacts, reference: Reference, from: DeclarationMeta | undefined): Binding {
 		const key = positionKey(reference.range.start);
@@ -202,7 +156,7 @@ export abstract class CsharpImports extends CsharpWorkspace {
 			const inner = joinNamespace(namespace, head.name);
 			if (this.index.isNamespace(inner)) return this.underNamespace(inner, rest, module);
 		}
-		if (rest.length > 0 && this.index.types(namespace, segmentKey([head])).length === 0) return undefined;
+		if (rest.length > 0 && this.index.types(namespace, segmentKey([head]), module).length === 0) return undefined;
 		const types = this.indexed(namespace, segmentKey(segments), module);
 		return rest.length > 0 || types.length > 0 ? types : undefined;
 	}
@@ -306,7 +260,7 @@ export abstract class CsharpImports extends CsharpWorkspace {
 	 * A using directive's namespace, read from the namespace holding it outward until its first name
 	 * settles; none for an extern alias's.
 	 */
-	private usedNamespace(using: Target, base: string): string | undefined {
+	protected usedNamespace(using: Target, base: string): string | undefined {
 		if (isExternAlias(using.qualifier)) return undefined;
 		const head = using.target[0]?.name ?? using.specifier;
 		for (const level of readLevels(base, using.qualifier))

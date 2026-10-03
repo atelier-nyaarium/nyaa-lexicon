@@ -87,7 +87,12 @@ export const RENAME_EDIT_CONFLICT: Record<EditConflict, { reason: BlockedSiteRea
  * to re-derive from the syntax what the index already knows.
  */
 export const RenameSiteSchema = z
-	.object({ range: RangeSchema, role: z.string().min(1).optional() })
+	.object({
+		range: RangeSchema,
+		role: z.string().min(1).optional(),
+		/** Rewrite the source name and keep the old exported name as an alias. Sent only under `renameKeep`. */
+		keep: z.literal(true).optional(),
+	})
 	.meta({ id: "RenameSite" });
 
 export type RenameSite = z.infer<typeof RenameSiteSchema>;

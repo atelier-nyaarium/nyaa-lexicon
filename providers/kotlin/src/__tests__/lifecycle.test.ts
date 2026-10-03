@@ -162,7 +162,7 @@ describe("a module the core lets go of", () => {
 		expect(targets(bindings(provider, "a/Use.kt", USE))).toEqual(["lexicon kotlin a/Bar.kt Foo#"]);
 		expect(provider.resolveImport({ fromModule: "a/Use.kt", specifier: "p.Foo" })).toEqual({
 			status: "resolved",
-			module: "a/Bar.kt",
+			landing: { kind: "module", module: "a/Bar.kt" },
 		});
 	});
 

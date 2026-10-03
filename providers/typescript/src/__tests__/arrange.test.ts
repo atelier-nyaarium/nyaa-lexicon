@@ -102,7 +102,6 @@ function importSite(text: string, name: string): ArrangeImportSite {
 		specifier: "./source",
 		importKind: "named",
 		importedName: name,
-		reExport: false,
 		symbolId: id(name),
 	};
 }

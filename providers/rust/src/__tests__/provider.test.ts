@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { handlersFor, type ImportResolution, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { REFERENCE_ROLES, RustProvider, TIERS } from "../main.js";
 
 const roots: string[] = [];
@@ -33,6 +33,10 @@ function workspace(files: Record<string, string>): string {
 		writeFileSync(full, text);
 	}
 	return root;
+}
+
+function landed(module: string): ImportResolution {
+	return { status: "resolved", landing: { kind: "module", module } };
 }
 
 function rangeAt(text: string, value: string, from = 0) {
@@ -140,37 +144,43 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 	},
 );
 
-test("resolves Rust module paths and distinguishes external crates", () => {
+test("lands a named leaf where its name is looked up, a glob on what it opens, and a lone crate on its root", () => {
+	const lib = "extern crate serde;\npub mod util;\nmod inner { pub fn helper() {} }\npub enum Color { Red }\n";
 	const root = workspace({
 		"Cargo.toml": '[package]\nname = "demo"\nversion = "0.1.0"\n\n[dependencies]\nserde = "1"\n',
-		"src/lib.rs": "pub mod util;\n",
-		"src/util.rs": "pub mod nested;\n",
+		"src/lib.rs": lib,
+		"src/util.rs": "pub mod nested;\npub struct Tool;\n",
 		"src/util/nested.rs": "pub struct Item;\n",
 	});
 	const provider = client(new RustProvider());
 	provider.initialize(root);
 	provider.discoverProject(root);
+	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "lib", text: lib });
+	const resolve = (specifier: string, fromModule = "src/lib.rs") => provider.resolveImport({ fromModule, specifier });
+	const scopeOf = (name: string): ImportResolution => {
+		const scopeId = facts.declarations.find((declaration) => declaration.name === name)?.symbolId ?? name;
+		expect(facts.scopeContributions?.some((scope) => scope.scopeId === scopeId)).toBe(true);
+		return {
+			status: "resolved",
+			landing: { kind: "symbolScope", providerId: "rust-provider", scopeId, anchorSymbolId: scopeId },
+		};
+	};
 
-	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::util" })).toEqual({
-		status: "resolved",
-		module: "src/util.rs",
-	});
-	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::util::nested::Item" })).toEqual({
-		status: "resolved",
-		module: "src/util/nested.rs",
-	});
-	expect(provider.resolveImport({ fromModule: "src/util/nested.rs", specifier: "super::nested" })).toEqual({
-		status: "resolved",
-		module: "src/util/nested.rs",
-	});
-	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "serde::Serialize" })).toEqual({
-		status: "external",
-		packageName: "serde",
-	});
-	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::gone" })).toMatchObject({
-		status: "unresolved",
-		reason: "NotIndexed",
-	});
+	expect(resolve("crate::util")).toEqual(landed("src/lib.rs"));
+	expect(resolve("crate::util::Tool")).toEqual(landed("src/util.rs"));
+	expect(resolve("crate::util::nested::Item")).toEqual(landed("src/util/nested.rs"));
+	expect(resolve("super::nested", "src/util/nested.rs")).toEqual(landed("src/util.rs"));
+	expect(resolve("crate::util::*")).toEqual(landed("src/util.rs"));
+	expect(resolve("self::util::nested::*")).toEqual(landed("src/util/nested.rs"));
+	expect(resolve("crate::inner::helper")).toEqual(scopeOf("inner"));
+	expect(resolve("crate::inner::*")).toEqual(scopeOf("inner"));
+	expect(resolve("Color::Red")).toEqual(scopeOf("Color"));
+	expect(resolve("self::Color::*")).toEqual(scopeOf("Color"));
+	expect(resolve("serde")).toEqual({ status: "external", packageName: "serde" });
+	// Through `extern crate serde`, which also binds the name.
+	expect(resolve("serde::Serialize")).toEqual({ status: "external", packageName: "serde" });
+	for (const specifier of ["crate::gone", "crate::util::Missing", "crate::inner::hidden"])
+		expect(resolve(specifier)).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 });
 
 test("reads dependency names from Cargo.toml's tables, not its text", () => {
@@ -353,9 +363,9 @@ test("answers a base-module symbol import from the text the store holds", () => 
 	provider.initialize(root);
 	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
 
-	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+	expect(ask()).toEqual(landed("src/lib.rs"));
 	writeFileSync(path.join(root, "src/lib.rs"), "mod glob;\npub enum Other { Literal }\n");
-	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+	expect(ask()).toEqual(landed("src/lib.rs"));
 	provider.parseFile({
 		module: "src/lib.rs",
 		contentHash: "changed",
@@ -386,6 +396,12 @@ test("answers every protocol method, including explicit refusals", () => {
 	expect(info.language).toBe("rust");
 	expect(rename).toMatchObject({ status: "refused", reason: "NotImplemented" });
 	expect(move).toMatchObject({ status: "refused", reason: "NotImplemented" });
+	expect(
+		handlers.probeBatch({
+			files: [{ module: "src/lib.rs", contentHash: "probe", text: "pub fn a() {}\n" }],
+			answer: ["src/lib.rs"],
+		}),
+	).toEqual({ status: "unsupported" });
 	expect(handlers.shutdown({})).toEqual({});
 });
 
@@ -479,15 +495,14 @@ test("reads each target's own module tree, and a name in scope before a crate of
 	provider.initialize(root);
 	provider.discoverProject(root);
 	const resolve = (fromModule: string, specifier: string) => provider.resolveImport({ fromModule, specifier });
-	const resolved = (module: string) => ({ status: "resolved" as const, module });
 
-	expect(resolve("src/util.rs", "crate::util::thing::Thing")).toEqual(resolved("src/moved.rs"));
-	expect(resolve("src/cli.rs", "crate::cli::Cli")).toEqual(resolved("src/cli.rs"));
+	expect(resolve("src/util.rs", "crate::util::thing::Thing")).toEqual(landed("src/moved.rs"));
+	expect(resolve("src/cli.rs", "crate::cli::Cli")).toEqual(landed("src/cli.rs"));
 	expect(resolve("src/cli.rs", "crate::util")).toMatchObject({ status: "unresolved" });
-	expect(resolve("src/main.rs", "demo::util::thing::Thing")).toEqual(resolved("src/moved.rs"));
-	expect(resolve("src/bin/tool/helper.rs", "crate::helper::Helper")).toEqual(resolved("src/bin/tool/helper.rs"));
-	expect(resolve("tests/it.rs", "crate::common::Common")).toEqual(resolved("tests/common/mod.rs"));
-	expect(resolve("src/lib.rs", "foo::Local")).toEqual(resolved("src/foo.rs"));
+	expect(resolve("src/main.rs", "demo::util::thing::Thing")).toEqual(landed("src/moved.rs"));
+	expect(resolve("src/bin/tool/helper.rs", "crate::helper::Helper")).toEqual(landed("src/bin/tool/helper.rs"));
+	expect(resolve("tests/it.rs", "crate::common::Common")).toEqual(landed("tests/common/mod.rs"));
+	expect(resolve("src/lib.rs", "foo::Local")).toEqual(landed("src/foo.rs"));
 	expect(resolve("src/lib.rs", "::foo::Local")).toEqual({ status: "external", packageName: "foo" });
 	const text = readFileSync(path.join(root, "src/lib.rs"), "utf8");
 	const facts = provider.parseFile({ module: "src/lib.rs", contentHash: "lib", text });
@@ -518,31 +533,26 @@ test("resolves only the files the module tree declares, beside files, in module 
 	provider.initialize(root);
 	provider.discoverProject(root);
 
-	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::feature" })).toEqual({
-		status: "resolved",
-		module: "src/feature/mod.rs",
-	});
-	expect(provider.resolveImport({ fromModule: "src/feature/mod.rs", specifier: "self::item::Item" })).toEqual({
-		status: "resolved",
-		module: "src/feature/item.rs",
-	});
-	expect(provider.resolveImport({ fromModule: "src/feature/item.rs", specifier: "super::leaf::Leaf" })).toEqual({
-		status: "resolved",
-		module: "src/feature/leaf.rs",
-	});
-	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "feature::Feature" })).toEqual({
-		status: "resolved",
-		module: "src/feature/mod.rs",
-	});
+	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::feature::*" })).toEqual(
+		landed("src/feature/mod.rs"),
+	);
+	expect(provider.resolveImport({ fromModule: "src/feature/mod.rs", specifier: "self::item::Item" })).toEqual(
+		landed("src/feature/item.rs"),
+	);
+	expect(provider.resolveImport({ fromModule: "src/feature/item.rs", specifier: "super::leaf::Leaf" })).toEqual(
+		landed("src/feature/leaf.rs"),
+	);
+	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "feature::Feature" })).toEqual(
+		landed("src/feature/mod.rs"),
+	);
 	expect(
 		provider.resolveImport({ fromModule: "src/feature/mod.rs", specifier: "self::hidden::Hidden" }),
 	).toMatchObject({
 		status: "unresolved",
 	});
-	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::inline::moved::Moved" })).toEqual({
-		status: "resolved",
-		module: "src/inline/elsewhere.rs",
-	});
+	expect(provider.resolveImport({ fromModule: "src/lib.rs", specifier: "crate::inline::moved::Moved" })).toEqual(
+		landed("src/inline/elsewhere.rs"),
+	);
 });
 
 test("discovers multiple Cargo roots and resolves crate paths within the nearest root, never another crate's", () => {
@@ -570,10 +580,12 @@ test("discovers multiple Cargo roots and resolves crate paths within the nearest
 	expect(model.files).toContain("crates/two/src/lib.rs");
 	expect(model.files).not.toContain("crates/two/target/ignored.rs");
 	expect(model.configFiles).toEqual(["Cargo.toml", "crates/one/Cargo.toml", "crates/two/Cargo.toml"]);
-	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "first::item" })).toEqual({
-		status: "resolved",
-		module: "crates/one/src/item.rs",
-	});
+	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "first::item::*" })).toEqual(
+		landed("crates/one/src/item.rs"),
+	);
+	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "first" })).toEqual(
+		landed("crates/one/src/lib.rs"),
+	);
 	for (const [fromModule, specifier] of [
 		["crates/two/src/lib.rs", "one_lib::item"],
 		["crates/one/src/lib.rs", "second::item"],
@@ -592,14 +604,12 @@ test("discovers multiple Cargo roots and resolves crate paths within the nearest
 	const bindingOf = (name: string) => two.references.find((reference) => reference.name === name)?.binding;
 	expect(bindingOf("One")).toMatchObject({ symbolId: one.declarations[0]?.symbolId });
 	expect(bindingOf("path")).toMatchObject({ status: "unbound", reason: "ExternalDependency" });
-	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "crate::item" })).toEqual({
-		status: "resolved",
-		module: "crates/two/src/item.rs",
-	});
-	expect(provider.resolveImport({ fromModule: "crates/core/app.rs", specifier: "crate::app::App" })).toEqual({
-		status: "resolved",
-		module: "crates/core/app.rs",
-	});
+	expect(provider.resolveImport({ fromModule: "crates/two/src/lib.rs", specifier: "crate::item::*" })).toEqual(
+		landed("crates/two/src/item.rs"),
+	);
+	expect(provider.resolveImport({ fromModule: "crates/core/app.rs", specifier: "crate::app::App" })).toEqual(
+		landed("crates/core/app.rs"),
+	);
 	expect(provider.resolveImport({ fromModule: "tests/it.rs", specifier: "crate::item" })).toMatchObject({
 		status: "unresolved",
 	});
@@ -887,7 +897,7 @@ test("keeps Cargo.lock in the project model and excludes all generated roots", (
 	expect(model.diagnostics).toEqual([]);
 });
 
-test("marks re-exporting use declarations and keeps visibility distinctions", () => {
+test("forwards a re-exporting use declaration and keeps visibility distinctions", () => {
 	const root = workspace({
 		"src/lib.rs": `pub struct Item;
 pub use crate::item::Other;
@@ -916,7 +926,10 @@ fn private() {}
 	expect(limit.exported).toBe(true);
 	expect(privateDeclaration.visibility).toBe("private");
 	expect(privateDeclaration.exported).toBe(false);
-	expect(facts.imports[0]?.reExport).toBe(true);
+	expect(facts.exports?.find((edge) => edge.name === "Other")).toMatchObject({
+		form: "forward",
+		target: { kind: "import", span: facts.imports[0]?.edges[0]?.span },
+	});
 });
 
 test("resolves a declared type symbol from a return annotation", () => {
@@ -1087,14 +1100,14 @@ test("resolves a base-module symbol import against what the index holds, not the
 	const ask = () => provider.resolveImport({ fromModule: "src/glob.rs", specifier: "super::Token" });
 	const token = "mod glob;\npub enum Token { Literal }\n";
 
-	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+	expect(ask()).toEqual(landed("src/lib.rs"));
 
 	provider.forgetModule({ module: "src/lib.rs" });
 	expect(ask()).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 
 	settle(provider, "src/lib.rs", token, "lib");
-	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+	expect(ask()).toEqual(landed("src/lib.rs"));
 
 	settle(provider, "src/lib.rs", token, "lib-2", "an id the index could not read");
-	expect(ask()).toEqual({ status: "resolved", module: "src/lib.rs" });
+	expect(ask()).toEqual(landed("src/lib.rs"));
 });

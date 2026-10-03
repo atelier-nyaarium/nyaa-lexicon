@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Declaration, Import, IndexDepth } from "@nyaa-lexicon/protocol";
+import type { Declaration, IndexDepth } from "@nyaa-lexicon/protocol";
 import {
 	DAEMON_METHODS,
 	type DaemonMethod,
@@ -21,8 +21,8 @@ import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
 import { fakeClock } from "./fakeClock";
-import { fakeClasses, fakeImports } from "./fakeGrammar";
-import { fakeSupervisor, resolveFake } from "./fakeProvider";
+import { fakeClasses } from "./fakeGrammar";
+import { fakeSupervisor, importsFrom, resolveFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
 
 ////////////////////////////////
@@ -55,10 +55,6 @@ function declaration(module: string, name: string): Declaration {
 		visibility: "public",
 		exported: true,
 	};
-}
-
-function importsFrom(text: string): Import[] {
-	return fakeImports(text).map((specifier) => ({ specifier, imported: [], reExport: false }));
 }
 
 interface ParseSeen {

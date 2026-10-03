@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Binding } from "@nyaa-lexicon/protocol";
+import { type Binding, FileFactsSchema, type ImportResolution, type Range } from "@nyaa-lexicon/protocol";
 import { REFERENCE_ROLES } from "../main.js";
 import { started } from "./harness.js";
 
@@ -443,7 +443,10 @@ describe("Kotlin accessibility on every lookup path", () => {
 			{ status: "unresolved", reason: "NotIndexed" },
 			{ status: "unresolved", reason: "NotIndexed" },
 		]);
-		expect(resolve("q/Use.kt", "p.A.Open")).toEqual({ status: "resolved", module: "p/A.kt" });
+		expect(resolve("q/Use.kt", "p.A.Open")).toEqual({
+			status: "resolved",
+			landing: { kind: "module", module: "p/A.kt" },
+		});
 	});
 });
 
@@ -487,7 +490,7 @@ describe("Kotlin top-level tiers", () => {
 });
 
 describe("Kotlin imports", () => {
-	test("an import records its names and ranges, and an alias binds where the original name does not", () => {
+	test("each directive is one edge: an explicit name outranks a star, and an alias binds where the original name does not", () => {
 		const root = workspace({
 			"src/Item.kt": "package sample.models\nclass Item\n",
 			"src/Use.kt":
@@ -495,15 +498,50 @@ describe("Kotlin imports", () => {
 		});
 		const provider = started(root);
 		const text = readFileSync(path.join(root, "src/Use.kt"), "utf8");
-		const facts = provider.parseFile({ module: "src/Use.kt", contentHash: "h", text });
-		const [alias, star] = facts.imports;
+		const facts = FileFactsSchema.parse(provider.parseFile({ module: "src/Use.kt", contentHash: "h", text }));
+		const written = (range: Range | undefined) =>
+			range === undefined
+				? undefined
+				: text.split("\n")[range.start.line]?.slice(range.start.character, range.end.character);
+		const edges = facts.imports.map(({ specifier, edges: [edge] }) => ({
+			specifier,
+			kind: edge?.kind,
+			span: written(edge?.span),
+			name: written(edge?.range),
+			local: written(edge?.localRange),
+			selector: edge?.selector,
+			bindsLocally: edge?.bindsLocally,
+			priority: edge?.conflict?.priority,
+			againstLocal: edge?.conflict?.againstLocal,
+			order: edge?.order,
+		}));
 
-		expect(alias).toMatchObject({
-			specifier: "sample.models.Item",
-			imported: [{ name: "Item", local: "Product" }],
-		});
-		expect(alias?.imported[0]?.range).not.toEqual(alias?.imported[0]?.localRange);
-		expect(star).toMatchObject({ specifier: "sample.models.*", imported: [{ name: "*" }] });
+		expect(edges).toEqual([
+			{
+				specifier: "sample.models.Item",
+				kind: "named",
+				span: "sample.models.Item as Product",
+				name: "Item",
+				local: "Product",
+				selector: undefined,
+				bindsLocally: true,
+				priority: 1,
+				againstLocal: "localWins",
+				order: 0,
+			},
+			{
+				specifier: "sample.models.*",
+				kind: "wildcard",
+				span: "sample.models.*",
+				name: undefined,
+				local: undefined,
+				selector: { kind: "visible" },
+				bindsLocally: true,
+				priority: 0,
+				againstLocal: "localWins",
+				order: 1,
+			},
+		]);
 		expect(
 			facts.references
 				.filter((reference) => reference.name === "Product" && reference.role !== "import")
@@ -511,24 +549,98 @@ describe("Kotlin imports", () => {
 		).toEqual(["src/Item.kt Item#", "src/Item.kt Item#", "src/Item.kt Item#"]);
 	});
 
-	test("resolveImport names the declaring file, the deepest package, an external root or a closed reason", () => {
+	test("resolveImport lands a name in its declaring file, a star in its package or class scope, else a closed reason", () => {
 		const root = workspace({
-			"src/one.kt": "package org.example.models\nclass One\n",
+			"src/one.kt": "package org.example.models\nclass One { class Inner }\nfun helper() = 1\n",
 			"src/two.kt": "package org.example\nclass Two\n",
 			"dup/a.kt": "package duplicate\nclass A\n",
 			"dup/b.kt": "package duplicate\nclass A\n",
 		});
 		const provider = started(root);
 		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "use.kt", specifier });
+		const scope = (kind: "packageScope" | "symbolScope", scopeId: string, anchor?: string): ImportResolution => ({
+			status: "resolved",
+			landing:
+				kind === "packageScope"
+					? { kind, providerId: "kotlin-provider", scopeId }
+					: { kind, providerId: "kotlin-provider", scopeId, anchorSymbolId: `lexicon kotlin ${anchor}` },
+		});
 
-		expect(resolve("org.example.models.One")).toEqual({ status: "resolved", module: "src/one.kt" });
-		expect(resolve("org.example.Two")).toEqual({ status: "resolved", module: "src/two.kt" });
-		expect(resolve("org.example.models.*")).toEqual({ status: "resolved", module: "src/one.kt" });
+		expect(resolve("org.example.models.One")).toEqual({
+			status: "resolved",
+			landing: { kind: "module", module: "src/one.kt" },
+		});
+		expect(resolve("org.example.Two")).toEqual({
+			status: "resolved",
+			landing: { kind: "module", module: "src/two.kt" },
+		});
+		expect(resolve("org.example.models.*")).toEqual(scope("packageScope", "org.example.models"));
+		expect(resolve("duplicate.*")).toEqual(scope("packageScope", "duplicate"));
+		expect(resolve("org.example.models.One.*")).toEqual(
+			scope("symbolScope", "org.example.models.One", "src/one.kt One#"),
+		);
+		expect(resolve("org.example.models.One.Inner.*")).toEqual(
+			scope("symbolScope", "org.example.models.One.Inner", "src/one.kt One#Inner#"),
+		);
+		expect(resolve("org.example.models.helper.*")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 		expect(resolve("java.time.Instant")).toEqual({ status: "external", packageName: "java.time.Instant" });
 		expect(resolve("org.missing.Type")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 		expect(resolve("duplicate.A")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
-		expect(resolve("duplicate.*")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+		expect(resolve("duplicate.A.*")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 		expect(resolve("")).toMatchObject({ status: "unresolved", reason: "ParseError" });
+	});
+
+	test("a file contributes what its package and each class star reach from outside it, at every depth", () => {
+		const text = [
+			"package p.q",
+			"class Open {",
+			"  class Nested",
+			"  private class Secret",
+			"  enum class Mode { ON, OFF }",
+			"  fun instance() = 1",
+			"  companion object { fun make() = 1; private fun hide() = 2; class Nested }",
+			"}",
+			"object Single { fun call() = 1; val value = 2; private fun gone() = 3 }",
+			"private fun hidden() = 1",
+			"internal val shared = 2",
+			"typealias Name = String",
+			"fun outer() { class Local }",
+			"",
+		].join("\n");
+		const provider = started(workspace({ "p/Q.kt": text }));
+		const parse = (depth?: "outline") =>
+			FileFactsSchema.parse(provider.parseFile({ module: "p/Q.kt", contentHash: "h", text, depth }))
+				.scopeContributions;
+		const short = (id: string) => id.replace(/^lexicon kotlin p\/Q\.kt /u, "");
+		const contributed = new Map(
+			(parse() ?? []).map(({ kind, scopeId, members }) => [`${kind} ${scopeId}`, members.map(short)]),
+		);
+		const landed = (specifier: string) => {
+			const resolution = provider.resolveImport({ fromModule: "use.kt", specifier });
+			return resolution.status === "resolved" && resolution.landing.kind !== "module"
+				? contributed.get(`${resolution.landing.kind} ${resolution.landing.scopeId}`)
+				: resolution;
+		};
+		const rootPackage = provider.parseFile({ module: "Root.kt", contentHash: "h", text: "class Root\n" });
+
+		expect(Object.fromEntries(contributed)).toEqual({
+			"packageScope p.q": ["Open#", "Single#", "shared.", "Name#", "outer()."],
+			"symbolScope p.q.Open": ["Open#Nested#", "Open#Mode#", "Open#Companion#", "Open#Companion#make()."],
+			"symbolScope p.q.Open.Nested": [],
+			"symbolScope p.q.Open.Secret": [],
+			"symbolScope p.q.Open.Mode": ["Open#Mode#ON.", "Open#Mode#OFF."],
+			"symbolScope p.q.Open.Companion": ["Open#Companion#make().", "Open#Companion#Nested#"],
+			"symbolScope p.q.Open.Companion.Nested": [],
+			"symbolScope p.q.Single": ["Single#call().", "Single#value."],
+			"symbolScope p.q.Name": [],
+		});
+		expect([landed("p.q.*"), landed("p.q.Open.*"), landed("p.q.Open.Mode.*")]).toEqual([
+			contributed.get("packageScope p.q"),
+			contributed.get("symbolScope p.q.Open"),
+			contributed.get("symbolScope p.q.Open.Mode"),
+		]);
+		expect(parse("outline")).toEqual(parse());
+		expect(rootPackage.scopeContributions).toEqual([]);
 	});
 
 	test("an external import blocks lower tiers, and an unindexed name answers NotIndexed", () => {

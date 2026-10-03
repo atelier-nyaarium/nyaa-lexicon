@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { type ProviderTiers, ProviderTiersSchema } from "../methods.js";
 import { MoveBlockedReasonSchema, MoveEditsRequestSchema, MoveRefusalSchema } from "../move.js";
-import { EntryHowSchema } from "../project.js";
+import { EntryHowSchema, ExportFormSchema } from "../project.js";
 import { SymbolKindSchema, VisibilitySchema } from "../symbols.js";
 import { UnknownReasonSchema } from "../values.js";
 
@@ -59,6 +59,19 @@ export const ExpectedTriviaSchema = z
 
 export type ExpectedTrivia = z.infer<typeof ExpectedTriviaSchema>;
 
+/** Straight to its declaration, or through the import edge whose binding is `through`. */
+export const ExpectedOriginSchema = z
+	.union([
+		z.literal("declaration"),
+		z.object({
+			/** The edge's local binding, else its source name, else `*`. */
+			through: z.string().min(1),
+			/** The member names after the receiver, e.g. `["N"]` for `ns.N`. */
+			path: z.array(z.string().min(1)).optional(),
+		}),
+	])
+	.meta({ id: "ExpectedOrigin" });
+
 export const ExpectedReferenceSchema = z
 	.object({
 		name: z.string().min(1),
@@ -87,6 +100,8 @@ export const ExpectedReferenceSchema = z
 		at: z
 			.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative().optional() })
 			.optional(),
+		/** What the use resolves through, as the provider proves it. */
+		origin: ExpectedOriginSchema.optional(),
 	})
 	.superRefine((expected, context) => {
 		const binds = expected.bindsTo !== undefined || expected.bindsToModule !== undefined;
@@ -105,9 +120,34 @@ export const ExpectedImportSchema = z
 	.object({
 		specifier: z.string().min(1),
 		status: z.enum(["resolved", "external", "unresolved"]).optional(),
+		/** A module landing's module. */
 		module: z.string().optional(),
+		landing: z.enum(["module", "symbolScope", "packageScope"]).optional(),
+		scopeId: z.string().optional(),
+	})
+	.refine((expected) => expected.module === undefined || (expected.landing ?? "module") === "module", {
+		message: "a module names a module landing",
+	})
+	.refine((expected) => expected.scopeId === undefined || (expected.landing ?? "module") !== "module", {
+		message: "a scope id names a scope landing",
 	})
 	.meta({ id: "ExpectedImport" });
+
+/** One export edge, matched by form, name and target. */
+export const ExpectedExportSchema = z
+	.object({
+		form: ExportFormSchema,
+		/** Absent for a star or an assignment. */
+		name: z.string().min(1).optional(),
+		target: z.enum(["symbol", "import", "unknown"]),
+		/** A symbol target's declaration name, or an import target's binding: local, else source, else `*`. */
+		targetName: z.string().min(1).optional(),
+		/** An import target's source name, as the landing module spells it. */
+		sourceName: z.string().min(1).optional(),
+	})
+	.meta({ id: "ExpectedExport" });
+
+export type ExpectedExport = z.infer<typeof ExpectedExportSchema>;
 
 /**
  * What a type answer must be.
@@ -194,6 +234,8 @@ export const ConformanceFixtureSchema = z
 		 * carries the spelling rather than forcing every language to pretend it writes another's.
 		 */
 		imports: z.array(ExpectedImportSchema).optional(),
+		/** Export expectations only this language can state, replacing the case's when present. */
+		exports: z.array(ExpectedExportSchema).optional(),
 		/**
 		 * Type expectations only this language can state, replacing the case's when present.
 		 *
@@ -272,6 +314,8 @@ export const ConformanceCaseSchema = z
 		declarationNames: z.array(z.string().min(1)).optional(),
 		references: z.array(ExpectedReferenceSchema).optional(),
 		imports: z.array(ExpectedImportSchema).optional(),
+		/** EXACTLY these export edges, any order. */
+		exports: z.array(ExpectedExportSchema).optional(),
 		/**
 		 * Declaration name whose type is asserted.
 		 *
@@ -459,6 +503,35 @@ export const LifecycleCaseSchema = z
 	.meta({ id: "LifecycleCase" });
 
 export type LifecycleCase = z.infer<typeof LifecycleCaseSchema>;
+
+/** Texts on disk, and the texts a batch probe proposes over them. */
+export const ProbeBatchFixtureSchema = z
+	.object({
+		files: z.record(z.string().min(1), z.string()),
+		/** Read together as one view. */
+		probe: z
+			.record(z.string().min(1), z.string())
+			.refine((probe) => Object.keys(probe).length >= 2, { message: "a batch proposes two texts or more" }),
+		answer: z.array(z.string().min(1)).min(1),
+		/** A declaration only a proposed text has, so an answer reporting it read the view. */
+		sees: z.array(z.object({ module: z.string().min(1), declaration: z.string().min(1) })).min(1),
+		/** A use that binds only across the proposed texts. */
+		bound: z.array(z.object({ module: z.string().min(1), name: z.string().min(1) })).optional(),
+	})
+	.meta({ id: "ProbeBatchFixture" });
+
+export type ProbeBatchFixture = z.infer<typeof ProbeBatchFixtureSchema>;
+
+export const ProbeBatchCaseSchema = z
+	.object({
+		id: z.string().min(1),
+		/** Prose for the failure report, so a red case explains itself. */
+		about: z.string().min(1),
+		fixtures: z.record(z.string().min(1), ProbeBatchFixtureSchema),
+	})
+	.meta({ id: "ProbeBatchCase" });
+
+export type ProbeBatchCase = z.infer<typeof ProbeBatchCaseSchema>;
 
 ////////////////////////////////
 //  Interfaces & Types

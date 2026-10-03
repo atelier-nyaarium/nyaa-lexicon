@@ -1221,146 +1221,20 @@ describe("visibility and reach", () => {
 });
 
 describe("imports", () => {
-	it("records source and local spans, and every form but a plain named one, for each import and export", () => {
-		const source = [
-			'import { foo } from "./named";',
-			'import { original as renamed } from "./aliased";',
-			'import defaultThing from "./default";',
-			'import * as namespace from "./namespace";',
-			'import type { TypeOnly } from "./type-only";',
-			'import { type InlineType as LocalInline } from "./inline-type";',
-			'export { reexported } from "./reexport";',
-			'export { sourceName as exportedName } from "./reexport-alias";',
-			'export { defaultSource as default } from "./default-reexport";',
-			'export * as namespaceExport from "./namespace-export";',
-			'export * from "./all";',
-			'import "./side-effect";',
-			'import type TypeDefault from "./type-default";',
-			'export type { Shape } from "./type-reexport";',
-			'import type * as TypeSpace from "./type-namespace";',
-		].join("\n");
-		const span = (value: string, from: string) => rangeForText(source, value, source.indexOf(from));
-
-		expect(extract(source).imports).toEqual([
-			{
-				specifier: "./named",
-				imported: [{ name: "foo", range: span("foo", "import { foo }") }],
-				reExport: false,
-			},
-			{
-				specifier: "./aliased",
-				imported: [
-					{
-						name: "original",
-						range: span("original", "import { original"),
-						local: "renamed",
-						localRange: span("renamed", "import { original"),
-					},
-				],
-				reExport: false,
-			},
-			{
-				specifier: "./default",
-				imported: [
-					{ local: "defaultThing", localRange: span("defaultThing", "import defaultThing"), kind: "default" },
-				],
-				reExport: false,
-			},
-			{
-				specifier: "./namespace",
-				imported: [
-					{ local: "namespace", localRange: span("namespace", "import * as namespace"), kind: "namespace" },
-				],
-				reExport: false,
-			},
-			{
-				specifier: "./type-only",
-				imported: [{ name: "TypeOnly", range: span("TypeOnly", "import type { TypeOnly"), typeOnly: true }],
-				reExport: false,
-			},
-			{
-				specifier: "./inline-type",
-				imported: [
-					{
-						name: "InlineType",
-						range: span("InlineType", "import { type InlineType"),
-						local: "LocalInline",
-						localRange: span("LocalInline", "import { type InlineType"),
-						typeOnly: true,
-					},
-				],
-				reExport: false,
-			},
-			{
-				specifier: "./reexport",
-				imported: [{ name: "reexported", range: span("reexported", "export { reexported") }],
-				reExport: true,
-			},
-			{
-				specifier: "./reexport-alias",
-				imported: [
-					{
-						name: "sourceName",
-						range: span("sourceName", "export { sourceName"),
-						local: "exportedName",
-						localRange: span("exportedName", "export { sourceName"),
-					},
-				],
-				reExport: true,
-			},
-			{
-				specifier: "./default-reexport",
-				imported: [{ name: "defaultSource", range: span("defaultSource", "export { defaultSource") }],
-				reExport: true,
-			},
-			{
-				specifier: "./namespace-export",
-				imported: [
-					{
-						local: "namespaceExport",
-						localRange: span("namespaceExport", "export * as namespaceExport"),
-						kind: "namespace",
-					},
-				],
-				reExport: true,
-			},
-			{ specifier: "./all", imported: [], reExport: true },
-			{ specifier: "./side-effect", imported: [], reExport: false },
-			{
-				specifier: "./type-default",
-				imported: [
-					{
-						local: "TypeDefault",
-						localRange: span("TypeDefault", "import type TypeDefault"),
-						kind: "default",
-						typeOnly: true,
-					},
-				],
-				reExport: false,
-			},
-			{
-				specifier: "./type-reexport",
-				imported: [{ name: "Shape", range: span("Shape", "export type { Shape"), typeOnly: true }],
-				reExport: true,
-			},
-			{
-				specifier: "./type-namespace",
-				imported: [
-					{
-						local: "TypeSpace",
-						localRange: span("TypeSpace", "import type * as TypeSpace"),
-						kind: "namespace",
-						typeOnly: true,
-					},
-				],
-				reExport: false,
-			},
-		]);
-	});
-
-	it("records a side-effect import with no names rather than skipping it", () => {
+	it("records a side-effect import as one edge binding nothing", () => {
 		expect(extract('import "./polyfill";').imports).toEqual([
-			{ specifier: "./polyfill", imported: [], reExport: false },
+			{
+				specifier: "./polyfill",
+				edges: [
+					{
+						kind: "sideEffect",
+						span: rangeForText('import "./polyfill";', 'import "./polyfill";'),
+						bindsLocally: false,
+						certainty: { status: "known" },
+						order: 0,
+					},
+				],
+			},
 		]);
 	});
 
@@ -1389,8 +1263,8 @@ describe("imports", () => {
 			"equals-spec",
 			"lazy",
 		]);
-		expect(found.imports[3]?.imported).toEqual([
-			{ local: "equals", localRange: rangeForText(source, "equals"), kind: "require" },
+		expect(found.imports[3]?.edges).toMatchObject([
+			{ kind: "require", local: "equals", localRange: rangeForText(source, "equals"), bindsLocally: true },
 		]);
 		expect(found.literals.map((literal) => literal.value)).toEqual(["node:fs", "require-spec"]);
 	});
@@ -1453,16 +1327,13 @@ describe("references", () => {
 	});
 
 	it("leaves a bare name unqualified", () => {
-		const source =
-			"helper();\nconst total = value;\nlet item: Item;\nlist[index];\nconst { key: renamed } = row;\n";
+		const source = "helper();\nconst total = value;\nlet item: Item;\nlist[index];\n";
 		expect(qualifiedByName(source)).toEqual({
 			helper: false,
 			value: false,
 			Item: false,
 			list: false,
 			index: false,
-			key: false,
-			row: false,
 		});
 	});
 
@@ -1478,6 +1349,7 @@ describe("references", () => {
 			"\t\treturn import.meta;",
 			"\t}",
 			"}",
+			"const { key: renamed } = row;",
 		].join("\n");
 		expect(qualifiedByName(source)).toEqual({
 			Base: false,
@@ -1488,6 +1360,8 @@ describe("references", () => {
 			"#count": true,
 			reset: true,
 			meta: true,
+			key: true,
+			row: false,
 		});
 	});
 

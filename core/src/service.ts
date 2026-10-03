@@ -64,6 +64,7 @@ import { RefactorPlanner } from "./refactorPlanner.js";
 import type { PlannedWrite } from "./refactorStep.js";
 import type { UnknownType } from "./refusalSlots.js";
 import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
+import { holdsWord } from "./renameRoutes.js";
 import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
 import type { SourceReader } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
@@ -102,16 +103,17 @@ export class LexiconService {
 	) {
 		this.reads = new IndexReadModel(store);
 		// Caching and surface globs are workspace decisions, so they are answered here.
-		this.imports = new ImportResolver(store, async (fromModule, specifier) => {
+		this.imports = new ImportResolver(store, async (fromModule, specifier, fresh) => {
 			const surfaceGlobs = (await this.currentScope()).bundles;
-			const configKey = surfaceGlobs.join("\u0000");
-			return this.caches.resolutions.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, () =>
+			const ask = () =>
 				this.supervisor.ask(fromModule, "resolveImport", {
 					fromModule,
 					specifier,
 					...(surfaceGlobs.length === 0 ? {} : { surfaceGlobs }),
-				}),
-			);
+				});
+			if (fresh === true) return ask();
+			const configKey = surfaceGlobs.join("\u0000");
+			return this.caches.resolutions.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, ask);
 		});
 		this.knowledge = new KnowledgeLedger(store, this.imports, this.clock);
 		this.notes = new NoteLedger(store, this.clock);
@@ -253,6 +255,16 @@ export class LexiconService {
 		return this.indexer.upgradeRemaining();
 	}
 
+	/** Owes each module a parse that outlives a crash, until one lands. */
+	oweParses(modules: readonly string[]): void {
+		this.store.oweRebinds(modules);
+	}
+
+	/** Starts paying owed parses. */
+	payOwed(): void {
+		this.indexer.payOwed();
+	}
+
 	/** Runs `work` as work a status answer names, such as a refactor step. */
 	during<T>(doing: Doing, work: () => Promise<T>): Promise<T> {
 		return this.indexer.during(doing, work);
@@ -272,7 +284,8 @@ export class LexiconService {
 			for (const statement of this.store.importsIn(module)) {
 				if (closure.size > 32) break;
 				const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
-				if (landed !== null && landed.status === "resolved") closure.add(landed.module);
+				if (landed?.status === "resolved" && landed.landing.kind === "module")
+					closure.add(landed.landing.module);
 			}
 			await this.indexer.requestFull([...closure]).catch(() => {});
 		})();
@@ -292,6 +305,19 @@ export class LexiconService {
 
 	staleModules(modules: string[]): string[] {
 		return this.source.staleModules(modules);
+	}
+
+	/** Modules owing a parse a failure holds back: each one read, and any other whose text spells `name`. */
+	heldDebts(read: readonly string[], name: string): string[] {
+		const asked = new Set(read);
+		return this.store
+			.blockedRebinds()
+			.flatMap((debt) => {
+				if (asked.has(debt.module)) return [debt.module];
+				const text = this.source.currentText(debt.module);
+				return text !== null && holdsWord(text, name) ? [debt.module] : [];
+			})
+			.sort();
 	}
 
 	factsMoved(...args: Parameters<RefactorPlanner["factsMoved"]>): ReturnType<RefactorPlanner["factsMoved"]> {
@@ -350,6 +376,16 @@ export class LexiconService {
 
 	renameEdits(...args: Parameters<RefactorPlanner["renameEdits"]>): ReturnType<RefactorPlanner["renameEdits"]> {
 		return this.planner.renameEdits(...args);
+	}
+
+	planRenameEdits(
+		...args: Parameters<RefactorPlanner["planRenameEdits"]>
+	): ReturnType<RefactorPlanner["planRenameEdits"]> {
+		return this.planner.planRenameEdits(...args);
+	}
+
+	landingsMoved(...args: Parameters<RefactorPlanner["landingsMoved"]>): ReturnType<RefactorPlanner["landingsMoved"]> {
+		return this.planner.landingsMoved(...args);
 	}
 
 	moveEdits(...args: Parameters<RefactorPlanner["moveEdits"]>): ReturnType<RefactorPlanner["moveEdits"]> {

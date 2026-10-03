@@ -85,6 +85,8 @@ export function handlersFor<V extends ModuleValue, P, E>(
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
 		parseFile: (params) => provider.parseFile(params),
 		probeFile: (params) => provider.parseFile(params),
+		// Reads other files from disk, so it holds no view of several proposed texts.
+		probeBatch: () => ({ status: "unsupported" }),
 		resolveImport: (params) => provider.resolveImport(params),
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),

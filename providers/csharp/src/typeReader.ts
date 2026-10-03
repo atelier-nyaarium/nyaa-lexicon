@@ -91,6 +91,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		if (depth > MAX_TYPE_DEPTH) return undefined;
 		const shape: TypeShape = {
 			end: -1,
+			composed: false,
 			name: undefined,
 			segments: [],
 			qualifier: undefined,
@@ -119,9 +120,11 @@ export class CsharpTypeReader extends CsharpTokenStream {
 				} else if (value === "(" && shape.end < 0) {
 					next = this.tupleClose(current, end, shape.elementNames, depth + 1) + 1;
 					if (next <= 0) return undefined;
+					shape.composed = true;
 				} else break;
 				expectName = false;
 			} else if (value === "*" && syntaxValue(shape.name) === "delegate") {
+				shape.composed = true;
 				// Function pointer signature.
 				const open = this.findTopLevelValue(next, end, "<");
 				const pairs = open < 0 ? EMPTY_MAP : this.listWalk(open, end, depth + 1);
@@ -131,6 +134,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 				next = close + 1;
 				qualifiable = false;
 			} else if (value === "<" && qualifiable) {
+				shape.composed = true;
 				const pairs = this.listWalk(current, end, depth + 1);
 				const close = pairs.get(current) ?? -1;
 				this.typeArguments(current, close < 0 ? end : close, shape.elementNames, depth + 1, pairs);
@@ -146,10 +150,12 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			} else if ((value === "." || value === "::") && qualifiable) {
 				expectName = true;
 			} else if (value === "?" || value === "*") {
+				shape.composed = true;
 				qualifiable = false;
 			} else if (value === "[") {
 				const close = this.matching(current, "[", "]", end);
 				if (close < 0) break;
+				shape.composed = true;
 				next = close + 1;
 				qualifiable = false;
 			} else break;
@@ -206,12 +212,13 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		const first = this.token(leading.first) as Token;
 		const last = this.token(this.previousSignificant(leading.shape.end, leading.first)) as Token;
 		if (first === last && syntaxValue(first) === "var") return {};
-		const { name, segments, qualifier } = leading.shape;
+		const { name, segments, qualifier, composed } = leading.shape;
 		return {
 			typeText: this.sourceSpan(first, last),
 			...(name === undefined || BUILTIN_TYPES.has(syntaxValue(name) ?? "") || segments.length === 0
 				? {}
 				: { typeSegments: segments, ...defined({ typeQualifier: qualifier }) }),
+			...(composed ? { typeComposed: true as const } : {}),
 		};
 	}
 

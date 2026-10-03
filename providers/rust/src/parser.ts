@@ -1,5 +1,6 @@
 import { defined } from "@nyaa-lexicon/protocol";
 import { type ParseContext, sanitizeDisambiguator } from "./declarations.js";
+import { directExports, ordered, scopeContributions } from "./edges.js";
 import { BODY, LeafItems } from "./leafItems.js";
 import type { ParsedFile, RawDeclaration, RawReference, RustDescriptor } from "./model.js";
 import type { Prefix } from "./prefixes.js";
@@ -70,6 +71,10 @@ export class RustParser extends LeafItems {
 			if (name !== undefined) raw.targetName = name;
 		}
 		const declarations = this.rawDeclarations.map((raw) => raw.declaration);
+		const { imports, exports } = ordered(this.importEdges, [
+			...this.forwardExports,
+			...directExports(this.rawDeclarations),
+		]);
 		const { references, literals } =
 			this.depth === "outline"
 				? { references: [], literals: [] }
@@ -94,7 +99,9 @@ export class RustParser extends LeafItems {
 			text: this.text,
 			declarations,
 			references,
-			imports: this.imports,
+			imports,
+			exports,
+			scopeContributions: scopeContributions(this.rawDeclarations),
 			literals,
 			comments: this.depth === "outline" ? [] : this.scan.comments,
 			...(this.depth === "outline" ? {} : { blankLines: this.scan.blankLines }),

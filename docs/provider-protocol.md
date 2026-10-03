@@ -15,21 +15,24 @@ any branch on language, which a residue test enforces.
 ## Methods
 
 ```
-initialize(root, deny)       -> ProviderInfo { id, language, extensions[], protocolVersion, tiers }
+initialize(workspaceRoot, protocolVersion, deny)
+                             -> { providerId, language, extensions[], protocolVersion, tiers, ... }
 discoverProject(root)        -> ProjectModel { files[], resolutionRules, externalRoots[] }
 parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[], comments[], docs[] }
 probeFile(module, hash, text)-> FileFacts, derived by handlersFor; the provider holds what it held before
 resolveImport(from, spec)    -> ImportResolution
+probeBatch(files, answer)    -> ProbeBatchResponse
 bind(reference)              -> Binding
 typeOf(target)               -> TypeInfo
 renameEdits(request)         -> RenameEditsResponse
 moveEdits(request)           -> MoveEditsResponse
+arrangeEdits(request)        -> MoveEditsResponse
 shutdown()
 ```
 
 `FileFacts` also carries the facts core decides from instead of reading source text:
 `blankLines`, each container's `memberInsertLine`, and each comment's `codeBefore` and `codeAfter`.
-`docs/parsing.md` defines each.
+`docs/parsing.md` defines each. The facts a rename routes by are under Imports, exports and origins.
 
 Three notifications travel the other way without an answer:
 
@@ -457,11 +460,45 @@ three different columns and only one passes.
 The reverse direction matters more than the forward one: a range that reads correctly and slices
 incorrectly corrupts a file on rename rather than merely misreporting it.
 
+## Imports, exports and origins
+
+A rename follows these facts through every module, with no language test in core. The schemas in
+`protocol/src/project.ts` and `protocol/src/symbols.ts` state each field and which fields each kind
+requires.
+
+- A resolved import answers a tagged `landing`: a module, a symbol scope such as a Rust enum a glob
+  opens, or a package scope such as Kotlin's `p.*`. An external or unresolved one answers its status.
+  A scope's members come from each file's `scopeContributions`.
+- An import is one edge per transfer: `named`, `default`, `namespace`, `require`, `wildcard`,
+  `injection` or `sideEffect`. Each carries what its kind writes: the source `name` and `range`, the
+  `local` binding and its `localRange`, a `selector` for a wildcard or injection, and a conflict
+  policy when it binds locally. Every edge states `bindsLocally`, its certainty and source order, and
+  may state its meaning.
+- `exports` holds one fact per syntactic export edge: `direct`, `local`, `forward`, `star`,
+  `namespace`, `default` or `assignment`, each targeting a symbol, an import edge by its span, or an
+  unknown. Core projects each module's effective exports from these; a provider never computes them.
+- `allList` is `absent` with the glob a star falls back to, `static` with each entry's range, or
+  `dynamic`, which leaves a star through it unproved.
+- A reference's `origin` is the declaration or the import edge, by span, it resolves through, with
+  the member `path` after a receiver. A provider sends one only once proved; none reads as unknown.
+
+The `exports` tier says `FileFacts.exports` is complete at every depth. Absent means unknown
+coverage, not no exports.
+
+`probeBatch` answers for proposed texts. Every file in `files` is visible as one read-only overlay;
+the provider answers facts for the modules in `answer`, and a landing per import, then holds what it
+held before. A provider that cannot answers `unsupported`, and a rename needing that proof refuses.
+
 ## Rename
 
 A write is proposed before it is performed. The core decides WHICH occurrences belong to a symbol,
 since provenance is language-neutral, and the provider decides WHAT TEXT each becomes, since that
 is pure syntax.
+
+A site marked `keep` renames a re-export's or import's source name and keeps the old name as its
+alias: `export { N2 as N } from` in TypeScript, `from .m import N2 as N` in Python. Core sends `keep`
+only under the `renameKeep` tier; a provider that cannot write one blocks it `NotImplemented`.
+Renaming `N2 as N` back to `N` collapses the alias.
 
 Three per-site outcomes, so an occurrence that must change and cannot is never confused with one
 that correctly needs no change. A single blocked site writes nothing at all.
@@ -708,4 +745,6 @@ Every stateful provider uses the kit's module store.
 ## Versioning
 
 Negotiated at initialize and additive-only within a major, so an older provider keeps working
-against a newer core. A major mismatch is refused rather than attempted.
+against a newer core for the methods it implements; a method a later minor adds needs a provider
+update. A major mismatch is refused rather than attempted. 5.0.0 is one: `resolveImport` answers a
+landing, and an import is a list of edges.

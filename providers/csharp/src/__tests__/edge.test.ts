@@ -760,9 +760,15 @@ describe("C# imports and binding", () => {
 		const text =
 			"using Alias = N.C; using static N.C; public class Use { public Alias Field; public int Read() { return Value; } }\n";
 		const facts = parseThroughKit(provider, { module: "src/use.cs", contentHash: "hash", text });
+		// One landing per specifier: the static's, where the alias's name reads unknown, never wrong.
 		expect(provider.resolveImport({ fromModule: "src/use.cs", specifier: "N.C" })).toEqual({
 			status: "resolved",
-			module: "src/types.cs",
+			landing: {
+				kind: "symbolScope",
+				providerId: "csharp-provider",
+				scopeId: "N.C",
+				anchorSymbolId: "lexicon csharp src/types.cs N/C#",
+			},
 		});
 		const alias = facts.references.find((item) => item.name === "Alias" && item.role === "typeUse");
 		if (alias === undefined) throw new Error("alias reference missing");
@@ -878,6 +884,31 @@ describe("C# imports and binding", () => {
 			[10, "Make", "C.Make:method"],
 			[11, "Make", "C.Make:method"],
 			[11, "P", "unbound"],
+		]);
+	});
+
+	it("reads a receiver value of its own type as the type, whatever comment stands in the type's name", () => {
+		const text = [
+			"namespace Lib {",
+			"  public class Color { public static void Paint() {} }",
+			"  class Plain { Lib./*<?[*/Color Color; void M() { Color.Paint(); } }",
+			"  class Nullable { Color? Color; void M() { Color.Paint(); } }",
+			"  class Listed { Color[] Color; void M() { Color.Paint(); } }",
+			"}",
+		].join("\n");
+		const { facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		expect(
+			facts.references
+				.filter((item) => item.name === "Paint")
+				.map((item) => [
+					item.range.start.line,
+					item.binding.status === "unbound" ? item.binding.reason : item.binding.status,
+				]),
+		).toEqual([
+			[2, "bound"],
+			[3, "NotImplemented"],
+			[4, "NotImplemented"],
 		]);
 	});
 

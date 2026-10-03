@@ -104,6 +104,33 @@ describe("settling a name path declared twice", () => {
 		expect(settled.literals.map((literal) => literal.containerId)).toEqual([CART, CART_2]);
 	});
 
+	it("points an export inside the second declaration at it, and a repeated scope member at each reopening in turn", () => {
+		const known = { status: "known" } as const;
+		const conflict = { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" } as const;
+		const exported = (line: number) => ({
+			form: "direct" as const,
+			span: span(line, line),
+			name: "Cart",
+			range: span(line, line),
+			target: { kind: "symbol" as const, symbolId: CART },
+			conflict,
+			certainty: known,
+			order: line,
+		});
+		const settled = withOccurrences(
+			facts({
+				declarations: [decl(CART, span(0, 2)), decl(CART, span(3, 5))],
+				exports: [exported(0), exported(3), { ...exported(9), name: "Again" }],
+				scopeContributions: [{ kind: "packageScope", scopeId: "p", members: [CART, CART] }],
+			}),
+		);
+
+		expect({
+			targets: settled.exports?.map((edge) => (edge.target.kind === "symbol" ? edge.target.symbolId : null)),
+			members: settled.scopeContributions?.[0]?.members,
+		}).toEqual({ targets: [CART, CART_2, CART], members: [CART, CART_2] });
+	});
+
 	it("binds a read inside the second definition to that definition's own local", () => {
 		const input = facts({
 			declarations: [

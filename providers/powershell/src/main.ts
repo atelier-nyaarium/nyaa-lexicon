@@ -5,6 +5,7 @@ import path from "node:path";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
+	comparePositions,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
 	defined,
@@ -32,15 +33,59 @@ import {
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { keyOf, wildcardMatches } from "./context.js";
+import { keyOf, type MemberFilter, wildcardMatches } from "./context.js";
 import {
 	LANGUAGE,
 	type ParsedPowerShellFile,
 	type PowerShellDeclaration,
 	type PowerShellReference,
 	parsePowerShellFile,
+	type SourceImport,
 } from "./extract.js";
 import { membersOf, parameterOf } from "./scope.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+type Unresolved = Exclude<ImportResolution, { status: "resolved" }>;
+
+type MemberKind = "function" | "variable";
+
+/** Where a binding lands: the scope a file runs in, or the global scope that scope's own names shadow. */
+type Level = "scope" | "global";
+
+/** What a brought-in file passes through on its way to the file that binds. */
+interface Through {
+	/** The modules it came in through, whose exports decide what an importer sees. */
+	gates: ParsedPowerShellFile[];
+	/** The `Import-Module` member filters it came in through. */
+	filters: MemberFilter[];
+	/** Runs in a module's session state, where an import lands in the module's own scope. */
+	inModule: boolean;
+}
+
+/** One name settling across the files a module brings in. */
+interface Settling {
+	kind: MemberKind;
+	name: string;
+	report: (status: Unresolved, specifier: string) => void;
+	/** What each file leaves, by module, name and what it came through, so a shared file is read once. */
+	memo: Map<string, Left>;
+}
+
+/** What a run leaves for one name: the last binding in each scope it reaches. */
+interface Left {
+	scope?: PowerShellDeclaration;
+	global?: PowerShellDeclaration;
+	/** In the importer's scope, by a manifest's scripts. */
+	caller?: PowerShellDeclaration;
+}
+
+/** A file's own definition of a name, and where it last took effect. */
+interface Binder {
+	declaration: PowerShellDeclaration;
+	at: Position;
+}
 
 ////////////////////////////////
 //  Constants
@@ -176,6 +221,10 @@ function contains(range: Range, position: Position): boolean {
 	return afterStart && beforeEnd;
 }
 
+function landed(module: string): ImportResolution {
+	return { status: "resolved", landing: { kind: "module", module } };
+}
+
 function declarationWire(declaration: PowerShellDeclaration): Declaration {
 	const {
 		declaredType: _declared,
@@ -220,10 +269,123 @@ function isPathLike(specifier: string): boolean {
  * Whether a module lets a name out to its importer: a function unless its list says otherwise, a
  * variable only as listed, and a manifest lets through what it does not list.
  */
-function exports(gate: ParsedPowerShellFile, kind: "function" | "variable", name: string): boolean {
+function exports(gate: ParsedPowerShellFile, kind: MemberKind, name: string): boolean {
 	const patterns = kind === "function" ? gate.exportedFunctions : gate.exportedVariables;
 	if (patterns === undefined) return kind === "function" || keyOf(gate.module).endsWith(".psd1");
 	return [...patterns].some((pattern) => wildcardMatches(pattern, name));
+}
+
+function admits(filter: MemberFilter, kind: MemberKind, name: string): boolean {
+	const patterns = kind === "function" ? filter.functions : filter.variables;
+	return patterns.some((pattern) => wildcardMatches(pattern, name));
+}
+
+/** What `through` lets out, as a memo key. */
+function signature(through: Through): string {
+	return JSON.stringify([through.gates.map((gate) => gate.module), through.filters, through.inModule]);
+}
+
+/** Nothing between a file and what it runs in its own scope. */
+function direct(module: string): Through {
+	const key = keyOf(module);
+	return { gates: [], filters: [], inModule: key.endsWith(".psm1") || key.endsWith(".psd1") };
+}
+
+/** Where a module import's names land: a script imports into the global scope, a module into its own. */
+function importLevel(source: SourceImport, through: Through): Level {
+	if (source.scope !== undefined) return source.scope === "local" ? "scope" : "global";
+	return through.inModule ? "scope" : "global";
+}
+
+/** `Verb-PNoun` read back as `Verb-Noun`, and `PName` with no verb as `Name`; none without the prefix. */
+function unprefixed(name: string, prefix: string): string | undefined {
+	const dash = name.indexOf("-");
+	const verb = dash < 0 ? "" : name.slice(0, dash + 1);
+	const noun = name.slice(verb.length);
+	if (noun.length <= prefix.length || !keyOf(noun).startsWith(keyOf(prefix))) return undefined;
+	return verb + noun.slice(prefix.length);
+}
+
+/** The name a module import reaches for `sought`: a command's without its prefix, a variable's as written. */
+function importedName(sought: Pick<Settling, "kind" | "name">, source: SourceImport): string | undefined {
+	const prefix = source.prefix;
+	if (sought.kind === "variable" || prefix === undefined) return sought.name;
+	return prefix.kind === "static" ? unprefixed(sought.name, prefix.text) : undefined;
+}
+
+/** Where a definition last took effect, before `before` when given: a variable at its last top-level write. */
+function binderOf(
+	facts: ParsedPowerShellFile,
+	declaration: PowerShellDeclaration,
+	before?: Position,
+): Binder | undefined {
+	let at: Position | undefined;
+	const consider = (position: Position) => {
+		if (before !== undefined && comparePositions(position, before) >= 0) return;
+		if (at === undefined || comparePositions(position, at) > 0) at = position;
+	};
+	consider(declaration.range.start);
+	if (declaration.kind === "variable") {
+		for (const reference of facts.references) {
+			if (
+				reference.role === "write" &&
+				reference.of.kind === "variable" &&
+				reference.fromId === undefined &&
+				reference.target === declaration.symbolId
+			)
+				consider(reference.range.start);
+		}
+	}
+	return at === undefined ? undefined : { declaration, at };
+}
+
+/** A script's own scope shadows the global one. */
+function visible(left: Left): PowerShellDeclaration | undefined {
+	return left.scope ?? left.global;
+}
+
+/** The function or variable a reference settles on; a parameter settles its command. */
+function soughtBy(reference: PowerShellReference): Pick<Settling, "kind" | "name"> | undefined {
+	switch (reference.of.kind) {
+		case "command":
+			return { kind: "function", name: reference.name };
+		case "variable":
+			return { kind: "variable", name: reference.name };
+		case "parameter":
+			return { kind: "function", name: reference.of.command };
+		case "type":
+		case "member":
+			return undefined;
+	}
+}
+
+/** A file's own definition of the name, as far as what it came through lets out. */
+function ownDefinition(
+	facts: ParsedPowerShellFile,
+	through: Through,
+	sought: Pick<Settling, "kind" | "name">,
+): Binder | undefined {
+	const { kind, name } = sought;
+	const declaration =
+		kind === "function"
+			? facts.functionsByName
+					.get(keyOf(name))
+					?.filter((definition) => definition.visibility === "public")
+					.at(-1)
+			: facts.variablesByName.get(keyOf(name));
+	if (declaration === undefined) return undefined;
+	const shown =
+		through.gates.every((gate) => exports(gate, kind, declaration.name)) &&
+		through.filters.every((filter) => admits(filter, kind, declaration.name));
+	return shown ? binderOf(facts, declaration) : undefined;
+}
+
+/** What a reachable file holds for a type or member reference. */
+function typeCandidates(facts: ParsedPowerShellFile, reference: PowerShellReference): PowerShellDeclaration[] {
+	if (reference.of.kind === "member")
+		return membersOf(facts.typesByName, reference.of.typeName, reference.name, reference.of.arity);
+	const type = facts.typesByName.get(keyOf(reference.name));
+	return type === undefined ? [] : [type];
 }
 
 /** A reference whose target the file cannot name, and that only a declaration makes a symbol. */
@@ -304,7 +466,7 @@ export class PowerShellProvider {
 		const root = this.store.root;
 		if (!isPathLike(specifier)) {
 			const named = this.modulesNamed(specifier);
-			if (named.length === 1) return { status: "resolved", module: named[0] as string };
+			if (named.length === 1) return landed(named[0] as string);
 			if (named.length > 1)
 				return {
 					status: "unresolved",
@@ -318,17 +480,17 @@ export class PowerShellProvider {
 			const module = workspaceModule(root, relative);
 			if (module === null) return { status: "external", packageName: specifier };
 			return this.hasFile(module)
-				? { status: "resolved", module }
+				? landed(module)
 				: { status: "unresolved", reason: "NotIndexed", detail: `no workspace file at ${specifier}` };
 		}
 		const fromAbsolute = workspaceFile(root, params.fromModule);
 		const directories = fromAbsolute === null ? [root] : [path.dirname(fromAbsolute), root];
 		for (const directory of directories) {
 			const module = workspaceModule(root, path.resolve(directory, relative));
-			if (module !== null && this.hasFile(module)) return { status: "resolved", module };
+			if (module !== null && this.hasFile(module)) return landed(module);
 			// A module folder: its manifest, else its module file.
 			for (const inside of this.moduleFolderFiles(directory, relative)) {
-				if (this.hasFile(inside)) return { status: "resolved", module: inside };
+				if (this.hasFile(inside)) return landed(inside);
 			}
 		}
 		return { status: "unresolved", reason: "NotIndexed", detail: `no workspace file matches ${specifier}` };
@@ -463,12 +625,22 @@ export class PowerShellProvider {
 		);
 	}
 
-	/** Same file first, then every file it dot-sources or imports, transitively. */
+	/**
+	 * At the top level, the last definition or import before the read, the script's own scope over
+	 * the global one; in a body, the file's own definition first.
+	 */
 	private bindReference(module: string, parsed: ParsedPowerShellFile, reference: PowerShellReference): Binding {
-		if (reference.target !== undefined) return bound(reference.target);
+		const sought = soughtBy(reference);
+		const target = reference.target;
+		// A write names the variable it assigns, whatever an import left.
+		const kept =
+			sought === undefined ||
+			reference.fromId !== undefined ||
+			(reference.of.kind === "variable" && reference.role === "write");
+		if (target !== undefined && kept) return bound(target);
 		let reason: UnknownReason = "NotIndexed";
 		let detail = `no PowerShell declaration matches ${reference.name}`;
-		const report = (status: Exclude<ImportResolution, { status: "resolved" }>, specifier: string) => {
+		const report = (status: Unresolved, specifier: string) => {
 			if (status.status === "external") {
 				reason = "ExternalDependency";
 				detail = `${reference.name} may come from ${specifier}, outside the workspace`;
@@ -478,70 +650,156 @@ export class PowerShellProvider {
 			}
 		};
 		const candidates = new Set<string>();
-		// A member's overloads may sit in this file, unsettled because the call cannot tell them apart.
-		const own = reference.of.kind === "member" ? [{ facts: parsed, gates: [] }] : [];
-		for (const { facts, gates } of [...own, ...this.reachable(module, parsed, report)]) {
-			for (const declaration of this.candidatesIn(facts, gates, reference)) candidates.add(declaration.symbolId);
+		if (sought === undefined) {
+			// A member's overloads may sit in this file, unsettled because the call cannot tell them apart.
+			const own = reference.of.kind === "member" ? [parsed] : [];
+			for (const facts of [...own, ...this.reachable(module, parsed, report)]) {
+				for (const declaration of typeCandidates(facts, reference)) candidates.add(declaration.symbolId);
+			}
+		} else {
+			const s: Settling = { ...sought, report, memo: new Map() };
+			const visiting = new Set([module]);
+			const start = direct(module);
+			// A function body may run after any import, so each import's definition stands.
+			const settled =
+				reference.fromId === undefined
+					? [
+							visible(
+								this.settledIn(
+									s,
+									module,
+									parsed,
+									start,
+									start,
+									this.ownBinder(parsed, reference),
+									visiting,
+									reference.range.start,
+								),
+							),
+						]
+					: parsed.sources.map((source) =>
+							visible(this.settledThrough(s, module, source, start, start, visiting)),
+						);
+			for (const declaration of settled) {
+				const found =
+					declaration !== undefined && reference.of.kind === "parameter"
+						? parameterOf(declaration, reference.name)
+						: declaration;
+				if (found !== undefined) candidates.add(found.symbolId);
+			}
 		}
 		if (candidates.size === 1) return bound([...candidates][0] as string);
 		if (candidates.size > 1) return { status: "ambiguous", candidates: [...candidates], provenance: "bound" };
 		return unbound(reason, detail);
 	}
 
-	/** What a reachable file holds for a reference, as far as the modules around it export. */
-	private candidatesIn(
+	/** The definition a top-level read reached in its own file, where it last took effect before the read. */
+	private ownBinder(parsed: ParsedPowerShellFile, reference: PowerShellReference): Binder | undefined {
+		const id = reference.of.kind === "variable" ? reference.target : reference.callee;
+		const declaration = parsed.declarations.find((candidate) => candidate.symbolId === id);
+		return declaration === undefined ? undefined : binderOf(parsed, declaration, reference.range.start);
+	}
+
+	/** What running `facts` up to `before`, or whole, leaves in each scope: the last binding there. */
+	private settledIn(
+		s: Settling,
+		module: string,
 		facts: ParsedPowerShellFile,
-		gates: readonly ParsedPowerShellFile[],
-		reference: PowerShellReference,
-	): PowerShellDeclaration[] {
-		const key = keyOf(reference.name);
-		const shown = (kind: "function" | "variable", declaration: PowerShellDeclaration) =>
-			gates.every((gate) => exports(gate, kind, declaration.name));
-		switch (reference.of.kind) {
-			case "command": {
-				const last = facts.functionsByName
-					.get(key)
-					?.filter((definition) => definition.visibility === "public")
-					.at(-1);
-				return last !== undefined && shown("function", last) ? [last] : [];
+		through: Through,
+		caller: Through,
+		own: Binder | undefined,
+		visiting: ReadonlySet<string>,
+		before?: Position,
+	): Left {
+		const left: Left = own === undefined ? {} : { scope: own.declaration };
+		let scopeSince = own?.at;
+		let globalSince: Position | undefined;
+		const later = (at: Position, since: Position | undefined) =>
+			since === undefined || comparePositions(at, since) >= 0;
+		for (const source of facts.sources) {
+			const at = source.range.start;
+			if (before !== undefined && comparePositions(at, before) >= 0) continue;
+			const brought = this.settledThrough(s, module, source, through, caller, visiting);
+			if (brought.scope !== undefined && later(at, scopeSince)) {
+				left.scope = brought.scope;
+				scopeSince = at;
 			}
-			case "variable": {
-				const variable = facts.variablesByName.get(key);
-				return variable !== undefined && shown("variable", variable) ? [variable] : [];
+			if (brought.global !== undefined && later(at, globalSince)) {
+				left.global = brought.global;
+				globalSince = at;
 			}
-			case "type": {
-				const type = facts.typesByName.get(key);
-				return type === undefined ? [] : [type];
-			}
-			case "member":
-				return membersOf(facts.typesByName, reference.of.typeName, reference.name, reference.of.arity);
-			case "parameter": {
-				const command = facts.functionsByName
-					.get(keyOf(reference.of.command))
-					?.filter((definition) => definition.visibility === "public")
-					.at(-1);
-				if (command === undefined || !shown("function", command)) return [];
-				const parameter = parameterOf(command, reference.name);
-				return parameter === undefined ? [] : [parameter];
-			}
+			if (brought.caller !== undefined) left.caller = brought.caller;
 		}
+		return left;
 	}
 
 	/**
-	 * The files a module brings in, each followed by what it brings in, read once each. Each carries
-	 * the modules it came in through, whose exports decide what of it an importer sees; a dot-source
-	 * shares everything with the file that runs it.
+	 * What one import leaves once its file has run, in the importer's scopes. `caller` is what the
+	 * importing module came through, where a manifest's scripts run.
 	 */
+	private settledThrough(
+		s: Settling,
+		module: string,
+		source: SourceImport,
+		through: Through,
+		caller: Through,
+		visiting: ReadonlySet<string>,
+	): Left {
+		const resolution = this.resolveImport({ fromModule: module, specifier: source.specifier });
+		if (resolution.status !== "resolved") {
+			s.report(resolution, source.specifier);
+			return {};
+		}
+		const { landing } = resolution;
+		if (landing.kind !== "module" || visiting.has(landing.module)) return {};
+		const target = this.factsFor(landing.module);
+		if (target === null) return {};
+		const visits = new Set([...visiting, landing.module]);
+		if (source.kind === "dotSource") return this.leftBy(s, landing.module, target, through, caller, visits);
+		if (source.kind === "importerScript") {
+			const left = this.leftBy(s, landing.module, target, caller, caller, visits);
+			return defined({ caller: left.scope, global: left.global });
+		}
+		const name = importedName(s, source);
+		if (name === undefined) return {};
+		const inner: Through = {
+			gates: [...through.gates, target],
+			filters: source.filter === undefined ? through.filters : [...through.filters, source.filter],
+			inModule: true,
+		};
+		const left = this.leftBy({ ...s, name }, landing.module, target, inner, through, visits);
+		const members = visible(left);
+		return importLevel(source, through) === "scope"
+			? defined({ scope: members ?? left.caller })
+			: defined({ scope: left.caller, global: members });
+	}
+
+	/** What running a brought-in file whole leaves, read once per name and what it came through. */
+	private leftBy(
+		s: Settling,
+		module: string,
+		facts: ParsedPowerShellFile,
+		through: Through,
+		caller: Through,
+		visiting: ReadonlySet<string>,
+	): Left {
+		const key = JSON.stringify([module, s.name, signature(through), signature(caller)]);
+		const held = s.memo.get(key);
+		if (held !== undefined) return held;
+		const left = this.settledIn(s, module, facts, through, caller, ownDefinition(facts, through, s), visiting);
+		s.memo.set(key, left);
+		return left;
+	}
+
+	/** The files a module brings in, each followed by what it brings in, read once each. */
 	private reachable(
 		module: string,
 		parsed: ParsedPowerShellFile,
-		report: (status: Exclude<ImportResolution, { status: "resolved" }>, specifier: string) => void,
-	): Array<{ facts: ParsedPowerShellFile; gates: ParsedPowerShellFile[] }> {
-		const found: Array<{ facts: ParsedPowerShellFile; gates: ParsedPowerShellFile[] }> = [];
+		report: Settling["report"],
+	): ParsedPowerShellFile[] {
+		const found: ParsedPowerShellFile[] = [];
 		const visited = new Set([module]);
-		const pending: Array<{ module: string; facts: ParsedPowerShellFile; gates: ParsedPowerShellFile[] }> = [
-			{ module, facts: parsed, gates: [] },
-		];
+		const pending = [{ module, facts: parsed }];
 		for (let next = pending.shift(); next !== undefined; next = pending.shift()) {
 			for (const source of next.facts.sources) {
 				const resolution = this.resolveImport({ fromModule: next.module, specifier: source.specifier });
@@ -549,13 +807,13 @@ export class PowerShellProvider {
 					report(resolution, source.specifier);
 					continue;
 				}
-				if (visited.has(resolution.module)) continue;
-				visited.add(resolution.module);
-				const target = this.factsFor(resolution.module);
+				const { landing } = resolution;
+				if (landing.kind !== "module" || visited.has(landing.module)) continue;
+				visited.add(landing.module);
+				const target = this.factsFor(landing.module);
 				if (target === null) continue;
-				const gates = source.kind === "module" ? [...next.gates, target] : next.gates;
-				found.push({ facts: target, gates });
-				pending.push({ module: resolution.module, facts: target, gates });
+				found.push(target);
+				pending.push({ module: landing.module, facts: target });
 			}
 		}
 		return found;

@@ -180,13 +180,13 @@ describe("every writing dispatch handler takes the workspace gate", () => {
 	});
 
 	// Restoring puts back text the index does not describe, so a restore that skips the reindex
-	// leaves the store answering about a version that is no longer on disk. Forgotten twice.
+	// leaves the store answering about a version that is no longer on disk.
 	it("reindexes whatever it restores", () => {
 		const offenders: string[] = [];
 
 		for (const handler of handlers(parsed)) {
 			if (callsNamed(handler.node, RESTORING_CALLS).length === 0) continue;
-			if (callsNamed(handler.node, ["service.indexFile"]).length === 0) {
+			if (callsNamed(handler.node, ["reindexOwed"]).length === 0) {
 				offenders.push(`${handler.method} restores without reindexing`);
 			}
 		}

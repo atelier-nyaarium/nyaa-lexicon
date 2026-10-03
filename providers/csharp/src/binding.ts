@@ -151,8 +151,7 @@ export abstract class CsharpBinder extends CsharpTypeLookup {
 			const at = this.typeAt(value.symbolId);
 			const meta = at?.meta;
 			// `T?`, `T[]` and `T<A>` are other types.
-			if (at === undefined || meta?.typeSegments === undefined || /[?[<(*]/.test(meta.typeText ?? ""))
-				return false;
+			if (at === undefined || meta?.typeSegments === undefined || meta.typeComposed === true) return false;
 			const declared = this.lookupType(at.facts, meta, meta.typeSegments, { qualifier: meta.typeQualifier });
 			return declared.length === 1 && declared[0]?.symbolId === types[0]?.symbolId;
 		});

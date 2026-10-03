@@ -150,10 +150,10 @@ describe("a real provider's function values and namespaces", () => {
 					.filter((fact) => fact.kind !== "declaration" && fact.kind !== "reference")
 					.map((fact) => fact.kind);
 			};
-			expect(await evidence("handler")).toEqual(["literal", "literal", "comment", "comment"]);
+			expect(await evidence("handler")).toEqual(["literal", "literal", "comment", "comment", "export"]);
 			expect(await evidence("total")).toEqual(["literal", "comment"]);
 			expect(await evidence("price")).toEqual(["literal", "comment"]);
-			expect(await evidence("Shop")).toEqual([]);
+			expect(await evidence("Shop")).toEqual(["export"]);
 
 			const line = service.findReferences(idOf("Line"), 50).references;
 			expect(line.map((row) => row.topLevel?.name)).toEqual(["Cart", "Cart"]);

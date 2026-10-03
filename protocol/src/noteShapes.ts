@@ -5,6 +5,12 @@ import { z } from "zod";
 import { SymbolKindSchema } from "./symbols.js";
 
 ////////////////////////////////
+//  Constants
+
+/** The longest note `write_note` takes, in UTF-16 code units, so a scan for its refs stays fast. */
+export const NOTE_MAX = 16_000;
+
+////////////////////////////////
 //  Schemas
 
 /** Who wrote, as the harness attests it; an agent never names itself. */

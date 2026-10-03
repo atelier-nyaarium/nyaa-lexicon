@@ -955,7 +955,7 @@ describe("C++ parser edges", () => {
 
 		expect(provider.resolveImport({ fromModule: "src/use.cpp", specifier: "detail/item.hpp" })).toEqual({
 			status: "resolved",
-			module: "src/detail/item.hpp",
+			landing: { kind: "module", module: "src/detail/item.hpp" },
 		});
 		expect(provider.resolveImport({ fromModule: "src/use.cpp", specifier: "../../outside.hpp" })).toMatchObject({
 			status: "unresolved",

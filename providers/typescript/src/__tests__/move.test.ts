@@ -130,7 +130,6 @@ describe("move edits", () => {
 					importKind: "named",
 					importedName: "moved",
 					localName: "local",
-					reExport: false,
 				},
 			],
 			dependencies: [],
@@ -170,7 +169,6 @@ describe("move edits", () => {
 						range: rangeForText(text, "./old"),
 						specifier: "./old",
 						importKind: "wildcard",
-						reExport: true,
 					},
 				],
 				dependencies: [],
@@ -214,7 +212,6 @@ describe("move edits", () => {
 							importKind,
 							...(importedName === undefined ? {} : { importedName }),
 							localName: "moved",
-							reExport: false,
 						},
 					],
 					dependencies: [],
@@ -248,7 +245,6 @@ describe("move edits", () => {
 						specifier: "./cart",
 						importKind: "named",
 						importedName: "add",
-						reExport: false,
 					},
 				],
 				dependencies: [],
@@ -267,7 +263,7 @@ describe("move edits", () => {
 	});
 
 	it("moves one name out of an import that keeps others, in its own form, joining or dropping statements", () => {
-		const named = { importKind: "named", importedName: "moved", reExport: false } as const;
+		const named = { importKind: "named", importedName: "moved" } as const;
 		const cases: { imports: string; site: Omit<MoveImportSite, "range" | "specifier">; expected: string }[] = [
 			{
 				imports: 'import { moved, stay } from "./old";',
@@ -291,7 +287,7 @@ describe("move edits", () => {
 			},
 			{
 				imports: 'import moved, { stay } from "./old";',
-				site: { importKind: "default", localName: "moved", reExport: false },
+				site: { importKind: "default", localName: "moved" },
 				expected: 'import { stay } from "./old";\nimport moved from "./new";',
 			},
 			{
@@ -321,7 +317,7 @@ describe("move edits", () => {
 			},
 			{
 				imports: 'export { stay, moved } from "./old";',
-				site: { ...named, reExport: true },
+				site: named,
 				expected: 'export { stay } from "./old";\nexport { moved } from "./new";',
 			},
 		];
@@ -471,9 +467,9 @@ describe("move edits", () => {
 			if (written === undefined || !(ts.isImportDeclaration(written) || ts.isImportEqualsDeclaration(written))) {
 				throw new Error("missing test import");
 			}
-			const entry = importOf(written, written.getSourceFile())?.imported[0];
+			const entry = importOf(written, written.getSourceFile())?.edges[0];
 			const via = {
-				importKind: entry?.kind ?? (entry?.name === undefined ? "namespace" : "named"),
+				importKind: entry?.kind ?? "named",
 				...(entry?.name === undefined ? {} : { importedName: entry.name }),
 				...(entry?.typeOnly === true ? { typeOnly: true } : {}),
 			} as const;
@@ -700,7 +696,6 @@ describe("move edits", () => {
 						importKind: "named",
 						importedName: "moved",
 						localName: `m${index}`,
-						reExport: false,
 					};
 				});
 				return { text, dependencies: [], importSites };
@@ -720,7 +715,6 @@ describe("move edits", () => {
 						importKind: "named",
 						importedName: "moved",
 						localName: `m${index}`,
-						reExport: false,
 					};
 				});
 				return { text, dependencies: [], importSites };
@@ -1100,7 +1094,6 @@ describe("move edits", () => {
 						importKind: "named",
 						importedName: "moved",
 						localName: "moved",
-						reExport: false,
 					},
 				],
 				dependencies: [],
@@ -1138,7 +1131,6 @@ describe("move edits", () => {
 						importKind: "named",
 						importedName: "moved",
 						localName: "moved",
-						reExport: false,
 					},
 				],
 				dependencies: [],
@@ -1312,7 +1304,6 @@ describe("move edits", () => {
 						specifier: "./source",
 						importKind: "named",
 						importedName: "moved",
-						reExport: false,
 					},
 				],
 				dependencies: [],

@@ -7,6 +7,7 @@ import { composeSymbolId, type Declaration, doubtFactId, type Reference } from "
 import type { AttachedComment } from "../commentAttach";
 import { ImportResolver } from "../imports";
 import { HiddenModules, IndexStore, SCHEMA_VERSION } from "../store";
+import { edge, named, onLine, sideEffect } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -509,8 +510,8 @@ describe("opening the index", () => {
 		IndexStore.open(file).store.close();
 		const { DatabaseSync } = await import("node:sqlite");
 		const raw = new DatabaseSync(file);
-		// An earlier 23 layout, before imports kept their form.
-		raw.exec("ALTER TABLE imports DROP COLUMN importKind");
+		// A 23 layout missing columns this version reads.
+		raw.exec("ALTER TABLE imports DROP COLUMN edge");
 		raw.exec("ALTER TABLE imports DROP COLUMN typeOnly");
 		raw.exec("PRAGMA user_version = 23");
 		raw.close();
@@ -521,7 +522,7 @@ describe("opening the index", () => {
 			contentHash: "h1",
 			declarations: [declaration("a")],
 			references: [],
-			imports: [{ specifier: "./b", imported: [], reExport: false }],
+			imports: [sideEffect("./b", POINT)],
 		});
 		expect(reopened.rebuilt).toBe(true);
 		expect(reopened.store.importsIn("src/a.ts")).toHaveLength(1);
@@ -718,28 +719,17 @@ describe("a file's role", () => {
 	});
 });
 
-/**
- * The knowledge layer's prerequisite: a fact an answer can name and later resolve.
- *
- * The declaration already had a symbolId, which is a different thing. That id names the SYMBOL and
- * survives edits by design, so a citation built on it could never notice the signature changing
- * underneath it.
- */
 describe("the form an import binds", () => {
-	it("keeps the form a provider names, and reads one it does not from the names it carries", () => {
+	it("keeps the form each edge names", () => {
 		store.replaceFile({
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [],
 			references: [],
 			imports: [
-				{
-					specifier: "./d.js",
-					imported: [{ local: "d", localRange: POINT, kind: "default" }],
-					reExport: false,
-				},
-				{ specifier: "./n.js", imported: [{ local: "n", localRange: POINT }], reExport: false },
-				{ specifier: "./x.js", imported: [{ name: "x", range: POINT }], reExport: false },
+				{ specifier: "./d.js", edges: [edge("default", onLine(1), { local: "d", localRange: onLine(1) })] },
+				{ specifier: "./n.js", edges: [edge("namespace", onLine(2), { local: "n", localRange: onLine(2) })] },
+				named("./x.js", "x", onLine(3)),
 			],
 			literals: [],
 		});
@@ -753,6 +743,13 @@ describe("the form an import binds", () => {
 	});
 });
 
+/**
+ * The knowledge layer's prerequisite: a fact an answer can name and later resolve.
+ *
+ * The declaration already had a symbolId, which is a different thing. That id names the SYMBOL and
+ * survives edits by design, so a citation built on it could never notice the signature changing
+ * underneath it.
+ */
 describe("citable facts", () => {
 	const literal = { kind: "string" as const, value: "hello", range: POINT };
 
@@ -762,7 +759,7 @@ describe("citable facts", () => {
 			contentHash: "h1",
 			declarations: [declaration("add")],
 			references: [reference("add", idOf("add"))],
-			imports: [{ specifier: "./b.js", imported: [], reExport: false }],
+			imports: [sideEffect("./b.js", POINT)],
 			literals: [literal],
 		});
 
@@ -1066,7 +1063,7 @@ describe("forgetting a file", () => {
 			contentHash: "h1",
 			declarations: [declaration("add")],
 			references: [reference("add", idOf("add"))],
-			imports: [{ specifier: "./b.js", imported: [], reExport: false }],
+			imports: [sideEffect("./b.js", POINT)],
 			literals: [{ kind: "string", value: "gone", range: POINT }],
 		});
 
@@ -1074,5 +1071,49 @@ describe("forgetting a file", () => {
 
 		expect(store.totals()).toMatchObject({ files: 0, symbols: 0, references: 0, imports: 0, literals: 0 });
 		expect(store.literalsWhere({ value: "gone", hidden: HiddenModules.none }, 10)).toEqual([]);
+	});
+});
+
+describe("an overlaid read", () => {
+	it("reads facts in place of the stored ones, projections settled, and leaves none behind, returned or thrown", () => {
+		const facts = (module: string, name: string) => ({
+			module,
+			contentHash: name,
+			declarations: [declaration(name, module)],
+			references: [],
+		});
+		store.replaceFile(facts("src/a.ts", "kept"));
+		store.settleProjections();
+		const generation = store.factsGeneration();
+
+		const inside = store.readOverlaid([facts("src/a.ts", "tried"), facts("src/b.ts", "added")], () => ({
+			declared: ["src/a.ts", "src/b.ts"].flatMap((module) => store.declarationsIn(module).map((row) => row.name)),
+			exposed: store.effectiveExportsOf("src/b.ts").map((row) => row.name),
+		}));
+		const thrown = (() => {
+			try {
+				return store.readOverlaid([facts("src/c.ts", "abandoned")], () => {
+					throw new Error("stop");
+				});
+			} catch {
+				return "thrown";
+			}
+		})();
+
+		expect({
+			inside,
+			thrown,
+			after: ["src/a.ts", "src/b.ts", "src/c.ts"].map((module) =>
+				store.declarationsIn(module).map((row) => row.name),
+			),
+			generation: store.factsGeneration() - generation,
+			debt: store.nextProjectionDebt(),
+		}).toEqual({
+			inside: { declared: ["tried", "added"], exposed: ["added", null] },
+			thrown: "thrown",
+			after: [["kept"], [], []],
+			generation: 0,
+			debt: null,
+		});
 	});
 });

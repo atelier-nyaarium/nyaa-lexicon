@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { toyTokens } from "../conformance/toyLexer";
 import { hashContent } from "../hash";
 import {
 	asyncModuleStore,
@@ -32,8 +33,12 @@ const roots: string[] = [];
 
 function read(_module: string, text: string, _depth: IndexDepth): Toy {
 	if (text === "boom") throw new Error("boom");
-	const names = text.split(/\s+/).filter((name) => name.length > 0 && !name.includes("!"));
-	return { text, names, diagnostics: text.includes("!") ? [{ severity: "error", message: "bang" }] : [] };
+	const tokens = toyTokens(text);
+	// A word marked `!` is a parse error, never a name.
+	const marked = (at: number) => tokens[at + 1]?.text === "!";
+	const names = tokens.flatMap((token, at) => (token.kind === "word" && !marked(at) ? [token.text] : []));
+	const bang = tokens.some((token) => token.text === "!");
+	return { text, names, diagnostics: bang ? [{ severity: "error", message: "bang" }] : [] };
 }
 
 function* entries(
@@ -56,6 +61,7 @@ function toy(
 	root: string,
 	onParse?: (value: Toy) => void,
 	fingerprint?: () => string,
+	probeBatch?: StoreProvider<Toy, null, string>["probeBatch"],
 ) {
 	const provider: StoreProvider<Toy, null, string> = {
 		store,
@@ -74,6 +80,7 @@ function toy(
 		renameEdits: () => ({}) as never,
 		moveEdits: () => ({}) as never,
 		arrangeEdits: () => ({}) as never,
+		...(probeBatch === undefined ? {} : { probeBatch }),
 	};
 	const handlers = handlersFor(provider);
 	handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
@@ -574,6 +581,35 @@ describe("the module store's layers", () => {
 			during: "w z",
 			sameValue: true,
 			index: before.index,
+		});
+	});
+
+	it("shows every text of a batch probe at once, then the held ones again", async () => {
+		const root = workspace({ "a.toy": "x", "b.toy": "y" });
+		const store = moduleStore<Toy, null, string>({ read, entries });
+		const shown = () => ({
+			texts: MODULES.slice(0, 2).map((module) => store.peek(module)?.text),
+			w: store.get("name:w"),
+		});
+		let during: unknown;
+		const handlers = toy(store, root, undefined, undefined, () => {
+			during = shown();
+			return { status: "ready", facts: [], landings: [] };
+		});
+		handlers.parseFile({ module: "a.toy", contentHash: "h", text: "x" });
+		handlers.parseFile({ module: "b.toy", contentHash: "h", text: "y" });
+		const answer = await handlers.probeBatch({
+			files: [
+				{ module: "a.toy", contentHash: "p", text: "w" },
+				{ module: "b.toy", contentHash: "q", text: "w z" },
+			],
+			answer: ["a.toy"],
+		});
+
+		expect({ answer, during, after: shown() }).toEqual({
+			answer: { status: "ready", facts: [], landings: [] },
+			during: { texts: ["w", "w z"], w: ["a.toy", "b.toy"] },
+			after: { texts: ["x", "y"], w: [] },
 		});
 	});
 

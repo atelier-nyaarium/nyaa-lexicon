@@ -5,14 +5,14 @@
 import type { Binding, SymbolKind, UnknownReason } from "@nyaa-lexicon/protocol";
 import type { CppDeclarationRecord, CppFacts, CppReferenceRecord, CppUsing, Receiver, TypeShape } from "./model.js";
 import { includesBefore, type Reach, type Reaches } from "./reach.js";
-import { isTransparent, memberPath, scopeIdOf, seenScope } from "./scopes.js";
+import { isTransparent, memberPath, namespaceScopeId, scopeIdOf, seenScope } from "./scopes.js";
 import { type Alternative, exclusive } from "./tokens.js";
 
 ////////////////////////////////
 //  Interfaces & Types
 
 /** Why a lookup found nothing. */
-interface Missing {
+export interface Missing {
 	reason: UnknownReason;
 	detail: string;
 }
@@ -269,6 +269,25 @@ export class CppBinder {
 		const ids = [...new Set(found.records.map((record) => record.declaration.symbolId))];
 		if (ids.length === 1) return { status: "bound", symbolId: ids[0] as string, provenance: "bound" };
 		return { status: "ambiguous", candidates: ids, provenance: "bound" };
+	}
+
+	/** The scope id of the one named namespace the name at `token` writes, through aliases; why none. */
+	namespaceAt(module: string, token: number): { scopeId: string } | Missing {
+		const reference = this.facts(module)?.referencesByToken.get(token);
+		if (reference === undefined) return missing("NotImplemented", "no name writes the namespace");
+		const found = this.lookup(module, reference);
+		if (isMissing(found)) return found;
+		const ids = new Set(
+			found.records
+				.filter((record) => record.declaration.kind === "namespace")
+				.flatMap((namespace) => this.aliased(namespace))
+				.map(namespaceScopeId),
+		);
+		const [id] = ids;
+		if (id === undefined) return missing("NotImplemented", "the name is no namespace");
+		if (ids.size > 1) return missing("Ambiguous", "the name opens different namespaces");
+		if (id === null) return missing("NotImplemented", "an unnamed namespace is its file's own");
+		return { scopeId: id };
 	}
 
 	private facts(module: string): CppFacts | undefined {

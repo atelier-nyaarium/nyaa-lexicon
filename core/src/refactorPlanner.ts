@@ -5,6 +5,7 @@
 
 import type {
 	FileFacts,
+	Meaning,
 	MoveAnchor,
 	MoveDependency,
 	MoveEditsRequest,
@@ -31,6 +32,7 @@ import {
 	sameRange,
 } from "@nyaa-lexicon/protocol";
 import type { FileEdits } from "./applyEdits.js";
+import { landingKey, narrowed } from "./exportProjection.js";
 import type { ImportResolver } from "./imports.js";
 import type { ProviderProbe } from "./providerProbe.js";
 import { type FactsSeen, factsMovedSince, ReadContext } from "./readContext.js";
@@ -43,6 +45,7 @@ import {
 	anchorNotTopLevel,
 	candidateDoesNotParse,
 	editsRefused,
+	landingUnchecked,
 	moduleChangedReindex,
 	moduleNotOnDisk,
 	moduleUnreadable,
@@ -55,9 +58,11 @@ import {
 	nothingToInsert,
 	occurrencesBlocked,
 	oneAnchorOnly,
+	projectionsUnsettled,
 	providerRefused,
 	type Refusal,
 	replacementRenames,
+	routeChanged,
 	sharesId,
 	sharesSpan,
 	siteBlocked,
@@ -66,9 +71,11 @@ import {
 	subjectRefused,
 	unrepresentableModule,
 } from "./refusals.js";
+import { type ModuleTiers, mentionsOf, type ResolvedRoutes, resolveRoutes, startKey } from "./renameRoutes.js";
+import { proveRename, type RenameCandidate } from "./renameValidation.js";
 import { writableText } from "./sourceRead.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
-import type { IndexStore, StoredDeclaration } from "./store.js";
+import type { IndexStore, StoredDeclaration, StoredImport } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
 
 export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } from "@nyaa-lexicon/protocol";
@@ -82,10 +89,6 @@ function inside(range: Range, at: Position): boolean {
 
 function contains(outer: Range, inner: Range): boolean {
 	return inside(outer, inner.start) && inside(outer, inner.end);
-}
-
-function siteKey(module: string, line: number, character: number): string {
-	return `${module}\0${line}\0${character}`;
 }
 
 /** Member type, or null. */
@@ -145,6 +148,13 @@ const UNKNOWN_REASONS: UnknownReason[] = [
 	"BrokenImport",
 	"NotIndexed",
 ];
+
+/** The issue kind a provider's rename refusal reads as. */
+const REFUSAL_KINDS: Readonly<Record<string, string>> = {
+	Collision: "NameTaken",
+	NotImplemented: "NotImplemented",
+	ParseError: "ParseError",
+};
 
 function isDangling(reason: string): boolean {
 	return reason !== "ExternalDependency" && reason !== "NotIndexed" && reason !== "DynamicallyTyped";
@@ -218,6 +228,11 @@ function countUnbound(rows: Array<{ name: string; role: string; reason: string }
 		else counts.set(key, { name: row.name, role: row.role, reason: row.reason, count: 1 });
 	}
 	return counts;
+}
+
+/** Routes not yet followed, mentions not yet counted. */
+function untraced(): Pick<PlannedRename, "routes" | "mentions"> {
+	return { routes: { edges: [], modules: [] }, mentions: { comments: 0, strings: 0, incomplete: true } };
 }
 
 ////////////////////////////////
@@ -316,6 +331,9 @@ export class RefactorPlanner {
 		private readonly imports: ImportResolver,
 		private readonly source: SourceWorkspace,
 		private readonly probe: ProviderProbe,
+		/** The candidate proof; a planner test that is not about it passes its own. */
+		private readonly prove: (candidate: RenameCandidate) => Promise<RenameBlocker[]> = (candidate) =>
+			proveRename(store, probe, candidate),
 	) {}
 
 	/**
@@ -1127,63 +1145,54 @@ export class RefactorPlanner {
 	 *
 	 * The whole reason this is separate from applying: a rename is honest only over a set that is
 	 * provably closed, and closedness is a question the index can answer without editing anything.
-	 * The occurrences come from bound edges alone, because a name match is a guess and a guess is
-	 * acceptable in a reading tool and disqualifying in a writing one.
+	 * The occurrences come from bound edges and proved routes alone, because a name match is a guess
+	 * and a guess is acceptable in a reading tool and disqualifying in a writing one.
 	 */
-	async prepareRename(symbolId: string, newName: string, context: ReadContext): Promise<PlannedRename> {
-		const declaration = context.declaration(symbolId);
-		if (!declaration) {
-			return {
-				symbolId,
-				oldName: "",
-				newName,
-				files: [],
-				occurrences: 0,
-				blockers: [{ kind: "NotIndexed", detail: subjectRefused(symbolId, this.store) }],
-				warnings: [],
-			};
-		}
+	async prepareRename(
+		symbolId: string,
+		newName: string,
+		context: ReadContext,
+		stops: readonly string[] = [],
+	): Promise<PlannedRename> {
+		return (await this.planRename(symbolId, newName, context, stops)).plan;
+	}
 
-		const oldName = declaration.name;
-		// A name that is nowhere in the source has no site to rewrite.
-		if (declaration.selectionRange === undefined) {
-			return {
+	/** The plan, and the routes it was read from; null where it stops before tracing any. */
+	private async planRename(
+		symbolId: string,
+		newName: string,
+		context: ReadContext,
+		stops: readonly string[],
+	): Promise<{ plan: PlannedRename; routes: ResolvedRoutes | null }> {
+		// A write anywhere from here on moves the plan, an importer it never read included.
+		context.pinIndex();
+		const refused = (oldName: string, blocker: RenameBlocker) => ({
+			plan: {
 				symbolId,
 				oldName,
 				newName,
 				files: [],
 				occurrences: 0,
-				blockers: [{ kind: "NameNotInSource", detail: nameNotInSource(oldName) }],
+				blockers: [blocker],
 				warnings: [],
-			};
-		}
-		const byModule = new Map<string, RenameSite[]>();
-		// The declaration's own name is a site like any other, and forgetting it renames every use
-		// to point at a definition that still has the old name.
-		byModule.set(declaration.module, [{ range: declaration.selectionRange }]);
+				...untraced(),
+			},
+			routes: null,
+		});
+		const declaration = context.declaration(symbolId);
+		if (!declaration) return refused("", { kind: "NotIndexed", detail: subjectRefused(symbolId, this.store) });
 
-		// Parser-reported member accesses; no local captures them.
-		const qualified = new Set<string>();
-		for (const reference of context.referencesTo(symbolId)) {
-			if (reference.qualified === true) {
-				qualified.add(siteKey(reference.module, reference.startLine, reference.startCharacter));
-			}
-			const sites = byModule.get(reference.module) ?? [];
-			sites.push({
-				range: {
-					start: { line: reference.startLine, character: reference.startCharacter },
-					end: { line: reference.endLine, character: reference.endCharacter },
-				},
-				role: reference.role,
-			});
-			byModule.set(reference.module, sites);
+		const oldName = declaration.name;
+		// A name that is nowhere in the source has no site to rewrite.
+		if (declaration.selectionRange === undefined) {
+			return refused(oldName, { kind: "NameNotInSource", detail: nameNotInSource(oldName) });
 		}
-
-		for (const site of await this.imports.importSitesFor(declaration.module, oldName, context)) {
-			const sites = byModule.get(site.module) ?? [];
-			sites.push({ range: site.range, role: "import" });
-			byModule.set(site.module, sites);
+		if (this.store.nextProjectionDebt() !== null) {
+			return refused(oldName, { kind: "RouteUnknown", detail: projectionsUnsettled() });
 		}
+		const tiers = (module: string) => this.tiersOf(module);
+		const routes = resolveRoutes({ subject: declaration, newName, stops: new Set(stops), tiers }, context);
+		const byModule = routes.sites;
 
 		// Renaming an owned symbol reaches its owner's CALLERS: a Python keyword argument names the
 		// parameter at a site that spells the function's name, so nothing searching for the old name
@@ -1204,22 +1213,87 @@ export class RefactorPlanner {
 			sites,
 			...(owned ? { ownerCalls: ownerCalls.get(module) ?? [] } : {}),
 		}));
+		// A kept site writes no new binding, so nothing captures it.
+		const renamed = new Map(
+			[...byModule].map(([module, sites]) => [module, sites.filter((site) => site.keep !== true)] as const),
+		);
+		// Every range a module's plan decides, which no mention counts.
+		const decided = new Map(
+			[...byModule].map(
+				([module, sites]) =>
+					[module, [...sites.map((site) => site.range), ...(routes.unchanged.get(module) ?? [])]] as const,
+			),
+		);
 		const blockers =
 			newName === oldName
 				? [{ kind: "SameName", detail: alreadyNamed(oldName) }]
-				: this.renameCollisions(symbolId, newName, byModule, qualified, context);
+				: [
+						...routes.blockers,
+						...(await this.landingsMoved(routes.relied)),
+						...this.renameCollisions(symbolId, newName, renamed, routes.qualified, routes.inert, context),
+					];
 
 		return {
-			symbolId,
-			oldName,
-			newName,
-			files,
-			occurrences: files.reduce((total, file) => total + file.sites.length, 0),
-			blockers,
-			warnings: [
-				...this.renameWarnings(declaration, oldName, newName, symbolId, context),
-				...this.ownerCallConcerns(symbolId, context),
-			],
+			plan: {
+				symbolId,
+				oldName,
+				newName,
+				files,
+				occurrences: files.reduce((total, file) => total + file.sites.length, 0),
+				blockers,
+				warnings: [
+					...this.renameWarnings(declaration, oldName, newName, symbolId, context),
+					...this.ownerCallConcerns(symbolId, context),
+				],
+				routes: routes.routes,
+				mentions: mentionsOf(oldName, decided, context, tiers),
+			},
+			routes,
+		};
+	}
+
+	/** Relied edges whose live landing differs from the stored one, or could not be checked. */
+	async landingsMoved(relied: readonly StoredImport[]): Promise<RenameBlocker[]> {
+		const bySpecifier = new Map(relied.map((edge) => [`${edge.module}\0${edge.specifier}`, edge] as const));
+		const checked = await Promise.all(
+			[...bySpecifier.values()].map(async (edge) => {
+				try {
+					const live = await this.imports.resolveLive(edge.module, edge.specifier);
+					const landing = live.status === "resolved" ? live.landing : null;
+					const same =
+						landing === null || edge.landing === null
+							? landing === edge.landing
+							: landingKey(landing) === landingKey(edge.landing);
+					return { edge, outcome: same ? ("same" as const) : ("moved" as const) };
+				} catch {
+					return { edge, outcome: "unchecked" as const };
+				}
+			}),
+		);
+		const at = (edge: StoredImport) => ({ module: edge.module, line: edge.span.start.line + 1 });
+		const moved = checked.filter((each) => each.outcome === "moved").map((each) => at(each.edge));
+		const blockers: RenameBlocker[] = checked
+			.filter((each) => each.outcome === "unchecked")
+			.map(({ edge }) => ({
+				kind: "RouteUnknown",
+				detail: landingUnchecked(edge.module, edge.specifier),
+				sites: [at(edge)],
+			}));
+		if (moved.length > 0) {
+			blockers.unshift({ kind: "RouteChanged", detail: routeChanged(moved.length), sites: moved.slice(0, 20) });
+		}
+		return blockers;
+	}
+
+	/** What the owning provider declares for keeping a name and reading prose; null when none owns it. */
+	private tiersOf(module: string): ModuleTiers | null {
+		const owner = this.probe.owner(module);
+		if (!owner.owned) return null;
+		const { providerId } = owner;
+		return {
+			renameKeep: this.probe.declares(providerId, "renameKeep"),
+			comments: this.probe.declares(providerId, "comments"),
+			literals: this.probe.declares(providerId, "literals"),
 		};
 	}
 
@@ -1286,9 +1360,9 @@ export class RefactorPlanner {
 	 *
 	 * A declaration collides when its scope holds a rename site, when it is a member of the renamed
 	 * member's type, or when the renamed symbol nests inside its scope around one of its uses. A
-	 * member's own declaration and a site the parser marked `qualified` are no sites here: no local can
-	 * capture them. A declaration's container is its scope; module level spans the file. Everything
-	 * comes from the index, never from source text.
+	 * member's own declaration, a site the parser marked `qualified`, and a token that binds nothing, such
+	 * as a forward's, are no sites here: no local can capture them. A declaration's container is its
+	 * scope; module level spans the file. Everything comes from the index, never from source text.
 	 *
 	 * A blocker rather than a warning: this is known to break. Each one names the conflicting site
 	 * and both ways out.
@@ -1298,6 +1372,7 @@ export class RefactorPlanner {
 		newName: string,
 		sites: ReadonlyMap<string, readonly RenameSite[]>,
 		qualified: ReadonlySet<string>,
+		inert: ReadonlySet<string>,
 		context: ReadContext,
 	): RenameBlocker[] {
 		const renamed = context.declaration(symbolId);
@@ -1310,11 +1385,10 @@ export class RefactorPlanner {
 		const exposed = new Map<string, Position[]>();
 		for (const [module, each] of sites) {
 			const starts = each
-				.filter(
-					(site) =>
-						!ownDeclaration(module, site) &&
-						!qualified.has(siteKey(module, site.range.start.line, site.range.start.character)),
-				)
+				.filter((site) => {
+					const key = startKey(module, site.range.start);
+					return !ownDeclaration(module, site) && !qualified.has(key) && !inert.has(key);
+				})
 				.map((site) => site.range.start);
 			exposed.set(module, starts);
 		}
@@ -1333,11 +1407,27 @@ export class RefactorPlanner {
 				return reference.module === renamed.module && reference.qualified !== true && inside(own, at);
 			});
 		};
+		// Disjoint meanings never clash.
+		const meaning = renamed === null ? undefined : this.meaningOf(renamed, context);
 		const declared = context
 			.declarationsNamed(newName)
-			.filter((other) => other.symbolId !== symbolId && sites.has(other.module) && collides(other));
+			.filter(
+				(other) =>
+					other.symbolId !== symbolId &&
+					sites.has(other.module) &&
+					narrowed(meaning, this.meaningOf(other, context)) !== null &&
+					collides(other),
+			);
 
-		const bound = context.importsBinding(newName).filter((entry) => (exposed.get(entry.module) ?? []).length > 0);
+		// A rebinding import of the subject itself, its source token renamed, binds the same declaration again.
+		const again = (entry: StoredImport) =>
+			entry.conflict !== undefined &&
+			entry.conflict.amongTransfers !== "exclude" &&
+			entry.range !== undefined &&
+			(sites.get(entry.module) ?? []).some((site) => sameRange(site.range, entry.range as Range));
+		const bound = context
+			.importsBinding(newName)
+			.filter((entry) => (exposed.get(entry.module) ?? []).length > 0 && !again(entry));
 
 		const concerns: RenameBlocker[] = [];
 		if (declared.length > 0) {
@@ -1346,7 +1436,7 @@ export class RefactorPlanner {
 				detail: nameAlreadyDeclared(newName, declared.length),
 				sites: declared.map((other) => ({
 					module: other.module,
-					line: (other.selectionRange ?? other.range).start.line,
+					line: (other.selectionRange ?? other.range).start.line + 1,
 				})),
 			});
 		}
@@ -1354,10 +1444,21 @@ export class RefactorPlanner {
 			concerns.push({
 				kind: "NameImported",
 				detail: nameAlreadyImported(newName, bound.length),
-				sites: bound.map((entry) => ({ module: entry.module, line: entry.range?.start.line ?? 0 })),
+				sites: bound.map((entry) => ({
+					module: entry.module,
+					line: (entry.localRange ?? entry.range ?? entry.span).start.line + 1,
+				})),
 			});
 		}
 		return concerns;
+	}
+
+	/** The meaning a declaration's own export states; absent when none does. */
+	private meaningOf(declaration: StoredDeclaration, context: ReadContext): Meaning | undefined {
+		const edge = context
+			.exportsIn(declaration.module)
+			.find((each) => each.target.kind === "symbol" && each.target.symbolId === declaration.symbolId);
+		return edge?.meaning;
 	}
 
 	/** Builds the complete edit set for `renameEdits`. See `docs/daemon-protocol.md`. */
@@ -1365,22 +1466,39 @@ export class RefactorPlanner {
 		symbolId: string,
 		newName: string,
 		context: ReadContext = new ReadContext(this.store),
+		stops: readonly string[] = [],
 	): Promise<PlannedRenameEdits> {
-		const plan = await this.prepareRename(symbolId, newName, context);
+		return (await this.planRenameEdits(symbolId, newName, context, stops)).edits;
+	}
+
+	/** The edit set, proved against every provider's view of it, and the import edges a writer checks again. */
+	async planRenameEdits(
+		symbolId: string,
+		newName: string,
+		context: ReadContext,
+		stops: readonly string[] = [],
+	): Promise<{ edits: PlannedRenameEdits; relied: StoredImport[] }> {
+		const { plan, routes } = await this.planRename(symbolId, newName, context, stops);
+		const relied = routes?.relied ?? [];
+		const refuse = (reason: Refusal, blockers = plan.blockers) => ({
+			edits: { ok: false as const, plan: { ...plan, blockers }, reason },
+			relied,
+		});
 		const blocker = plan.blockers[0];
-		if (blocker !== undefined) return { ok: false, plan, reason: blocker.detail };
+		if (blocker !== undefined) return refuse(blocker.detail);
 		// File changes invalidate stored ranges.
 		const stale = this.source.staleModules(plan.files.map((file) => file.module));
-		if (stale.length > 0) return { ok: false, plan, reason: staleSincePlanned(stale, "rename") };
+		if (stale.length > 0) return refuse(staleSincePlanned(stale, "rename"));
 
 		const files: FileEdits[] = [];
+		const proposed: RenameCandidate["proposed"] = [];
 		const blocked: RenameBlocker[] = [];
 
 		for (const file of plan.files) {
 			const current = this.source.writable(file.module);
-			if ("refused" in current) return { ok: false, plan, reason: current.refused };
+			if ("refused" in current) return refuse(current.refused);
 			const text = current.text;
-			if (text === null) return { ok: false, plan, reason: moduleUnreadable(file.module) };
+			if (text === null) return refuse(moduleUnreadable(file.module));
 
 			const answer = await this.probe.renameEdits(file.module, {
 				module: file.module,
@@ -1392,7 +1510,9 @@ export class RefactorPlanner {
 			});
 
 			if (answer.status === "refused") {
-				return { ok: false, plan, reason: providerRefused(file.module, answer.reason, answer.detail) };
+				const detail = providerRefused(file.module, answer.reason, answer.detail);
+				const kind = REFUSAL_KINDS[answer.reason] ?? "NotEditable";
+				return refuse(detail, [...plan.blockers, { kind, detail, sites: [{ module: file.module, line: 1 }] }]);
 			}
 			for (const site of answer.blocked) {
 				blocked.push({
@@ -1401,14 +1521,38 @@ export class RefactorPlanner {
 					sites: [{ module: file.module, line: site.range.start.line + 1 }],
 				});
 			}
-			if (answer.edits.length > 0)
-				files.push({ module: file.module, contentHash: hashContent(text), edits: answer.edits });
+			if (answer.edits.length === 0) continue;
+			const applied = applyEdits(text, answer.edits);
+			if ("problem" in applied) return refuse(editsRefused(applied.problem));
+			files.push({ module: file.module, contentHash: hashContent(text), edits: answer.edits });
+			proposed.push({ module: file.module, before: text, text: applied.text, edits: answer.edits });
 		}
 
-		if (blocked.length > 0) {
-			return { ok: false, plan: { ...plan, blockers: blocked }, reason: occurrencesBlocked() };
-		}
-		return { ok: true, plan, files };
+		if (blocked.length > 0) return refuse(occurrencesBlocked(), blocked);
+
+		const idMap = this.renameIdMap(symbolId, newName, context);
+		const affected = [
+			...plan.files.map((file) => file.module),
+			...plan.routes.modules.map((row) => row.module),
+			...this.modulesBoundTo(idMap.keys(), context),
+			// A capture or a rebinding shows in an importer of a landing whose rows move.
+			...(routes?.moved ?? []).flatMap((landing) =>
+				context.importEdgesLandingOn(landing).map((edge) => edge.module),
+			),
+			// So does a dotted read through a namespace holder.
+			...(routes?.readers ?? []),
+		];
+		const proof = await this.prove({
+			proposed,
+			affected,
+			idMap,
+			subject: symbolId,
+			sites: new Map(plan.files.map((file) => [file.module, file.sites])),
+			projected: routes?.projected ?? [],
+		});
+		const [unproved] = proof;
+		if (unproved !== undefined) return refuse(unproved.detail, proof);
+		return { edits: { ok: true, plan, files }, relied };
 	}
 
 	/**

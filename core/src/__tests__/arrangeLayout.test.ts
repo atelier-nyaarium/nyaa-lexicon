@@ -136,4 +136,12 @@ describe("insertions", () => {
 			"a\r\n\r\nP\r\nQ\r\n\r\nb\r\n",
 		);
 	});
+
+	it("keep a line break inside a literal as written", () => {
+		const text = "a\r\n\r\nb\r\n";
+		const moved = 'P = @"x\ny"\nQ';
+		const literal = { start: moved.indexOf("@"), end: moved.indexOf("y") + 2 };
+		const slot = { landing: { line: 1 }, members: [{ symbolId: "P", text: moved, literals: [literal] }] };
+		expect(arranged(text, {}, [slot])).toBe('a\r\n\r\nP = @"x\ny"\r\nQ\r\n\r\nb\r\n');
+	});
 });

@@ -39,7 +39,6 @@ function importSite(text: string, name: string): ArrangeImportSite {
 		importKind: "named",
 		importedName: name,
 		localName: name,
-		reExport: false,
 	};
 }
 

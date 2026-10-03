@@ -5,7 +5,17 @@
 
 import type { z } from "zod";
 import { comparePositions, coordinatesOf } from "../coordinates.js";
-import type { CommentSpan, DocRegion, FileFacts, FileRole, ImportResolution, Literal } from "../project.js";
+import type { ProbeBatchResponse } from "../methods.js";
+import type {
+	CommentSpan,
+	DocRegion,
+	ExportTarget,
+	FileFacts,
+	FileRole,
+	ImportEdge,
+	ImportResolution,
+	Literal,
+} from "../project.js";
 import { parseSymbolId } from "../symbolId.js";
 import type { Declaration, Range, Reference } from "../symbols.js";
 import type { TypeInfo } from "../values.js";
@@ -13,10 +23,12 @@ import type {
 	ConformanceCase,
 	ExpectedDeclarationSchema,
 	ExpectedDocRegionSchema,
+	ExpectedExport,
 	ExpectedLiteral,
 	ExpectedReferenceSchema,
 	ExpectedRole,
 	ExpectedTrivia,
+	ProbeBatchFixture,
 } from "./types.js";
 
 ////////////////////////////////
@@ -111,7 +123,7 @@ function checkReference(
 	expected: ExpectedReference,
 	actual: Reference,
 	byId: Map<string, Declaration>,
-	module: string,
+	facts: FileFacts,
 ): string[] {
 	const problems: string[] = [];
 	const at = referenceLabel(expected);
@@ -121,6 +133,8 @@ function checkReference(
 		if (owner !== expected.from)
 			problems.push(`${at}: written in ${owner ?? "no declaration"}, expected ${expected.from}`);
 	}
+
+	problems.push(...checkOrigin(expected, actual, facts));
 
 	const wanted =
 		expected.status ??
@@ -143,7 +157,7 @@ function checkReference(
 
 	if (actual.binding.status !== "bound") return problems;
 	const parsed = parseSymbolId(actual.binding.symbolId);
-	const elsewhere = parsed !== null && parsed.module !== module;
+	const elsewhere = parsed !== null && parsed.module !== facts.module;
 	if (expected.bindsToModule !== undefined && parsed?.module !== expected.bindsToModule) {
 		problems.push(`${at}: binds in ${parsed?.module ?? "an unknown module"}, expected ${expected.bindsToModule}`);
 	}
@@ -206,6 +220,85 @@ function checkedInSourceOrder<Row extends { range: Range; role?: string }>(
 		);
 }
 
+function sameRange(left: Range, right: Range): boolean {
+	return comparePositions(left.start, right.start) === 0 && comparePositions(left.end, right.end) === 0;
+}
+
+/** The import edges written at exactly this span. */
+function edgesAt(facts: FileFacts, span: Range): ImportEdge[] {
+	return facts.imports.flatMap((statement) => statement.edges).filter((edge) => sameRange(edge.span, span));
+}
+
+/** How a case names an edge: its local binding, else its source name, else `*`. */
+function bindingOf(edge: ImportEdge): string {
+	return edge.local ?? edge.name ?? "*";
+}
+
+function targetNameOf(target: ExportTarget, facts: FileFacts, byId: Map<string, Declaration>): string | undefined {
+	if (target.kind === "symbol") return byId.get(target.symbolId)?.name;
+	if (target.kind === "import") return edgesAt(facts, target.span).map(bindingOf)[0];
+	return undefined;
+}
+
+/** EXACTLY these export edges, any order. */
+function checkExports(expected: readonly ExpectedExport[], facts: FileFacts, byId: Map<string, Declaration>): string[] {
+	if (facts.exports === undefined) return ["exports: not reported"];
+	const left = facts.exports.map((edge) => ({
+		edge,
+		targetName: targetNameOf(edge.target, facts, byId),
+		sourceName: edge.target.kind === "import" ? edgesAt(facts, edge.target.span)[0]?.name : undefined,
+	}));
+	const problems: string[] = [];
+	for (const wanted of expected) {
+		const at = left.findIndex(
+			({ edge, targetName, sourceName }) =>
+				edge.form === wanted.form &&
+				edge.name === wanted.name &&
+				edge.target.kind === wanted.target &&
+				(wanted.targetName === undefined || targetName === wanted.targetName) &&
+				(wanted.sourceName === undefined || sourceName === wanted.sourceName),
+		);
+		if (at === -1) problems.push(`export ${wanted.form} ${wanted.name ?? "*"}: not reported as expected`);
+		else left.splice(at, 1);
+	}
+	for (const { edge } of left) problems.push(`export ${edge.form} ${edge.name ?? "*"}: reported, not expected`);
+	return problems;
+}
+
+/** An import target or origin names exactly one edge, or core cannot follow it. */
+function checkEdgeLinks(facts: FileFacts): string[] {
+	const problems: string[] = [];
+	for (const edge of facts.exports ?? []) {
+		const count = edge.target.kind === "import" ? edgesAt(facts, edge.target.span).length : 1;
+		if (count !== 1) problems.push(`export ${edge.name ?? "*"}: its import target matches ${count} edges`);
+	}
+	for (const reference of facts.references) {
+		const count = reference.origin?.kind === "import" ? edgesAt(facts, reference.origin.span).length : 1;
+		if (count !== 1) problems.push(`reference ${reference.name}: its origin matches ${count} edges`);
+	}
+	return problems;
+}
+
+function checkOrigin(expected: ExpectedReference, actual: Reference, facts: FileFacts): string[] {
+	const wanted = expected.origin;
+	const origin = actual.origin;
+	const at = referenceLabel(expected);
+	if (wanted === undefined) return [];
+	if (origin === undefined) return [`${at}: no origin, expected one`];
+	if (wanted === "declaration") {
+		return origin.kind === "declaration" ? [] : [`${at}: resolves through an import, expected its declaration`];
+	}
+	if (origin.kind !== "import") return [`${at}: resolves to its declaration, expected through ${wanted.through}`];
+	const through = edgesAt(facts, origin.span).map(bindingOf);
+	const problems = through.includes(wanted.through)
+		? []
+		: [`${at}: resolves through ${through.join(", ") || "no edge"}, expected ${wanted.through}`];
+	const path = (origin.path ?? []).join(".");
+	const wantedPath = (wanted.path ?? []).join(".");
+	if (path !== wantedPath) problems.push(`${at}: reached through .${path}, expected .${wantedPath}`);
+	return problems;
+}
+
 ////////////////////////////////
 //  Case checking
 
@@ -227,6 +320,8 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 			problems.push(`declaration ${declaration.name}: signature ${JSON.stringify(signature)} is not one line`);
 		}
 	}
+
+	problems.push(...checkEdgeLinks(facts));
 
 	// A fixture's own declarations REPLACE the case's, matching how imports and typeOf already work.
 	const fixture = language === undefined ? undefined : testCase.fixtures[language];
@@ -259,7 +354,7 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 		const named = facts.references.filter((r) => r.name === expected.name && placed(expected, r));
 		const checked = checkedInSourceOrder(
 			named.filter((r) => selected(expected, r)),
-			(match) => checkReference(expected, match, byId, facts.module),
+			(match) => checkReference(expected, match, byId, facts),
 		);
 		if (checked.length === 0) {
 			const roles = [...new Set(named.map((r) => r.role))].sort();
@@ -280,6 +375,9 @@ export function checkFacts(testCase: ConformanceCase, facts: FileFacts, language
 			);
 		}
 	}
+
+	const wantedExports = fixture?.exports ?? testCase.exports;
+	if (wantedExports !== undefined) problems.push(...checkExports(wantedExports, facts, byId));
 
 	const wantedComments = fixture?.comments ?? testCase.comments;
 	if (wantedComments !== undefined) problems.push(...checkComments(wantedComments, facts.comments ?? []));
@@ -601,9 +699,15 @@ function checkLiteralRanges(source: string, actual: Literal[]): string[] {
 	return problems;
 }
 
-/** Compares one import specifier's resolution against a case. */
+/** Compares one import specifier's resolution against a case, landing kind and scope included. */
 export function checkImport(
-	expected: { specifier: string; status?: string | undefined; module?: string | undefined },
+	expected: {
+		specifier: string;
+		status?: string | undefined;
+		module?: string | undefined;
+		landing?: string | undefined;
+		scopeId?: string | undefined;
+	},
 	actual: ImportResolution,
 ): string[] {
 	const problems: string[] = [];
@@ -613,11 +717,65 @@ export function checkImport(
 		problems.push(`${at}: resolved as ${actual.status}, expected ${expected.status}`);
 		return problems;
 	}
-	if (expected.module !== undefined) {
-		if (actual.status !== "resolved") {
-			problems.push(`${at}: resolved as ${actual.status}, expected a module`);
-		} else if (actual.module !== expected.module) {
-			problems.push(`${at}: resolved to ${actual.module}, expected ${expected.module}`);
+	const kind = expected.landing ?? (expected.module === undefined ? undefined : "module");
+	if (kind === undefined && expected.scopeId === undefined) return problems;
+	if (actual.status !== "resolved") {
+		problems.push(`${at}: resolved as ${actual.status}, expected a landing`);
+		return problems;
+	}
+	const landing = actual.landing;
+	if (kind !== undefined && landing.kind !== kind) {
+		problems.push(`${at}: landed in a ${landing.kind}, expected a ${kind}`);
+	} else if (landing.kind === "module") {
+		if (expected.module !== undefined && landing.module !== expected.module) {
+			problems.push(`${at}: resolved to ${landing.module}, expected ${expected.module}`);
+		}
+	} else if (expected.scopeId !== undefined && landing.scopeId !== expected.scopeId) {
+		problems.push(`${at}: landed in scope ${landing.scopeId}, expected ${expected.scopeId}`);
+	}
+	return problems;
+}
+
+/**
+ * A ready batch probe against its fixture: one facts per asked module at its proposed or disk text's
+ * hash, one landing per distinct module and specifier, and the proposed texts read as one view.
+ */
+export function checkProbeBatch(
+	fixture: ProbeBatchFixture,
+	answer: Extract<ProbeBatchResponse, { status: "ready" }>,
+	hashOf: (text: string) => string,
+): string[] {
+	const problems: string[] = [];
+	for (const module of fixture.answer) {
+		const answered = answer.facts.filter((facts) => facts.module === module);
+		const text = fixture.probe[module] ?? fixture.files[module] ?? "";
+		if (answered.length !== 1) problems.push(`${module}: ${answered.length} facts answered, expected one`);
+		else if (answered[0]?.contentHash !== hashOf(text)) problems.push(`${module}: facts for another text`);
+	}
+	for (const facts of answer.facts) {
+		if (!fixture.answer.includes(facts.module)) problems.push(`${facts.module}: answered, not asked`);
+	}
+
+	const key = (module: string, specifier: string) => JSON.stringify([module, specifier]);
+	const wanted = new Set(
+		answer.facts.flatMap((facts) => facts.imports.map((statement) => key(facts.module, statement.specifier))),
+	);
+	const landed = answer.landings.map((landing) => key(landing.module, landing.specifier));
+	if (new Set(landed).size !== landed.length) problems.push("a landing is answered twice");
+	for (const each of wanted) if (!landed.includes(each)) problems.push(`no landing for ${each}`);
+	for (const each of landed) if (!wanted.has(each)) problems.push(`landing ${each} answers no import`);
+
+	for (const seen of fixture.sees) {
+		const facts = answer.facts.find((one) => one.module === seen.module);
+		if (!facts?.declarations.some((declaration) => declaration.name === seen.declaration)) {
+			problems.push(`${seen.module}: ${seen.declaration} was not read from the proposed text`);
+		}
+	}
+	for (const use of fixture.bound ?? []) {
+		const facts = answer.facts.find((one) => one.module === use.module);
+		const named = facts?.references.filter((reference) => reference.name === use.name) ?? [];
+		if (named.length === 0 || named.some((reference) => reference.binding.status !== "bound")) {
+			problems.push(`${use.module}: ${use.name} does not bind across the proposed texts`);
 		}
 	}
 	return problems;

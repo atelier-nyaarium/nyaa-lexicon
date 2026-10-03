@@ -100,9 +100,7 @@ interface ImportedSpan {
 }
 
 function importedSpans(imports: FileFacts["imports"]): ImportedSpan[] {
-	return imports.flatMap((statement) =>
-		statement.imported.map((entry) => ({ specifier: statement.specifier, ...entry })),
-	);
+	return imports.flatMap((statement) => statement.edges.map((edge) => ({ specifier: statement.specifier, ...edge })));
 }
 
 /**
@@ -229,8 +227,12 @@ export class PaintReads {
 		// A default import writes no source name.
 		const name = under.name ?? (under.kind === "default" ? "default" : undefined);
 		if (name === undefined) return null;
-		const target = this.store.importTarget(module, under.specifier);
-		return target === null ? null : this.store.exportedSymbol(target, name);
+		const landing = this.store.importLanding(module, under.specifier);
+		if (landing === null) return null;
+		if (landing.kind === "module") return this.store.exportedSymbol(landing.module, name);
+		// A scope answers only when one member carries the name.
+		const members = (this.store.scopeMembers(landing) ?? []).filter((member) => member.name === name);
+		return members.length === 1 ? (members[0]?.symbolId ?? null) : null;
 	}
 
 	private unowned(module: string): SymbolAtResult {

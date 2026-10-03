@@ -101,8 +101,9 @@ export class CppTokenStream {
 			const targetToken = tokenAt(this.tokens, target);
 			if (targetToken?.kind === "string") {
 				this.imports.push({
-					imported: { specifier: targetToken.value, imported: [], reExport: false },
+					specifier: targetToken.value,
 					quoted: true,
+					span: { start: token.start, end: targetToken.end },
 					tokenStart: index,
 					tokenEnd: target + 1,
 				});
@@ -126,8 +127,9 @@ export class CppTokenStream {
 					if (item !== undefined && item.kind !== "newline" && item.kind !== "comment") parts.push(item.text);
 				}
 				this.imports.push({
-					imported: { specifier: parts.join(""), imported: [], reExport: false },
+					specifier: parts.join(""),
 					quoted: false,
+					span: { start: token.start, end: (tokenAt(this.tokens, close) as Token).end },
 					tokenStart: index,
 					tokenEnd: close + 1,
 				});

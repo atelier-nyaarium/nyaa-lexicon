@@ -202,7 +202,10 @@ describe("C++ structural coverage", () => {
 
 		expect(aliases.map((declaration) => declaration.languageKind)).toEqual(["using alias", "typedef"]);
 		expect(aliases.every((declaration) => declaration.kind === "class")).toBe(true);
-		expect(facts.imports).toEqual([]);
+		expect(facts.transfers.map((transfer) => [transfer.kind, transfer.specifier])).toEqual([
+			["injection", "std"],
+			["named", "std"],
+		]);
 		expect(facts.references.filter((reference) => reference.role === "import")).toHaveLength(3);
 	});
 
@@ -402,6 +405,7 @@ describe("C++ structural coverage", () => {
 			"moduleAdmission",
 			"moveEdits",
 			"parseFile",
+			"probeBatch",
 			"probeFile",
 			"releaseModule",
 			"renameEdits",
@@ -409,5 +413,8 @@ describe("C++ structural coverage", () => {
 			"shutdown",
 			"typeOf",
 		]);
+		expect(
+			handlers.probeBatch({ files: [{ module: "a.cpp", contentHash: "a", text: "" }], answer: ["a.cpp"] }),
+		).toEqual({ status: "unsupported" });
 	});
 });

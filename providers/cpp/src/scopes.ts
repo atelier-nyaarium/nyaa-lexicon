@@ -1,7 +1,7 @@
 // Lookup indexes over a file's declarations: each scope's names, the windows its locals are visible
 // in, the scopes code outside sees by name, and the scopes whose names a scope sees as its own.
 
-import { ANONYMOUS_NAMESPACE } from "@nyaa-lexicon/protocol";
+import { ANONYMOUS_NAMESPACE, type ScopeContribution } from "@nyaa-lexicon/protocol";
 import { listAt, mapAt } from "./collections.js";
 import type { CppDeclarationRecord } from "./model.js";
 
@@ -46,6 +46,39 @@ function scopeNames(scope: CppDeclarationRecord): string[] {
 /** The qualified name code outside uses for the members of `scope`, `""` for the file's. */
 export function memberPath(scope: CppDeclarationRecord | null): string {
 	return scope === null ? "" : scopeNames(scope).join("::");
+}
+
+/** A namespace's scope id, an inline one's own name kept; null within an unnamed one, its file's own. */
+export function namespaceScopeId(namespace: CppDeclarationRecord): string | null {
+	return namespace.names.includes(ANONYMOUS_NAMESPACE) ? null : namespace.names.join("::");
+}
+
+/**
+ * Each named namespace the file opens, with the members it shows outside the file: its own
+ * declarations, an inline namespace's and an unscoped enum's included, and none of internal linkage.
+ */
+export function scopeContributionsOf(records: readonly CppDeclarationRecord[]): ScopeContribution[] {
+	const members = new Map<string, string[]>();
+	for (const record of records) {
+		const id =
+			record.declaration.kind === "namespace" && record.aliasOf === undefined ? namespaceScopeId(record) : null;
+		if (id !== null) listAt(members, id);
+	}
+	for (const record of records) {
+		const { visibility, symbolId } = record.declaration;
+		if (visibility === "local" || visibility === "fileLocal" || record.names.includes(ANONYMOUS_NAMESPACE))
+			continue;
+		let scope = record.parent;
+		while (scope?.declaration.kind === "enum" && isTransparent(scope)) scope = scope.parent;
+		while (scope?.declaration.kind === "namespace") {
+			const id = namespaceScopeId(scope);
+			if (id === null) break;
+			listAt(members, id).push(symbolId);
+			if (scope.declaration.languageKind !== "inline") break;
+			scope = scope.parent;
+		}
+	}
+	return [...members].map(([scopeId, list]) => ({ kind: "packageScope", scopeId, members: list }));
 }
 
 ////////////////////////////////

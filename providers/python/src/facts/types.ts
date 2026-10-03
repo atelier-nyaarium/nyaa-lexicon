@@ -6,9 +6,10 @@ import type {
 	Descriptor,
 	Diagnostic,
 	FileRole,
-	ImportedName,
+	ImportKind,
 	Literal,
 	Reference,
+	Selector,
 	UnknownReason,
 } from "@nyaa-lexicon/protocol";
 import type { RawHeader } from "../header.js";
@@ -77,20 +78,72 @@ export interface RawLiteral {
 	containerPath?: RawDescriptor[];
 }
 
+/** One transfer an import statement makes. */
+export interface RawImportEdge {
+	kind: Extract<ImportKind, "named" | "namespace" | "wildcard" | "sideEffect">;
+	span: Range;
+	name?: string;
+	range?: Range;
+	local?: string;
+	localRange?: Range;
+	selector?: Selector;
+	/** Written in a control block, so it may not run. */
+	conditional: boolean;
+	/** At module level, where its binding is a module global. */
+	moduleLevel: boolean;
+}
+
 export interface RawImport {
 	specifier: string;
-	imported: ImportedName[];
-	reExport: boolean;
+	edges: RawImportEdge[];
+	/** A `from` statement's load of its module, on the module's name. */
+	load?: RawImportEdge;
 }
 
 export interface RawImportBinding {
+	/** As the statement writes it. */
 	specifier: string;
+	/** The specifier the local binding lands on: `a` for `import a.b`. */
+	lands: string;
 	localName: string;
 	importedName: string | null;
 	scopePath: RawDescriptor[];
 	conditional: boolean;
 	star: boolean;
+	/** The edge it binds through. */
+	span: Range;
+	/** The side-effect edge loading each submodule past `lands`: `a.b`, then `a.b.c`, for `import a.b.c`. */
+	loads: Range[];
 }
+
+export type RawExportTarget =
+	| { kind: "symbol"; descriptorPath: RawDescriptor[] }
+	| { kind: "import"; span: Range }
+	| { kind: "unknown"; reason: UnknownReason };
+
+export interface RawExport {
+	form: "direct" | "forward" | "star";
+	span: Range;
+	name?: string;
+	range?: Range;
+	sourceRange?: Range;
+	target: RawExportTarget;
+	conditional: boolean;
+}
+
+export interface RawAllListEntry {
+	name: string;
+	range: Range;
+	/** What the entry names unless one of `stars` brings it. */
+	target: RawExportTarget;
+	/** Module-level stars written after the entry's binder, any of which may bind it instead. */
+	stars?: Range[];
+}
+
+export type RawAllList =
+	| { state: "absent" }
+	| { state: "static"; entries: RawAllListEntry[] }
+	| { state: "dynamic"; reason: UnknownReason };
 
 export interface RawImportAlias {
 	name: string;
@@ -109,7 +162,6 @@ export interface RawImportStatement {
 	moduleRange: Range | null;
 	/** Indent if the import starts its line; null otherwise. */
 	indent: string | null;
-	reExport: boolean;
 	aliases: RawImportAlias[];
 }
 
@@ -138,6 +190,10 @@ export interface RawReference {
 	/** Declaration the use is written in, header included. */
 	ownerPath: RawDescriptor[];
 	binding: RawBinding;
+	/** A lambda's or comprehension's own name, which no import reaches. */
+	nestedLocal?: boolean;
+	/** A member's receiver when it is a name or a dotted chain: `a` and path `["b"]` in `a.b.N`. */
+	receiver?: { name: string; binding: RawBinding; path: string[]; nestedLocal: boolean };
 }
 
 export type UnboundReason = "NotImplemented" | "NotIndexed" | "Ambiguous" | "RuntimeConstructed";
@@ -151,6 +207,9 @@ export interface RawFacts {
 	references: RawReference[];
 	role: FileRole;
 	imports: RawImport[];
+	/** Null when the file did not parse, which is unknown coverage. */
+	exports: RawExport[] | null;
+	allList: RawAllList | null;
 	importStatements: RawImportStatement[];
 	/** Point after the shebang, module docstring and future imports. */
 	prologueEnd: Position | null;

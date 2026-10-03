@@ -10,6 +10,7 @@ import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { HiddenModules, IndexStore } from "../store";
 import { ProviderSupervisor } from "../supervisor";
+import { named } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -614,7 +615,7 @@ describe("answers surviving code that moves", () => {
 					binding: { status: "unbound", reason: "NotIndexed" },
 				},
 			],
-			imports: [{ specifier: "./money", reExport: false, imported: [{ name: "Money", range: at(importLine) }] }],
+			imports: [named("./money", "Money", at(importLine))],
 			literals: [{ kind: "string", value: "cart.updated", range: at(offset + 1), containerId: SYMBOL }],
 			depth: "full",
 			comments: [

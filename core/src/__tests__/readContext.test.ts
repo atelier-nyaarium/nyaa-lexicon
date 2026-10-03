@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ancestryOf } from "../locals.js";
-import { type DeclarationReads, factsMovedSince, ReadContext } from "../readContext.js";
+import { type DeclarationReads, factsMovedSince, ReadContext, UNREAD_FILE } from "../readContext.js";
 import {
 	type FactsStamp,
 	IndexStore,
@@ -11,7 +11,9 @@ import {
 	type StoredImport,
 	type StoredReference,
 } from "../store.js";
+import { EMPTY_READS } from "./emptyReads";
 import { fakeClock } from "./fakeClock";
+import { edge } from "./importEdges";
 
 const SHOP = "shop.ref";
 const OTHER = "other.ref";
@@ -77,6 +79,7 @@ const REF_FROM_OTHER: StoredReference = {
 	startCharacter: 0,
 	endLine: 3,
 	endCharacter: 4,
+	origin: null,
 };
 
 /** Spelled like the shop class but never bound to it. */
@@ -93,16 +96,18 @@ const UNBOUND_SPELLING: StoredReference = {
 	startCharacter: 0,
 	endLine: 5,
 	endCharacter: 4,
+	origin: null,
 };
+
+const SHOP_TOKEN = { start: { line: 0, character: 9 }, end: { line: 0, character: 13 } };
 
 /** An import in `other.ref` binding the shop's own name. */
 const IMPORT_IN_OTHER: StoredImport = {
+	...edge("named", SHOP_TOKEN, { name: "Shop", range: SHOP_TOKEN }),
 	factId: "lexicon import other.ref Shop",
 	module: OTHER,
 	specifier: "./shop.ref",
-	reExport: false,
-	name: "Shop",
-	local: "Shop",
+	landing: null,
 };
 
 interface Counting extends DeclarationReads {
@@ -122,6 +127,7 @@ function reads(
 	const references = facts.references ?? [];
 	const imports = facts.imports ?? [];
 	return {
+		...EMPTY_READS,
 		modules,
 		ids,
 		stamps,
@@ -141,6 +147,8 @@ function reads(
 		importsBinding: (localName) => imports.filter((row) => (row.local ?? row.name) === localName),
 		importsNamed: (name) => imports.filter((row) => row.name === name),
 		importsIn: (module) => imports.filter((row) => row.module === module),
+		importEdgesLandingOn: (landing) =>
+			imports.filter((row) => JSON.stringify(row.landing) === JSON.stringify(landing)),
 		symbolIdsIn: (module) => rows.filter((row) => row.module === module).map((row) => row.symbolId),
 		stampOf: (module) => stamps.get(module) ?? null,
 	};
@@ -237,6 +245,29 @@ describe("a read context stamps what it read", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("names only the modules it read, until the index is pinned; then any other file's write", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "lexicon-stamp-"));
+		const store = IndexStore.open(path.join(dir, "index.sqlite"), undefined, undefined, fakeClock()).store;
+		const commit = (module: string, rows: StoredDeclaration[]) =>
+			store.replaceFile({ module, contentHash: `${module} ${rows.length}`, declarations: rows, references: [] });
+		try {
+			commit(SHOP, [inShop[0] as StoredDeclaration]);
+			const loose = new ReadContext(store);
+			const pinned = new ReadContext(store);
+			pinned.pinIndex();
+			for (const context of [loose, pinned]) context.heldIn(SHOP);
+			commit(OTHER, []);
+			const unread = [factsMovedSince(loose.seen(), store), factsMovedSince(pinned.seen(), store)];
+			commit(SHOP, [inShop[0] as StoredDeclaration, inShop[4] as StoredDeclaration]);
+
+			expect(unread).toEqual([[], [UNREAD_FILE]]);
+			expect(factsMovedSince(pinned.seen(), store)).toEqual([SHOP]);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("a rename or move plan's reads stamp their own module, not the one asked about", () => {
@@ -269,6 +300,15 @@ describe("a rename or move plan's reads stamp their own module, not the one aske
 		const context = new ReadContext(source);
 
 		expect(context.importsBinding("Shop").map((row) => row.module)).toEqual([OTHER]);
+		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
+	});
+
+	it("stamps a route's importer by its own module, not the module it lands on", () => {
+		const landed: StoredImport = { ...IMPORT_IN_OTHER, landing: { kind: "module", module: SHOP } };
+		const source = reads(ROWS, { imports: [landed] });
+		const context = new ReadContext(source);
+
+		expect(context.importEdgesLandingOn({ kind: "module", module: SHOP })).toEqual([landed]);
 		expect(context.seen()).toEqual([{ module: OTHER, stamp: null }]);
 	});
 

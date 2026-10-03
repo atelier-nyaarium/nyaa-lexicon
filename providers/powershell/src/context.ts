@@ -57,15 +57,31 @@ export interface PowerShellReference {
 	fromId?: string;
 	/** The declaration in this file the name settled on. */
 	target?: string;
+	/** The function in this file a command or named argument reached, whatever its parameters. */
+	callee?: string;
 	of: Target;
 	qualified: boolean;
 }
 
+/** What an `Import-Module` member filter lets in: patterns per kind, none for a kind it leaves out. */
+export interface MemberFilter {
+	functions: string[];
+	variables: string[];
+}
+
+/** `Import-Module -Prefix`: the text each command's noun takes, unless only the run knows it. */
+export type CommandPrefix = { kind: "static"; text: string } | { kind: "dynamic" };
+
 /** A file another brings in: a dot-source, a module import, `using module` or a manifest's entry. */
 export interface SourceImport {
 	specifier: string;
-	kind: "dotSource" | "module";
+	/** `importerScript`: a manifest's `ScriptsToProcess`, run in the importer's scope. */
+	kind: "dotSource" | "module" | "importerScript";
 	range: Range;
+	filter?: MemberFilter;
+	/** `-Scope` or `-Global` as written; absent, a script imports into the global scope and a module into its own. */
+	scope?: "local" | "global";
+	prefix?: CommandPrefix;
 }
 
 export interface ParsedPowerShellFile {

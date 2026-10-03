@@ -11,6 +11,7 @@ import {
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { destructuredElement } from "./references.js";
 
 ////////////////////////////////
 //  Constants
@@ -92,6 +93,7 @@ const RESERVED_WORDS = new Set([
 const VALUE_MEANING = ts.SymbolFlags.Value | ts.SymbolFlags.Namespace;
 const TYPE_MEANING = ts.SymbolFlags.Type | ts.SymbolFlags.Namespace;
 const ALL_NAMED_MEANINGS = VALUE_MEANING | TYPE_MEANING;
+const MEANINGS = [ts.SymbolFlags.Value, ts.SymbolFlags.Type, ts.SymbolFlags.Namespace];
 const AMBIENT_NODE_FLAG = (ts.NodeFlags as unknown as { Ambient?: number }).Ambient ?? 1 << 25;
 
 ////////////////////////////////
@@ -194,6 +196,22 @@ function classifySite(
 	}
 
 	if (!matchesName(site, request.oldName) || request.oldName === request.newName) return {};
+	const specifier = specifierOf(token);
+	if (site.site.keep === true && (specifier === undefined || !ts.isIdentifier(token))) {
+		return blocked(site.site.range, "NotImplemented", "only a specifier's source name keeps its old name");
+	}
+	if (specifier !== undefined && ts.isIdentifier(token)) {
+		const kept = specifier.propertyName === undefined && site.site.keep === true;
+		if (kept) return { edit: { range: site.site.range, newText: `${candidateName} as ${request.oldName}` } };
+		const alias = specifier.name;
+		// `N2 as N` renamed to N is `N`.
+		if (specifier.propertyName === token && ts.isIdentifier(alias) && alias.text === candidateName) {
+			const range = coordinates.rangeAt(token.getStart(source), alias.getEnd());
+			return range === undefined
+				? blocked(site.site.range, "ParseError", "the rename span is outside the module")
+				: { edit: { range, newText: candidateName } };
+		}
+	}
 	const replacement = token.kind === ts.SyntaxKind.PrivateIdentifier ? `#${candidateName}` : candidateName;
 	if (isObjectShorthand(token)) {
 		const range = widerRange(source, coordinates, token);
@@ -202,9 +220,49 @@ function classifySite(
 			: { edit: { range, newText: `${request.oldName}: ${replacement}` } };
 	}
 	if (isDestructuringShorthand(token)) {
-		return { edit: { range: site.site.range, newText: `${request.oldName}: ${replacement}` } };
+		const side = shorthandSide(site.site.role);
+		const newText =
+			side === "local"
+				? `${request.oldName}: ${replacement}`
+				: side === "key"
+					? `${replacement}: ${request.oldName}`
+					: replacement;
+		return { edit: { range: site.site.range, newText } };
 	}
 	return { edit: { range: site.site.range, newText: replacement } };
+}
+
+/**
+ * What a site on `{ N }` renames: its local where it declares or exports one, both where a require
+ * edge binds it, else the key a use reads.
+ */
+function shorthandSide(role: string | undefined): "local" | "both" | "key" {
+	if (role === undefined || role === "export") return "local";
+	return role === "import" ? "both" : "key";
+}
+
+/** A destructured key the site renames while its local stays. */
+function isDestructuredKey(site: SiteContext): boolean {
+	const token = site.token;
+	const element = token === undefined ? undefined : destructuredElement(token);
+	if (element === undefined) return false;
+	return element.propertyName === token || shorthandSide(site.site.role) === "key";
+}
+
+/** The import or export specifier whose source name `token` is. */
+function specifierOf(token: ts.Node): ts.ImportSpecifier | ts.ExportSpecifier | undefined {
+	const parent = token.parent;
+	if (!ts.isImportSpecifier(parent) && !ts.isExportSpecifier(parent)) return undefined;
+	return (parent.propertyName ?? parent.name) === token ? parent : undefined;
+}
+
+/** Renaming the token changes no binding in this file: an aliased or kept import, or a re-export. */
+function bindsNoLocal(site: SiteContext): boolean {
+	const token = site.token;
+	const specifier = token === undefined ? undefined : specifierOf(token);
+	if (specifier === undefined) return false;
+	if (ts.isImportSpecifier(specifier)) return specifier.propertyName !== undefined || site.site.keep === true;
+	return specifier.parent.parent.moduleSpecifier !== undefined;
 }
 
 function isObjectShorthand(token: ts.Node): boolean {
@@ -212,8 +270,8 @@ function isObjectShorthand(token: ts.Node): boolean {
 }
 
 function isDestructuringShorthand(token: ts.Node): boolean {
-	const parent = token.parent;
-	return ts.isBindingElement(parent) && parent.propertyName === undefined && parent.name === token;
+	const element = destructuredElement(token);
+	return element !== undefined && element.propertyName === undefined;
 }
 
 function widerRange(source: ts.SourceFile, coordinates: TextCoordinates, token: ts.Node): Range | undefined {
@@ -229,16 +287,62 @@ function hasCollision(checker: ts.TypeChecker, sites: SiteContext[], newName: st
 	return sites.some((site) => {
 		const token = site.token;
 		if (token === undefined) return false;
-		if (moduleExportCollision(checker, token, newName)) return true;
-		const property = propertyCollision(checker, token, newName);
-		if (property) return true;
-		if (isPropertyName(token)) return false;
-		const meaning = meaningOf(token);
+		const renamed = renamedSymbol(checker, token);
+		if (moduleExportCollision(checker, token, newName, renamed)) return true;
+		const key = isDestructuredKey(site);
+		if (propertyCollision(checker, token, newName) || (key && keyCollision(checker, token, newName))) return true;
+		if (key || isPropertyName(token) || bindsNoLocal(site)) return false;
+		const position = meaningOf(token);
+		const meaning = sharedMeaning(position, symbolMeaning(renamed)) || position;
 		return checker.resolveName(newName, token, meaning, false) !== undefined;
 	});
 }
 
-function moduleExportCollision(checker: ts.TypeChecker, token: ts.Node, newName: string): boolean {
+/** The symbol a site names, through exports and aliases; undefined when the checker cannot resolve it. */
+function renamedSymbol(checker: ts.TypeChecker, token: ts.Node): ts.Symbol | undefined {
+	const symbol = checker.getSymbolAtLocation(token);
+	return symbol === undefined ? undefined : resolvedSymbol(checker, checker.getExportSymbolOfSymbol(symbol));
+}
+
+function resolvedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol | undefined {
+	const target = (symbol.flags & ts.SymbolFlags.Alias) === 0 ? symbol : checker.getAliasedSymbol(symbol);
+	// An unresolved alias answers a symbol with no declarations.
+	return (target.declarations ?? []).length > 0 ? target : undefined;
+}
+
+/** Value, type and namespace, as the checker gives them to `symbol`; all three when unknown. */
+function symbolMeaning(symbol: ts.Symbol | undefined): ts.SymbolFlags {
+	const flags = symbol?.flags ?? 0;
+	const meaning = MEANINGS.reduce<ts.SymbolFlags>((held, each) => ((flags & each) === 0 ? held : held | each), 0);
+	return meaning === 0 ? ALL_NAMED_MEANINGS : meaning;
+}
+
+/** The meanings two unions of `MEANINGS` share. */
+function sharedMeaning(a: ts.SymbolFlags, b: ts.SymbolFlags): ts.SymbolFlags {
+	return MEANINGS.reduce<ts.SymbolFlags>(
+		(shared, each) => ((a & each) === each && (b & each) === each ? shared | each : shared),
+		0,
+	);
+}
+
+/** The source file or namespace body whose exports hold `declaration`. */
+function exportScopeOf(declaration: ts.Node): ts.Node | undefined {
+	return ts.findAncestor(declaration.parent, (node) => ts.isSourceFile(node) || ts.isModuleBlock(node));
+}
+
+/** Only one scope's own declarations merge; an export from another shadows by name. */
+function declaredTogether(a: ts.Symbol, b: ts.Symbol): boolean {
+	const scopes = new Set((a.declarations ?? []).map(exportScopeOf));
+	scopes.delete(undefined);
+	return (b.declarations ?? []).some((declaration) => scopes.has(exportScopeOf(declaration)));
+}
+
+function moduleExportCollision(
+	checker: ts.TypeChecker,
+	token: ts.Node,
+	newName: string,
+	renamed: ts.Symbol | undefined,
+): boolean {
 	const parent = token.parent;
 	let declaration: ts.ImportDeclaration | ts.ExportDeclaration | undefined;
 	let sourceName: ts.Node | undefined;
@@ -251,10 +355,14 @@ function moduleExportCollision(checker: ts.TypeChecker, token: ts.Node, newName:
 	}
 	if (declaration === undefined || sourceName !== token || declaration.moduleSpecifier === undefined) return false;
 	const moduleSymbol = checker.getSymbolAtLocation(declaration.moduleSpecifier);
-	return (
-		moduleSymbol !== undefined &&
-		checker.getExportsOfModule(moduleSymbol).some((symbol) => symbol.getName() === newName)
-	);
+	if (moduleSymbol === undefined) return false;
+	const existing = checker.getExportsOfModule(moduleSymbol).find((symbol) => symbol.getName() === newName);
+	if (existing === undefined) return false;
+	const target = resolvedSymbol(checker, existing);
+	if (target === undefined || renamed === undefined) return true;
+	if (target === renamed) return false;
+	const disjoint = sharedMeaning(symbolMeaning(target), symbolMeaning(renamed)) === 0;
+	return !(disjoint && declaredTogether(target, renamed));
 }
 
 function ancestorOfKind(node: ts.Node, kind: ts.SyntaxKind): ts.Node | undefined {
@@ -289,6 +397,13 @@ function propertyCollision(checker: ts.TypeChecker, token: ts.Node, newName: str
 		(token.kind === ts.SyntaxKind.PrivateIdentifier &&
 			checker.getPrivateIdentifierPropertyOfType(type, newName, token) !== undefined)
 	);
+}
+
+/** The destructured value already has a property of the new name. */
+function keyCollision(checker: ts.TypeChecker, token: ts.Node, newName: string): boolean {
+	const element = destructuredElement(token);
+	if (element === undefined) return false;
+	return checker.getPropertyOfType(checker.getTypeAtLocation(element.parent), newName) !== undefined;
 }
 
 function isPropertyName(token: ts.Node): boolean {

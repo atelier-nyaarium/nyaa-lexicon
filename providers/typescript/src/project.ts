@@ -112,6 +112,29 @@ export function readableSystem(policy: ReadPolicy): ts.System {
 	};
 }
 
+/** `system` with proposed texts standing in for, or beside, the files on disk. */
+export function overlaidSystem(
+	root: string,
+	files: ReadonlyMap<string, { readonly text: string }>,
+	system: ts.System,
+): ts.System {
+	const proposed = new Map([...files].map(([module, { text }]) => [path.resolve(root, module), text]));
+	const directories = new Set([...proposed.keys()].flatMap((file) => ancestorsOf(path.dirname(file))));
+	return {
+		...system,
+		readFile: (fileName, encoding) => proposed.get(path.resolve(fileName)) ?? system.readFile(fileName, encoding),
+		fileExists: (fileName) => proposed.has(path.resolve(fileName)) || system.fileExists(fileName),
+		directoryExists: (directory) => directories.has(path.resolve(directory)) || system.directoryExists(directory),
+	};
+}
+
+function ancestorsOf(directory: string): string[] {
+	const found = [directory];
+	for (let parent = path.dirname(directory); parent !== found.at(-1); parent = path.dirname(parent))
+		found.push(parent);
+	return found;
+}
+
 function resolutionHost(system: ts.System): ts.ModuleResolutionHost {
 	return {
 		fileExists: system.fileExists,
@@ -414,9 +437,10 @@ export function resolveSpecifier(
 			surface: { module },
 		};
 	}
+	const landing = { kind: "module", module } as const;
 	return surfaceDepth(module, resolved.resolvedFileName, surfaceGlobs, lookupSurface) === "surface"
-		? { status: "resolved", module, depth: "surface" }
-		: { status: "resolved", module };
+		? { status: "resolved", landing, depth: "surface" }
+		: { status: "resolved", landing };
 }
 
 ////////////////////////////////
@@ -437,7 +461,9 @@ export type ModuleResolver = (fromModule: string, specifier: string) => string |
 
 /** A resolution's module, a package's surface included. */
 export function landingOf(resolution: ImportResolution): string | undefined {
-	if (resolution.status === "resolved") return resolution.module;
+	if (resolution.status === "resolved") {
+		return resolution.landing.kind === "module" ? resolution.landing.module : undefined;
+	}
 	return resolution.status === "external" ? resolution.surface?.module : undefined;
 }
 
@@ -662,9 +688,7 @@ function resolvesToTarget(
 	setup: CompilerSetup,
 	lookupSurface: (module: string, fileName: string) => boolean,
 ): boolean {
-	const result = resolveSpecifier(root, fromModule, specifier, setup, [], lookupSurface);
-	if (result.status === "resolved") return result.module === targetModule;
-	return result.status === "external" && result.surface?.module === targetModule;
+	return landingOf(resolveSpecifier(root, fromModule, specifier, setup, [], lookupSurface)) === targetModule;
 }
 
 function dedupeCandidates(candidates: RenderCandidate[]): RenderCandidate[] {
@@ -721,7 +745,7 @@ function resolveRuntimeSurface(
 	const typed = ts.resolveModuleName(runtime, containing, setup.options, resolutionHost(setup.system)).resolvedModule;
 	const fileName = typed?.resolvedFileName ?? runtime;
 	const module = toModule(workspaceRoot, fileName);
-	return module === null ? null : { status: "resolved", module, depth: "surface" };
+	return module === null ? null : { status: "resolved", landing: { kind: "module", module }, depth: "surface" };
 }
 
 function normalizeCandidate(module: string): string | null {

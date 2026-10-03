@@ -1,6 +1,6 @@
 // Declarations by recursive descent from each scope: using directives, namespaces, then types and members.
 
-import { defined, type ImportedName } from "@nyaa-lexicon/protocol";
+import { defined } from "@nyaa-lexicon/protocol";
 import type { CsharpImport, Leading, ModifierInfo, RawDeclaration, Segment } from "./model.js";
 import { positionRange, type Token } from "./tokens.js";
 import { CsharpTypeParser, earliest } from "./types.js";
@@ -107,10 +107,9 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		if (first < 0) return end;
 		const item = this.token(first);
 		if (item === undefined) return end;
-		if (syntaxValue(item) === "global" && this.value(this.nextSignificant(first + 1, end)) === "using") {
-			return this.parseUsing(first + 1, end, true, parent);
-		}
-		if (syntaxValue(item) === "using") return this.parseUsing(first, end, false, parent);
+		const afterGlobal = syntaxValue(item) === "global" ? this.nextSignificant(first + 1, end) : -1;
+		if (this.value(afterGlobal) === "using") return this.parseUsing(afterGlobal, item, end, true, parent);
+		if (syntaxValue(item) === "using") return this.parseUsing(first, item, end, false, parent);
 		if (syntaxValue(item) === "namespace") return this.parseNamespace(first, first, end, parent, leading);
 		const modifiers = this.modifiersAt(first, end);
 		const keyword = this.value(modifiers.index);
@@ -130,7 +129,13 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		return -1;
 	}
 
-	private parseUsing(index: number, end: number, global: boolean, scope: RawDeclaration | undefined): number {
+	private parseUsing(
+		index: number,
+		opener: Token,
+		end: number,
+		global: boolean,
+		scope: RawDeclaration | undefined,
+	): number {
 		const usingToken = this.token(index);
 		if (usingToken === undefined) return -1;
 		let current = this.nextSignificant(index + 1, end);
@@ -174,27 +179,19 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		const specifier = joinTokenValues(names);
 		const firstName = names[0] as Token;
 		const lastName = names[names.length - 1] as Token;
-		const statementRange = { start: usingToken.start, end: this.token(statementEnd)?.end ?? lastName.end };
-		let alias: string | undefined;
-		let imported: ImportedName[] = [];
-		if (aliasIndex >= 0) {
-			const aliasToken = this.token(significant[0] as number);
-			if (aliasToken?.kind === "identifier") {
-				alias = aliasToken.value;
-				imported = [{ local: alias, localRange: positionRange(aliasToken) }];
-			}
-		}
+		const aliasToken = aliasIndex < 0 ? undefined : this.token(significant[0] as number);
 		const directive: CsharpImport = {
 			specifier,
-			imported,
-			reExport: false,
-			...defined({ alias }),
+			...(aliasToken?.kind === "identifier"
+				? { alias: aliasToken.value, aliasRange: positionRange(aliasToken) }
+				: {}),
 			static: isStatic,
 			global,
 			target: target.segments,
 			...defined({ qualifier: target.qualifier }),
-			range: statementRange,
+			span: { start: opener.start, end: this.token(statementEnd)?.end ?? lastName.end },
 			specifierToken: firstName,
+			nameToken: lastName,
 		};
 		this.rawImports.push(directive);
 		if (scope !== undefined) this.importScopes.set(directive, scope);

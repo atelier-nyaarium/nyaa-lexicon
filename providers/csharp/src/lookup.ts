@@ -2,9 +2,10 @@
 // type's members through its parts and bases.
 
 import type { Binding, Declaration, Reference } from "@nyaa-lexicon/protocol";
-import { CsharpImports, type Level } from "./imports.js";
+import type { Level } from "./imports.js";
 import { type DeclarationMeta, type Segment, segmentKey } from "./model.js";
 import { type IndexedType, typeKey } from "./namespaces.js";
+import { CsharpTransfers } from "./transfers.js";
 import { type IndexedFacts, TYPE_DECLARATION_KINDS, type TypeAt } from "./workspace.js";
 
 ////////////////////////////////
@@ -56,7 +57,7 @@ function isMember(declaration: Declaration): boolean {
 ////////////////////////////////
 //  Classes
 
-export abstract class CsharpTypeLookup extends CsharpImports {
+export abstract class CsharpTypeLookup extends CsharpTransfers {
 	/** A reference's binding; a type's base list binds through it. */
 	protected abstract bindingForReference(facts: IndexedFacts, reference: Reference): Binding;
 

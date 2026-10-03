@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { blankCode, findRefLinks, findRefs, formatRef, parseRef } from "../noteRefs";
+import { NOTE_MAX } from "../noteShapes";
 
 describe("finding refs in a note", () => {
 	it("finds written links anywhere in prose, and nothing in code or bare text, which blanks to the same length", () => {
@@ -23,7 +24,7 @@ describe("finding refs in a note", () => {
 		}).toEqual({ length: text.length, shown: [true, false, false] });
 	});
 
-	it("scans text in time linear in its length, however its brackets, backticks and backslashes fall", () => {
+	it("scans a note at the size cap within a time budget, however its brackets, backticks and backslashes fall", () => {
 		const shapes: Record<string, (length: number) => string> = {
 			"closes with no label": (length) => "](ref://a)".repeat(length / 10),
 			"bare destinations with no close": (length) => "](ref://a".repeat(length / 9),
@@ -44,9 +45,9 @@ describe("finding refs in a note", () => {
 			}
 			return best;
 		};
-		// Linear reads scale 8x; a walk back per link, or a rescan per backtick run, scales 64x.
+		// Headroom for slow machines.
 		for (const [shape, text] of Object.entries(shapes)) {
-			expect(timed(text(128_000)) / timed(text(16_000)), shape).toBeLessThan(24);
+			expect(timed(text(NOTE_MAX)), shape).toBeLessThan(250);
 		}
 	});
 

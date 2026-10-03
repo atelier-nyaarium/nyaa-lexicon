@@ -16,11 +16,12 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { createDispatch, daemonHandlers } from "../dispatch";
 import { lexiconRoot } from "../providers";
+import { recoverSteps } from "../refactorStep";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import type { Gate } from "../stepRunners";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
+import { ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
 import { TransactionManager } from "../transactions";
 
 ////////////////////////////////
@@ -66,14 +67,19 @@ function statusOf(symbolId: string) {
 }
 
 /** A gate that runs `between` after planning and before the step's hold. */
-function gateAfter(between: () => void): Gate {
+function gateAfter(between: () => void | Promise<void>): Gate {
 	return {
 		read: async (work) => work(),
 		write: async (work) => {
-			between();
+			await between();
 			return work();
 		},
 	};
+}
+
+async function eventually(done: () => boolean): Promise<boolean> {
+	for (let tries = 0; tries < 200 && !done(); tries++) await Bun.sleep(5);
+	return done();
 }
 
 beforeEach(async () => {
@@ -259,6 +265,51 @@ describe("a move through the daemon's handlers", () => {
 	});
 });
 
+describe("a debt a stopped daemon left", () => {
+	it("is paid by the next daemon's pump before any scan computed its scope", async () => {
+		store.oweRebinds(["a.ref"]);
+		const restarted = new LexiconService(store, supervisor, sourceReader(root), root);
+
+		await recoverSteps(restarted, new TransactionManager(store, root));
+
+		expect(await eventually(() => store.owedRebindAfter(null) === null)).toBe(true);
+		expect(store.blockedRebinds()).toEqual([]);
+	});
+});
+
+describe("restoring a file the index cannot read yet", () => {
+	for (const operation of ["refactorUndo", "refactorRevert"] as const) {
+		it(`${operation} names it, and the pump parses it later`, async () => {
+			await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
+			// The rename's own pump run ends first, so only the restore's debt can start the next.
+			await service.upgradeRemaining();
+			const indexFile = service.indexFile.bind(service);
+			// The handler's parse of a.ref finds its provider down; the pump's later one does not.
+			service.indexFile = async (module, ...rest) =>
+				module === "a.ref"
+					? {
+							module,
+							action: "skipped",
+							cause: "providerDown",
+							reason: "provider unavailable",
+							failure: "down",
+						}
+					: indexFile(module, ...rest);
+
+			const outcome =
+				operation === "refactorUndo"
+					? await dispatch("refactorUndo", {})
+					: await dispatch("refactorRevert", { drifted: transactions.status().drifted });
+
+			expect(outcome).toMatchObject({
+				issues: [expect.objectContaining({ kind: "ReindexFailed", module: "a.ref" })],
+			});
+			expect(read("a.ref")).toBe("export class Cart {}\n");
+			expect(await eventually(() => store.declaration(CART) !== null)).toBe(true);
+		});
+	}
+});
+
 describe("moving several declarations together", () => {
 	const BAG = "lexicon reference a.ref Bag#";
 	const BOTH = "export class Cart {}\nexport class Bag {}\n";
@@ -425,6 +476,87 @@ describe("acting on the refactor that was shown", () => {
 });
 
 describe("a rename through the daemon's handlers", () => {
+	/** A gate that indexes a new unrelated file before each of the first `times` holds. */
+	function indexingElsewhere(times: number): { gate: Gate; holds: () => number } {
+		let holds = 0;
+		const gate = gateAfter(async () => {
+			holds += 1;
+			if (holds > times) return;
+			put(`z${holds}.ref`, `export class Zebra${holds} {}\n`);
+			await service.indexFile(`z${holds}.ref`);
+		});
+		return { gate, holds: () => holds };
+	}
+
+	/** Owes `module` a parse its provider is down for; the pump holds that debt until the provider answers. */
+	async function holdDebtOf(module: string): Promise<void> {
+		const ask = supervisor.askProvider.bind(supervisor);
+		supervisor.askProvider = (async (providerId, method, params) =>
+			method === "parseFile" && (params as { module: string }).module === module
+				? Promise.reject(new ProviderUnavailableError("provider down"))
+				: ask(providerId, method, params)) as typeof supervisor.askProvider;
+		store.oweRebinds([module]);
+		service.payOwed();
+		const held = await eventually(() => store.blockedRebinds().some((debt) => debt.module === module));
+		supervisor.askProvider = ask;
+		if (!held) throw new Error(`no held debt on ${module}`);
+	}
+
+	it("refuses while a module its plan reads owes a parse a failure holds back", async () => {
+		await holdDebtOf("a.ref");
+
+		const outcome = await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
+
+		expect(outcome).toMatchObject({ renamed: false, reason: expect.stringContaining("a.ref") });
+		expect(read("a.ref")).toBe("export class Cart {}\n");
+	});
+
+	it("refuses while a module its plan never read spells the old name and owes a held parse", async () => {
+		put("z.ref", "export class Zebra {}\n\nexport const pick = Cart;\n");
+		await service.indexFile("z.ref");
+		await holdDebtOf("z.ref");
+
+		const outcome = await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
+
+		expect(outcome).toMatchObject({ renamed: false, reason: expect.stringContaining("z.ref") });
+		expect(read("a.ref")).toBe("export class Cart {}\n");
+	});
+
+	it("goes ahead past a held debt on a module its plan never reads", async () => {
+		put("z.ref", "export class Zebra {}\n");
+		await service.indexFile("z.ref");
+		await holdDebtOf("z.ref");
+
+		expect(await dispatch("refactorRename", { symbolId: CART, newName: "Basket" })).toMatchObject({
+			renamed: true,
+		});
+	});
+
+	it("plans again when only indexing elsewhere outran its plan, and lands", async () => {
+		const { gate, holds } = indexingElsewhere(1);
+		const outcome = await daemonHandlers(service, { transactions }).refactorRename.run(
+			{ symbolId: CART, newName: "Basket" },
+			gate,
+		);
+
+		expect(outcome).toMatchObject({ renamed: true });
+		expect(holds()).toBe(2);
+		expect(read("a.ref")).toBe("export class Basket {}\n");
+	});
+
+	it("refuses, to be tried again, when indexing elsewhere outruns every plan", async () => {
+		const { gate, holds } = indexingElsewhere(Number.POSITIVE_INFINITY);
+		const outcome = await daemonHandlers(service, { transactions }).refactorRename.run(
+			{ symbolId: CART, newName: "Basket" },
+			gate,
+		);
+
+		expect(outcome).toMatchObject({ renamed: false });
+		expect(holds()).toBe(3);
+		expect(read("a.ref")).toBe("export class Cart {}\n");
+		expect(transactions.status().steps).toEqual([]);
+	});
+
 	it("rebinds the subject to the re-minted id with the rename as evidence", async () => {
 		const outcome = await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
 

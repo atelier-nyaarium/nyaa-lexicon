@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import path from "node:path";
-import { composeSymbolId, coordinatesOf, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, coordinatesOf, FileFactsSchema, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { extractDeclarationsCore, extractReferencesCore } from "../extractCore.js";
 import { GDScriptProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 
@@ -15,6 +15,14 @@ function rangeAt(text: string, offset: number) {
 	const position = coordinatesOf(text).positionAt(offset);
 	if (position === undefined) throw new Error(`test offset is outside text: ${offset}`);
 	return { start: position, end: position };
+}
+
+/** The `index`th occurrence of `needle`. */
+function textRange(text: string, needle: string, index = 0) {
+	let offset = -1;
+	for (let seen = 0; seen <= index; seen++) offset = text.indexOf(needle, offset + 1);
+	if (offset < 0) throw new Error(`test text has no ${needle}`);
+	return { start: rangeAt(text, offset).start, end: rangeAt(text, offset + needle.length).start };
 }
 
 test("extracts the GDScript declaration forms used by the project", () => {
@@ -408,7 +416,8 @@ var face5 = "${face}"; var pathLoaded = load("res://other.gd")
 		start: { line: 1, character: scriptLine.indexOf("Script") },
 		end: { line: 1, character: scriptLine.indexOf("Script") + "Script".length },
 	});
-	expect(imported?.imported[0]?.localRange).toEqual(script?.selectionRange);
+	expect(imported?.edges[0]?.localRange).toEqual(script?.selectionRange);
+	expect(imported?.edges[0]?.span.start).toEqual({ line: 1, character: scriptLine.indexOf("preload") });
 	expect(marker?.range).toEqual({
 		start: { line: 2, character: markerLine.indexOf('"hello"') },
 		end: { line: 2, character: markerLine.indexOf('"hello"') + '"hello"'.length },
@@ -749,7 +758,6 @@ test("binds a literal path on an inner class extends clause", () => {
 		symbolId: baseDeclaration.symbolId,
 		provenance: "bound",
 	});
-	expect(child.imports).toContainEqual({ specifier: "res://base.gd", imported: [], reExport: false });
 });
 
 test("binds literal script paths and preserves dynamic loader uncertainty", () => {
@@ -774,13 +782,6 @@ func run(path: String) -> void:
 	const pathImport = user.references.find((reference) => reference.role === "import");
 	const relativeImport = user.references.find((reference) => reference.name === "base.gd");
 	const dynamicLoad = user.references.find((reference) => reference.name === "load");
-	const baseScript = user.declarations.find((declaration) => declaration.name === "BaseScript");
-	const loaded = user.declarations.find((declaration) => declaration.name === "loaded");
-	const scriptImport = user.imports.find((entry) => entry.specifier === "res://base.gd" && entry.imported.length > 0);
-	const extendsImport = user.imports.find(
-		(entry) => entry.specifier === "res://base.gd" && entry.imported.length === 0,
-	);
-	const dynamicImport = user.imports.find((entry) => entry.specifier === "load(path)");
 	if (baseDeclaration === undefined) throw new Error("base declaration missing");
 
 	expect(pathExtends?.name).toBe("res://base.gd");
@@ -791,31 +792,6 @@ func run(path: String) -> void:
 	});
 	expect(pathImport?.binding).toEqual(pathExtends?.binding);
 	expect(relativeImport?.binding).toEqual(pathExtends?.binding);
-	expect(extendsImport).toEqual({
-		specifier: "res://base.gd",
-		imported: [],
-		reExport: false,
-	});
-	expect(scriptImport).toEqual({
-		specifier: "res://base.gd",
-		imported: [
-			{
-				local: "BaseScript",
-				localRange: baseScript?.selectionRange as NonNullable<typeof baseScript>["selectionRange"],
-			},
-		],
-		reExport: false,
-	});
-	expect(dynamicImport).toEqual({
-		specifier: "load(path)",
-		imported: [
-			{
-				local: "loaded",
-				localRange: loaded?.selectionRange as NonNullable<typeof loaded>["selectionRange"],
-			},
-		],
-		reExport: false,
-	});
 	expect(dynamicLoad?.binding).toEqual({
 		status: "unbound",
 		reason: "RuntimeConstructed",
@@ -835,16 +811,166 @@ const Split = preload(
 `;
 	const facts = provider.parseFile({ module: "loaders.gd", contentHash: "loaders", text });
 
-	expect(facts.imports.map((entry) => entry.specifier)).toEqual([
-		"res://scene.tscn",
-		"res://split.gd",
-		'load("res://levels/" + name)',
+	expect(
+		facts.imports.map((entry) => [
+			entry.specifier,
+			entry.edges[0]?.kind,
+			entry.edges[0]?.local,
+			entry.edges[0]?.order,
+		]),
+	).toEqual([
+		['load("res://levels/" + name)', "require", "level", 0],
+		["res://scene.tscn", "require", "scene", 1],
+		["res://split.gd", "require", "Split", 2],
 	]);
+	expect(facts.imports[1]?.edges[0]?.span).toEqual(textRange(text, 'ResourceLoader.load("res://scene.tscn")'));
 	expect(facts.references.filter((entry) => entry.role === "import").map((entry) => entry.name)).toEqual([
 		"res://scene.tscn",
 		"res://split.gd",
 	]);
 	expect(facts.references.find((entry) => entry.name === "preload")).toMatchObject({ role: "call", qualified: true });
+});
+
+test("reports one edge per loader call and extends path, in source order", () => {
+	const provider = started();
+	const text = `const Early = preload("res://early.gd")
+class Inner extends "res://base.gd":
+	pass
+var instance = preload("res://made.gd").new()
+func run(path):
+	var dynamic = load(path)
+	load(path).free()
+`;
+	const facts = provider.parseFile({ module: "edges.gd", contentHash: "edges", text });
+	const known = { status: "known" } as const;
+	const computed = { status: "unknown", reason: "RuntimeConstructed" } as const;
+	const conflict = { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" } as const;
+
+	expect(facts.imports).toEqual([
+		{
+			specifier: "res://early.gd",
+			edges: [
+				{
+					kind: "require",
+					span: textRange(text, 'preload("res://early.gd")'),
+					local: "Early",
+					localRange: textRange(text, "Early"),
+					bindsLocally: true,
+					conflict,
+					certainty: known,
+					order: 0,
+				},
+			],
+		},
+		{
+			specifier: "res://base.gd",
+			edges: [
+				{
+					kind: "injection",
+					span: textRange(text, 'extends "res://base.gd"'),
+					selector: { kind: "visible" },
+					bindsLocally: false,
+					certainty: known,
+					order: 1,
+				},
+			],
+		},
+		{
+			specifier: "res://made.gd",
+			edges: [
+				{
+					kind: "sideEffect",
+					span: textRange(text, 'preload("res://made.gd")'),
+					bindsLocally: false,
+					certainty: known,
+					order: 2,
+				},
+			],
+		},
+		{
+			specifier: "load(path)",
+			edges: [
+				{
+					kind: "require",
+					span: textRange(text, "load(path)"),
+					local: "dynamic",
+					localRange: textRange(text, "dynamic"),
+					bindsLocally: true,
+					conflict,
+					certainty: computed,
+					order: 3,
+				},
+			],
+		},
+		{
+			specifier: "load(path)",
+			edges: [
+				{
+					kind: "sideEffect",
+					span: textRange(text, "load(path)", 1),
+					bindsLocally: false,
+					certainty: computed,
+					order: 4,
+				},
+			],
+		},
+	]);
+	expect(FileFactsSchema.safeParse(facts).success).toBe(true);
+	// A class_name is a global, not an import.
+	expect(provider.parseFile({ module: "global.gd", contentHash: "global", text: "extends Base\n" }).imports).toEqual(
+		[],
+	);
+});
+
+test("traces `X.member` through a const preload to that edge, and nothing it cannot prove", () => {
+	const provider = started();
+	const text = `const Helper = preload("res://helper.gd")
+var Loose = preload("res://helper.gd")
+const Made = preload("res://helper.gd").new()
+const Wrapped = ((preload("res://helper.gd")))
+const Opened = (preload("res://helper.gd")).new()
+func run():
+	Helper.go()
+	Helper.inner.deep
+	Loose.go()
+	Made.go()
+	self.Helper.go()
+	Wrapped.go()
+	Opened.go()
+func other(Helper):
+	Helper.go()
+`;
+	const facts = provider.parseFile({ module: "user.gd", contentHash: "user", text });
+	const [helper, , , wrapped, opened] = facts.imports.map((statement) => statement.edges[0]);
+	if (helper === undefined || wrapped === undefined) throw new Error("preload edge missing");
+
+	expect([helper.local, wrapped.kind, wrapped.local, opened?.kind]).toEqual([
+		"Helper",
+		"require",
+		"Wrapped",
+		"sideEffect",
+	]);
+	expect(
+		facts.references
+			.filter((reference) => reference.origin?.kind === "import")
+			.map((reference) => [reference.name, reference.range.start.line, reference.origin]),
+	).toEqual([
+		["go", 6, { kind: "import", span: helper.span, path: ["go"] }],
+		["inner", 7, { kind: "import", span: helper.span, path: ["inner"] }],
+		["deep", 7, { kind: "import", span: helper.span, path: ["inner", "deep"] }],
+		["go", 11, { kind: "import", span: wrapped.span, path: ["go"] }],
+	]);
+	// The receiver resolves to its own declaration; a parameter of that name proves nothing.
+	expect(
+		facts.references
+			.filter((reference) => reference.name === "Helper")
+			.map((reference) => [reference.range.start.line, reference.origin]),
+	).toEqual([
+		[6, { kind: "declaration" }],
+		[7, { kind: "declaration" }],
+		[10, undefined],
+		[14, undefined],
+	]);
 });
 
 test("resolves script resources and classifies other loader paths honestly", () => {
@@ -858,11 +984,11 @@ test("resolves script resources and classifies other loader paths honestly", () 
 
 	expect(provider.resolveImport({ fromModule: "user.gd", specifier: "res://state.gd" })).toEqual({
 		status: "resolved",
-		module: "state.gd",
+		landing: { kind: "module", module: "state.gd" },
 	});
 	expect(provider.resolveImport({ fromModule: "user.gd", specifier: "state.gd" })).toEqual({
 		status: "resolved",
-		module: "state.gd",
+		landing: { kind: "module", module: "state.gd" },
 	});
 	expect(provider.resolveImport({ fromModule: "user.gd", specifier: "scene.tscn" })).toEqual({
 		status: "external",
@@ -1268,14 +1394,8 @@ func use():
 		{ kind: "string", value: "first\nsecond", number: undefined },
 		{ kind: "string", value: "inside", number: undefined },
 	]);
-	expect(facts.imports).toEqual([
-		{
-			specifier: "res://other.gd",
-			imported: [
-				{ local: "script", localRange: { start: { line: 7, character: 4 }, end: { line: 7, character: 10 } } },
-			],
-			reExport: false,
-		},
+	expect(facts.imports.map((entry) => [entry.specifier, entry.edges[0]?.local])).toEqual([
+		["res://other.gd", "script"],
 	]);
 	const multiline = facts.literals.find((literal) => literal.value === "first\nsecond");
 	expect(multiline?.range).toEqual({ start: { line: 8, character: 16 }, end: { line: 9, character: 9 } });
@@ -1349,14 +1469,8 @@ func connect_signal():
 	const facts = provider.parseFile({ module: "search.gd", contentHash: "search", text });
 
 	expect(facts.literals.map((literal) => literal.value)).toEqual(["res://mentioned.gd", "thing_happened", "handler"]);
-	expect(facts.imports).toEqual([
-		{
-			specifier: "res://other.gd",
-			imported: [
-				{ local: "script", localRange: { start: { line: 0, character: 6 }, end: { line: 0, character: 12 } } },
-			],
-			reExport: false,
-		},
+	expect(facts.imports.map((entry) => [entry.specifier, entry.edges[0]?.local])).toEqual([
+		["res://other.gd", "script"],
 	]);
 });
 

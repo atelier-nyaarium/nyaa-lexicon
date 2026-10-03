@@ -87,4 +87,22 @@ describe("an arrangement with the TypeScript provider", () => {
 			target: "export const marker = 0;\n\nexport function foo() {\n\treturn 1;\n}\n",
 		});
 	}, 120_000);
+
+	it("writes the target's line endings around a moved declaration, and leaves a break inside its literal", async () => {
+		writeFileSync(path.join(root, "src/banner.ts"), "export function banner() {\n\treturn `one\ntwo`;\n}\n");
+		writeFileSync(path.join(root, "src/windows.ts"), "export const marker = 0;\r\n");
+		for (const module of ["src/banner.ts", "src/windows.ts"]) await service.indexFile(module);
+		const banner = service.findByName("banner")[0]?.symbolId as string;
+		const request = { toModule: "src/windows.ts", placements: [{ symbolId: banner }] };
+		const shown = (await dispatch("previewArrange", request)) as ResponseOf<"previewArrange">;
+		if (!shown.ok) throw new Error(shown.reason);
+		await dispatch("refactorArrange", {
+			...request,
+			expect: shown.files.map(({ module, base, result }) => ({ module, base, result })),
+		});
+
+		expect(read("src/windows.ts")).toBe(
+			"export const marker = 0;\r\n\r\nexport function banner() {\r\n\treturn `one\ntwo`;\r\n}\r\n",
+		);
+	}, 120_000);
 });

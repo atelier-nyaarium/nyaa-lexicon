@@ -22,7 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { err, ok, type ParseResult } from "./parseResult.js";
-import type { CommentSpan, DocRegion, ImportedName, Literal } from "./project.js";
+import type { Certainty, CommentSpan, Conflict, DocRegion, Export, ImportEdge, Literal, Selector } from "./project.js";
 import { SourceCursor } from "./sourceCursor.js";
 import {
 	decodeModuleField,
@@ -32,12 +32,12 @@ import {
 	moduleOf,
 	readIdField,
 } from "./symbolId.js";
-import type { Declaration, Position, Range, Reference } from "./symbols.js";
+import type { Declaration, Position, Range, Reference, ReferenceOrigin } from "./symbols.js";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-export type FactKind = "declaration" | "reference" | "import" | "literal" | "comment" | "doc" | "answer" | "doubt";
+export type FactKind = (typeof FACT_KINDS)[number];
 
 export interface FactId {
 	kind: FactKind;
@@ -67,6 +67,7 @@ export const FACT_KINDS = [
 	"declaration",
 	"reference",
 	"import",
+	"export",
 	"literal",
 	"comment",
 	"doc",
@@ -131,6 +132,28 @@ function ownedRangeFields(range: Range, owner: string | null | undefined, owners
 	return rangeFields(range, origin);
 }
 
+/** Counted, so a list mid-tuple cannot run into the next field. */
+function listFields(list: readonly string[] | undefined): FactField[] {
+	return list === undefined ? [null] : [list.length, ...list];
+}
+
+function selectorFields(selector: Selector | undefined): FactField[] {
+	return [
+		selector?.kind,
+		...listFields(selector?.kind === "names" ? selector.names : undefined),
+		selector?.kind === "pattern" ? selector.glob : null,
+		selector?.kind === "pattern" ? selector.caseInsensitive : null,
+	];
+}
+
+function conflictFields(conflict: Conflict | undefined): FactField[] {
+	return [conflict?.priority, conflict?.amongTransfers, conflict?.againstLocal];
+}
+
+function certaintyFields(certainty: Certainty): FactField[] {
+	return [certainty.status, certainty.status === "unknown" ? certainty.reason : null];
+}
+
 function composeFactId(kind: FactKind, module: string, parts: FactField[]): string {
 	if (!isCanonicalModule(module)) throw new Error(`module is not in canonical form: ${module}`);
 	return `${FACT_SCHEME} ${kind} ${encodeModuleField(module)} ${digestOf(kind, module, parts)}`;
@@ -162,8 +185,44 @@ export function declarationFactId(module: string, d: Declaration): string {
 	]);
 }
 
+/**
+ * The import edge a reference's origin names: its statement's specifier, and its occurrence among
+ * identical edges in the file.
+ */
+export interface OriginEdge {
+	specifier: string;
+	edge: ImportEdge;
+	occurrence: number;
+}
+
+/**
+ * An origin by the edge it names, never where that edge sits: references are owner-relative, so an
+ * import block shifting must not re-mint every reference through it.
+ */
+function originFields(origin: ReferenceOrigin, through: OriginEdge | undefined): FactField[] {
+	if (origin.kind === "declaration") return [origin.kind];
+	if (through === undefined) throw new Error("a reference's import origin names no edge in its file");
+	const { specifier, edge, occurrence } = through;
+	return [
+		origin.kind,
+		...listFields(origin.path),
+		specifier,
+		edge.kind,
+		edge.name,
+		edge.local,
+		edge.bindsLocally,
+		edge.typeOnly === true,
+		...selectorFields(edge.selector),
+		...conflictFields(edge.conflict),
+		...listFields(edge.meaning),
+		edge.visibility,
+		...certaintyFields(edge.certainty),
+		occurrence,
+	];
+}
+
 /** The binding is part of the fact: the same call newly resolving is news, not the same news. */
-export function referenceFactId(module: string, r: Reference, owners: OwnerStarts): string {
+export function referenceFactId(module: string, r: Reference, owners: OwnerStarts, through?: OriginEdge): string {
 	const target = r.binding.status === "bound" ? r.binding.symbolId : null;
 	const candidates = r.binding.status === "ambiguous" ? r.binding.candidates.join(",") : null;
 	const how = r.binding.status === "unbound" ? r.binding.reason : r.binding.provenance;
@@ -175,27 +234,54 @@ export function referenceFactId(module: string, r: Reference, owners: OwnerStart
 		candidates,
 		how,
 		r.fromId,
+		r.qualified,
 		...ownedRangeFields(r.range, r.fromId, owners),
+		// An absent origin adds no slot.
+		...(r.origin === undefined ? [] : originFields(r.origin, through)),
 	]);
 }
 
-/**
- * One name an import writes, or the statement itself when it names none.
- *
- * Two identical statements in one file mint one id. They are the same fact stated twice, so that is
- * the right answer rather than a collision to design around.
- */
-export function importFactId(module: string, specifier: string, reExport: boolean, name?: ImportedName): string {
+/** One edge an import makes. Its span tells two identical statements apart. */
+export function importFactId(module: string, specifier: string, edge: ImportEdge): string {
 	return composeFactId("import", module, [
 		specifier,
-		reExport,
-		name?.name,
-		...rangeFields(name?.range),
-		name?.local,
-		...rangeFields(name?.localRange),
-		// Only when stated, so an import stating neither keeps its id.
-		...(name?.kind === undefined ? [] : [name.kind]),
-		...(name?.typeOnly === true ? ["typeOnly"] : []),
+		edge.kind,
+		...rangeFields(edge.span),
+		edge.name,
+		...rangeFields(edge.range),
+		edge.local,
+		...rangeFields(edge.localRange),
+		edge.bindsLocally,
+		edge.typeOnly === true,
+		...selectorFields(edge.selector),
+		...conflictFields(edge.conflict),
+		...listFields(edge.meaning),
+		edge.visibility,
+		...certaintyFields(edge.certainty),
+		edge.order,
+	]);
+}
+
+/** Every field that changes what a module exposes. */
+export function exportFactId(module: string, edge: Export): string {
+	const target = edge.target;
+	return composeFactId("export", module, [
+		edge.form,
+		...rangeFields(edge.span),
+		edge.name,
+		...rangeFields(edge.range),
+		...rangeFields(edge.sourceRange),
+		target.kind,
+		target.kind === "symbol" ? target.symbolId : null,
+		...rangeFields(target.kind === "import" ? target.span : undefined),
+		target.kind === "unknown" ? target.reason : null,
+		edge.scopeId,
+		...selectorFields(edge.selector),
+		...conflictFields(edge.conflict),
+		...listFields(edge.meaning),
+		edge.visibility,
+		...certaintyFields(edge.certainty),
+		edge.order,
 	]);
 }
 

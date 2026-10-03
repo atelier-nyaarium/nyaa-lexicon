@@ -104,6 +104,8 @@ function plan(symbolId: string, newName: string, blockers: RenamePlan["blockers"
 		occurrences: 0,
 		blockers,
 		warnings: [],
+		routes: { edges: [], modules: [] },
+		mentions: { comments: 0, strings: 0 },
 	};
 }
 
@@ -148,6 +150,7 @@ function reference(module: string, name: string, range: Range): StoredReference 
 		startCharacter: range.start.character,
 		endLine: range.end.line,
 		endCharacter: range.end.character,
+		origin: null,
 	};
 }
 

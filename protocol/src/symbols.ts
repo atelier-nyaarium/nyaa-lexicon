@@ -148,6 +148,22 @@ export const ReferenceRoleSchema = z
 
 export type ReferenceRole = z.infer<typeof ReferenceRoleSchema>;
 
+/** The binding a use resolves through. */
+export const ReferenceOriginSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("declaration") }),
+		z.object({
+			kind: z.literal("import"),
+			/** The import edge with exactly this span. A side-effect edge stands for the module it loads. */
+			span: RangeSchema,
+			/** The member names after its receiver, e.g. `["N"]` for `ns.N`. */
+			path: z.array(z.string().min(1)).optional(),
+		}),
+	])
+	.meta({ id: "ReferenceOrigin" });
+
+export type ReferenceOrigin = z.infer<typeof ReferenceOriginSchema>;
+
 /**
  * A reference is a candidate plus a `Binding`, not a resolved edge.
  *
@@ -165,6 +181,8 @@ export const ReferenceSchema = z
 		fromId: z.string().min(1).optional(),
 		/** Syntax-tree receiver/path access (`a.b`, `a?.b`, `a->b`, `A::b`) cannot bind to a local; absent means unknown. */
 		qualified: z.boolean().optional(),
+		/** Proved by the provider; absent is unknown. */
+		origin: ReferenceOriginSchema.optional(),
 	})
 	.meta({ id: "Reference" });
 

@@ -7,6 +7,7 @@ import {
 	formatRef,
 	isLocalSymbol,
 	moduleOf,
+	NOTE_MAX,
 	type Note,
 	type NoteAuthor,
 	NoteAuthorSchema,
@@ -55,7 +56,6 @@ type Checked<T> = { ok: true; value: T } | { ok: false; outcome: LedgerNoteOutco
 ////////////////////////////////
 //  Constants
 
-const NOTE_MAX = 16_000;
 /** Opening blocks, as refusals name them. */
 const BLOCK_NAMES: Record<OpeningBlock, string> = {
 	heading: "heading",

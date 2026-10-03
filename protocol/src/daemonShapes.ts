@@ -6,15 +6,25 @@
 
 import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
-import { FACT_KINDS } from "./factId.js";
+import { FACT_KINDS, parseFactId } from "./factId.js";
 import { ImportKindSchema, MoveAnchorSchema, MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
-import { EntryRoleSchema, FileRoleSchema, IndexDepthSchema, LiteralSchema } from "./project.js";
+import {
+	EntryRoleSchema,
+	ExportFormSchema,
+	ExportSchema,
+	FileRoleSchema,
+	ImportEdgeSchema,
+	IndexDepthSchema,
+	LandingSchema,
+	LiteralSchema,
+} from "./project.js";
 import { RenameSiteSchema } from "./rename.js";
 import {
 	DeclarationSchema,
 	PositionSchema,
 	RangeSchema,
+	ReferenceOriginSchema,
 	ReferenceRoleSchema,
 	type SymbolKind,
 	SymbolKindSchema,
@@ -88,6 +98,17 @@ export type CommentForm = z.infer<typeof CommentFormSchema>;
 
 export const FactKindSchema = z.enum(FACT_KINDS).meta({ id: "FactKind" });
 
+/** Names one export edge, e.g. a rename stop. */
+export const ExportFactIdSchema = z
+	.string()
+	.refine((id) => parseFactId(id)?.kind === "export", "not an export fact id")
+	.meta({ id: "ExportFactId" });
+
+export const ImportFactIdSchema = z
+	.string()
+	.refine((id) => parseFactId(id)?.kind === "import", "not an import fact id")
+	.meta({ id: "ImportFactId" });
+
 ////////////////////////////////
 //  Counting
 
@@ -139,6 +160,8 @@ export const StoredReferenceSchema = z
 		fromId: z.string().nullable(),
 		/** Reached through a receiver or path; null when the provider did not say. */
 		qualified: z.boolean().nullable(),
+		/** Null when unproved, which is unknown. */
+		origin: ReferenceOriginSchema.nullable(),
 		/** A bound reference's provenance, or the reason an unbound one did not bind. */
 		provenance: z.string(),
 		startLine: z.number(),
@@ -199,26 +222,23 @@ export const StoredDocSchema = z
 
 export type StoredDoc = z.infer<typeof StoredDocSchema>;
 
-/** One name written by one import statement, with the spans a rewrite would replace. */
-export const StoredImportSchema = z
-	.object({
-		factId: z.string(),
-		module: z.string(),
-		specifier: z.string(),
-		reExport: z.boolean(),
-		/** Absent when the statement names no export. The edge is still real; only rename skips it. */
-		name: z.string().optional(),
-		range: RangeSchema.optional(),
-		/** Present only when the import writes an alias, which renames must NOT follow. */
-		local: z.string().optional(),
-		localRange: RangeSchema.optional(),
-		/** The form the provider named; absent when it named none. */
-		kind: ImportKindSchema.optional(),
-		typeOnly: z.boolean().optional(),
-	})
-	.meta({ id: "StoredImport" });
+/** One import edge, with the spans a rewrite would replace. */
+export const StoredImportSchema = ImportEdgeSchema.safeExtend({
+	factId: z.string(),
+	module: z.string(),
+	specifier: z.string(),
+	/** Null when the specifier did not resolve into the workspace. */
+	landing: LandingSchema.nullable(),
+}).meta({ id: "StoredImport" });
 
 export type StoredImport = z.infer<typeof StoredImportSchema>;
+
+/** One export edge. */
+export const StoredExportSchema = ExportSchema.safeExtend({ factId: z.string(), module: z.string() }).meta({
+	id: "StoredExport",
+});
+
+export type StoredExport = z.infer<typeof StoredExportSchema>;
 
 ////////////////////////////////
 //  Knowledge
@@ -266,7 +286,8 @@ export const StoredFactSchema = z
 	.discriminatedUnion("fact", [
 		StoredDeclarationSchema.extend({ fact: z.literal("declaration") }),
 		StoredReferenceSchema.extend({ fact: z.literal("reference") }),
-		StoredImportSchema.extend({ fact: z.literal("import") }),
+		StoredImportSchema.safeExtend({ fact: z.literal("import") }),
+		StoredExportSchema.safeExtend({ fact: z.literal("export") }),
 		StoredLiteralSchema.extend({ fact: z.literal("literal") }),
 		StoredCommentSchema.extend({ fact: z.literal("comment") }),
 		StoredDocSchema.extend({ fact: z.literal("doc") }),
@@ -1345,6 +1366,12 @@ export const REFACTOR_ISSUE_KINDS = [
 	"DynamicDependency",
 	"Landed",
 	"FixFailed",
+	"RouteUnknown",
+	"RouteChanged",
+	"StopNotReExport",
+	"StopUnsupported",
+	"ProofUnavailable",
+	"KnowledgeKept",
 ] as const;
 
 /** Reported, never block commits. */
@@ -1396,6 +1423,58 @@ export const RenameFileSchema = z
 
 export type RenameFile = z.infer<typeof RenameFileSchema>;
 
+/** What the rename does to one route edge. */
+export const RouteStateSchema = z.enum(["renamed", "fixed", "stopped", "unknown"]).meta({ id: "RouteState" });
+
+export type RouteState = z.infer<typeof RouteStateSchema>;
+
+/** One export or import fact a route crosses. An export's id is its stop id when `stoppable`. */
+export const RouteEdgeSchema = z
+	.discriminatedUnion("fact", [
+		z.object({
+			fact: z.literal("export"),
+			id: ExportFactIdSchema,
+			from: z.string(),
+			/** Where it points; absent for a local target or an unknown route. */
+			landing: LandingSchema.optional(),
+			form: ExportFormSchema,
+			name: z.string().optional(),
+			state: RouteStateSchema,
+			stoppable: z.literal(true).optional(),
+		}),
+		z.object({
+			fact: z.literal("import"),
+			id: ImportFactIdSchema,
+			from: z.string(),
+			/** Absent on an unknown route. */
+			landing: LandingSchema.optional(),
+			transfer: ImportKindSchema,
+			name: z.string().optional(),
+			state: RouteStateSchema,
+		}),
+	])
+	.refine((edge) => edge.state !== "unknown" || edge.landing === undefined, {
+		message: "an unknown route has no landing",
+	})
+	.meta({ id: "RouteEdge" });
+
+export type RouteEdge = z.infer<typeof RouteEdgeSchema>;
+
+/** One module a route reaches. A module may hold edited and kept sites at once. */
+export const RouteModuleSchema = z
+	.object({
+		module: z.string(),
+		roles: z.array(z.enum(["declares", "imports", "reExports", "uses"])),
+		edited: z.number(),
+		/** Sites a stop keeps. */
+		kept: z.number(),
+		/** Uses and routes in it no fact proves. */
+		unknown: z.number(),
+	})
+	.meta({ id: "RouteModule" });
+
+export type RouteModule = z.infer<typeof RouteModuleSchema>;
+
 export const RenamePlanSchema = z
 	.object({
 		symbolId: z.string(),
@@ -1406,6 +1485,15 @@ export const RenamePlanSchema = z
 		occurrences: z.number(),
 		blockers: z.array(RenameConcernSchema),
 		warnings: z.array(RenameConcernSchema),
+		/** Every route the rename follows. */
+		routes: z.object({ edges: z.array(RouteEdgeSchema), modules: z.array(RouteModuleSchema) }),
+		/** The old name as a whole word in comment prose and string values. Reported, never edited. */
+		mentions: z.object({
+			comments: z.number(),
+			strings: z.number(),
+			/** A module lacks the comment or literal tier. */
+			incomplete: z.literal(true).optional(),
+		}),
 	})
 	.meta({ id: "RenamePlan" });
 
@@ -1711,6 +1799,8 @@ export const RefactorUndoResultSchema = z
 		stepNo: z.number().optional(),
 		modules: z.array(z.string()).optional(),
 		unreversed: z.array(UnreversedRebindSchema).optional(),
+		/** Modules whose facts did not land again; each stays owed a parse. */
+		issues: z.array(RefactorIssueSchema).optional(),
 		reason: z.string().optional(),
 	})
 	.meta({ id: "RefactorUndoResult" });
@@ -1722,6 +1812,8 @@ export const RefactorRevertResultSchema = z
 		reverted: z.boolean(),
 		modules: z.array(z.string()),
 		unreversed: z.array(UnreversedRebindSchema).optional(),
+		/** Modules whose facts did not land again; each stays owed a parse. */
+		issues: z.array(RefactorIssueSchema).optional(),
 		reason: z.string().optional(),
 	})
 	.meta({ id: "RefactorRevertResult" });
@@ -1814,6 +1906,8 @@ export const RenameStepOutcomeSchema = z
 	.object({
 		renamed: z.boolean(),
 		modules: z.array(z.string()).optional(),
+		/** Export fact ids kept at the old name. */
+		stops: z.array(z.string()).optional(),
 		migrated: migrated.optional(),
 		issues: z.array(RefactorIssueSchema),
 		reason: z.string().optional(),
@@ -1861,6 +1955,8 @@ export const CommittedStepSchema = z
 			/** Every id the step re-minted, old to new. */
 			forwarded: z.array(z.object({ from: z.string(), to: z.string() })),
 			reverse: ReverseStepSchema,
+			/** A rename's export fact ids kept at the old name. */
+			stops: z.array(z.string()).optional(),
 			migrated: migrated.optional(),
 			issues: z.array(RefactorIssueSchema),
 		}),

@@ -1,6 +1,5 @@
 // Every name a file reads, writes, calls, extends or uses as a type, and its imports.
 
-import type { ImportedName } from "@nyaa-lexicon/protocol";
 import type * as A from "../syntax/ast.js";
 import { childNodes } from "../syntax/ast.js";
 import { parseExpression, parseFunctionType } from "../syntax/parser.js";
@@ -12,7 +11,7 @@ import {
 	NodeVisitor,
 	typeParamExpressions,
 } from "./nodes.js";
-import type { Range, RawDescriptor, RawReferenceRole } from "./types.js";
+import type { Range, RawBinding, RawDescriptor, RawImportEdge, RawReference, RawReferenceRole } from "./types.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -26,6 +25,17 @@ interface ReferenceOptions {
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** A dotted receiver's root name and the members after it: `a` and `["b"]` for `a.b`. */
+function receiverChain(node: A.Expression): { root: A.Name; path: string[] } | undefined {
+	const path: string[] = [];
+	let current = node;
+	while (current.type === "Attribute") {
+		path.unshift(current.attr);
+		current = current.value;
+	}
+	return current.type === "Name" ? { root: current, path } : undefined;
+}
 
 /** A type comment's expressions: a signature's argument and return types, or one type. */
 export function parseTypeComment(text: string | undefined, signature: boolean): A.Expression[] {
@@ -61,23 +71,39 @@ export class ReferenceVisitor extends NodeVisitor {
 	private addReference(node: A.Node, role: RawReferenceRole, options: ReferenceOptions = {}): void {
 		const name = options.name ?? (node.type === "Name" ? node.id : node.type === "Attribute" ? node.attr : "");
 		const range = options.range ?? this.rangeOf(options.rangeNode ?? node);
-		this.analyzer.references.push({
+		const qualified = node.type === "Attribute";
+		const reference: RawReference = {
 			name,
 			range,
 			role,
-			qualified: node.type === "Attribute",
+			qualified,
 			scopePath: [...this.scopePath],
 			ownerPath: [...this.ownerPath],
-			binding: this.analyzer.scopes.bindingFor({
-				name,
-				role,
-				scopePath: this.scopePath,
-				position: range.start,
-				bindable: options.bindable ?? true,
-				blockedReason: this.bindingBlocked,
-				ownerPath: this.ownerPath,
-				blockedLocal: this.blockedLocals.has(name),
-			}),
+			binding: this.bindingOf(name, role, range, options.bindable ?? true),
+		};
+		if (!qualified && this.blockedLocals.has(name)) reference.nestedLocal = true;
+		const receiver = qualified ? receiverChain(node.value) : undefined;
+		if (receiver !== undefined) {
+			reference.receiver = {
+				name: receiver.root.id,
+				binding: this.bindingOf(receiver.root.id, "read", this.rangeOf(receiver.root)),
+				path: receiver.path,
+				nestedLocal: this.blockedLocals.has(receiver.root.id),
+			};
+		}
+		this.analyzer.references.push(reference);
+	}
+
+	private bindingOf(name: string, role: RawReferenceRole, range: Range, bindable = true): RawBinding {
+		return this.analyzer.scopes.bindingFor({
+			name,
+			role,
+			scopePath: this.scopePath,
+			position: range.start,
+			bindable,
+			blockedReason: this.bindingBlocked,
+			ownerPath: this.ownerPath,
+			blockedLocal: this.blockedLocals.has(name),
 		});
 	}
 
@@ -323,24 +349,40 @@ export class ReferenceVisitor extends NodeVisitor {
 
 	private visitImport(node: A.Import): void {
 		const aliases = [];
+		const moduleLevel = this.scopePath.length === 0;
 		for (const alias of node.names) {
 			const local = alias.asname ?? (alias.name.split(".")[0] as string);
 			const localStart = alias.asname === undefined ? alias.pos : alias.end - alias.asname.length;
 			const localRange = this.source.range(localStart, localStart + local.length);
+			const conditional = this.isConditional(local);
+			const span = this.source.rangeOf(alias);
 			aliases.push({ name: alias.name, localName: local, range: localRange, localRange, star: false });
-			// A local import is a re-export only when `__all__` names that local binding.
+			// `import a.b.c` binds the package `a`, and loads `a.b` and `a.b.c` for effect.
+			const dotted = alias.asname === undefined && alias.name.includes(".");
+			const lands = dotted ? local : alias.name;
+			const bound = dotted ? localRange : span;
+			const loads = dotted ? this.source.dottedPrefixes(alias).slice(1) : [];
 			this.analyzer.imports.push({
-				specifier: alias.name,
-				imported: [{ local, localRange }],
-				reExport: this.scopePath.length === 0 && this.analyzer.isExplicitlyExported(local),
+				specifier: lands,
+				edges: [{ kind: "namespace", span: bound, local, localRange, conditional, moduleLevel }],
 			});
+			const segments = alias.name.split(".");
+			for (const [index, load] of loads.entries()) {
+				this.analyzer.imports.push({
+					specifier: segments.slice(0, index + 2).join("."),
+					edges: [{ kind: "sideEffect", span: load, conditional, moduleLevel }],
+				});
+			}
 			this.analyzer.importBindings.push({
 				specifier: alias.name,
+				lands,
 				localName: local,
 				importedName: null,
 				scopePath: [...this.scopePath],
-				conditional: this.isConditional(local),
+				conditional,
 				star: false,
+				span: bound,
+				loads,
 			});
 		}
 		this.analyzer.importStatements.push({
@@ -349,61 +391,84 @@ export class ReferenceVisitor extends NodeVisitor {
 			range: this.source.rangeOf(node),
 			moduleRange: null,
 			indent: this.source.statementIndent(node),
-			reExport: false,
 			aliases,
 		});
 	}
 
-	private importedName(alias: A.Alias): ImportedName | undefined {
-		if (alias.name === "*" || alias.name.includes(".")) return undefined;
-		const imported: ImportedName = {
+	/** One `from` alias's edge; `*` selects by the target's `__all__`. */
+	private fromEdge(alias: A.Alias, moduleLevel: boolean): RawImportEdge {
+		const span = this.source.rangeOf(alias);
+		if (alias.name === "*") {
+			return {
+				kind: "wildcard",
+				span,
+				selector: { kind: "allList" },
+				conditional: this.isConditional("*"),
+				moduleLevel,
+			};
+		}
+		const edge: RawImportEdge = {
+			kind: "named",
+			span,
 			name: alias.name,
 			range: this.source.range(alias.pos, alias.pos + alias.name.length),
+			conditional: this.isConditional(alias.asname ?? alias.name),
+			moduleLevel,
 		};
-		if (alias.asname !== undefined && alias.asname !== alias.name) {
-			imported.local = alias.asname;
-			imported.localRange = this.source.range(alias.end - alias.asname.length, alias.end);
+		if (alias.asname !== undefined) {
+			edge.local = alias.asname;
+			edge.localRange = this.source.range(alias.end - alias.asname.length, alias.end);
 		}
-		return imported;
+		return edge;
 	}
 
 	private visitImportFrom(node: A.ImportFrom): void {
 		const specifier = ".".repeat(node.level) + (node.module ?? "") || ".";
-		const imported: ImportedName[] = [];
-		const aliases = [];
-		for (const alias of node.names) {
-			const name = this.importedName(alias);
-			if (name !== undefined) imported.push(name);
-			aliases.push({
+		const moduleLevel = this.scopePath.length === 0;
+		const edges = node.names.map((alias) => this.fromEdge(alias, moduleLevel));
+		const moduleRange = this.source.moduleNameRange(node);
+		const aliases = node.names.map((alias, index) => {
+			const edge = edges[index] as RawImportEdge;
+			return {
 				name: alias.name,
 				localName: alias.asname ?? alias.name,
-				range: this.source.rangeOf(alias),
-				importedRange: name?.range ?? null,
-				localRange: name === undefined ? null : (name.localRange ?? name.range ?? null),
+				range: edge.span,
+				importedRange: edge.range ?? null,
+				localRange: edge.localRange ?? edge.range ?? null,
 				star: alias.name === "*",
+			};
+		});
+		if (edges.length > 0) {
+			const conditional = edges.some((edge) => edge.conditional);
+			this.analyzer.imports.push({
+				specifier,
+				edges,
+				...(moduleRange === null
+					? {}
+					: { load: { kind: "sideEffect", span: moduleRange, conditional, moduleLevel } }),
 			});
 		}
-		const reExport = this.analyzer.isFromReexport(node.names, this.scopePath);
-		this.analyzer.imports.push({ specifier, imported, reExport });
 		this.analyzer.importStatements.push({
 			kind: "from",
 			specifier,
 			range: this.source.rangeOf(node),
-			moduleRange: this.source.moduleNameRange(node),
+			moduleRange,
 			indent: this.source.statementIndent(node),
-			reExport,
 			aliases,
 		});
-		for (const alias of node.names) {
+		for (const [index, alias] of node.names.entries()) {
+			const edge = edges[index] as RawImportEdge;
 			const star = alias.name === "*";
-			const local = star ? "*" : (alias.asname ?? alias.name);
 			this.analyzer.importBindings.push({
 				specifier,
-				localName: local,
+				lands: specifier,
+				localName: star ? "*" : (alias.asname ?? alias.name),
 				importedName: star ? null : alias.name,
 				scopePath: [...this.scopePath],
-				conditional: this.isConditional(local),
+				conditional: edge.conditional,
 				star,
+				span: edge.span,
+				loads: [],
 			});
 		}
 	}

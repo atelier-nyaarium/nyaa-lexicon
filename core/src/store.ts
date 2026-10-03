@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
+	type AllList,
 	type Answer,
 	type ContentCounts,
 	type ContentTotals,
@@ -19,6 +20,8 @@ import {
 	defined,
 	docFactId,
 	type EntryHow,
+	type Export,
+	exportFactId,
 	type FileContent,
 	type FileNote,
 	type FileNotes,
@@ -26,23 +29,30 @@ import {
 	FileRoleSchema,
 	hashContent,
 	type Import,
-	type ImportKind,
+	type ImportEdge,
+	type ImportResolution,
 	type IndexDepth,
 	importFactId,
+	type Landing,
 	type Literal,
 	languageOf,
 	literalFactId,
 	type Metrics,
 	type ModuleExclusion,
+	type OriginEdge,
 	ownerStarts,
 	parseFactId,
+	type Range,
 	type Reference,
+	type ReferenceOrigin,
 	type ReferenceRole,
 	referenceFactId,
 	type ScanCounts,
+	type ScopeContribution,
 	type StoredComment,
 	type StoredDeclaration,
 	type StoredDoc,
+	type StoredExport,
 	type StoredFact,
 	type StoredImport,
 	type StoredLiteral,
@@ -51,7 +61,14 @@ import {
 import { z } from "zod";
 import { type Clock, systemClock } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
-import { admitFacts } from "./factAdmission.js";
+import {
+	type EffectiveExport,
+	type ScopeLanding,
+	scopeKey,
+	scopeOfKey,
+	settleProjections,
+} from "./exportProjection.js";
+import { admitFacts, spanKey } from "./factAdmission.js";
 import type { GeneratedReason, GeneratedVerdict } from "./fileScope.js";
 import {
 	installRevisionTriggers,
@@ -153,8 +170,12 @@ export interface ReplaceFileInput {
 	digests?: PatternDigest[];
 	generated?: GeneratedVerdict | null;
 	role?: FileRole | undefined;
-	/** Where each import's specifier landed, when known. */
-	importTargets?: ReadonlyMap<string, string>;
+	/** Where each specifier landed, as the provider resolved it. */
+	resolutions?: ReadonlyMap<string, ImportResolution | null>;
+	/** Absent when the provider does not report exports, which is unknown coverage. */
+	exports?: Export[] | undefined;
+	allList?: AllList | undefined;
+	scopeContributions?: ScopeContribution[] | undefined;
 }
 
 /** One commit of a module's rows: the depth they hold and the clock stamp the commit took. */
@@ -173,6 +194,8 @@ export interface SurfaceChange {
 	boundInto: string[];
 	/** Whether the module held a surface before, so a provider may still hold a parse of what it was. */
 	heldBefore: boolean;
+	/** Scope keys the module contributed to before or after the write; their importers rebind too. */
+	scopes: string[];
 }
 
 /** One declaration as another module may bind to it. */
@@ -195,10 +218,7 @@ interface SurfaceEntry {
 //  Constants
 
 /** Store layout version; mismatches rebuild the index. */
-export const SCHEMA_VERSION = 25;
-
-/** Re-export hops an imported name follows before giving up. */
-const EXPORT_HOPS = 32;
+export const SCHEMA_VERSION = 26;
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -247,7 +267,11 @@ CREATE TABLE files (
   roleSymbolId     TEXT,
   roleReason       TEXT,
   -- Digest of what other modules can bind to; NULL on a row written before it was kept.
-  surface          TEXT
+  surface          TEXT,
+  -- 1 when the parse carried export facts; 0 is unknown coverage.
+  exportsKnown     INTEGER NOT NULL DEFAULT 0,
+  -- The star-export list as JSON; NULL when the language has none.
+  allList          TEXT
 );
 CREATE INDEX files_indexed_at ON files(indexedAt);
 CREATE INDEX files_depth ON files(depth);
@@ -269,7 +293,9 @@ CREATE TABLE surface_moves (
   lost       TEXT NOT NULL,
   boundInto  TEXT NOT NULL,
   -- 1 when the module held a surface before, so a provider may still hold a parse of what it was.
-  heldBefore INTEGER NOT NULL CHECK (heldBefore IN (0, 1))
+  heldBefore INTEGER NOT NULL CHECK (heldBefore IN (0, 1)),
+  -- JSON: the scope keys the module contributed to before or after.
+  scopes     TEXT NOT NULL DEFAULT '[]'
 );
 
 -- Modules owed a parse because a move left their bindings stale, until a parse reading references
@@ -342,7 +368,15 @@ CREATE TABLE refs (
   startLine  INTEGER NOT NULL,
   startChar  INTEGER NOT NULL,
   endLine    INTEGER NOT NULL,
-  endChar    INTEGER NOT NULL
+  endChar    INTEGER NOT NULL,
+  -- The binding the use resolves through, when proved: declaration or import, with the import
+  -- edge's span and the member path as JSON.
+  originKind      TEXT,
+  originStartLine INTEGER,
+  originStartChar INTEGER,
+  originEndLine   INTEGER,
+  originEndChar   INTEGER,
+  originPath      TEXT
 );
 CREATE INDEX refs_module ON refs(module);
 -- The whole reason for a database: this turns reverse lookup into an indexed read.
@@ -352,38 +386,110 @@ CREATE INDEX refs_name ON refs(name);
 -- Not unique, here or on any fact table. Two identical statements in one file are the same fact
 -- written twice, so one id for both is the right answer rather than a collision to design around.
 CREATE INDEX refs_fact ON refs(factId);
+CREATE INDEX refs_origin ON refs(module, originStartLine, originStartChar);
 
--- One row per NAME an import brings in, not one per statement: the rewritable thing is the name.
--- The specifier is kept unresolved because resolving every one at index time costs a provider
--- round trip per import, and only the handful sharing a name with a rename target ever need it.
+-- One row per import EDGE, not one per statement: a name, a namespace, a wildcard, an injection or a
+-- side effect. The edge column holds the whole protocol edge as JSON; the others are what queries read.
 CREATE TABLE imports (
   factId     TEXT NOT NULL,
   module     TEXT NOT NULL,
   specifier  TEXT NOT NULL,
-  reExport   INTEGER NOT NULL,
-  -- Null when the statement names no export: a bare module import, a namespace import, a preload
-  -- const. The EDGE is still real, so the row exists and only rename filters it out.
+  kind       TEXT NOT NULL,
+  -- The source name and its span; null when the edge names no export.
   name       TEXT,
   startLine  INTEGER,
   startChar  INTEGER,
   endLine    INTEGER,
   endChar    INTEGER,
-  -- The local alias and its span, both null when the import writes no alias.
+  -- The local binding and its span; null when the edge writes none.
   localName      TEXT,
   localStartLine INTEGER,
   localStartChar INTEGER,
   localEndLine   INTEGER,
   localEndChar   INTEGER,
-  -- The form the provider named, null when it named none.
-  importKind     TEXT,
-  typeOnly       INTEGER NOT NULL DEFAULT 0,
-  -- Where the specifier landed when it was written; null when unknown.
-  target         TEXT
+  -- The edge as written, which export targets and reference origins name it by.
+  spanStartLine INTEGER NOT NULL,
+  spanStartChar INTEGER NOT NULL,
+  spanEndLine   INTEGER NOT NULL,
+  spanEndChar   INTEGER NOT NULL,
+  bindsLocally  INTEGER NOT NULL,
+  typeOnly      INTEGER NOT NULL DEFAULT 0,
+  edge          TEXT NOT NULL,
+  -- Where the specifier landed when written, as JSON; null when unresolved or external.
+  landing       TEXT,
+  -- A module landing's module.
+  target        TEXT,
+  -- A scope landing's key, JSON [providerId, kind, scopeId].
+  targetScope   TEXT,
+  -- An external resolution's indexable module: reachability only, never a landing.
+  surfaceTarget TEXT
 );
 CREATE INDEX imports_module ON imports(module);
 CREATE INDEX imports_name ON imports(name);
+CREATE INDEX imports_local ON imports(localName);
 CREATE INDEX imports_fact ON imports(factId);
 CREATE INDEX imports_target ON imports(target);
+CREATE INDEX imports_scope ON imports(targetScope);
+CREATE INDEX imports_surface ON imports(surfaceTarget);
+CREATE INDEX imports_span ON imports(module, spanStartLine, spanStartChar);
+
+-- One row per export edge. The edge column holds the protocol edge as JSON; the others are what queries read.
+CREATE TABLE exports (
+  factId         TEXT NOT NULL,
+  module         TEXT NOT NULL,
+  form           TEXT NOT NULL,
+  name           TEXT,
+  targetKind     TEXT NOT NULL,
+  targetSymbolId TEXT,
+  edge           TEXT NOT NULL
+);
+CREATE INDEX exports_module ON exports(module);
+CREATE INDEX exports_name ON exports(name);
+CREATE INDEX exports_target ON exports(targetSymbolId);
+CREATE INDEX exports_fact ON exports(factId);
+
+-- Each scope a module contributes to, empty contributions included, so a scope with no member is
+-- told apart from one nothing admitted.
+CREATE TABLE scope_contributions (
+  module   TEXT NOT NULL,
+  scopeKey TEXT NOT NULL,
+  PRIMARY KEY (module, scopeKey)
+);
+CREATE INDEX scope_contributions_key ON scope_contributions(scopeKey);
+
+CREATE TABLE scope_members (
+  module   TEXT NOT NULL,
+  scopeKey TEXT NOT NULL,
+  memberId TEXT NOT NULL
+);
+CREATE INDEX scope_members_module ON scope_members(module);
+CREATE INDEX scope_members_key ON scope_members(scopeKey);
+
+-- Advanced by every write a contributor makes, so a plan can tell its scope moved.
+CREATE TABLE scope_generations (
+  scopeKey   TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL
+);
+
+-- Each module's effective exports, from the export resolver: a name, its meaning and origin as
+-- JSON, and its certainty. A null name is an unnamed route, such as unknown coverage.
+CREATE TABLE effective_exports (
+  module         TEXT NOT NULL,
+  name           TEXT,
+  meaning        TEXT,
+  origin         TEXT NOT NULL,
+  originSymbolId TEXT,
+  certainty      TEXT NOT NULL
+);
+CREATE INDEX effective_exports_module ON effective_exports(module);
+CREATE INDEX effective_exports_origin ON effective_exports(originSymbolId);
+
+-- Modules whose effective exports a write may have moved, until settlement recomputes them.
+-- heldBefore: the index held the module before the write that owed it.
+CREATE TABLE projection_debt (
+  module     TEXT PRIMARY KEY,
+  heldBefore INTEGER NOT NULL
+);
 
 -- Text as facts rather than as bytes. A name inside a string is not a reference, so without this
 -- table an __all__ entry and a connect("thing_happened") argument are in no index anywhere.
@@ -469,7 +575,18 @@ ${JOURNAL_DDL}
  * separately, a table added to one and not the other leaves a deleted file's rows in the index
  * forever, still answering searches.
  */
-const FACT_TABLES = ["refs", "symbols", "imports", "literals", "comments", "docs", "notes"] as const;
+const FACT_TABLES = [
+	"refs",
+	"symbols",
+	"imports",
+	"exports",
+	"scope_contributions",
+	"scope_members",
+	"literals",
+	"comments",
+	"docs",
+	"notes",
+] as const;
 
 /** Classifies use vs mention. */
 const ROLE_CLASS: Readonly<Record<ReferenceRole, "use" | "mention">> = {
@@ -921,51 +1038,63 @@ function columnExists(db: DatabaseSync, table: string, column: string): boolean 
 	return columns.some((row) => row.name === column);
 }
 
-/** What another module can bind to: one row per id, as the symbols table keeps it, locals aside. */
 /** A declaration another module may bind to, keyed by its id, kind and exposure. */
 function declarationEntry(row: SurfaceRow): SurfaceEntry {
 	return { key: JSON.stringify([row.symbolId, row.kind, row.visibility, row.exported]), name: row.name };
 }
 
-/** A re-export, keyed by what it names, from where, and where that landed when known. */
-function reExportEntry(
-	specifier: string,
-	name: string | null,
-	local: string | null,
-	target: string | null,
-): SurfaceEntry {
-	return { key: JSON.stringify(["reExport", specifier, name, local, target]), name: local ?? name };
-}
-
 /**
- * What a write lets another module bind to: one entry per declaration id, as the symbols table
- * keeps them, locals aside, and one per re-exported name.
+ * What a write lets another module bind to by declaration: one entry per id, as the symbols table
+ * keeps them, locals aside. What it exports moves with its projection, at settlement.
  */
-function surfaceOf(
-	declarations: readonly Declaration[],
-	imports: readonly Import[],
-	targets: ReadonlyMap<string, string>,
-): SurfaceEntry[] {
+function surfaceOf(declarations: readonly Declaration[]): SurfaceEntry[] {
 	const byId = new Map<string, SurfaceEntry>();
 	for (const d of declarations) {
 		if (d.visibility === "local") continue;
 		const { symbolId, name, kind, visibility } = d;
 		byId.set(symbolId, declarationEntry({ symbolId, name, kind, visibility, exported: d.exported ?? null }));
 	}
-	const entries = new Map([...byId.values()].map((entry) => [entry.key, entry]));
-	for (const statement of imports) {
-		if (!statement.reExport) continue;
-		const target = targets.get(statement.specifier) ?? null;
-		for (const imported of statement.imported.length > 0 ? statement.imported : [undefined]) {
-			const entry = reExportEntry(statement.specifier, imported?.name ?? null, imported?.local ?? null, target);
-			entries.set(entry.key, entry);
-		}
-	}
-	return [...entries.values()].sort((left, right) => (left.key < right.key ? -1 : 1));
+	return [...byId.values()].sort((left, right) => (left.key < right.key ? -1 : 1));
 }
 
 function namesOf(entries: readonly SurfaceEntry[]): string[] {
 	return [...new Set(entries.flatMap((entry) => (entry.name === null ? [] : [entry.name])))].sort();
+}
+
+/** A resolved specifier's landing; null when it is external or unresolved. */
+function landingOf(resolution: ImportResolution | null): Landing | null {
+	return resolution?.status === "resolved" ? resolution.landing : null;
+}
+
+/** JSON with sorted keys and no undefined values, so two equal objects spell alike. */
+function canonical(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+	if (value !== null && typeof value === "object") {
+		const entries = Object.entries(value)
+			.filter(([, each]) => each !== undefined)
+			.sort(([left], [right]) => (left < right ? -1 : 1));
+		return `{${entries.map(([key, each]) => `${JSON.stringify(key)}:${canonical(each)}`).join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/**
+ * Each import edge by its span, with its occurrence among identical edges, for reference ids.
+ * Position and source order stay out of the identity, so an import moving re-mints nothing.
+ */
+function originEdges(imports: readonly Import[]): Map<string, OriginEdge> {
+	const seen = new Map<string, number>();
+	const out = new Map<string, OriginEdge>();
+	for (const statement of imports) {
+		for (const edge of statement.edges) {
+			const { span: _span, range: _range, localRange: _localRange, order: _order, ...content } = edge;
+			const key = canonical([statement.specifier, content]);
+			const occurrence = seen.get(key) ?? 0;
+			seen.set(key, occurrence + 1);
+			out.set(spanKey(edge.span), { specifier: statement.specifier, edge, occurrence });
+		}
+	}
+	return out;
 }
 
 ////////////////////////////////
@@ -982,6 +1111,7 @@ export class IndexStore {
 	/** In-process recall changes. */
 	private knowledgeTurns = 0;
 	private transactionDepth = 0;
+	private speculating = false;
 	private pendingKnowledgeWrite = false;
 
 	private constructor(
@@ -1004,13 +1134,15 @@ export class IndexStore {
 		return this.newestStamp;
 	}
 
-	/** node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. */
+	/** node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. Under a
+	 * speculation it is a savepoint, which the speculation's rollback discards with everything else. */
 	private inTransaction<T>(work: () => T): T {
-		this.db.exec("BEGIN");
+		const savepoint = this.speculating ? `nested${this.transactionDepth}` : null;
+		this.db.exec(savepoint === null ? "BEGIN" : `SAVEPOINT ${savepoint}`);
 		this.transactionDepth++;
 		try {
 			const result = work();
-			this.db.exec("COMMIT");
+			this.db.exec(savepoint === null ? "COMMIT" : `RELEASE ${savepoint}`);
 			this.transactionDepth--;
 			if (this.transactionDepth === 0 && this.pendingKnowledgeWrite) {
 				this.knowledgeTurns++;
@@ -1018,10 +1150,42 @@ export class IndexStore {
 			}
 			return result;
 		} catch (error) {
-			this.db.exec("ROLLBACK");
+			this.db.exec(savepoint === null ? "ROLLBACK" : `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
 			this.transactionDepth--;
 			if (this.transactionDepth === 0) this.pendingKnowledgeWrite = false;
 			throw error;
+		}
+	}
+
+	/**
+	 * Reads with `facts` standing in for their modules' stored facts, projections settled, then rolls
+	 * every write back; `read` gets the modules whose exports moved. Synchronous, so no other read sees them.
+	 */
+	readOverlaid<T>(facts: readonly ReplaceFileInput[], read: (moved: string[]) => T): T {
+		return this.speculate(() => {
+			for (const each of facts) this.replaceFile(each);
+			return read(this.settleProjections());
+		});
+	}
+
+	/**
+	 * Runs `work` over writes that never land: every write inside it, settled projections included,
+	 * rolls back when it returns or throws. Synchronous, so no other read sees the writes.
+	 */
+	private speculate<T>(work: () => T): T {
+		if (this.transactionDepth > 0) throw new Error("a speculation cannot open inside a transaction");
+		this.db.exec("BEGIN");
+		this.transactionDepth++;
+		this.speculating = true;
+		try {
+			const result = work();
+			if (result instanceof Promise) throw new Error("a speculation must finish synchronously");
+			return result;
+		} finally {
+			this.db.exec("ROLLBACK");
+			this.transactionDepth--;
+			this.speculating = false;
+			this.pendingKnowledgeWrite = false;
 		}
 	}
 
@@ -1250,8 +1414,9 @@ export class IndexStore {
 	 * whole-index rebuild. The delete-then-insert is not an optimization: a symbol removed from a
 	 * file has to disappear, and an upsert alone would leave it behind forever.
 	 *
-	 * Answers what the write moved of the module's surface, read before its old rows go, or null
-	 * when other modules can bind to exactly what they could before.
+	 * Answers what the write moved of the module's declared surface, read before its old rows go, or
+	 * null when other modules can bind to exactly what they could before. What it moved of the module's
+	 * exports is settled after, from the projection debt the write records.
 	 */
 	replaceFile(input: ReplaceFileInput): SurfaceChange | null {
 		const {
@@ -1270,21 +1435,47 @@ export class IndexStore {
 			digests = [],
 			generated = null,
 			role,
-			importTargets = new Map(),
+			resolutions = new Map(),
+			exports,
+			allList,
+			scopeContributions = [],
 		} = input;
-		admitFacts(module, { declarations, references, literals, docs, role });
+		const landings = [...resolutions.values()].flatMap((resolution) => {
+			const landing = landingOf(resolution);
+			return landing === null ? [] : [landing];
+		});
+		admitFacts(module, {
+			declarations,
+			references,
+			literals,
+			docs,
+			role,
+			imports,
+			exports,
+			allList,
+			landings,
+			provider,
+			scopeContributions,
+		});
 		const owners = ownerStarts(declarations);
 		const digestOf = new Map(digests.map((digest) => [digest.symbolId, digest]));
-		const surface = surfaceOf(declarations, imports, importTargets);
+		const through = originEdges(imports);
+		const surface = surfaceOf(declarations);
 		const surfaceDigest = hashContent(surface.map((entry) => entry.key).join("\n"));
 		return this.inTransaction(() => {
 			const change = this.surfaceChange(module, surface, surfaceDigest);
+			const scopesBefore = this.scopeKeysOf(module);
+			const before = this.db.prepare("SELECT allList FROM files WHERE module = ?").get(module) as
+				| { allList: string | null }
+				| undefined;
+			const heldBefore = before !== undefined;
+			const allListBefore = before?.allList ?? null;
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
 				.prepare(
 					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, provider, generated, generatedReason,
-					 role, roleHow, roleSymbolId, roleReason, surface)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 role, roleHow, roleSymbolId, roleReason, surface, exportsKnown, allList)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					module,
@@ -1300,6 +1491,8 @@ export class IndexStore {
 					role?.kind === "entry" && role.how === "main" ? role.symbolId : null,
 					role?.kind === "unknown" ? role.reason : null,
 					surfaceDigest,
+					exports === undefined ? 0 : 1,
+					allList === undefined ? null : JSON.stringify(allList),
 				);
 			// A successful parse clears its failure record.
 			this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
@@ -1354,16 +1547,19 @@ export class IndexStore {
 			this.subjects.refreshDigests(module);
 
 			const reference = this.db.prepare(
-				`INSERT INTO refs (factId, module, name, role, targetId, fromId, qualified, provenance, startLine, startChar, endLine, endChar)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO refs (factId, module, name, role, targetId, fromId, qualified, provenance, startLine, startChar, endLine, endChar,
+				 originKind, originStartLine, originStartChar, originEndLine, originEndChar, originPath)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const r of references) {
 				// An unbound reference keeps its REASON where a bound one keeps its provenance:
 				// both answer "how do you know", and losing the reason discards why it failed.
 				const target = r.binding.status === "bound" ? r.binding.symbolId : null;
 				const how = r.binding.status === "unbound" ? r.binding.reason : r.binding.provenance;
+				const span = r.origin?.kind === "import" ? r.origin.span : undefined;
+				const path = r.origin?.kind === "import" ? r.origin.path : undefined;
 				reference.run(
-					referenceFactId(module, r, owners),
+					referenceFactId(module, r, owners, span === undefined ? undefined : through.get(spanKey(span))),
 					module,
 					r.name,
 					r.role,
@@ -1375,42 +1571,80 @@ export class IndexStore {
 					r.range.start.character,
 					r.range.end.line,
 					r.range.end.character,
+					r.origin?.kind ?? null,
+					span?.start.line ?? null,
+					span?.start.character ?? null,
+					span?.end.line ?? null,
+					span?.end.character ?? null,
+					path === undefined ? null : JSON.stringify(path),
 				);
 			}
 
 			const importRow = this.db.prepare(
-				`INSERT INTO imports (factId, module, specifier, reExport, name, startLine, startChar, endLine, endChar,
-				 localName, localStartLine, localStartChar, localEndLine, localEndChar, importKind, typeOnly, target)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO imports (factId, module, specifier, kind, name, startLine, startChar, endLine, endChar,
+				 localName, localStartLine, localStartChar, localEndLine, localEndChar,
+				 spanStartLine, spanStartChar, spanEndLine, spanEndChar, bindsLocally, typeOnly, edge,
+				 landing, target, targetScope, surfaceTarget)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
-			// One row per entry, and one for a statement that names nothing. Skipping the latter
-			// dropped the EDGE along with the name: `import os`, `import * as ns` and a preload const
-			// all bind locally without naming an export, so the import graph silently lost them and
-			// "who imports this" answered zero for a whole class of real imports. Rename filters on a
-			// non-null name; the graph does not.
+			// One row per edge, a side effect and a wildcard included: the edge is real when it names nothing.
 			for (const statement of imports) {
-				const entries = statement.imported.length > 0 ? statement.imported : [undefined];
-				for (const name of entries) {
+				const resolution = resolutions.get(statement.specifier) ?? null;
+				const landing = landingOf(resolution);
+				for (const edge of statement.edges) {
 					importRow.run(
-						importFactId(module, statement.specifier, statement.reExport, name),
+						importFactId(module, statement.specifier, edge),
 						module,
 						statement.specifier,
-						statement.reExport ? 1 : 0,
-						name?.name ?? null,
-						name?.range?.start.line ?? null,
-						name?.range?.start.character ?? null,
-						name?.range?.end.line ?? null,
-						name?.range?.end.character ?? null,
-						name?.local ?? null,
-						name?.localRange?.start.line ?? null,
-						name?.localRange?.start.character ?? null,
-						name?.localRange?.end.line ?? null,
-						name?.localRange?.end.character ?? null,
-						name?.kind ?? null,
-						name?.typeOnly === true ? 1 : 0,
-						importTargets.get(statement.specifier) ?? null,
+						edge.kind,
+						edge.name ?? null,
+						edge.range?.start.line ?? null,
+						edge.range?.start.character ?? null,
+						edge.range?.end.line ?? null,
+						edge.range?.end.character ?? null,
+						edge.local ?? null,
+						edge.localRange?.start.line ?? null,
+						edge.localRange?.start.character ?? null,
+						edge.localRange?.end.line ?? null,
+						edge.localRange?.end.character ?? null,
+						edge.span.start.line,
+						edge.span.start.character,
+						edge.span.end.line,
+						edge.span.end.character,
+						edge.bindsLocally ? 1 : 0,
+						edge.typeOnly === true ? 1 : 0,
+						JSON.stringify(edge),
+						landing === null ? null : JSON.stringify(landing),
+						landing?.kind === "module" ? landing.module : null,
+						landing === null || landing.kind === "module" ? null : scopeKey(landing),
+						resolution?.status === "external" ? (resolution.surface?.module ?? null) : null,
 					);
 				}
+			}
+
+			const exportRow = this.db.prepare(
+				"INSERT INTO exports (factId, module, form, name, targetKind, targetSymbolId, edge) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			);
+			for (const edge of exports ?? []) {
+				exportRow.run(
+					exportFactId(module, edge),
+					module,
+					edge.form,
+					edge.name ?? null,
+					edge.target.kind,
+					edge.target.kind === "symbol" ? edge.target.symbolId : null,
+					JSON.stringify(edge),
+				);
+			}
+
+			const contribution = this.db.prepare(
+				"INSERT OR IGNORE INTO scope_contributions (module, scopeKey) VALUES (?, ?)",
+			);
+			const member = this.db.prepare("INSERT INTO scope_members (module, scopeKey, memberId) VALUES (?, ?, ?)");
+			for (const scope of scopeContributions) {
+				const key = scopeKey({ kind: scope.kind, providerId: provider ?? "", scopeId: scope.scopeId });
+				contribution.run(module, key);
+				for (const memberId of scope.members) member.run(module, key, memberId);
 			}
 
 			const literalRow = this.db.prepare(
@@ -1494,11 +1728,14 @@ export class IndexStore {
 					note.range?.end.character ?? null,
 				);
 			});
+			// A star selecting by the module's list reads it, so a moved list owes its forwarders.
+			if (allListBefore !== (allList === undefined ? null : JSON.stringify(allList))) this.oweForwarders(module);
+			this.advanceGenerations(module, scopesBefore, heldBefore);
 			return change;
 		});
 	}
 
-	/** What the module's surface moved, from the rows it holds before a write replaces them. */
+	/** What the module's declared surface moved, from the rows it holds before a write replaces them. */
 	private surfaceChange(module: string, surface: SurfaceEntry[], digest: string): SurfaceChange | null {
 		const file = this.db.prepare("SELECT surface FROM files WHERE module = ?").get(module) as
 			| { surface: string | null }
@@ -1515,30 +1752,20 @@ export class IndexStore {
 			lost: namesOf(lost),
 			boundInto: this.boundInto(module),
 			heldBefore: file !== undefined,
+			scopes: [],
 		};
 	}
 
-	/** What the module lets another module bind to, as its declaration and re-export rows hold it. */
+	/** What the module lets another module bind to by declaration, as its rows hold it. */
 	private surfaceHeld(module: string): SurfaceEntry[] {
 		const rows = this.db
 			.prepare(
 				"SELECT symbolId, name, kind, visibility, exported FROM symbols WHERE module = ? AND visibility <> 'local'",
 			)
 			.all(module) as Array<Omit<SurfaceRow, "exported"> & { exported: number | null }>;
-		const reExports = this.db
-			.prepare("SELECT specifier, name, localName, target FROM imports WHERE module = ? AND reExport = 1")
-			.all(module) as Array<{
-			specifier: string;
-			name: string | null;
-			localName: string | null;
-			target: string | null;
-		}>;
-		return [
-			...rows.map((row) =>
-				declarationEntry({ ...row, exported: row.exported === null ? null : row.exported === 1 }),
-			),
-			...reExports.map((row) => reExportEntry(row.specifier, row.name, row.localName, row.target)),
-		];
+		return rows.map((row) =>
+			declarationEntry({ ...row, exported: row.exported === null ? null : row.exported === 1 }),
+		);
 	}
 
 	/** Other modules with a reference bound to a declaration this module holds. */
@@ -1555,11 +1782,11 @@ export class IndexStore {
 	/** Adds a move to what the module's earlier writes left unasked. */
 	private recordMove(module: string, change: SurfaceChange): void {
 		const held = this.surfaceMovesOf([module]).get(module);
-		const merged = (key: "gained" | "lost" | "boundInto") =>
+		const merged = (key: "gained" | "lost" | "boundInto" | "scopes") =>
 			[...new Set([...(held?.[key] ?? []), ...change[key]])].sort();
 		this.db
 			.prepare(
-				"INSERT OR REPLACE INTO surface_moves (module, gained, lost, boundInto, heldBefore) VALUES (?, ?, ?, ?, ?)",
+				"INSERT OR REPLACE INTO surface_moves (module, gained, lost, boundInto, heldBefore, scopes) VALUES (?, ?, ?, ?, ?, ?)",
 			)
 			.run(
 				module,
@@ -1567,19 +1794,27 @@ export class IndexStore {
 				JSON.stringify(merged("lost")),
 				JSON.stringify(merged("boundInto")),
 				held?.heldBefore === true || change.heldBefore ? 1 : 0,
+				JSON.stringify(merged("scopes")),
 			);
 	}
 
 	/** The moves writes left for `modules`, or for every module when null, still pending. */
 	surfaceMovesOf(modules: readonly string[] | null): Map<string, SurfaceChange> {
-		const columns = "SELECT module, gained, lost, boundInto, heldBefore FROM surface_moves";
+		const columns = "SELECT module, gained, lost, boundInto, heldBefore, scopes FROM surface_moves";
 		const rows = (
 			modules === null
 				? this.db.prepare(columns).all()
 				: this.db
 						.prepare(`${columns} WHERE module IN (SELECT value FROM json_each(?))`)
 						.all(JSON.stringify(modules))
-		) as Array<{ module: string; gained: string; lost: string; boundInto: string; heldBefore: number }>;
+		) as Array<{
+			module: string;
+			gained: string;
+			lost: string;
+			boundInto: string;
+			heldBefore: number;
+			scopes: string;
+		}>;
 		return new Map(
 			rows.map((row) => [
 				row.module,
@@ -1588,6 +1823,7 @@ export class IndexStore {
 					lost: JSON.parse(row.lost),
 					boundInto: JSON.parse(row.boundInto),
 					heldBefore: row.heldBefore === 1,
+					scopes: JSON.parse(row.scopes),
 				},
 			]),
 		);
@@ -1601,7 +1837,8 @@ export class IndexStore {
 	settleMoves(moves: ReadonlyMap<string, SurfaceChange>, owed: readonly string[]): void {
 		const owe = this.db.prepare("INSERT OR IGNORE INTO rebind_owed (module) VALUES (?)");
 		const acknowledge = this.db.prepare(
-			"DELETE FROM surface_moves WHERE module = ? AND gained = ? AND lost = ? AND boundInto = ? AND heldBefore = ?",
+			`DELETE FROM surface_moves
+			 WHERE module = ? AND gained = ? AND lost = ? AND boundInto = ? AND heldBefore = ? AND scopes = ?`,
 		);
 		this.inTransaction(() => {
 			for (const module of owed) owe.run(module);
@@ -1612,9 +1849,238 @@ export class IndexStore {
 					JSON.stringify(change.lost),
 					JSON.stringify(change.boundInto),
 					change.heldBefore ? 1 : 0,
+					JSON.stringify(change.scopes),
 				);
 			}
 		});
+	}
+
+	////////////////////////////////
+	//  Generations and projection
+
+	/** The scope keys a module contributes to. */
+	scopeKeysOf(module: string): string[] {
+		const rows = this.db
+			.prepare("SELECT scopeKey FROM scope_contributions WHERE module = ? ORDER BY scopeKey")
+			.all(module) as Array<{ scopeKey: string }>;
+		return rows.map((row) => row.scopeKey);
+	}
+
+	/**
+	 * Advances the store-wide facts generation and every scope the module touched, owes its
+	 * projection, and records the scopes it left or joined, all in the caller's transaction.
+	 * `heldBefore`: the index held the module before this write.
+	 */
+	private advanceGenerations(module: string, scopesBefore: readonly string[], heldBefore: boolean): void {
+		const touched = [...new Set([...scopesBefore, ...this.scopeKeysOf(module)])].sort();
+		this.db
+			.prepare(
+				`INSERT INTO meta (key, value) VALUES ('factsGeneration', '1')
+				 ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`,
+			)
+			.run();
+		const bump = this.db.prepare(
+			`INSERT INTO scope_generations (scopeKey, generation) VALUES (?, 1)
+			 ON CONFLICT(scopeKey) DO UPDATE SET generation = generation + 1`,
+		);
+		for (const key of touched) bump.run(key);
+		this.db
+			.prepare(
+				`INSERT INTO projection_debt (module, heldBefore) VALUES (?, ?)
+				 ON CONFLICT(module) DO UPDATE SET heldBefore = MAX(heldBefore, excluded.heldBefore)`,
+			)
+			.run(module, heldBefore ? 1 : 0);
+		// A forwarder from a touched scope reads its members; one landing on a module new to the index read none.
+		this.oweForwarders(heldBefore ? null : module, touched);
+		if (touched.length > 0) {
+			this.recordMove(module, { gained: [], lost: [], boundInto: [], heldBefore, scopes: touched });
+		}
+	}
+
+	/** Advanced by every fact admission, replacement and removal. */
+	factsGeneration(): number {
+		const row = this.db.prepare("SELECT value FROM meta WHERE key = 'factsGeneration'").get() as
+			| { value: string }
+			| undefined;
+		return row === undefined ? 0 : Number(row.value);
+	}
+
+	/** Advanced by every write a contributor to the scope makes. */
+	scopeGeneration(key: string): number {
+		const row = this.db.prepare("SELECT generation FROM scope_generations WHERE scopeKey = ?").get(key) as
+			| { generation: number }
+			| undefined;
+		return row?.generation ?? 0;
+	}
+
+	fileOf(module: string): { exportsKnown: boolean; allList: AllList | null } | null {
+		const row = this.db.prepare("SELECT exportsKnown, allList FROM files WHERE module = ?").get(module) as
+			| { exportsKnown: number; allList: string | null }
+			| undefined;
+		if (row === undefined) return null;
+		return { exportsKnown: row.exportsKnown === 1, allList: row.allList === null ? null : JSON.parse(row.allList) };
+	}
+
+	exportsIn(module: string): StoredExport[] {
+		return this.db.prepare("SELECT * FROM exports WHERE module = ?").all(module).map(rowToExport);
+	}
+
+	/** Export edges whose target is this declaration, or whose name a module exposes it under. */
+	exportsOf(symbolId: string): StoredExport[] {
+		return this.db
+			.prepare(
+				`SELECT * FROM exports WHERE targetSymbolId = ?
+				 UNION
+				 SELECT e.* FROM exports e JOIN effective_exports x ON x.module = e.module AND x.name = e.name
+				 WHERE x.originSymbolId = ?
+				 ORDER BY module`,
+			)
+			.all(symbolId, symbolId)
+			.map(rowToExport);
+	}
+
+	importEdgeAt(module: string, span: Range): StoredImport | null {
+		const row = this.db
+			.prepare(
+				`SELECT * FROM imports WHERE module = ? AND spanStartLine = ? AND spanStartChar = ?
+				 AND spanEndLine = ? AND spanEndChar = ?`,
+			)
+			.get(module, span.start.line, span.start.character, span.end.line, span.end.character);
+		return row === undefined ? null : rowToImport(row);
+	}
+
+	exportedDeclarations(module: string): Array<{ symbolId: string; name: string }> {
+		return this.db
+			.prepare(
+				`SELECT symbolId, name FROM symbols
+				 WHERE module = ? AND containerId IS NULL AND visibility <> 'local' AND (exported IS NULL OR exported = 1)
+				 ORDER BY startLine, startChar`,
+			)
+			.all(module) as Array<{ symbolId: string; name: string }>;
+	}
+
+	scopeMembers(landing: ScopeLanding): Array<{ symbolId: string; name: string }> | null {
+		const key = scopeKey(landing);
+		if (this.db.prepare("SELECT 1 FROM scope_contributions WHERE scopeKey = ? LIMIT 1").get(key) === undefined) {
+			return null;
+		}
+		return this.db
+			.prepare(
+				`SELECT s.symbolId, s.name FROM scope_members m JOIN symbols s ON s.symbolId = m.memberId
+				 WHERE m.scopeKey = ? ORDER BY s.module, s.startLine`,
+			)
+			.all(key) as Array<{ symbolId: string; name: string }>;
+	}
+
+	scopeExports(landing: ScopeLanding): Array<{ module: string; edge: StoredExport }> {
+		return this.db
+			.prepare(
+				`SELECT e.* FROM exports e JOIN scope_contributions c ON c.module = e.module
+				 WHERE c.scopeKey = ? AND json_extract(e.edge, '$.scopeId') = ? ORDER BY e.module`,
+			)
+			.all(scopeKey(landing), landing.scopeId)
+			.map(rowToExport)
+			.map((edge) => ({ module: edge.module, edge }));
+	}
+
+	/** The effective exports settlement last committed for a module. */
+	effectiveExportsOf(module: string): EffectiveExport[] {
+		const rows = this.db
+			.prepare("SELECT name, meaning, origin, certainty FROM effective_exports WHERE module = ? ORDER BY rowid")
+			.all(module) as Array<{ name: string | null; meaning: string | null; origin: string; certainty: string }>;
+		return rows.map((row) => ({
+			name: row.name,
+			...(row.meaning === null ? {} : { meaning: JSON.parse(row.meaning) }),
+			origin: JSON.parse(row.origin),
+			certainty: JSON.parse(row.certainty),
+		}));
+	}
+
+	nextProjectionDebt(): string | null {
+		const row = this.db.prepare("SELECT module FROM projection_debt ORDER BY rowid LIMIT 1").get() as
+			| { module: string }
+			| undefined;
+		return row?.module ?? null;
+	}
+
+	/**
+	 * Commits one module's recomputed projection and clears its debt. When it moved, records the
+	 * names gained and lost, and owes a projection to every module forwarding from it.
+	 */
+	commitProjection(module: string, rows: readonly EffectiveExport[]): boolean {
+		return this.inTransaction(() => {
+			const previous = this.effectiveExportsOf(module);
+			const before = new Set(previous.map(canonical));
+			const after = new Set(rows.map(canonical));
+			const owed = this.db.prepare("SELECT heldBefore FROM projection_debt WHERE module = ?").get(module) as
+				| { heldBefore: number }
+				| undefined;
+			this.db.prepare("DELETE FROM projection_debt WHERE module = ?").run(module);
+			const moved = before.size !== after.size || [...after].some((key) => !before.has(key));
+			if (!moved) return false;
+			// A plan that read these exports read them as of the module's stamp.
+			this.db.prepare("UPDATE files SET indexedAt = ? WHERE module = ?").run(this.nextStamp(), module);
+			this.db.prepare("DELETE FROM effective_exports WHERE module = ?").run(module);
+			const insert = this.db.prepare(
+				"INSERT INTO effective_exports (module, name, meaning, origin, originSymbolId, certainty) VALUES (?, ?, ?, ?, ?, ?)",
+			);
+			for (const row of rows) {
+				insert.run(
+					module,
+					row.name,
+					row.meaning === undefined ? null : JSON.stringify(row.meaning),
+					JSON.stringify(row.origin),
+					row.origin.kind === "symbol" ? row.origin.symbolId : null,
+					JSON.stringify(row.certainty),
+				);
+			}
+			// Names whose rows the other side lacks.
+			const fresh = (keys: ReadonlySet<string>, from: readonly EffectiveExport[]) =>
+				[
+					...new Set(
+						from.flatMap((row) => (row.name !== null && !keys.has(canonical(row)) ? [row.name] : [])),
+					),
+				].sort();
+			this.recordMove(module, {
+				gained: fresh(before, rows),
+				lost: fresh(after, previous),
+				boundInto: [],
+				heldBefore: owed === undefined || owed.heldBefore === 1,
+				scopes: [],
+			});
+			this.oweForwarders(module);
+			return true;
+		});
+	}
+
+	/** Owes a projection to every module forwarding from an import landing on `module` or on one of `scopes`. */
+	private oweForwarders(module: string | null, scopes: readonly string[] = []): void {
+		const owe = this.db.prepare(
+			"INSERT INTO projection_debt (module, heldBefore) VALUES (?, 1) ON CONFLICT(module) DO UPDATE SET heldBefore = 1",
+		);
+		for (const forwarder of this.forwardersOf(module, scopes)) owe.run(forwarder);
+	}
+
+	/** Modules whose export edges forward from an import landing on `module` or on one of `scopes`. */
+	private forwardersOf(module: string | null, scopes: readonly string[]): string[] {
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT i.module FROM imports i
+				 JOIN exports e ON e.module = i.module AND e.targetKind = 'import'
+				  AND json_extract(e.edge, '$.target.span.start.line') = i.spanStartLine
+				  AND json_extract(e.edge, '$.target.span.start.character') = i.spanStartChar
+				  AND json_extract(e.edge, '$.target.span.end.line') = i.spanEndLine
+				  AND json_extract(e.edge, '$.target.span.end.character') = i.spanEndChar
+				 WHERE i.target = ? OR i.targetScope IN (SELECT value FROM json_each(?))
+				 ORDER BY i.module`,
+			)
+			.all(module, JSON.stringify(scopes)) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** Recomputes every owed projection to a fixpoint; answers the modules whose exports moved. */
+	settleProjections(): string[] {
+		return settleProjections(this);
 	}
 
 	/** Owes each module a parse for its bindings until one reading references is admitted. */
@@ -1679,16 +2145,79 @@ export class IndexStore {
 		this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
 	}
 
-	/** Modules with an import that landed on one of `targets` when it was written. */
+	/** Modules with an import that landed on, or reaches through, one of `targets` when written. */
 	importersLandedOn(targets: readonly string[]): string[] {
 		if (targets.length === 0) return [];
 		const rows = this.db
 			.prepare(
 				`SELECT DISTINCT module FROM imports
-				 WHERE target IN (SELECT value FROM json_each(?)) ORDER BY module`,
+				 WHERE target IN (SELECT value FROM json_each(?)) OR surfaceTarget IN (SELECT value FROM json_each(?))
+				 ORDER BY module`,
 			)
-			.all(JSON.stringify(targets)) as Array<{ module: string }>;
+			.all(JSON.stringify(targets), JSON.stringify(targets)) as Array<{ module: string }>;
 		return rows.map((row) => row.module);
+	}
+
+	/** Modules with an import landing on one of these scopes. */
+	importersOfScopes(keys: readonly string[]): string[] {
+		if (keys.length === 0) return [];
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT module FROM imports
+				 WHERE targetScope IN (SELECT value FROM json_each(?)) ORDER BY module`,
+			)
+			.all(JSON.stringify(keys)) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** Import edges that landed on `landing` when written: a module by its path, a scope by its key. */
+	importEdgesLandingOn(landing: Landing): StoredImport[] {
+		const order = "ORDER BY module, spanStartLine, spanStartChar";
+		const rows =
+			landing.kind === "module"
+				? this.db.prepare(`SELECT * FROM imports WHERE target = ? ${order}`).all(landing.module)
+				: this.db.prepare(`SELECT * FROM imports WHERE targetScope = ? ${order}`).all(scopeKey(landing));
+		return rows.map(rowToImport);
+	}
+
+	/** Modules whose effective exports bind some name to this declaration. */
+	modulesExposing(symbolId: string): string[] {
+		const rows = this.db
+			.prepare("SELECT DISTINCT module FROM effective_exports WHERE originSymbolId = ? ORDER BY module")
+			.all(symbolId) as Array<{ module: string }>;
+		return rows.map((row) => row.module);
+	}
+
+	/** The scopes listing this declaration as a member. */
+	scopesHolding(symbolId: string): ScopeLanding[] {
+		const rows = this.db
+			.prepare("SELECT DISTINCT scopeKey FROM scope_members WHERE memberId = ? ORDER BY scopeKey")
+			.all(symbolId) as Array<{ scopeKey: string }>;
+		return rows.map((row) => scopeOfKey(row.scopeKey));
+	}
+
+	/** Modules exposing `landing` under some name, as a namespace or a module value. */
+	modulesHoldingNamespace(landing: Landing): string[] {
+		const rows =
+			landing.kind === "module"
+				? this.db
+						.prepare(
+							`SELECT DISTINCT module FROM effective_exports
+							 WHERE (json_extract(origin, '$.kind') = 'namespace' AND json_extract(origin, '$.landing.kind') = 'module'
+							  AND json_extract(origin, '$.landing.module') = ?)
+							 OR (json_extract(origin, '$.kind') = 'moduleValue' AND json_extract(origin, '$.module') = ?)
+							 ORDER BY module`,
+						)
+						.all(landing.module, landing.module)
+				: this.db
+						.prepare(
+							`SELECT DISTINCT module FROM effective_exports
+							 WHERE json_extract(origin, '$.kind') = 'namespace' AND json_extract(origin, '$.landing.kind') = ?
+							  AND json_extract(origin, '$.landing.providerId') = ? AND json_extract(origin, '$.landing.scopeId') = ?
+							 ORDER BY module`,
+						)
+						.all(landing.kind, landing.providerId, landing.scopeId);
+		return (rows as Array<{ module: string }>).map((row) => row.module);
 	}
 
 	/** Modules with an unbound reference spelled as one of `names`. */
@@ -1717,16 +2246,23 @@ export class IndexStore {
 			// Read while the rows it asks about still exist.
 			const lost = namesOf(this.surfaceHeld(module));
 			const boundInto = this.boundInto(module);
+			const scopesBefore = this.scopeKeysOf(module);
 			let removed = false;
+			let held = false;
 			for (const table of FACT_TABLES) {
 				if (this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module).changes > 0) removed = true;
 			}
-			if (this.db.prepare("DELETE FROM files WHERE module = ?").run(module).changes > 0) removed = true;
+			if (this.db.prepare("DELETE FROM files WHERE module = ?").run(module).changes > 0) held = true;
 			if (this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module).changes > 0) removed = true;
 			// A module the index no longer holds owes nothing.
 			this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
-			if (removed) this.recordMove(module, { gained: [], lost, boundInto, heldBefore: true });
-			return removed;
+			if (removed || held) {
+				this.recordMove(module, { gained: [], lost, boundInto, heldBefore: held, scopes: [] });
+				this.advanceGenerations(module, scopesBefore, held);
+				// What forwarded from it now lands on nothing the index holds.
+				this.oweForwarders(module);
+			}
+			return removed || held;
 		});
 	}
 
@@ -2014,6 +2550,10 @@ export class IndexStore {
 			case "import": {
 				const row = this.db.prepare("SELECT * FROM imports WHERE factId = ?").get(factId);
 				return row ? { fact: "import", ...rowToImport(row) } : null;
+			}
+			case "export": {
+				const row = this.db.prepare("SELECT * FROM exports WHERE factId = ?").get(factId);
+				return row ? { fact: "export", ...rowToExport(row) } : null;
 			}
 			case "literal": {
 				const row = this.db.prepare("SELECT * FROM literals WHERE factId = ?").get(factId);
@@ -2348,67 +2888,47 @@ export class IndexStore {
 		const rows = this.db
 			.prepare(
 				`SELECT * FROM imports
-				 WHERE localName = ? OR (localName IS NULL AND name = ?)
-				 ORDER BY module, startLine`,
+				 WHERE bindsLocally = 1 AND (localName = ? OR (localName IS NULL AND name = ?))
+				 ORDER BY module, spanStartLine`,
 			)
 			.all(localName, localName);
 		return rows.map(rowToImport);
 	}
 
 	importsIn(module: string): StoredImport[] {
-		const rows = this.db.prepare("SELECT * FROM imports WHERE module = ? ORDER BY startLine").all(module);
+		const rows = this.db
+			.prepare("SELECT * FROM imports WHERE module = ? ORDER BY spanStartLine, spanStartChar")
+			.all(module);
 		return rows.map(rowToImport);
 	}
 
+	/** Each module whose effective exports name `name`, with what it binds to there. */
+	exposuresNamed(name: string): Array<{ module: string; originSymbolId: string | null }> {
+		return this.db
+			.prepare("SELECT module, originSymbolId FROM effective_exports WHERE name = ? ORDER BY module")
+			.all(name) as Array<{ module: string; originSymbolId: string | null }>;
+	}
+
 	/** Where `specifier` landed from `module` when it was written; null when unknown. */
-	importTarget(module: string, specifier: string): string | null {
+	importLanding(module: string, specifier: string): Landing | null {
 		const row = this.db
-			.prepare("SELECT target FROM imports WHERE module = ? AND specifier = ? AND target IS NOT NULL LIMIT 1")
-			.get(module, specifier) as { target: string } | undefined;
-		return row?.target ?? null;
+			.prepare("SELECT landing FROM imports WHERE module = ? AND specifier = ? AND landing IS NOT NULL LIMIT 1")
+			.get(module, specifier) as { landing: string } | undefined;
+		return row === undefined ? null : (JSON.parse(row.landing) as Landing);
 	}
 
 	/**
-	 * The top-level declaration `name` means in `module`, followed through re-exports. Null when
-	 * nothing exports it, or it names a namespace. A declaration its provider marks unexported never
-	 * answers; an unmarked one does, since some languages export every top-level name.
+	 * The declaration `name` means in `module`, through its effective exports. Null when nothing
+	 * exports it, or it names a namespace or a module value.
 	 */
 	exportedSymbol(module: string, name: string): string | null {
-		const declared = this.db.prepare(
-			`SELECT symbolId FROM symbols
-			 WHERE module = ? AND name = ? AND containerId IS NULL AND visibility <> 'local'
-			   AND (exported IS NULL OR exported = 1)
-			 ORDER BY exported DESC, startLine LIMIT 1`,
-		);
-		const forwarded = this.db.prepare(
-			`SELECT name, localName, target FROM imports
-			 WHERE module = ? AND reExport = 1 AND target IS NOT NULL
-			   AND (localName = ? OR (localName IS NULL AND (name = ? OR name IS NULL)))
-			 ORDER BY startLine`,
-		);
-		const queue = [{ module, name }];
-		const seen = new Set<string>();
-		while (queue.length > 0 && seen.size < EXPORT_HOPS) {
-			const next = queue.shift() as { module: string; name: string };
-			const key = `${next.module}\n${next.name}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-			const hit = declared.get(next.module, next.name) as { symbolId: string } | undefined;
-			if (hit !== undefined) return hit.symbolId;
-			const rows = forwarded.all(next.module, next.name, next.name) as Array<{
-				name: string | null;
-				localName: string | null;
-				target: string;
-			}>;
-			for (const row of rows) {
-				// `export * as ns` binds a namespace, not a declaration.
-				if (row.name === null && row.localName !== null) continue;
-				// `export *` never passes a default on.
-				if (row.name === null && next.name === "default") continue;
-				queue.push({ module: row.target, name: row.name ?? next.name });
-			}
-		}
-		return null;
+		const row = this.db
+			.prepare(
+				`SELECT originSymbolId FROM effective_exports
+				 WHERE module = ? AND name = ? AND originSymbolId IS NOT NULL ORDER BY rowid LIMIT 1`,
+			)
+			.get(module, name) as { originSymbolId: string } | undefined;
+		return row?.originSymbolId ?? null;
 	}
 
 	/** Import rows for bounded application-side searches. */
@@ -2953,6 +3473,12 @@ interface RefRow {
 	startChar: number;
 	endLine: number;
 	endChar: number;
+	originKind: string | null;
+	originStartLine: number | null;
+	originStartChar: number | null;
+	originEndLine: number | null;
+	originEndChar: number | null;
+	originPath: string | null;
 }
 
 function rowToDeclaration(raw: unknown): StoredDeclaration {
@@ -3213,55 +3739,31 @@ interface ImportRow {
 	factId: string;
 	module: string;
 	specifier: string;
-	reExport: number;
-	name: string | null;
-	startLine: number | null;
-	startChar: number | null;
-	endLine: number | null;
-	endChar: number | null;
-	localName: string | null;
-	localStartLine: number | null;
-	localStartChar: number | null;
-	localEndLine: number | null;
-	localEndChar: number | null;
-	importKind: ImportKind | null;
-	typeOnly: number;
+	edge: string;
+	landing: string | null;
 }
 
+/** The edge as the provider sent it, with where its specifier landed. Written only by this store. */
 function rowToImport(raw: unknown): StoredImport {
 	const row = raw as ImportRow;
-	const alias =
-		row.localName === null || row.localStartLine === null
-			? {}
-			: {
-					local: row.localName,
-					localRange: {
-						start: { line: row.localStartLine, character: row.localStartChar ?? 0 },
-						end: { line: row.localEndLine ?? row.localStartLine, character: row.localEndChar ?? 0 },
-					},
-				};
-
-	const named =
-		row.name === null || row.startLine === null
-			? {}
-			: {
-					name: row.name,
-					range: {
-						start: { line: row.startLine, character: row.startChar ?? 0 },
-						end: { line: row.endLine ?? row.startLine, character: row.endChar ?? 0 },
-					},
-				};
-
 	return {
+		...(JSON.parse(row.edge) as ImportEdge),
 		factId: row.factId,
 		module: row.module,
 		specifier: row.specifier,
-		reExport: row.reExport === 1,
-		...named,
-		...alias,
-		...(row.importKind === null ? {} : { kind: row.importKind }),
-		...(row.typeOnly === 1 ? { typeOnly: true } : {}),
+		landing: row.landing === null ? null : (JSON.parse(row.landing) as Landing),
 	};
+}
+
+interface ExportRow {
+	factId: string;
+	module: string;
+	edge: string;
+}
+
+function rowToExport(raw: unknown): StoredExport {
+	const row = raw as ExportRow;
+	return { ...(JSON.parse(row.edge) as Export), factId: row.factId, module: row.module };
 }
 
 /** One open gap, at the subject's current address and at the address it was first asked at. */
@@ -3332,5 +3834,21 @@ function rowToReference(raw: unknown): StoredReference {
 		startCharacter: row.startChar,
 		endLine: row.endLine,
 		endCharacter: row.endChar,
+		origin: originOf(row),
+	};
+}
+
+/** Null when unproved, which is unknown. */
+function originOf(row: RefRow): ReferenceOrigin | null {
+	if (row.originKind === "declaration") return { kind: "declaration" };
+	if (row.originKind !== "import" || row.originStartLine === null) return null;
+	const path = row.originPath === null ? undefined : (JSON.parse(row.originPath) as string[]);
+	return {
+		kind: "import",
+		span: {
+			start: { line: row.originStartLine, character: row.originStartChar ?? 0 },
+			end: { line: row.originEndLine ?? row.originStartLine, character: row.originEndChar ?? 0 },
+		},
+		...(path === undefined ? {} : { path }),
 	};
 }

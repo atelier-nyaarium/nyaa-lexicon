@@ -18,6 +18,7 @@ import {
 	DescribeResultSchema,
 	DocsResultSchema,
 	DriftedModuleSchema,
+	ExportFactIdSchema,
 	FactSetSchema,
 	FileHistorySchema,
 	FileNotesSchema,
@@ -135,7 +136,14 @@ const KnowledgeScopeRequest = z
 	)
 	.meta({ id: "KnowledgeScopeRequest" });
 const Resolve = z.object({ fromModule: ModulePath, specifier: z.string().min(1) }).meta({ id: "ResolveRequest" });
-const Rename = z.object({ symbolId: z.string().min(1), newName: z.string().min(1) }).meta({ id: "RenameRequest" });
+const Rename = z
+	.object({
+		symbolId: z.string().min(1),
+		newName: z.string().min(1),
+		/** Re-exports that keep the old name, by export fact id. */
+		stops: z.array(ExportFactIdSchema).max(4096).optional(),
+	})
+	.meta({ id: "RenameRequest" });
 const MoveOne = z.object({
 	symbolId: z.string().min(1),
 	toModule: ModulePath,

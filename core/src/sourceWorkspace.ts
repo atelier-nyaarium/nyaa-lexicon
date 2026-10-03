@@ -132,8 +132,13 @@ export class SourceWorkspace {
 
 	/** The hash of a module's current text, for a writer proving nothing moved since it planned. */
 	currentHashOf(module: string): string | null {
-		const text = textOf(this.readSource(module));
+		const text = this.currentText(module);
 		return text === null ? null : hashContent(text);
+	}
+
+	/** A module's text on disk now; null when it is not readable text. */
+	currentText(module: string): string | null {
+		return textOf(this.readSource(module));
 	}
 
 	/**

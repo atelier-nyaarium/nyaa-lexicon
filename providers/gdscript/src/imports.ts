@@ -1,57 +1,56 @@
 // Owns GDScript static import facts and loader name resolution.
 
-import { comparePositions, type ImportedName, type Position } from "@nyaa-lexicon/protocol";
-import type { DeclarationFact } from "./parse-model.js";
-import { extendsPaths, type LoaderCall, loaderCalls } from "./path-syntax.js";
+import { type Certainty, type Conflict, comparePositions, type Import, type ImportEdge } from "@nyaa-lexicon/protocol";
+import { type ExtendsPath, extendsPaths, type LoaderCall, loaderCalls } from "./path-syntax.js";
 import type { ParsedScript } from "./script.js";
 
+//////// Constants
+
+const KNOWN: Certainty = { status: "known" };
+
+const COMPUTED: Certainty = { status: "unknown", reason: "RuntimeConstructed" };
+
+/** A nested local shadows the member; a second member of one name does not parse. */
+const LOADER_CONFLICT: Conflict = { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" };
+
+//////// Edges
+
+type Unordered = Omit<ImportEdge, "order">;
+
+/** A loader bound as a whole initializer is a require; any other loads unbound. */
+function loaderEdge(call: LoaderCall): Unordered {
+	const certainty = call.literal === undefined ? COMPUTED : KNOWN;
+	const binding = call.binding;
+	if (binding?.whole !== true) return { kind: "sideEffect", span: call.span, bindsLocally: false, certainty };
+	return {
+		kind: "require",
+		span: call.span,
+		local: binding.name,
+		localRange: binding.range,
+		bindsLocally: true,
+		conflict: LOADER_CONFLICT,
+		certainty,
+	};
+}
+
+/** The base script's members, and its own base's in turn, enter the class unbound. */
+function extendsEdge(path: ExtendsPath): Unordered {
+	return { kind: "injection", span: path.span, selector: { kind: "visible" }, bindsLocally: false, certainty: KNOWN };
+}
+
 //////// Imports
-
-export interface ImportFact {
-	specifier: string;
-	imported: ImportedName[];
-	reExport: boolean;
-}
-
-function importedLoaderName(declarations: DeclarationFact[], loader: Position): ImportedName[] {
-	// Every declaration this provider extracts has its name in the source.
-	const declaration = declarations
-		.filter(
-			(candidate) =>
-				candidate.selectionRange !== undefined &&
-				candidate.selectionRange.start.line === loader.line &&
-				candidate.selectionRange.start.character < loader.character &&
-				candidate.selectionRange.end.character <= loader.character,
-		)
-		.sort((left, right) => right.selectionRange.start.character - left.selectionRange.start.character)[0];
-	if (declaration === undefined) return [];
-	// Every declaration this provider extracts has its name in the source.
-	return [{ local: declaration.name, localRange: declaration.selectionRange ?? declaration.range }];
-}
 
 export function loaderCallsOf(script: ParsedScript): LoaderCall[] {
 	if (!script.module.endsWith(".gd")) return [];
 	return loaderCalls(script.lexed.tokens, script.coordinates, script.declarations);
 }
 
-/** Literal paths in source order, then computed loaders. */
-export function importsOf(script: ParsedScript, calls = loaderCallsOf(script)): ImportFact[] {
+/** One statement per loader call and `extends` path, in source order. */
+export function importsOf(script: ParsedScript, calls = loaderCallsOf(script)): Import[] {
 	if (!script.module.endsWith(".gd")) return [];
-	const { declarations } = script;
-	const literal = [
-		...extendsPaths(script.lexed.tokens).map((path) => ({
-			at: path.range.start,
-			fact: { specifier: path.path, imported: [] },
-		})),
-		...calls
-			.filter((call) => call.literal !== undefined)
-			.map((call) => ({
-				at: call.range.start,
-				fact: { specifier: call.specifier, imported: importedLoaderName(declarations, call.range.start) },
-			})),
-	].sort((left, right) => comparePositions(left.at, right.at));
-	const computed = calls
-		.filter((call) => call.literal === undefined)
-		.map((call) => ({ specifier: call.specifier, imported: importedLoaderName(declarations, call.range.start) }));
-	return [...literal.map((entry) => entry.fact), ...computed].map((fact) => ({ ...fact, reExport: false }));
+	const written = [
+		...extendsPaths(script.lexed.tokens).map((path) => ({ specifier: path.path, edge: extendsEdge(path) })),
+		...calls.map((call) => ({ specifier: call.specifier, edge: loaderEdge(call) })),
+	].sort((left, right) => comparePositions(left.edge.span.start, right.edge.span.start));
+	return written.map(({ specifier, edge }, order) => ({ specifier, edges: [{ ...edge, order }] }));
 }

@@ -6,7 +6,14 @@
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 import type { z } from "zod";
 import { defined } from "./defined.js";
-import type { METHOD_SCHEMAS, ProviderEvent, ProviderMethod, ProviderNotification, ProviderPhase } from "./methods.js";
+import type {
+	METHOD_SCHEMAS,
+	ProbeBatchResponse,
+	ProviderEvent,
+	ProviderMethod,
+	ProviderNotification,
+	ProviderPhase,
+} from "./methods.js";
 import { EVENT_SCHEMAS, NOTIFICATION_SCHEMAS, PROVIDER_METHODS, PROVIDER_NOTIFICATIONS } from "./methods.js";
 import type { MoveEditsResponse } from "./move.js";
 import { withOccurrences } from "./occurrences.js";
@@ -56,6 +63,15 @@ const servedHooks = new WeakMap<object, (events: ProviderEvents) => void>();
 /** A parse answer shaped enough to settle; anything else is left for the schema to refuse. */
 function hasDeclarations(answer: unknown): answer is FileFacts {
 	return typeof answer === "object" && answer !== null && Array.isArray((answer as FileFacts).declarations);
+}
+
+function isReadyBatch(answer: unknown): answer is Extract<ProbeBatchResponse, { status: "ready" }> {
+	return (
+		typeof answer === "object" &&
+		answer !== null &&
+		(answer as ProbeBatchResponse).status === "ready" &&
+		Array.isArray((answer as { facts?: unknown }).facts)
+	);
 }
 
 /** Hands `handlers`' owner the sender once `serveProvider` serves them, before any request. */
@@ -126,6 +142,9 @@ export function serveProvider(
 				refuseUnrepresentable(params);
 				const answer = await handler(params);
 				// One id per declaration, settled at the wire for every provider.
+				if (method === "probeBatch" && isReadyBatch(answer)) {
+					return { ...answer, facts: answer.facts.map((facts) => withOccurrences(facts)) };
+				}
 				const parsed = method === "parseFile" || method === "probeFile";
 				return parsed && hasDeclarations(answer) ? withOccurrences(answer) : answer;
 			}),

@@ -23,6 +23,8 @@ export function extractFacts(module: string, text: string): RawFacts {
 			declarations: [],
 			references: [],
 			imports: [],
+			exports: null,
+			allList: null,
 			importStatements: [],
 			role: { kind: "unknown", reason: "ParseError" },
 			prologueEnd: null,
@@ -36,5 +38,5 @@ export function extractFacts(module: string, text: string): RawFacts {
 			diagnostics: [{ severity: "error", message }],
 		};
 	}
-	return { ...new Analyzer(module, source, parsed.module).analyze(), comments, blankLines: blank };
+	return { ...new Analyzer(source, parsed.module).analyze(), comments, blankLines: blank };
 }

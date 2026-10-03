@@ -6,11 +6,11 @@ import type {
 	Descriptor,
 	Diagnostic,
 	FileRole,
-	Import,
 	Literal,
 	Metrics,
 	Range,
 	Reference,
+	ScopeContribution,
 	TypeInfo,
 	UnknownReason,
 } from "@nyaa-lexicon/protocol";
@@ -30,11 +30,31 @@ export const LANGUAGE = "cpp";
 ////////////////////////////////
 //  Interfaces & Types
 
+/** An include, `#` through its header name. */
 export interface ImportFact {
-	imported: Import;
+	specifier: string;
 	quoted: boolean;
+	span: Range;
 	tokenStart: number;
 	tokenEnd: number;
+}
+
+/** A using-directive, a using-declarator or a namespace alias: names taken from a namespace. */
+export interface TransferDraft {
+	kind: "injection" | "named" | "namespace";
+	/** The namespace as written, `a::b` or `::a::b`; `::` for the global one. */
+	specifier: string;
+	span: Range;
+	tokenStart: number;
+	/** The last name it writes, a reference: the namespace's, or a using-declarator's. */
+	lastName: number;
+	/** A using-declarator's name, or an alias's. */
+	name?: { text: string; range: Range };
+}
+
+export interface NamespaceTransfer extends Omit<TransferDraft, "lastName"> {
+	/** The namespace's last name, a reference; -1 when no name writes it. */
+	scopeToken: number;
 }
 
 export interface CppDeclarationRecord {
@@ -129,7 +149,9 @@ export interface CppReferenceRecord {
 export interface CppFacts extends ScopeIndex {
 	declarations: Declaration[];
 	references: CppReferenceRecord[];
-	imports: Import[];
+	transfers: NamespaceTransfer[];
+	/** Each named namespace the file opens, with its members visible outside the file. */
+	scopeContributions: ScopeContribution[];
 	literals: Literal[];
 	comments: CommentSpan[];
 	blankLines: number[];

@@ -2,6 +2,9 @@
 // name chain. A ref is a link written as `[label](ref://...)`; a bare `ref://` in prose is text.
 // Code spans and fences hold literal text, except a mermaid block's `click` line.
 
+import { parse, postprocess, preprocess } from "micromark";
+import { mermaidClick, mermaidStatements } from "./mermaid.js";
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -26,159 +29,123 @@ export interface ParsedRef {
 
 export type RefParse = { ok: true; ref: ParsedRef } | { ok: false; problem: string };
 
+/** A code fence: its info word and the span it covers, fences included. */
+export interface CodeFence {
+	info: string;
+	from: number;
+	to: number;
+}
+
+/** One token micromark read, by offset. */
+interface Token {
+	type: string;
+	from: number;
+	to: number;
+}
+
 ////////////////////////////////
 //  Constants
 
 export const REF_SCHEME = "ref://";
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
-
-/**
- * `](ref://...)`, `](<ref://...>)`, with an optional title. A bare destination stops before `](`
- * and an angled one before `<`, so no match reads past the next link.
- */
-const LINK_DESTINATION = /\]\(\s*(<ref:\/\/[^<>\n]*>|ref:\/\/(?:[^\s)\]]|\](?!\())+)(?:\s+"[^"\n]*")?\s*\)/g;
-
-/** A mermaid `click` line: `click id "ref://..."` or `click id href "ref://..."`. */
-const MERMAID_CLICK = /^\s*click\s+\S+\s+(?:href\s+)?"(ref:\/\/[^"]+)"/;
-
-/** A blank line, LF or CRLF. */
-const BLANK_LINE = /^[ \t\r]*$/;
+/** What micromark reads as code: its text is literal. */
+const CODE = new Set(["codeFenced", "codeIndented", "codeText"]);
 
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Each unescaped `]` to the unescaped `[` on its line that opens its label. */
-function labelStarts(text: string): Map<number, number> {
-	const starts = new Map<number, number>();
-	const open: number[] = [];
-	let slashes = 0;
-	for (let i = 0; i < text.length; i++) {
-		const char = text[i];
-		const escaped = slashes % 2 === 1;
-		slashes = char === "\\" ? slashes + 1 : 0;
-		if (char === "\n") open.length = 0;
-		else if (escaped) continue;
-		else if (char === "[") open.push(i);
-		else if (char === "]") {
-			const start = open.pop();
-			if (start !== undefined) starts.set(i, start);
-		}
-	}
-	return starts;
+/** Every token micromark reads in the text, in document order, parents before children. */
+function tokensOf(text: string): Token[] {
+	const chunks = preprocess()(text, undefined, true);
+	const events = postprocess(parse().document().write(chunks));
+	return events.flatMap(([kind, token]) =>
+		kind === "enter" ? [{ type: token.type, from: token.start.offset, to: token.end.offset }] : [],
+	);
 }
 
-/**
- * Blanks each code span to spaces, keeping newlines. A backtick run opens a span that the next run
- * of its length closes; a span may wrap lines but never crosses a blank one.
- */
-function blankCodeSpans(text: string): string {
-	const runs: { from: number; to: number; key: string }[] = [];
-	let paragraph = 0;
-	let offset = 0;
-	for (const line of text.split("\n")) {
-		if (BLANK_LINE.test(line)) paragraph++;
-		for (let i = line.indexOf("`"); i >= 0; i = line.indexOf("`", i)) {
-			let end = i;
-			while (line[end] === "`") end++;
-			runs.push({ from: offset + i, to: offset + end, key: `${paragraph} ${end - i}` });
-			i = end;
-		}
-		offset += line.length + 1;
+/** Each code fence with its info word and the line values inside it. */
+function fencesOf(text: string, tokens: readonly Token[]): Array<CodeFence & { values: Token[] }> {
+	const fences: Array<CodeFence & { values: Token[] }> = [];
+	let open: (CodeFence & { values: Token[] }) | null = null;
+	for (const token of tokens) {
+		if (open !== null && token.from >= open.to) open = null;
+		if (token.type === "codeFenced") {
+			open = { info: "", from: token.from, to: token.to, values: [] };
+			fences.push(open);
+		} else if (open?.info === "" && token.type === "codeFencedFenceInfo") {
+			open.info = text.slice(token.from, token.to);
+		} else if (open !== null && token.type === "codeFlowValue") open.values.push(token);
 	}
-
-	const closer: number[] = [];
-	const next = new Map<string, number>();
-	for (let k = runs.length - 1; k >= 0; k--) {
-		const key = runs[k]?.key ?? "";
-		closer[k] = next.get(key) ?? -1;
-		next.set(key, k);
-	}
-
-	const parts: string[] = [];
-	let kept = 0;
-	for (let k = 0; k < runs.length; k++) {
-		const shut = closer[k] ?? -1;
-		const open = runs[k];
-		const close = runs[shut];
-		if (open === undefined || close === undefined) continue;
-		parts.push(text.slice(kept, open.from), text.slice(open.from, close.to).replace(/[^\n]/g, " "));
-		kept = close.to;
-		k = shut;
-	}
-	parts.push(text.slice(kept));
-	return parts.join("");
+	return fences;
 }
 
-/** The text with fenced lines blanked, and the mermaid clicks inside those fences. */
-function fenced(text: string): { shown: string; clicks: FoundRef[] } {
-	const clicks: FoundRef[] = [];
-	const shown: string[] = [];
-	let fence: { marker: string; mermaid: boolean } | null = null;
-	let offset = 0;
-	for (const line of text.split("\n")) {
-		const opened = FENCE.exec(line);
-		let hidden = true;
-		if (fence !== null) {
-			const closes =
-				opened !== null &&
-				opened[1] !== undefined &&
-				opened[1][0] === fence.marker[0] &&
-				opened[1].length >= fence.marker.length &&
-				line.trim() === opened[1];
-			if (closes) fence = null;
-			else if (fence.mermaid) {
-				const click = MERMAID_CLICK.exec(line);
-				if (click?.[1] !== undefined) clicks.push({ ref: click[1], index: offset + line.indexOf(click[1]) });
-			}
-		} else if (opened?.[1] !== undefined) {
-			fence = { marker: opened[1], mermaid: (opened[2] ?? "").toLowerCase() === "mermaid" };
-		} else hidden = false;
-		shown.push(hidden ? " ".repeat(line.length) : line);
-		offset += line.length + 1;
-	}
-	return { shown: shown.join("\n"), clicks };
+/** Each code fence: its info word and the span it covers, fences included. */
+export function codeFences(text: string): CodeFence[] {
+	return fencesOf(text, tokensOf(text)).map(({ info, from, to }) => ({ info, from, to }));
 }
 
-/** Fences and code spans blanked to spaces, newlines kept, so every index still reads the text. */
+/** Code blanked to spaces, newlines kept, so every index still reads the text. */
 export function blankCode(text: string): string {
-	return blankCodeSpans(fenced(text).shown);
+	let out = "";
+	let kept = 0;
+	for (const token of tokensOf(text)) {
+		if (!CODE.has(token.type) || token.from < kept) continue;
+		out += text.slice(kept, token.from) + text.slice(token.from, token.to).replace(/[^\n]/g, " ");
+		kept = token.to;
+	}
+	return out + text.slice(kept);
 }
 
-/** Written links and mermaid clicks outside code. */
-function scan(text: string): { links: RefLink[]; clicks: FoundRef[] } {
+/** Each written link to a ref, from its label and destination tokens. */
+function linksOf(text: string, tokens: readonly Token[]): RefLink[] {
 	const links: RefLink[] = [];
-	const { shown, clicks } = fenced(text);
-
-	// Fences and code spans blank to spaces, so every index still reads the text.
-	const plain = blankCodeSpans(shown);
-	const starts = labelStarts(plain);
-	for (const match of plain.matchAll(LINK_DESTINATION)) {
-		const at = match.index ?? 0;
-		const from = starts.get(at);
-		if (from === undefined) continue;
-		const raw = match[1] ?? "";
-		const angled = raw.startsWith("<");
-		links.push({
-			ref: angled ? raw.slice(1, -1) : raw,
-			index: at + match[0].indexOf(raw) + (angled ? 1 : 0),
-			from,
-			to: at + match[0].length,
-			label: text.slice(from + 1, at),
-		});
+	let link: { token: Token; label?: Token; destination?: Token } | null = null;
+	const finish = (done: { token: Token; label?: Token; destination?: Token }) => {
+		const { token, label, destination } = done;
+		const ref = destination === undefined ? "" : text.slice(destination.from, destination.to);
+		if (destination === undefined || !ref.startsWith(REF_SCHEME)) return;
+		const written = label === undefined ? "" : text.slice(label.from, label.to);
+		links.push({ ref, index: destination.from, from: token.from, to: token.to, label: written });
+	};
+	for (const token of tokens) {
+		if (link !== null && token.from >= link.token.to) {
+			finish(link);
+			link = null;
+		}
+		if (token.type === "link") link = { token };
+		else if (link === null) continue;
+		else if (token.type === "labelText" && link.label === undefined) link.label = token;
+		// After the label, so an image inside it cannot lend its destination.
+		else if (token.type === "resourceDestinationString" && token.from >= (link.label?.to ?? link.token.from)) {
+			link.destination ??= token;
+		}
 	}
-	return { links, clicks };
+	if (link !== null) finish(link);
+	return links;
+}
+
+/** Each mermaid `click` whose target is a ref, pointing at the ref itself. */
+function clicksOf(text: string, tokens: readonly Token[]): FoundRef[] {
+	return fencesOf(text, tokens).flatMap((fence) => {
+		if (fence.info.toLowerCase() !== "mermaid") return [];
+		const lines = fence.values.map((token) => ({ text: text.slice(token.from, token.to), from: token.from }));
+		return mermaidStatements(lines).flatMap((statement) => {
+			const target = mermaidClick(statement)?.target;
+			return target?.text.startsWith(REF_SCHEME) ? [{ ref: target.text, index: target.from + 1 }] : [];
+		});
+	});
 }
 
 /** Every `ref://` link in markdown, in order, outside code; `index` is where the ref itself starts. */
 export function findRefs(text: string): FoundRef[] {
-	const { links, clicks } = scan(text);
-	return [...links.map(({ ref, index }) => ({ ref, index })), ...clicks].sort((a, b) => a.index - b.index);
+	const tokens = tokensOf(text);
+	const links = linksOf(text, tokens).map(({ ref, index }) => ({ ref, index }));
+	return [...links, ...clicksOf(text, tokens)].sort((a, b) => a.index - b.index);
 }
 
 /** Each written `[label](ref://...)` outside code, in order, with the span it covers. */
 export function findRefLinks(text: string): RefLink[] {
-	return scan(text).links;
+	return linksOf(text, tokensOf(text));
 }
 
 /** Splits on single colons; `::` stays inside a segment as a qualifier. */

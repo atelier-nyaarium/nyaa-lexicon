@@ -674,6 +674,19 @@ export function changedWhilePlanned(module: string, kind: string): Refusal {
 	return mint(`${module} changed while the ${kind} was planned. Re-index it and plan again`);
 }
 
+/** A read module owes a parse that failed, so it may bind as it did before a move. */
+export function bindingsHeld(modules: string[], kind: string): Refusal {
+	const one = modules.length === 1;
+	return mint(
+		`${modules.join(", ")} could not be parsed again after a move, so ${one ? "its" : "their"} bindings may be out of date. Plan the ${kind} again once ${one ? "it indexes" : "they index"}`,
+	);
+}
+
+/** Each plan in turn was outrun by indexing elsewhere; a later try may find the index still. */
+export function indexBusy(kind: string): Refusal {
+	return mint(`files kept being indexed while the ${kind} was planned. Plan again in a moment`);
+}
+
 /** The index committed the rows again, so the plan read facts that are gone. */
 export function factsMovedWhilePlanned(modules: string[], kind: string): Refusal {
 	return mint(`indexed again while the ${kind} was planned: ${modules.join(", ")}. Plan again`);
@@ -728,6 +741,100 @@ export function nameAlreadyDeclared(newName: string, files: number): Refusal {
 export function nameAlreadyImported(newName: string, files: number): Refusal {
 	return mint(
 		`${newName} is already imported in ${files === 1 ? "a file" : `${files} files`} this rename rewrites, so the rewritten uses would bind to that import instead. Rename or alias that import first, or pick another name.`,
+	);
+}
+
+export function useUntraced(name: string): Refusal {
+	return mint(`the index cannot trace this use of ${name} to its declaration. Rename it by hand`);
+}
+
+export function routeUncertain(module: string, name: string): Refusal {
+	return mint(`${module} may expose ${name} through an export the index cannot prove. Make that export static`);
+}
+
+export function stopOffRoute(id: string): Refusal {
+	return mint(`${id} is not an export this rename passes through. Stop at a re-export on its routes`);
+}
+
+export function stopNotKeepable(module: string): Refusal {
+	return mint(`${module} does not re-export the name as one plain transfer, so no alias can keep it. Stop elsewhere`);
+}
+
+export function stopReceivesNoChange(module: string): Refusal {
+	return mint(`the name no longer changes at ${module}. Drop this stop`);
+}
+
+export function stopUnsupported(module: string): Refusal {
+	return mint(`the provider for ${module} cannot keep an old name as an alias. Drop this stop`);
+}
+
+export function siteDecidedTwice(module: string): Refusal {
+	return mint(`${module}: one occurrence would be both kept and renamed. Drop a stop`);
+}
+
+export function nameAlreadyExposed(newName: string, where: string): Refusal {
+	return mint(`${where} already exposes ${newName}, so its importers would bind to that. Pick another name`);
+}
+
+export function nameShared(module: string, name: string): Refusal {
+	return mint(
+		`${module} carries ${name} for another declaration too, and renaming its token drops that one. Rename by hand`,
+	);
+}
+
+export function exposureRebinds(where: string, name: string): Refusal {
+	return mint(`${where} would expose ${name} differently, so its importers would bind elsewhere. Pick another name`);
+}
+
+export function wildcardCaptures(module: string, name: string): Refusal {
+	return mint(
+		`${module} would gain ${name} through a wildcard where it already binds or reads ${name}. Pick another name`,
+	);
+}
+
+export function routeChanged(count: number): Refusal {
+	const imports =
+		count === 1
+			? "1 import on this rename's routes now resolves"
+			: `${count} imports on this rename's routes now resolve`;
+	return mint(`${imports} elsewhere. Plan again`);
+}
+
+export function landingUnchecked(module: string, specifier: string): Refusal {
+	return mint(`could not check where ${specifier} lands from ${module}. Try again`);
+}
+
+export function starDropsName(module: string, newName: string): Refusal {
+	return mint(
+		`${module} forwards it through a star that would not carry ${newName}. Pick another name, or forward it by name`,
+	);
+}
+
+export function wildcardDropsName(module: string, newName: string): Refusal {
+	return mint(
+		`${module} imports it through a wildcard that would not bring ${newName}. Pick another name, or import it by name`,
+	);
+}
+
+export function newNameUnproved(where: string, newName: string): Refusal {
+	return mint(`${where} may also expose ${newName} through an export the index cannot prove. Pick another name`);
+}
+
+export function allListUnproved(module: string, name: string): Refusal {
+	return mint(`${module} lists ${name} in __all__ without saying what binds it. Rename by hand`);
+}
+
+export function projectionsUnsettled(): Refusal {
+	return mint("the index is still settling what modules export. Plan again in a moment");
+}
+
+export function proofUnavailable(why: string): Refusal {
+	return mint(`the rename cannot be proved before it writes: ${why}. Rename by hand`);
+}
+
+export function bindingsMoved(count: number): Refusal {
+	return mint(
+		`${count} place${count === 1 ? "" : "s"} would bind differently after the rename than its plan expects. Plan again, or rename by hand`,
 	);
 }
 

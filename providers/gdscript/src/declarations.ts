@@ -143,6 +143,14 @@ function declarationKindFor(keyword: ParsedKeyword, local: boolean): Declaration
 	return "variable";
 }
 
+/** `static` marks a func or var the class itself holds. */
+function memberLanguageKind(parsed: ParsedLine, local: boolean): string | undefined {
+	if (parsed.keyword === "signal") return "signal";
+	if (parsed.keyword === "func") return parsed.static ? "static" : undefined;
+	if (local) return undefined;
+	return parsed.static ? "static" : "property";
+}
+
 /** Its range and signature start from the one request. */
 function makeDeclaration(
 	script: ParsedScript,
@@ -566,16 +574,7 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 			}
 
 			const local = scope.functionScope;
-			const languageKind =
-				parsed.keyword === "signal"
-					? "signal"
-					: parsed.keyword === "func"
-						? parsed.static
-							? "static"
-							: undefined
-						: local
-							? undefined
-							: "property";
+			const languageKind = memberLanguageKind(parsed, local);
 			const declaration = makeDeclaration(
 				script,
 				headers,

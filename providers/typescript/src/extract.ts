@@ -8,6 +8,7 @@ import {
 	type Declaration,
 	type Descriptor,
 	defined,
+	type Export,
 	type FileRole,
 	type Import,
 	type Literal,
@@ -28,9 +29,10 @@ import {
 	nameOf,
 	visibilityOf,
 } from "./declarations.js";
+import { moduleEdges } from "./edges.js";
 import { fileRoleOf } from "./file-role.js";
+import { scriptKindOf } from "./file-types.js";
 import { headerOf } from "./header.js";
-import { importOf, isDynamicImport } from "./imports.js";
 import { literalOf } from "./literals.js";
 import { memberBodyOf, memberInsertLineOf, ownedTypeLiterals, partsOf, passesReach, unwrapped } from "./members.js";
 import { metricsOf } from "./metrics.js";
@@ -39,6 +41,7 @@ import {
 	isConstAssertionType,
 	isContextualPropertyReference,
 	isDeclarationName,
+	isModuleMemberShorthand,
 	isQualifiedReference,
 	isReferenceNode,
 	type ReferenceNode,
@@ -62,6 +65,7 @@ export interface Extracted {
 	declarations: Declaration[];
 	references: Reference[];
 	imports: Import[];
+	exports: Export[];
 	literals: Literal[];
 	role: FileRole;
 }
@@ -95,6 +99,7 @@ export function extractFile(module: string, source: ts.SourceFile, checker?: ts.
 		declarations: extracted.declarations,
 		references: extracted.references,
 		imports: extracted.imports,
+		exports: extracted.exports,
 		literals: extracted.literals,
 		role: extracted.role,
 	};
@@ -107,7 +112,6 @@ export function extractFileWithNodes(
 ): ExtractedWithNodes {
 	const declarations: Declaration[] = [];
 	const references: Reference[] = [];
-	const imports: Extracted["imports"] = [];
 	const literals: Literal[] = [];
 	const declarationNodes = new Map<ts.Node, string>();
 	const declarationScopes = new Map<ts.Node, Scope>();
@@ -191,6 +195,10 @@ export function extractFileWithNodes(
 			return;
 		}
 		if (checker !== undefined && isContextualPropertyReference(node, checker)) {
+			markReference(node, "read");
+			return;
+		}
+		if (checker !== undefined && ts.isIdentifier(node) && isModuleMemberShorthand(node, checker)) {
 			markReference(node, "read");
 			return;
 		}
@@ -425,13 +433,6 @@ export function extractFileWithNodes(
 		}
 	}
 
-	function recordDynamicImport(node: ts.CallExpression): void {
-		const argument = node.arguments[0];
-		if (argument === undefined || (!ts.isStringLiteral(argument) && !ts.isNoSubstitutionTemplateLiteral(argument)))
-			return;
-		imports.push({ specifier: argument.text, imported: [], reExport: false });
-	}
-
 	function recordReference(node: ReferenceNode, role: ReferenceRole, scope: Scope): void {
 		references.push({
 			name: node.text,
@@ -444,11 +445,6 @@ export function extractFileWithNodes(
 	}
 
 	function walk(node: ts.Node, scope: Scope, exportedByParent: boolean): void {
-		if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) {
-			const statement = importOf(node, source);
-			if (statement !== undefined) imports.push(statement);
-		}
-		if (ts.isCallExpression(node) && isDynamicImport(node)) recordDynamicImport(node);
 		if (ts.isVariableStatement(node)) {
 			const { declarations } = node.declarationList;
 			recordVariables(declarations, node, scope, exportedByParent || isExported(node));
@@ -484,5 +480,26 @@ export function extractFileWithNodes(
 	for (const declaration of declarations) {
 		if (running.has(declaration.symbolId) && !RUNNING_KINDS.has(declaration.kind)) declaration.contains = "locals";
 	}
-	return { declarations, references, imports, literals, role: fileRoleOf(source), declarationNodes };
+	const kind = scriptKindOf(module);
+	const edges = moduleEdges(source, {
+		idsOf: (node) => {
+			const id = declarationNodes.get(node);
+			return id === undefined ? [] : [id];
+		},
+		checker,
+		javascript: kind === ts.ScriptKind.JS || kind === ts.ScriptKind.JSX,
+	});
+	const uses = withoutTransferNames(references, edges.imports);
+	return { declarations, ...edges, references: uses, literals, role: fileRoleOf(source), declarationNodes };
+}
+
+/** An import edge's own source name is the transfer, never a use. */
+function withoutTransferNames(references: Reference[], imports: readonly Import[]): Reference[] {
+	const key = ({ start, end }: Reference["range"]) => `${start.line}:${start.character}-${end.line}:${end.character}`;
+	const names = new Set(
+		imports.flatMap((statement) =>
+			statement.edges.flatMap((edge) => (edge.range === undefined ? [] : [key(edge.range)])),
+		),
+	);
+	return names.size === 0 ? references : references.filter((reference) => !names.has(key(reference.range)));
 }

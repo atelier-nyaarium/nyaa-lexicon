@@ -8,9 +8,13 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	type Import,
+	type ImportKind,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	parseSymbolId,
+	type Reference,
+	type ReferenceOrigin,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	type TypeInfo,
@@ -19,13 +23,22 @@ import {
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { makeArrangeEdits } from "./arrange.js";
+import { isLikelyBundle } from "./bundle.js";
+import { commonJsMemberValue, isCommonJsTarget, isModuleName, meaningOf } from "./edges.js";
 import { type Extracted, extractFile, extractFileWithNodes, LANGUAGE } from "./extract.js";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
-import type { TypeScriptProject, TypeScriptStore } from "./module.js";
+import { aliasEdgeSpan } from "./imports.js";
+import type { TypeScriptProject, TypeScriptStore, TypeScriptValue } from "./module.js";
 import { makeMoveEdits } from "./move.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";
-import { runsAsEsm, toModule } from "./project.js";
-import { contextualPropertySymbol } from "./references.js";
+import { overlaidSystem, runsAsEsm, toModule } from "./project.js";
+import {
+	contextualPropertySymbol,
+	destructuredElement,
+	isModuleMemberShorthand,
+	meaningAt,
+	memberRoute,
+} from "./references.js";
 import { makeRenameEdits } from "./rename.js";
 import { extractSurfaceFile } from "./surface.js";
 
@@ -95,6 +108,15 @@ interface MappedDeclaration {
 	node: ts.Declaration;
 }
 
+/** Proposed texts read in place of what the store holds, for one batch probe. */
+export interface Overlay {
+	readonly files: ReadonlyMap<string, { readonly text: string; readonly contentHash: string }>;
+	/** Versions this view's program apart from the store's. */
+	readonly tag: string;
+	/** This view's memos, which die with the probe. */
+	readonly memos: Map<string, unknown>;
+}
+
 ////////////////////////////////
 //  Class
 
@@ -102,20 +124,30 @@ export class TypeScriptAnalyzer {
 	private readonly service: ts.LanguageService;
 	private readonly programCounters = new ProgramGenerationStats();
 
-	/** Store text gates symbols; disk serves type reads. */
+	/** Store text gates symbols; disk serves type reads. An overlay's texts stand in for the store's. */
 	constructor(
 		private readonly store: TypeScriptStore,
 		private readonly project: TypeScriptProject,
+		private readonly overlay?: Overlay,
+		private readonly registry: ts.DocumentRegistry = ts.createDocumentRegistry(),
 	) {
 		const root = project.root;
 		const compiler = project.loaded;
+		const directories =
+			overlay === undefined ? compiler.system : overlaidSystem(root, overlay.files, compiler.system);
 
 		const host: ts.LanguageServiceHost = {
 			getCompilationSettings: () => compiler.options,
 			getCurrentDirectory: () => root,
 			getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-			getProjectVersion: () => String(store.generation),
-			getScriptFileNames: () => [...project.roots, ...store.get("root").map((module) => this.fileName(module))],
+			getProjectVersion: () => `${store.generation}${overlay === undefined ? "" : `:${overlay.tag}`}`,
+			getScriptFileNames: () => [
+				...new Set([
+					...project.roots,
+					...store.get("root").map((module) => this.fileName(module)),
+					...this.overlaidRoots(),
+				]),
+			],
 			getScriptKind: (fileName) => scriptKindOf(fileName),
 			getScriptSnapshot: (fileName) => {
 				const text = this.hostText(fileName);
@@ -125,14 +157,51 @@ export class TypeScriptAnalyzer {
 			fileExists: (fileName) => this.hostText(fileName) !== undefined || compiler.system.fileExists(fileName),
 			readFile: (fileName) => this.hostText(fileName) ?? compiler.system.readFile(fileName),
 			readDirectory: compiler.system.readDirectory,
-			directoryExists: compiler.system.directoryExists,
+			directoryExists: directories.directoryExists,
 			getDirectories: compiler.system.getDirectories,
 			...(compiler.system.realpath ? { realpath: compiler.system.realpath } : {}),
 			useCaseSensitiveFileNames: () => compiler.system.useCaseSensitiveFileNames,
 		};
 		host.resolveModuleNames = (names, containingFile) =>
 			names.map((name) => ts.resolveModuleName(name, containingFile, compiler.options, host).resolvedModule);
-		this.service = ts.createLanguageService(host, ts.createDocumentRegistry());
+		this.service = ts.createLanguageService(host, registry);
+	}
+
+	/** A view of `overlay` over this one's store, sharing its parsed documents. */
+	overlaid(overlay: Overlay): TypeScriptAnalyzer {
+		return new TypeScriptAnalyzer(this.store, this.project, overlay, this.registry);
+	}
+
+	/** What the store holds for `module`, or what the overlay proposes. */
+	held(module: string): Pick<TypeScriptValue, "surface"> | undefined {
+		const proposed = this.overlay?.files.get(module);
+		if (proposed === undefined) return this.store.peek(module);
+		return { surface: isSurfaceText(module, proposed.text) };
+	}
+
+	/** Each reference's binding, and the import edge or declaration it resolves through. */
+	bindReferences(module: string, references: readonly Reference[], imports: readonly Import[]): Reference[] {
+		const context = this.sourceContext(module);
+		if (isSourceFailure(context)) {
+			return references.map((reference) => ({
+				...reference,
+				binding: unknownBinding(context.reason, context.detail),
+			}));
+		}
+		const edges = edgeKinds(imports);
+		const coordinates = coordinatesOf(context.source.text);
+		return references.map((reference) => {
+			const position = coordinates.offsetAt(reference.range.start);
+			const token = position === undefined ? undefined : tokenAt(context.source, position, reference.name);
+			if (token === undefined) {
+				return {
+					...reference,
+					binding: unknownBinding("RuntimeConstructed", "the name is not a source token"),
+				};
+			}
+			const { binding, origin } = this.use(context, token, edges);
+			return { ...reference, binding, ...defined({ origin }) };
+		});
 	}
 
 	sourceFile(module: string): ts.SourceFile | undefined {
@@ -145,9 +214,7 @@ export class TypeScriptAnalyzer {
 		const context = this.sourceContext(module);
 		if (isSourceFailure(context)) return extractFile(module, source);
 		const version = this.scriptVersion(context.source.fileName);
-		return this.store.memo(`extract:${module}:${version}`, () =>
-			extractFile(module, context.source, context.checker),
-		);
+		return this.memo(`extract:${module}:${version}`, () => extractFile(module, context.source, context.checker));
 	}
 
 	bind(module: string, name: string, range: Range): Binding {
@@ -157,11 +224,8 @@ export class TypeScriptAnalyzer {
 		if (position === undefined) return unknownBinding("RuntimeConstructed", "the range is not a source token");
 		const token = tokenAt(context.source, position, name);
 		if (token === undefined) return unknownBinding("RuntimeConstructed", "the name is not a source token");
-		return this.bindSymbol(context.checker, token);
-	}
-
-	bindReference(module: string, name: string, range: Range): Binding {
-		return this.bind(module, name, range);
+		const edges = edgeKinds(this.extract(module, context.source).imports);
+		return this.use(context, token, edges).binding;
 	}
 
 	typeOf(params: { symbolId: string } | { module: string; range: Range }): TypeInfo {
@@ -383,21 +447,25 @@ export class TypeScriptAnalyzer {
 		return mapped.external ? undefined : mapped.id;
 	}
 
-	private bindSymbol(checker: ts.TypeChecker, symbolNode: ts.Node): Binding {
-		const contextual =
-			ts.isPropertyAssignment(symbolNode.parent) && symbolNode.parent.name === symbolNode
-				? contextualPropertySymbol(checker, symbolNode.parent)
-				: undefined;
-		const shorthand = ts.isShorthandPropertyAssignment(symbolNode.parent)
-			? checker.getShorthandAssignmentValueSymbol(symbolNode.parent)
-			: undefined;
-		const symbol = contextual ?? shorthand ?? checker.getSymbolAtLocation(symbolNode);
+	/** A use's binding, and the import edge or declaration it resolves through. */
+	private use(
+		context: SourceContext,
+		token: ts.Node,
+		edges: ReadonlyMap<string, ImportKind>,
+	): { binding: Binding; origin?: ReferenceOrigin | undefined } {
+		const symbol = symbolOf(context.checker, token);
 		if (symbol === undefined) {
-			const failure = this.symbolFailure(checker, symbolNode);
-			return unknownBinding(failure.reason, failure.detail);
+			const failure = this.symbolFailure(context.checker, token);
+			return { binding: unknownBinding(failure.reason, failure.detail) };
 		}
+		const origin = originOf(context.checker, context.source, token, symbol, edges);
+		return { binding: this.bindSymbol(context.checker, token, symbol, origin?.kind === "import"), origin };
+	}
 
-		const target = resolveAlias(checker, symbol);
+	/** Through an import, a CommonJS export object's member binds as the local its value names. */
+	private bindSymbol(checker: ts.TypeChecker, symbolNode: ts.Node, symbol: ts.Symbol, imported: boolean): Binding {
+		const aliased = resolveAlias(checker, symbol);
+		const target = imported ? exportedLocal(checker, aliased) : aliased;
 		const declarations = declarationsOf(target);
 		if (declarations.length === 0) {
 			const failure = this.symbolDeclarationFailure(checker, symbol, symbolNode);
@@ -407,7 +475,7 @@ export class TypeScriptAnalyzer {
 		const ids = mapped.flatMap((item) => (item.id === undefined ? [] : [item.id]));
 		// A union's property stands for each constituent's; a merge or an accessor pair is one symbol.
 		const synthetic = (target.flags & ts.SymbolFlags.Transient) !== 0;
-		const resolved = (synthetic ? [...new Set(ids)] : firstOfOnePath(ids)).sort();
+		const resolved = (synthetic ? [...new Set(ids)] : byMeaning(checker, symbolNode, mapped)).sort();
 		const candidates = resolved.length > 0 ? resolved : this.exportAliasIds(checker, symbol);
 		if (candidates.length > 1) return { status: "ambiguous", candidates, provenance: "bound" };
 		if (candidates.length === 1) return { status: "bound", symbolId: candidates[0] as string, provenance: "bound" };
@@ -438,6 +506,9 @@ export class TypeScriptAnalyzer {
 	}
 
 	private symbolFailure(checker: ts.TypeChecker, node: ts.Node): SourceFailure {
+		if (isCommonJsTarget(node, checker)) {
+			return sourceFailure("NotIndexed", "the CommonJS export object has no workspace declaration");
+		}
 		if (this.isExternalProperty(checker, node)) {
 			return sourceFailure("ExternalDependency", "the property belongs to an external dependency");
 		}
@@ -580,7 +651,7 @@ export class TypeScriptAnalyzer {
 			if (this.isExternal(source.fileName)) return { id: undefined, external: true, withheld: false, node };
 			const module = this.toModule(source.fileName);
 			if (module === null) return { id: undefined, external: true, withheld: false, node };
-			const held = this.store.peek(module);
+			const held = this.held(module);
 			if (held === undefined) return { id: undefined, external: false, withheld: true, node };
 			let ids = idsByFile.get(source.fileName);
 			if (ids === undefined) {
@@ -605,25 +676,44 @@ export class TypeScriptAnalyzer {
 	/** A surface module binds only to the ids its surface facts admit, settled as the wire settles them. */
 	private surfaceDeclarations(module: string, source: ts.SourceFile): Declaration[] {
 		const version = this.scriptVersion(source.fileName);
-		return this.store.memo(`surface:${module}:${version}`, () => {
+		return this.memo(`surface:${module}:${version}`, () => {
 			const facts = extractSurfaceFile(module, source.text);
 			return withOccurrences({ module, contentHash: version, ...facts }).declarations;
 		});
+	}
+
+	/** The store's memo, or the overlay's own, so a probe's reads never outlive it. */
+	private memo<R>(key: string, compute: () => R): R {
+		if (this.overlay === undefined) return this.store.memo(key, compute);
+		const { memos } = this.overlay;
+		if (!memos.has(key)) memos.set(key, compute());
+		return memos.get(key) as R;
 	}
 
 	private fileName(module: string): string {
 		return path.resolve(this.project.root, module.replace(/\\/g, "/"));
 	}
 
+	/** Proposed modules this provider reads in full, which root the overlay's program as parses do. */
+	private overlaidRoots(): string[] {
+		return [...(this.overlay?.files ?? [])]
+			.filter(([module, { text }]) => claimsExtension(module) && !isSurfaceText(module, text))
+			.map(([module]) => this.fileName(module));
+	}
+
 	private hostText(fileName: string): string | undefined {
 		const module = this.toModule(fileName);
 		const { system } = this.project.loaded;
+		const proposed = module === null ? undefined : this.overlay?.files.get(module);
+		if (proposed !== undefined) return proposed.text;
 		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return system.readFile(fileName);
 		return this.store.text(module)?.text ?? system.readFile(fileName);
 	}
 
 	private scriptVersion(fileName: string): string {
 		const module = this.toModule(fileName);
+		const proposed = module === null ? undefined : this.overlay?.files.get(module);
+		if (proposed !== undefined) return proposed.contentHash;
 		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return "0";
 		const held = this.store.text(module);
 		if (held !== undefined) return held.contentHash;
@@ -650,6 +740,111 @@ export class TypeScriptAnalyzer {
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** Read as a surface, as the store reads a module from its text. */
+function isSurfaceText(module: string, text: string): boolean {
+	return module.split("/").includes("node_modules") || isLikelyBundle(module, text);
+}
+
+/**
+ * The symbol a use names: none for the CommonJS export object, a local `module` or `exports` by
+ * scope, a module member's own property, an object literal key's contextual property, a shorthand's
+ * value, else the checker's.
+ */
+function symbolOf(checker: ts.TypeChecker, node: ts.Node): ts.Symbol | undefined {
+	if (isCommonJsTarget(node, checker)) return undefined;
+	if (isModuleName(node)) return checker.resolveName(node.text, node, ts.SymbolFlags.Value, false);
+	const element = isModuleMemberShorthand(node, checker) ? destructuredElement(node) : undefined;
+	if (element !== undefined) {
+		return checker.getPropertyOfType(checker.getTypeAtLocation(element.parent), (node as ts.Identifier).text);
+	}
+	const contextual =
+		ts.isPropertyAssignment(node.parent) && node.parent.name === node
+			? contextualPropertySymbol(checker, node.parent)
+			: undefined;
+	const shorthand = ts.isShorthandPropertyAssignment(node.parent)
+		? checker.getShorthandAssignmentValueSymbol(node.parent)
+		: undefined;
+	return contextual ?? shorthand ?? checker.getSymbolAtLocation(node);
+}
+
+/** The edge an alias declaration writes in this file, when one does, with its kind. */
+function edgeOf(
+	symbol: ts.Symbol,
+	source: ts.SourceFile,
+	edges: ReadonlyMap<string, ImportKind>,
+): { span: Range; kind: ImportKind } | undefined {
+	for (const declaration of declarationsOf(symbol)) {
+		const span = aliasEdgeSpan(declaration, source);
+		const kind = span === undefined ? undefined : edges.get(positionKey(span));
+		if (span !== undefined && kind !== undefined) return { span, kind };
+	}
+	return undefined;
+}
+
+/** `ns.a.N` or `const { a: { N } } = ns` through a namespace or require edge: that edge, and the names after `ns`. */
+function receiverRoute(
+	checker: ts.TypeChecker,
+	source: ts.SourceFile,
+	token: ts.Node,
+	edges: ReadonlyMap<string, ImportKind>,
+): ReferenceOrigin | undefined {
+	const route = memberRoute(token);
+	if (route === undefined) return undefined;
+	const symbol = checker.getSymbolAtLocation(route.root);
+	if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Alias) === 0) return undefined;
+	const edge = edgeOf(symbol, source, edges);
+	if (edge === undefined || (edge.kind !== "namespace" && edge.kind !== "require")) return undefined;
+	return { kind: "import", span: edge.span, path: route.path };
+}
+
+/** Each import edge's kind, by where it is written. */
+function edgeKinds(imports: readonly Import[]): Map<string, ImportKind> {
+	const edges = new Map<string, ImportKind>();
+	for (const statement of imports) {
+		for (const edge of statement.edges) edges.set(positionKey(edge.span), edge.kind);
+	}
+	return edges;
+}
+
+/** A CommonJS export object's member as the local its value names, as the member's export row does. */
+function exportedLocal(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
+	const [declaration, ...rest] = declarationsOf(symbol);
+	const value = declaration === undefined || rest.length > 0 ? undefined : commonJsMemberValue(declaration);
+	const local = value === undefined ? undefined : checker.getSymbolAtLocation(value);
+	return local === undefined ? symbol : resolveAlias(checker, local);
+}
+
+/** One symbol's ids; where a value and a type share a name, those the use's position reads. */
+function byMeaning(checker: ts.TypeChecker, node: ts.Node, mapped: readonly MappedDeclaration[]): string[] {
+	const idsOf = (items: readonly MappedDeclaration[]) =>
+		firstOfOnePath(items.flatMap((item) => (item.id === undefined ? [] : [item.id])));
+	const all = idsOf(mapped);
+	const meaning = all.length > 1 ? meaningAt(node) : undefined;
+	if (meaning === undefined) return all;
+	const read = idsOf(mapped.filter((item) => meaningOf(item.node, checker)?.includes(meaning) !== false));
+	return read.length > 0 ? read : all;
+}
+
+/**
+ * The binding a use resolves through, read from the checker's alias before it resolves to a
+ * target. A use through an import names that edge; a use of anything else names its declaration.
+ */
+function originOf(
+	checker: ts.TypeChecker,
+	source: ts.SourceFile,
+	token: ts.Node,
+	symbol: ts.Symbol,
+	edges: ReadonlyMap<string, ImportKind>,
+): ReferenceOrigin | undefined {
+	const route = receiverRoute(checker, source, token, edges);
+	if (route !== undefined) return route;
+	if ((symbol.flags & ts.SymbolFlags.Alias) === 0) {
+		return declarationsOf(symbol).length > 0 ? { kind: "declaration" } : undefined;
+	}
+	const edge = edgeOf(symbol, source, edges);
+	return edge === undefined ? undefined : { kind: "import", span: edge.span };
+}
 
 function tokenAt(source: ts.SourceFile, position: number, name?: string): ts.Node | undefined {
 	if (source.end === 0) return undefined;

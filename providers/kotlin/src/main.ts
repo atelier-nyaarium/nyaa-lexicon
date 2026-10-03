@@ -22,6 +22,7 @@ import {
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	runProviderOnStdio,
+	type ScopeContribution,
 	type StoreProvider,
 	type TypeInfo,
 	type UnknownReason,
@@ -31,8 +32,21 @@ import {
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { ReferenceBinder } from "./binding.js";
 import { type KotlinFile, LANGUAGE, REFERENCE_ROLES, type ReferenceInfo, type TypeFact } from "./facts.js";
-import { cleanSpecifier, fileSite, isClassifier, PackageIndex, type PackageIndexEntry } from "./packageIndex.js";
+import {
+	cleanSpecifier,
+	fileSite,
+	type IndexedDeclaration,
+	isClassifier,
+	isCompanion,
+	isMember,
+	isObject,
+	isStatic,
+	PackageIndex,
+	type PackageIndexEntry,
+} from "./packageIndex.js";
 import { parseKotlin } from "./parse.js";
+
+const PROVIDER_ID = "kotlin-provider";
 
 export const TIERS = {
 	projectModel: true,
@@ -192,6 +206,89 @@ function packageEntries(module: string, facts: KotlinFile): Iterable<readonly [s
 	return entries;
 }
 
+/** `import p.C.*` opens the one classifier the path names. */
+function classScope(specifier: string, entries: readonly IndexedDeclaration[]): ImportResolution {
+	const classifiers = entries.filter((entry) => isClassifier(entry.declaration));
+	const [only] = classifiers;
+	if (only === undefined)
+		return { status: "unresolved", reason: "NotIndexed", detail: `${specifier} names no package or class` };
+	if (classifiers.length > 1)
+		return { status: "unresolved", reason: "Ambiguous", detail: `several workspace files declare ${specifier}` };
+	return {
+		status: "resolved",
+		landing: {
+			kind: "symbolScope",
+			providerId: PROVIDER_ID,
+			scopeId: specifier,
+			anchorSymbolId: only.declaration.symbolId,
+		},
+	};
+}
+
+/** No import can name the default package, so it has no scope. */
+function packageContributions(facts: KotlinFile): ScopeContribution[] {
+	if (facts.packageName === undefined) return [];
+	const members = facts.declarations
+		.filter(
+			(declaration) =>
+				declaration.containerId === undefined &&
+				declaration.kind !== "package" &&
+				declaration.exported !== false,
+		)
+		.map((declaration) => declaration.symbolId);
+	return [{ kind: "packageScope", scopeId: facts.packageName, members }];
+}
+
+/** A member a use outside its class may name. */
+function seenOutside(declaration: Declaration): boolean {
+	return isMember(declaration) && declaration.visibility !== "private" && declaration.visibility !== "protected";
+}
+
+/** A classifier's names from its top-level one down; none inside a function or another declaration. */
+function classPath(declaration: Declaration, byId: ReadonlyMap<string, Declaration>): string[] | undefined {
+	const path: string[] = [];
+	for (let current: Declaration | undefined = declaration; current !== undefined; ) {
+		if (!isClassifier(current) || current.visibility === "local") return undefined;
+		path.unshift(current.name);
+		if (current.containerId === undefined) return path;
+		current = byId.get(current.containerId);
+	}
+	return undefined;
+}
+
+/**
+ * Each classifier's scope, which `import p.C.*` lands on by C's path: what `C.name` reaches with no
+ * instance, as `staticMembers` reads it. A companion's member yields to a direct one of its name.
+ */
+function classContributions(facts: KotlinFile): ScopeContribution[] {
+	const { packageName } = facts;
+	if (packageName === undefined) return [];
+	const byId = new Map(facts.declarations.map((declaration) => [declaration.symbolId, declaration]));
+	const children = new Map<string, Declaration[]>();
+	for (const declaration of facts.declarations)
+		if (declaration.containerId !== undefined)
+			children.set(declaration.containerId, [...(children.get(declaration.containerId) ?? []), declaration]);
+	const contributions: ScopeContribution[] = [];
+	for (const declaration of facts.declarations) {
+		const path = classPath(declaration, byId);
+		if (path === undefined) continue;
+		const held = children.get(declaration.symbolId) ?? [];
+		const object = isObject(declaration);
+		const direct = held.filter((child) => seenOutside(child) && (object || isStatic(child)));
+		const names = new Set(direct.map((child) => child.name));
+		const companions = held
+			.filter(isCompanion)
+			.flatMap((companion) => children.get(companion.symbolId) ?? [])
+			.filter((member) => seenOutside(member) && !names.has(member.name));
+		contributions.push({
+			kind: "symbolScope",
+			scopeId: [packageName, ...path].join("."),
+			members: [...direct, ...companions].map((member) => member.symbolId),
+		});
+	}
+	return contributions;
+}
+
 function contains(range: RangeLike, position: RangeLike["start"]): boolean {
 	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
 }
@@ -217,7 +314,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 
 	initialize(_workspaceRoot: string) {
 		return {
-			providerId: "kotlin-provider",
+			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
 			protocolVersion: PROTOCOL_VERSION,
@@ -265,7 +362,8 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 			contentHash: params.contentHash,
 			declarations: facts.declarations,
 			references: outline ? [] : this.wireReferences(facts),
-			imports: facts.imports.map(({ specifier, imported, reExport }) => ({ specifier, imported, reExport })),
+			imports: facts.imports.map(({ specifier, edge }) => ({ specifier, edges: [edge] })),
+			scopeContributions: [...packageContributions(facts), ...classContributions(facts)],
 			literals: outline ? [] : facts.literals,
 			comments: outline ? [] : facts.comments,
 			...(outline ? {} : defined({ blankLines: facts.blankLines })),
@@ -280,22 +378,19 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 		if (specifier === "")
 			return { status: "unresolved", reason: "ParseError", detail: "the import specifier is empty" };
 		const index = this.index;
-		if (params.specifier.endsWith(".*") && index.hasPackage(specifier)) {
-			const modules = index.modulesIn(specifier);
-			return modules.length === 1
-				? { status: "resolved", module: modules[0] as string }
-				: {
-						status: "unresolved",
-						reason: "Ambiguous",
-						detail: `package ${specifier} spans ${modules.length} workspace files`,
-					};
-		}
+		const starred = params.specifier.endsWith(".*");
+		if (starred && index.hasPackage(specifier))
+			return {
+				status: "resolved",
+				landing: { kind: "packageScope", providerId: PROVIDER_ID, scopeId: specifier },
+			};
 		const resolution = index.resolvePath(fileSite(params.fromModule), specifier);
 		if (resolution.status === "external") return { status: "external", packageName: specifier };
 		if (resolution.status === "unresolved") return resolution;
+		if (starred) return classScope(specifier, resolution.entries);
 		const modules = [...new Set(resolution.entries.map((entry) => entry.module))];
 		return modules.length === 1
-			? { status: "resolved", module: modules[0] as string }
+			? { status: "resolved", landing: { kind: "module", module: modules[0] as string } }
 			: {
 					status: "unresolved",
 					reason: "Ambiguous",

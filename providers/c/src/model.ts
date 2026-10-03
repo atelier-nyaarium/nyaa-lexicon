@@ -5,7 +5,6 @@ import type {
 	Declaration,
 	Descriptor,
 	Diagnostic,
-	ImportedName,
 	Literal,
 	Metrics,
 	Range,
@@ -24,9 +23,10 @@ export type DescriptorPath = Descriptor[];
 
 export interface CImportFact {
 	specifier: string;
-	imported: ImportedName[];
-	reExport: boolean;
 	kind: "quoted" | "angle";
+	/** The directive, `#` through its header name. */
+	span: Range;
+	/** The header name's tokens. */
 	range?: Range;
 }
 

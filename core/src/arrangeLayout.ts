@@ -2,7 +2,7 @@
 // original text: whole-line removals, each blank separator owned once, and the insertions landing
 // at one point framed as one group.
 
-import { coordinatesOf, type Position, type Range } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, type OffsetRange, type Position, type Range } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -12,8 +12,8 @@ export type Landing = { line: number } | "end";
 
 export interface LayoutSlot {
 	landing: Landing;
-	/** In landing order. */
-	members: ReadonlyArray<{ symbolId: string; text: string }>;
+	/** In landing order. `literals` are offsets into `text` whose line breaks are part of a value. */
+	members: ReadonlyArray<{ symbolId: string; text: string; literals?: readonly OffsetRange[] }>;
 }
 
 export interface Layout {
@@ -33,6 +33,13 @@ interface Span {
 
 ////////////////////////////////
 //  Functions & Helpers
+
+/** Each line break as `eol`, but inside a literal, where a break is part of the value. */
+function withEndings(text: string, eol: string, literals: readonly OffsetRange[]): string {
+	return text.replace(/\r?\n/g, (written, at: number) =>
+		literals.some((literal) => literal.start <= at && at < literal.end) ? written : eol,
+	);
+}
 
 /** One module's removals and slots. Slots come in document order; a later slot at the same point lands after. */
 export function layoutModule(text: string, removals: ReadonlyMap<string, Range>, slots: readonly LayoutSlot[]): Layout {
@@ -94,7 +101,7 @@ export function layoutModule(text: string, removals: ReadonlyMap<string, Range>,
 		return spans.find((span) => span.start <= line && line <= span.end)?.start ?? line;
 	};
 
-	const groups = new Map<number, Array<{ symbolId: string; text: string }>>();
+	const groups = new Map<number, Array<LayoutSlot["members"][number]>>();
 	for (const slot of slots) {
 		const point = pointOf(slot.landing);
 		groups.set(point, [...(groups.get(point) ?? []), ...slot.members]);
@@ -108,7 +115,7 @@ export function layoutModule(text: string, removals: ReadonlyMap<string, Range>,
 		const leading = `${point >= count && !ended && count > 0 ? eol : ""}${filled(above) ? eol : ""}`;
 		const trailing = filled(below) ? eol : "";
 		for (const [index, member] of members.entries()) {
-			const body = member.text.replace(/\r?\n/g, eol);
+			const body = withEndings(member.text, eol, member.literals ?? []);
 			const lines = body.endsWith(eol) ? body : `${body}${eol}`;
 			const framed = `${index === 0 ? leading : eol}${lines}${index === members.length - 1 ? trailing : ""}`;
 			layout.insertions.set(member.symbolId, { text: framed, position: lineStart(point) });

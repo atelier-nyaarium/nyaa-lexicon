@@ -69,6 +69,11 @@ function verdict(handlers: ReturnType<typeof started>, module: string, contentHa
 	});
 }
 
+/** An include resolved to workspace `module`. */
+function landed(module: string) {
+	return { status: "resolved", landing: { kind: "module", module } } as const;
+}
+
 /** A `build/compile_commands.json` entry for workspace `file`, built with `args`. */
 function unitEntry(file: string, ...args: string[]) {
 	return { directory: ".", file: `../${file}`, arguments: ["cc", ...args, "-c", `../${file}`] };
@@ -116,6 +121,7 @@ describe("C provider protocol", () => {
 			"moduleAdmission",
 			"moveEdits",
 			"parseFile",
+			"probeBatch",
 			"probeFile",
 			"releaseModule",
 			"renameEdits",
@@ -123,6 +129,9 @@ describe("C provider protocol", () => {
 			"shutdown",
 			"typeOf",
 		]);
+		expect(
+			handlers.probeBatch({ files: [{ module: "src/a.c", contentHash: "a", text: "" }], answer: ["src/a.c"] }),
+		).toEqual({ status: "unsupported" });
 		expect(handlers.shutdown({})).toEqual({});
 	});
 
@@ -174,8 +183,8 @@ describe("C provider protocol", () => {
 
 		verdict(handlers, "src/use.c", "angle", "the index refused these facts");
 
-		expect(resolve("local.h")).toEqual({ status: "resolved", module: "src/local.h" });
-		expect(resolve("extra.h")).toEqual({ status: "resolved", module: "src/extra.h" });
+		expect(resolve("local.h")).toEqual(landed("src/local.h"));
+		expect(resolve("extra.h")).toEqual(landed("src/extra.h"));
 	});
 
 	test("an admitted reparse drops an include kind the file no longer states", () => {
@@ -190,7 +199,7 @@ describe("C provider protocol", () => {
 		handlers.parseFile({ module: "src/use.c", contentHash: "none", text: "int run(void) { return 0; }\n" });
 		verdict(handlers, "src/use.c", "none");
 
-		expect(resolve()).toEqual({ status: "resolved", module: "src/extra.h" });
+		expect(resolve()).toEqual(landed("src/extra.h"));
 	});
 
 	test("answers a probe from the candidate, then serves what the index holds, never the candidate or the disk", () => {
@@ -1726,14 +1735,29 @@ describe("C binding and imports", () => {
 
 		facts(handlers, "src/cart.c", text);
 
-		expect(handlers.resolveImport({ fromModule: "src/cart.c", specifier: "item.h" })).toEqual({
-			status: "resolved",
-			module: "src/item.h",
-		});
-		expect(handlers.resolveImport({ fromModule: "src/cart.c", specifier: "root.h" })).toEqual({
-			status: "resolved",
-			module: "root.h",
-		});
+		expect(handlers.resolveImport({ fromModule: "src/cart.c", specifier: "item.h" })).toEqual(landed("src/item.h"));
+		expect(handlers.resolveImport({ fromModule: "src/cart.c", specifier: "root.h" })).toEqual(landed("root.h"));
+	});
+
+	test("reports each include as one injection of all its header declares, spanning its directive", () => {
+		const handlers = started();
+		const text = '#include "a.h"\n#  include <sys/b.h> // why\n#include "a.h"\n#include <open.h\n';
+		const parsed = handlers.parseFile({ module: "src/use.c", contentHash: "edges", text });
+		const edge = {
+			kind: "injection",
+			selector: { kind: "visible" },
+			bindsLocally: true,
+			conflict: { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" },
+			certainty: { status: "known" },
+		} as const;
+
+		expect(FileFactsSchema.safeParse(parsed).success).toBe(true);
+		expect(parsed.imports).toEqual([
+			{ specifier: "a.h", edges: [{ ...edge, span: rangeAt(text, '#include "a.h"'), order: 0 }] },
+			{ specifier: "sys/b.h", edges: [{ ...edge, span: rangeAt(text, "#  include <sys/b.h>"), order: 1 }] },
+			{ specifier: "a.h", edges: [{ ...edge, span: rangeAt(text, '#include "a.h"', 20), order: 2 }] },
+			{ specifier: "open.h", edges: [{ ...edge, span: rangeAt(text, "#include <open.h"), order: 3 }] },
+		]);
 	});
 
 	test("marks angle includes external and missing quoted includes unresolved", () => {
@@ -1851,9 +1875,9 @@ describe("C binding and imports", () => {
 		const resolve = (specifier: string) => handlers.resolveImport({ fromModule: "src/main.c", specifier });
 
 		expect(["lib.h", '"config.h"', "<config.h>"].map(resolve)).toEqual([
-			{ status: "resolved", module: "include/lib.h" },
-			{ status: "resolved", module: "src/config.h" },
-			{ status: "resolved", module: "include/config.h" },
+			landed("include/lib.h"),
+			landed("src/config.h"),
+			landed("include/config.h"),
 		]);
 		// Through lib.h to detail.h, whose include of lib.h again ends the walk; hidden.h is never reached.
 		expect(["box_t", "size", "detail_count", "LOCAL_ONLY", "SHARED_ONLY", "hidden"].map(home)).toEqual([
@@ -1896,8 +1920,8 @@ describe("C binding and imports", () => {
 
 		// The database's lists replace the conventional ones; an angle include skips `-iquote`.
 		expect(["api.h", '"q.h"', "<q.h>"].map(resolve)).toEqual([
-			{ status: "resolved", module: "vendor/api/api.h" },
-			{ status: "resolved", module: "quoted/q.h" },
+			landed("vendor/api/api.h"),
+			landed("quoted/q.h"),
 			{ status: "external", packageName: "q.h" },
 		]);
 		expect([
@@ -1947,8 +1971,8 @@ describe("C binding and imports", () => {
 
 		expect(["x.h", '"x.h"', "<x.h>"].map(resolve)).toEqual([
 			{ status: "unresolved", reason: "Ambiguous", detail: expect.any(String) },
-			{ status: "resolved", module: "src/x.h" },
-			{ status: "resolved", module: "include/x.h" },
+			landed("src/x.h"),
+			landed("include/x.h"),
 		]);
 	});
 
@@ -2041,8 +2065,8 @@ describe("C binding and imports", () => {
 
 		expect(["<a.h>", '"a.h"', '"c.h"'].map(resolve)).toEqual([
 			{ status: "external", packageName: "a.h" },
-			{ status: "resolved", module: "pre/a.h" },
-			{ status: "resolved", module: "post/c.h" },
+			landed("pre/a.h"),
+			landed("post/c.h"),
 		]);
 	});
 
@@ -2352,10 +2376,7 @@ describe("C edge coverage", () => {
 		const parsed = facts(handlers, "src/user.c", readFileSync(path.join(root, "src/user.c"), "utf8"));
 		const binding = parsed.references.find((reference) => reference.role === "read")?.binding;
 
-		expect(handlers.resolveImport({ fromModule: "src/user.c", specifier: "item" })).toEqual({
-			status: "resolved",
-			module: "include/item",
-		});
+		expect(handlers.resolveImport({ fromModule: "src/user.c", specifier: "item" })).toEqual(landed("include/item"));
 		expect(binding?.status === "bound" ? parseSymbolId(binding.symbolId)?.module : binding?.status).toBe(
 			"include/item",
 		);

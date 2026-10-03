@@ -342,6 +342,7 @@ export class CsharpParser extends CsharpStatementParser {
 					typeText: raw.typeText,
 					typeSegments: raw.typeSegments,
 					typeQualifier: raw.typeQualifier,
+					typeComposed: raw.typeComposed,
 					inferredType: raw.inferredType,
 					isPartial: raw.isPartial,
 					isStatic: raw.isStatic,

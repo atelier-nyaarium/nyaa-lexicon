@@ -97,7 +97,7 @@ describe("C++ conditional groups", () => {
 		const values = tokenize(text, "directives.cpp").tokens.map((item) => item.value);
 		expect(values).toContain("KEPT");
 		expect(values).not.toContain("HIDDEN");
-		expect(facts.imports.map((item) => item.specifier)).toEqual(["kept.h"]);
+		expect(facts.importFacts.map((item) => item.specifier)).toEqual(["kept.h"]);
 	});
 
 	test("keeps the first branch when the second branch is a fragment", () => {

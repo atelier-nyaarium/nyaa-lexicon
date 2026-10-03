@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { instantiates, parsedFiles } from "../astResidue";
-import { loadLifecycleCases } from "../conformance/lifecycleCorpus";
+import { loadLifecycleCases, loadProbeBatchCases } from "../conformance/lifecycleCorpus";
 import { runSuite } from "../conformance/runner";
 
 const PROVIDERS = join(import.meta.dirname, "..", "..", "..", "providers");
@@ -25,6 +25,8 @@ function statefulProviders(): string[] {
 describe("every stateful provider holds what the index holds, over its real wire", () => {
 	const cases = loadLifecycleCases();
 	const ids = new Set(cases.map((testCase) => testCase.id));
+	const probes = loadProbeBatchCases();
+	const probeIds = new Set(probes.map((testCase) => testCase.id));
 
 	it("finds the stateful providers, so a passing run is never vacuous", () => {
 		expect(statefulProviders().length).toBeGreaterThanOrEqual(9);
@@ -43,6 +45,7 @@ describe("every stateful provider holds what the index holds, over its real wire
 				],
 				cases: [],
 				lifecycleCases: cases,
+				probeBatchCases: probes,
 			});
 			const lifecycle = report.results.filter((result) => ids.has(result.caseId));
 			expect(
@@ -53,6 +56,14 @@ describe("every stateful provider holds what the index holds, over its real wire
 			expect(lifecycle.length).toBe(ids.size);
 			const unseen = lifecycle.find((result) => result.caseId === "probes-and-refusals-are-unseen");
 			expect(unseen?.variants?.length).toBe(16);
+			// A probe the provider has not claimed skips; one it answers must pass.
+			const probed = report.results.filter((result) => probeIds.has(result.caseId));
+			expect(
+				probed
+					.filter((result) => result.outcome === "failed" || result.outcome === "stalled")
+					.map((result) => `${result.caseId} ${result.outcome}: ${result.problems.join("; ")}`),
+			).toEqual([]);
+			expect(probed.length).toBe(probeIds.size);
 		}, 240_000);
 	}
 });

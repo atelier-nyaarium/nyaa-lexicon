@@ -1496,15 +1496,16 @@ const CASES: ConformanceCase[] = [
 				subject: "src/cart.cpp",
 				imports: [{ specifier: "item.hpp", status: "resolved", module: "src/item.hpp" }],
 			},
-			// C# and Kotlin import a namespace or package, not a path, so resolution goes through the
-			// provider's own parse of which workspace file declares that name.
+			// C# imports a namespace, not a path, so it lands on that namespace's package scope.
 			[CSHARP]: {
 				files: {
 					"src/cart.cs": "using Demo.Item;\nnamespace Demo { public class Cart { public Item Value; } }\n",
 					"src/item.cs": "namespace Demo.Item { public class Item {} }\n",
 				},
 				subject: "src/cart.cs",
-				imports: [{ specifier: "Demo.Item", status: "resolved", module: "src/item.cs" }],
+				imports: [
+					{ specifier: "Demo.Item", status: "resolved", landing: "packageScope", scopeId: "Demo.Item" },
+				],
 			},
 			[RUST]: {
 				files: {
@@ -3531,6 +3532,85 @@ const CASES: ConformanceCase[] = [
 				literals: [{ value: "install %s now", kind: "string" }],
 			},
 		},
+	},
+	{
+		id: "export-edges",
+		tier: "exports",
+		about: "Each export is one edge with its form and target: a declaration, a local alias, a forward and a star, each forward naming its import edge.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"src/index.ts":
+						'export function add() {}\nconst sub = 1;\nexport { sub as minus };\nexport { mul } from "./mul";\nexport * from "./div";\n',
+					"src/mul.ts": "export function mul() {}\n",
+					"src/div.ts": "export function div() {}\n",
+				},
+				subject: "src/index.ts",
+				exports: [
+					{ form: "direct", name: "add", target: "symbol", targetName: "add" },
+					{ form: "local", name: "minus", target: "symbol", targetName: "sub" },
+					{ form: "forward", name: "mul", target: "import", targetName: "mul", sourceName: "mul" },
+					{ form: "star", target: "import", targetName: "*" },
+				],
+			},
+			// Every module-level binding is exported, the underscored one included; `__all__` decides
+			// only what a star brings.
+			[PYTHON]: {
+				files: {
+					"pkg/__init__.py":
+						"from .mul import mul\nfrom .div import *\n\n\ndef add():\n    pass\n\n\n_hidden = 1\n",
+					"pkg/mul.py": "def mul():\n    pass\n",
+					"pkg/div.py": "def div():\n    pass\n",
+				},
+				subject: "pkg/__init__.py",
+				exports: [
+					{ form: "forward", name: "mul", target: "import", targetName: "mul", sourceName: "mul" },
+					{ form: "star", target: "import", targetName: "*" },
+					{ form: "direct", name: "add", target: "symbol", targetName: "add" },
+					{ form: "direct", name: "_hidden", target: "symbol", targetName: "_hidden" },
+				],
+			},
+			[RUST]: {
+				files: {
+					"src/lib.rs":
+						"pub fn add() {}\npub use crate::mul::mul as times;\npub use crate::div::*;\nmod mul;\nmod div;\n",
+					"src/mul.rs": "pub fn mul() {}\n",
+					"src/div.rs": "pub fn div() {}\n",
+				},
+				subject: "src/lib.rs",
+				exports: [
+					{ form: "direct", name: "add", target: "symbol", targetName: "add" },
+					{ form: "forward", name: "times", target: "import", targetName: "times", sourceName: "mul" },
+					{ form: "star", target: "import", targetName: "*" },
+				],
+			},
+		},
+	},
+	{
+		id: "origin-through-an-alias",
+		tier: "binding",
+		about: "A use through an aliased import names that import edge as its origin; a use of a local declaration names the declaration.",
+		fixtures: {
+			[TYPESCRIPT]: {
+				files: {
+					"src/use.ts": 'import { add as plus } from "./add";\nfunction local() {}\nplus();\nlocal();\n',
+					"src/add.ts": "export function add() {}\n",
+				},
+				subject: "src/use.ts",
+			},
+			[PYTHON]: {
+				files: {
+					"pkg/__init__.py": "",
+					"pkg/use.py": "from .add import add as plus\n\n\ndef local():\n    pass\n\n\nplus()\nlocal()\n",
+					"pkg/add.py": "def add():\n    pass\n",
+				},
+				subject: "pkg/use.py",
+			},
+		},
+		references: [
+			{ name: "plus", role: "call", origin: { through: "plus" } },
+			{ name: "local", role: "call", origin: "declaration" },
+		],
 	},
 ];
 

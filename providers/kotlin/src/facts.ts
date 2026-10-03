@@ -3,7 +3,7 @@ import type {
 	Declaration,
 	Diagnostic,
 	FileRole,
-	ImportedName,
+	ImportEdge,
 	Literal,
 	Range,
 	Reference,
@@ -29,10 +29,9 @@ export interface TypeFact {
 
 export interface ImportInfo {
 	specifier: string;
-	imported: ImportedName[];
-	reExport: boolean;
+	/** A directive makes one transfer. */
+	edge: ImportEdge;
 	star: boolean;
-	importedName?: string;
 	localName?: string;
 }
 

@@ -272,6 +272,7 @@ export abstract class CsharpMemberParser extends CsharpSignatureReader {
 			exported: exportedFor(visibility, parent),
 			signature: this.header(leading?.attributes ?? codeStartIndex, headerEnd),
 			nameTokenOffsets: [name.startOffset],
+			isStatic: modifiers.has("static"),
 		});
 		this.recordTypeSpan(this.spanBeforeName(start, nameIndex), property);
 		const indexer = syntaxValue(name) === "this";
@@ -358,6 +359,7 @@ export abstract class CsharpMemberParser extends CsharpSignatureReader {
 				),
 				...type,
 				nameTokenOffsets: [name.startOffset],
+				isStatic: modifiers.has("static"),
 			});
 			this.recordTypeSpan(segmentIndex === 0 ? this.spanBeforeName(start + 1, nameIndex) : undefined, event);
 			const first = segmentIndex === 0 ? (leading?.attributes ?? codeStartIndex) : nameIndex;
@@ -427,6 +429,7 @@ export abstract class CsharpMemberParser extends CsharpSignatureReader {
 				...type,
 				...defined({ inferredType }),
 				nameTokenOffsets: [name.startOffset],
+				isStatic: modifiers.has("static"),
 			});
 			this.recordTypeSpan(segmentIndex === 0 ? this.spanBeforeName(start, nameIndex) : undefined, field);
 			const first = segmentIndex === 0 ? (leading?.attributes ?? codeStartIndex) : nameIndex;

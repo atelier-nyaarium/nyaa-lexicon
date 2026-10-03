@@ -30,6 +30,8 @@ function reads(overrides: Partial<LexiconReads> = {}): LexiconReads {
 			occurrences: 0,
 			blockers: [],
 			warnings: [],
+			routes: { edges: [], modules: [] },
+			mentions: { comments: 0, strings: 0 },
 		}),
 		renameEdits: async (symbolId, newName) => ({
 			ok: false,
@@ -41,6 +43,8 @@ function reads(overrides: Partial<LexiconReads> = {}): LexiconReads {
 				occurrences: 0,
 				blockers: [],
 				warnings: [],
+				routes: { edges: [], modules: [] },
+				mentions: { comments: 0, strings: 0 },
 			},
 			reason: "not under test",
 		}),
@@ -73,6 +77,8 @@ describe("deferred reads", () => {
 				occurrences: 0,
 				blockers: [],
 				warnings: [],
+				routes: { edges: [], modules: [] },
+				mentions: { comments: 0, strings: 0 },
 			},
 			reason: "blocked",
 		}));

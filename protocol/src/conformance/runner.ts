@@ -13,7 +13,7 @@ import { METHOD_SCHEMAS, type ProviderMethod, type ProviderNotification, type Pr
 import type { ArrangeEditsRequest } from "../move.js";
 import { composeSymbolId, moduleOf } from "../symbolId.js";
 import { PROTOCOL_VERSION } from "../version.js";
-import { checkFacts, checkImport, checkType } from "./check.js";
+import { checkFacts, checkImport, checkProbeBatch, checkType } from "./check.js";
 import {
 	type CaseOutcome,
 	type CaseResult,
@@ -23,6 +23,8 @@ import {
 	type LifecycleFixture,
 	type MoveCase,
 	type MoveFixture,
+	type ProbeBatchCase,
+	type ProbeBatchFixture,
 	type SuiteReport,
 	type Tier,
 	TierSchema,
@@ -42,6 +44,7 @@ export interface RunOptions {
 	cases: ConformanceCase[];
 	moveCases?: MoveCase[];
 	lifecycleCases?: LifecycleCase[];
+	probeBatchCases?: ProbeBatchCase[];
 	/** Milliseconds any single request may take before the case is failed. */
 	timeoutMs?: number;
 }
@@ -544,6 +547,35 @@ function boundModules(facts: MethodResponse<"parseFile">, name: string): string[
 		if (module !== null) found.add(module);
 	}
 	return [...found];
+}
+
+/**
+ * A batch probe reads its proposed texts as one view and leaves the provider holding what it held.
+ *
+ * An unsupported answer skips: the provider has not claimed the probe.
+ */
+async function runProbeBatchCase(
+	session: ProviderSession,
+	testCase: ProbeBatchCase,
+	fixture: ProbeBatchFixture,
+): Promise<CaseResult> {
+	const held = () =>
+		Promise.all(
+			fixture.answer.map((module) => {
+				const text = fixture.files[module] ?? "";
+				return session.call("parseFile", { module, contentHash: hashOf(text), text });
+			}),
+		);
+	const before = await held();
+	const files = Object.entries(fixture.probe).map(([module, text]) => ({ module, contentHash: hashOf(text), text }));
+	const answer = await session.call("probeBatch", { files, answer: fixture.answer });
+	if (answer.status === "unsupported") {
+		return { caseId: testCase.id, tier: "protocol", outcome: "skipped", problems: ["probeBatch is unsupported"] };
+	}
+	const problems = checkProbeBatch(fixture, answer, hashOf);
+	if (JSON.stringify(await held()) !== JSON.stringify(before))
+		problems.push("the probe changed what the provider holds");
+	return { caseId: testCase.id, tier: "protocol", outcome: problems.length === 0 ? "passed" : "failed", problems };
 }
 
 /** The control step first: a provider binding nothing across files must not pass while silent. */
@@ -1344,6 +1376,39 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 				results.push({
 					caseId: testCase.id,
 					tier: "binding",
+					outcome: "failed",
+					problems: [error instanceof Error ? error.message : String(error)],
+				});
+			}
+		}
+
+		for (const testCase of options.probeBatchCases ?? []) {
+			const fixture = testCase.fixtures[info.language];
+			if (!fixture) {
+				results.push({
+					caseId: testCase.id,
+					tier: "protocol",
+					outcome: "skipped",
+					problems: [`no ${info.language} fixture`],
+				});
+				continue;
+			}
+
+			// Its own project: the probe proposes texts over files on disk.
+			const probeRoot = path.join(root, `probe-${testCase.id}`);
+			writeFixture(probeRoot, fixture.files);
+			try {
+				await session.call("initialize", { workspaceRoot: probeRoot, protocolVersion: PROTOCOL_VERSION });
+				await session.call("discoverProject", { workspaceRoot: probeRoot });
+				results.push(await runProbeBatchCase(session, testCase, fixture));
+			} catch (error) {
+				if (error instanceof Stall) {
+					results.push(stalled(testCase.id, "protocol", error, startedAt, timeoutMs));
+					continue;
+				}
+				results.push({
+					caseId: testCase.id,
+					tier: "protocol",
 					outcome: "failed",
 					problems: [error instanceof Error ? error.message : String(error)],
 				});

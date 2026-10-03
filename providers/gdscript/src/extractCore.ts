@@ -8,7 +8,6 @@ import { ParsedScript } from "./script.js";
 import { type TypeAnnotationFact, typeAnnotationsOf } from "./type-facts.js";
 
 export { isGdscriptIdentifier } from "./characters.js";
-export type { ImportFact } from "./imports.js";
 export type { Layout } from "./layout.js";
 export type { CommentSpan } from "./lexer.js";
 export type { DeclarationFact, DeclarationKind, Descriptor, Visibility } from "./parse-model.js";

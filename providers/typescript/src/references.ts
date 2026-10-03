@@ -2,6 +2,7 @@
 
 import type { Reference } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { bindsModule } from "./imports.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -178,6 +179,94 @@ export function referenceTarget(expression: ts.Expression): ts.Identifier | ts.P
 	return undefined;
 }
 
+/** The object binding element whose key `node` is: `a` in `{ a: x }` or `{ a }`. */
+export function destructuredElement(node: ts.Node): ts.BindingElement | undefined {
+	if (!ts.isIdentifier(node)) return undefined;
+	const parent = node.parent;
+	if (!ts.isBindingElement(parent) || !ts.isObjectBindingPattern(parent.parent)) return undefined;
+	if (parent.dotDotDotToken !== undefined) return undefined;
+	return (parent.propertyName ?? parent.name) === node ? parent : undefined;
+}
+
+/** The expression a destructured key is read from, with the keys leading to it: `{ a: { N } } = ns` is `ns` and [a, N]. */
+function destructuredFrom(element: ts.BindingElement, key: string): { receiver: ts.Node; path: string[] } | undefined {
+	const path = [key];
+	let current = element;
+	while (true) {
+		const holder = current.parent.parent;
+		if (ts.isVariableDeclaration(holder)) {
+			return holder.initializer === undefined ? undefined : { receiver: holder.initializer, path };
+		}
+		if (!ts.isBindingElement(holder) || !ts.isObjectBindingPattern(holder.parent)) return undefined;
+		const outer = holder.propertyName;
+		if (outer === undefined || !ts.isIdentifier(outer) || holder.dotDotDotToken !== undefined) return undefined;
+		path.unshift(outer.text);
+		current = holder;
+	}
+}
+
+/** A member's root name and the names after it: `ns.a.N`, `ns.a.N` as a type, and `const { a: { N } } = ns`. */
+export function memberRoute(node: ts.Node): { root: ts.Identifier; path: string[] } | undefined {
+	if (!ts.isIdentifier(node)) return undefined;
+	const parent = node.parent;
+	const element = destructuredElement(node);
+	let from: { receiver: ts.Node; path: string[] } | undefined;
+	if (ts.isPropertyAccessExpression(parent) && parent.name === node)
+		from = { receiver: parent.expression, path: [node.text] };
+	else if (ts.isQualifiedName(parent) && parent.right === node) from = { receiver: parent.left, path: [node.text] };
+	else if (element !== undefined) from = destructuredFrom(element, node.text);
+	if (from === undefined) return undefined;
+	let receiver = from.receiver;
+	const path = from.path;
+	while (!ts.isIdentifier(receiver)) {
+		if (ts.isPropertyAccessExpression(receiver) && ts.isIdentifier(receiver.name)) {
+			path.unshift(receiver.name.text);
+			receiver = receiver.expression;
+		} else if (ts.isQualifiedName(receiver)) {
+			path.unshift(receiver.right.text);
+			receiver = receiver.left;
+		} else return undefined;
+	}
+	return { root: receiver, path };
+}
+
+/** `N` in `const { N } = ns`, where the checker binds `ns` to a whole module. */
+export function isModuleMemberShorthand(node: ts.Node, checker: ts.TypeChecker): boolean {
+	const element = destructuredElement(node);
+	if (element === undefined || element.propertyName !== undefined) return false;
+	const root = memberRoute(node)?.root;
+	const symbol = root === undefined ? undefined : checker.getSymbolAtLocation(root);
+	return (
+		symbol !== undefined &&
+		(symbol.flags & ts.SymbolFlags.Alias) !== 0 &&
+		(symbol.declarations ?? []).some(bindsModule)
+	);
+}
+
+/** The one meaning a use reads by its position; undefined where it reads every meaning or a namespace. */
+export function meaningAt(node: ts.Node): "value" | "type" | undefined {
+	const parent = node.parent;
+	if (
+		ts.isImportSpecifier(parent) ||
+		ts.isExportSpecifier(parent) ||
+		ts.isImportClause(parent) ||
+		ts.isNamespaceImport(parent) ||
+		ts.isNamespaceExport(parent) ||
+		ts.isImportEqualsDeclaration(parent) ||
+		ts.isExportAssignment(parent)
+	) {
+		return undefined;
+	}
+	if (ts.isPartOfTypeNode(node)) return "type";
+	// The head of a path in a type names a namespace, except under `typeof`.
+	let entity = node;
+	while (ts.isQualifiedName(entity.parent) && entity.parent.left === entity) entity = entity.parent;
+	if (entity !== node) return ts.isTypeQueryNode(entity.parent) ? "value" : undefined;
+	while (ts.isPropertyAccessExpression(entity.parent) && entity.parent.expression === entity) entity = entity.parent;
+	if (ts.isExpressionWithTypeArguments(entity.parent) && ts.isPartOfTypeNode(entity.parent)) return undefined;
+	return "value";
+}
+
 /** Reached through a receiver or path. */
 export function isQualifiedReference(node: ReferenceNode): boolean {
 	const parent = node.parent;
@@ -185,6 +274,7 @@ export function isQualifiedReference(node: ReferenceNode): boolean {
 		return parent.name === node;
 	}
 	if (ts.isQualifiedName(parent) && parent.right === node) return true;
+	if (destructuredElement(node) !== undefined) return true;
 	return isImportTypeQualifier(node);
 }
 

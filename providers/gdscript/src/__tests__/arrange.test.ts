@@ -281,7 +281,6 @@ describe("arrange edits", () => {
 						specifier: "res://source.gd",
 						importKind: "namespace",
 						localName: "Inner",
-						reExport: false,
 						symbolId,
 					},
 				],

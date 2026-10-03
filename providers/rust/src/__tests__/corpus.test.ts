@@ -1,10 +1,32 @@
 import { expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { coordinatesOf, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, type FileFacts, FileFactsSchema, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { typeBrackets } from "../angles.js";
 import { RustProvider } from "../main.js";
 import { tokenize } from "../tokens.js";
+
+/** Edges one span each, every forward naming exactly one, every scope member declared here. */
+function linkProblems(facts: FileFacts): string[] {
+	const problems: string[] = [];
+	const parsed = FileFactsSchema.safeParse(facts);
+	if (!parsed.success) problems.push(`${facts.module}: ${parsed.error.message}`);
+	const spans = new Map<string, number>();
+	for (const edge of facts.imports.flatMap((statement) => statement.edges)) {
+		const key = JSON.stringify(edge.span);
+		spans.set(key, (spans.get(key) ?? 0) + 1);
+	}
+	for (const [span, count] of spans) if (count > 1) problems.push(`${facts.module}: ${count} edges at ${span}`);
+	for (const edge of facts.exports ?? []) {
+		if (edge.target.kind === "import" && spans.get(JSON.stringify(edge.target.span)) !== 1)
+			problems.push(`${facts.module}: export ${edge.name ?? "*"} names no edge`);
+	}
+	const declared = new Set(facts.declarations.map((declaration) => declaration.symbolId));
+	for (const scope of facts.scopeContributions ?? [])
+		for (const member of scope.members)
+			if (!declared.has(member)) problems.push(`${facts.module}: scope member ${member} is not declared`);
+	return problems;
+}
 
 function rustFiles(directory: string): string[] {
 	const files: string[] = [];
@@ -41,6 +63,8 @@ corpusTest(
 		const misplaced: string[] = [];
 		// An unclosed bracket shifts all later angle depths.
 		const unbalanced: string[] = [];
+		// The index refuses a whole file over one edge it cannot name.
+		const unlinked: string[] = [];
 		let spans = 0;
 		const parsed: Array<Awaited<ReturnType<typeof handlers.parseFile>>> = [];
 		for (const file of files) {
@@ -69,6 +93,7 @@ corpusTest(
 				if (depth < 0) break;
 			}
 			if (depth !== 0) unbalanced.push(`${module}: ends at depth ${depth}`);
+			unlinked.push(...linkProblems(facts));
 			parsed.push(facts);
 		}
 		const errorFiles = parsed
@@ -83,6 +108,8 @@ corpusTest(
 		expect(strayed).toEqual([]);
 		expect(misplaced).toEqual([]);
 		expect(unbalanced).toEqual([]);
+		expect(unlinked).toEqual([]);
+		expect(parsed.some((facts) => (facts.exports ?? []).some((edge) => edge.target.kind === "import"))).toBe(true);
 		expect(spans).toBeGreaterThan(0);
 	},
 	120_000,

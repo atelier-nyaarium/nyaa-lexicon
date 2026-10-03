@@ -101,7 +101,10 @@ const CHECKS: Check[] = [
 		run: async (service) => {
 			const resolution = await service.resolveImport("src/shared/board-observations.ts", "./board-authority.js");
 			return {
-				ok: resolution.status === "resolved" && resolution.module === "src/shared/board-authority.ts",
+				ok:
+					resolution.status === "resolved" &&
+					resolution.landing.kind === "module" &&
+					resolution.landing.module === "src/shared/board-authority.ts",
 				detail: JSON.stringify(resolution),
 			};
 		},
@@ -115,7 +118,10 @@ const CHECKS: Check[] = [
 				"../shared/schemas.js",
 			);
 			return {
-				ok: resolution.status === "resolved" && resolution.module === "src/shared/schemas.ts",
+				ok:
+					resolution.status === "resolved" &&
+					resolution.landing.kind === "module" &&
+					resolution.landing.module === "src/shared/schemas.ts",
 				detail: JSON.stringify(resolution),
 			};
 		},

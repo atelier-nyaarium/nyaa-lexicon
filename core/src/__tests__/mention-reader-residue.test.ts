@@ -12,7 +12,11 @@ const RAW = ["referencesTo", "referencesIn", "referencesFrom"];
 
 const MENTION_READERS: Record<string, number> = {
 	// Rewrites every spelling.
-	"core/src/refactorPlanner.ts": 10,
+	"core/src/refactorPlanner.ts": 9,
+	// Rewrites every spelling a route proves, and refuses on unbound ones it reaches, a wildcard would capture, or a shared import reads.
+	"core/src/renameRoutes.ts": 4,
+	// Compares every use of each answered module before and after the candidate.
+	"core/src/renameValidation.ts": 2,
 	// Re-points every importer and qualified use.
 	"core/src/arrangePlanner.ts": 2,
 	// Mention is citable evidence.

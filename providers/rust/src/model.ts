@@ -2,11 +2,13 @@ import type {
 	CommentSpan,
 	Declaration,
 	Diagnostic,
+	Export,
 	Import,
 	Literal,
 	OffsetRange,
 	Range,
 	Reference,
+	ScopeContribution,
 	UnknownReason,
 } from "@nyaa-lexicon/protocol";
 import type { RustToken } from "./tokens.js";
@@ -103,6 +105,9 @@ export interface ParsedFile {
 	declarations: Declaration[];
 	references: Reference[];
 	imports: Import[];
+	/** Absent in a failed parse. */
+	exports?: Export[];
+	scopeContributions: ScopeContribution[];
 	literals: Literal[];
 	comments: CommentSpan[];
 	/** Absent in an outline or a failed parse. */

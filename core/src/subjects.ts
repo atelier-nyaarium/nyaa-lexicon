@@ -76,6 +76,8 @@ export interface RebindResult {
 	answers: number;
 	gaps: number;
 	applied: AppliedRebind[];
+	/** Entries whose subject stayed because another already holds its `to`. */
+	blocked: RebindEntry[];
 }
 
 /** A move a reversal left standing: the subject is gone, moved on past its `to`, or another holds its `from`. */
@@ -894,9 +896,11 @@ export class KnowledgeSubjects {
 	}
 
 	/** Moves subjects to new addresses; rows never move. An entry whose `from` holds no subject, or
-	 * whose `to` holds one, is a no-op, so a replay is safe and a merge is impossible. */
+	 * whose `to` holds one, is a no-op, so a replay is safe and a merge is impossible. The second is
+	 * answered as blocked. */
 	rebind(entries: RebindEntry[], evidence: RebindEvidence, now: number): RebindResult {
 		const applied: AppliedRebind[] = [];
+		const blocked: RebindEntry[] = [];
 		let answers = 0;
 		let gaps = 0;
 		const move = this.db.prepare(
@@ -907,7 +911,11 @@ export class KnowledgeSubjects {
 		for (const { from, to } of entries) {
 			if (from === to) continue;
 			const subject = this.forAddress(from);
-			if (subject === null || this.forAddress(to) !== null) continue;
+			if (subject === null) continue;
+			if (this.forAddress(to) !== null) {
+				blocked.push({ from, to });
+				continue;
+			}
 			move.run(to, from, now, evidence, subject.subjectId);
 			applied.push({
 				subjectId: subject.subjectId,
@@ -923,7 +931,7 @@ export class KnowledgeSubjects {
 			gaps += (countGaps.get(subject.subjectId) as { n: number }).n;
 		}
 		this.recordKnowledgeWrite(applied.length > 0);
-		return { subjects: applied.length, answers, gaps, applied };
+		return { subjects: applied.length, answers, gaps, applied, blocked };
 	}
 
 	/** Puts back exactly what a rebind moved: each subject still at its `to`, to the state it had.

@@ -37,19 +37,19 @@ export function isObject(declaration: Declaration): boolean {
 	return parts.includes("object") || parts.includes("companionObject");
 }
 
-function isCompanion(declaration: Declaration): boolean {
+export function isCompanion(declaration: Declaration): boolean {
 	return languageParts(declaration).includes("companionObject");
 }
 
 /** Reachable through a receiver: not a constructor, type parameter or body local. */
-function isMember(declaration: Declaration): boolean {
+export function isMember(declaration: Declaration): boolean {
 	return (
 		declaration.kind !== "constructor" && declaration.kind !== "typeParameter" && declaration.visibility !== "local"
 	);
 }
 
 /** Reachable without an instance. */
-function isStatic(declaration: Declaration): boolean {
+export function isStatic(declaration: Declaration): boolean {
 	return isClassifier(declaration) || declaration.languageKind === "enumEntry";
 }
 
@@ -112,10 +112,6 @@ export class PackageIndex {
 
 	declaration(symbolId: string): IndexedDeclaration | undefined {
 		return this.byId(symbolId);
-	}
-
-	modulesIn(packageKey: string): string[] {
-		return this.modulesFor(`pkg:${packageKey}`);
 	}
 
 	topLevelNamed(site: UseSite, packageKey: string, name: string): IndexedDeclaration[] {

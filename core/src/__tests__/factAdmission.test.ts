@@ -7,6 +7,7 @@ import {
 	type Reference,
 } from "@nyaa-lexicon/protocol";
 import { admitFacts, FactAdmissionError, notCanonical, type ProviderFacts } from "../factAdmission";
+import { direct, forwarding, named, onLine } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -191,5 +192,40 @@ describe("what each id must mean", () => {
 	it("refuses a name path declared twice", () => {
 		const heading = declaration("Guide", { symbolId: idOf("Guide", MODULE, "heading"), kind: "heading" });
 		expect(admit({ declarations: [heading, { ...heading, kind: "property" }] })).toThrow(/declared twice/);
+	});
+});
+
+describe("edges", () => {
+	it("refuses two import edges on one span, and a target, origin or scope landing nothing here answers", () => {
+		const imports = [named("./b", "x", onLine(1)), named("./c", "y", onLine(2))];
+		const origin = { kind: "import" as const, span: onLine(2) };
+		const forwardX = (line: number) => forwarding("forward", onLine(line), { name: "x", range: onLine(line) });
+		const listed = (line: number) => ({
+			state: "static" as const,
+			entries: [{ name: "x", range: onLine(4), target: { kind: "import" as const, span: onLine(line) } }],
+		});
+
+		expect(
+			admit({
+				imports,
+				exports: [forwardX(1)],
+				allList: listed(1),
+				references: [reference({ origin })],
+				provider: "ts",
+				landings: [{ kind: "packageScope", providerId: "ts", scopeId: "p" }],
+			}),
+		).not.toThrow();
+		expect(admit({ imports: [named("./b", "x", onLine(1)), named("./c", "y", onLine(1))] })).toThrow(
+			/share the span/,
+		);
+		expect(admit({ imports, exports: [forwardX(3)] })).toThrow(/names no import edge/);
+		expect(admit({ imports, allList: listed(3) })).toThrow(/names no import edge/);
+		expect(admit({ exports: [direct(declaration("Ghost"))] })).toThrow(/not declared/);
+		expect(admit({ imports, references: [reference({ origin: { ...origin, span: onLine(3) } })] })).toThrow(
+			/through no import edge/,
+		);
+		expect(
+			admit({ provider: "ts", landings: [{ kind: "packageScope", providerId: "java", scopeId: "p" }] }),
+		).toThrow(/scope landing/);
 	});
 });

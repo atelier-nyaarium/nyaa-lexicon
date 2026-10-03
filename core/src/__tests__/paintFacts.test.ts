@@ -7,6 +7,7 @@ import { PaintReads } from "../paintFacts";
 import { liveProbe } from "../providerProbe";
 import { IndexStore } from "../store";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
+import { edge, forwarding, landed } from "./importEdges";
 
 ////////////////////////////////
 //  Fixture
@@ -347,6 +348,7 @@ describe("symbolAt", () => {
 			references: [],
 		});
 		const nowhere = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+		const line = (at: number) => ({ start: { line: at, character: 0 }, end: { line: at, character: 1 } });
 		store.replaceFile({
 			module: "barrel.fake",
 			contentHash: hashContent("barrel"),
@@ -365,17 +367,31 @@ describe("symbolAt", () => {
 			imports: [
 				{
 					specifier: "./lib",
-					reExport: true,
-					imported: [{ name: "Widget", range: nowhere, local: "Thing", localRange: nowhere }],
+					edges: [edge("named", line(1), { name: "Widget", range: line(1), bindsLocally: false })],
 				},
-				{ specifier: "./lib", reExport: true, imported: [] },
 				{
 					specifier: "./lib",
-					reExport: true,
-					imported: [{ local: "ns", localRange: nowhere, kind: "namespace" }],
+					edges: [
+						edge("wildcard", line(2), {
+							selector: { kind: "allButDefault" },
+							bindsLocally: false,
+							order: 1,
+						}),
+					],
+				},
+				{
+					specifier: "./lib",
+					edges: [
+						edge("wildcard", line(3), { selector: { kind: "visible" }, bindsLocally: false, order: 2 }),
+					],
 				},
 			],
-			importTargets: new Map([["./lib", "lib.fake"]]),
+			exports: [
+				forwarding("forward", line(1), { name: "Thing", range: line(1) }),
+				forwarding("star", line(2), { order: 1 }),
+				forwarding("namespace", line(3), { name: "ns", range: line(3), order: 2 }),
+			],
+			resolutions: new Map([["./lib", landed("lib.fake")]]),
 		});
 		const MAIN = 'import Def, { Thing as Alias, Widget, ns, Missing } from "./barrel";';
 		const main = coordinatesOf(MAIN);
@@ -389,18 +405,24 @@ describe("symbolAt", () => {
 			imports: [
 				{
 					specifier: "./barrel",
-					reExport: false,
-					imported: [
-						{ local: "Def", localRange: at("Def"), kind: "default" },
-						{ name: "Thing", range: at("Thing"), local: "Alias", localRange: at("Alias") },
-						{ name: "Widget", range: at("Widget") },
-						{ name: "ns", range: at("ns") },
-						{ name: "Missing", range: at("Missing") },
+					edges: [
+						edge("default", at("Def"), { local: "Def", localRange: at("Def") }),
+						edge("named", at("Thing"), {
+							name: "Thing",
+							range: at("Thing"),
+							local: "Alias",
+							localRange: at("Alias"),
+							order: 1,
+						}),
+						edge("named", at("Widget"), { name: "Widget", range: at("Widget"), order: 2 }),
+						edge("named", at("ns"), { name: "ns", range: at("ns"), order: 3 }),
+						edge("named", at("Missing"), { name: "Missing", range: at("Missing"), order: 4 }),
 					],
 				},
 			],
-			importTargets: new Map([["./barrel", "barrel.fake"]]),
+			resolutions: new Map([["./barrel", landed("barrel.fake")]]),
 		});
+		store.settleProjections();
 		const reads = new PaintReads(store, liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS })), () => 0);
 		const under = async (needle: string) => {
 			const reply = await reads.symbolAt({ module: "main.fake", position: at(needle).start });
@@ -422,5 +444,47 @@ describe("symbolAt", () => {
 			member: "noSymbol",
 			defaultThroughStar: "noSymbol",
 		});
+	});
+
+	it("follows an imported name through a scope landing to the one member carrying it", async () => {
+		const LIB = "class Widget {}";
+		const widget = "lexicon fake lib.fake Widget#";
+		store.replaceFile({
+			module: "lib.fake",
+			contentHash: hashContent(LIB),
+			declarations: [
+				{
+					symbolId: widget,
+					kind: "class",
+					name: "Widget",
+					range: coordinatesOf(LIB).rangeAt(0, LIB.length) as Range,
+					visibility: "public",
+				},
+			],
+			references: [],
+			provider: "fake",
+			scopeContributions: [{ kind: "packageScope", scopeId: "com.acme", members: [widget] }],
+		});
+		const MAIN = 'import { Widget } from "com.acme";';
+		const main = coordinatesOf(MAIN);
+		const at = main.rangeAt(MAIN.indexOf("Widget"), MAIN.indexOf("Widget") + 6) as Range;
+		store.replaceFile({
+			module: "main.fake",
+			contentHash: hashContent(MAIN),
+			declarations: [],
+			references: [],
+			imports: [{ specifier: "com.acme", edges: [edge("named", at, { name: "Widget", range: at })] }],
+			provider: "fake",
+			resolutions: new Map([
+				[
+					"com.acme",
+					{ status: "resolved", landing: { kind: "packageScope", providerId: "fake", scopeId: "com.acme" } },
+				],
+			]),
+		});
+		const reads = new PaintReads(store, liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS })), () => 0);
+		const reply = await reads.symbolAt({ module: "main.fake", position: at.start });
+
+		expect("found" in reply && reply.found ? reply.symbolId : reply).toBe(widget);
 	});
 });

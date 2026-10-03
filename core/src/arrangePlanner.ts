@@ -7,13 +7,16 @@ import {
 	type ArrangeMember,
 	applyEdits,
 	comparePositions,
+	coordinatesOf,
 	defined,
 	hashContent,
 	isWithin,
 	type MoveAnchor,
 	type MoveDependency,
+	type OffsetRange,
 	type Position,
 	type Range,
+	type StoredLiteral,
 } from "@nyaa-lexicon/protocol";
 import { type Landing, layoutModule } from "./arrangeLayout.js";
 import type { ImportResolver } from "./imports.js";
@@ -57,6 +60,8 @@ export interface ArrangedMember {
 	/** Where it is declared now. */
 	module: string;
 	text: string;
+	/** Its string literals, as offsets into `text`; a line break inside one is part of the value. */
+	literals: OffsetRange[];
 	range: Range;
 	/** It and everything inside it. */
 	closure: string[];
@@ -125,6 +130,17 @@ function holds(range: Range, at: Position): boolean {
 	return comparePositions(range.start, at) <= 0 && comparePositions(at, range.end) <= 0;
 }
 
+/** Each indexed string literal inside `range`, as offsets into the text `range` slices. */
+function literalSpans(fileText: string, range: Range, literals: readonly StoredLiteral[]): OffsetRange[] {
+	const coordinates = coordinatesOf(fileText);
+	const within = coordinates.offsetsForRange(range);
+	if (within === undefined) return [];
+	return literals.flatMap((literal) => {
+		const at = literal.kind === "string" ? coordinates.offsetsForRange(literal.range) : undefined;
+		if (at === undefined || at.start < within.start || at.end > within.end) return [];
+		return [{ start: at.start - within.start, end: at.end - within.start }];
+	});
+}
 ////////////////////////////////
 //  Class
 
@@ -183,6 +199,7 @@ export class ArrangePlanner {
 				name: declaration.name,
 				module: declaration.module,
 				text: source.text,
+				literals: literalSpans(source.fileText, source.range, this.store.literalsIn(declaration.module)),
 				range: source.range,
 				closure: context.symbolIdsIn(declaration.module).filter((id) => isWithin(id, placement.symbolId)),
 				incoming,
@@ -403,7 +420,10 @@ export class ArrangePlanner {
 				new Map(own.map((member) => [member.symbolId, member.range])),
 				plan.slots.map((slot) => ({
 					landing: slot.landing,
-					members: slot.members.map((symbolId) => ({ symbolId, text: memberOf(symbolId).text })),
+					members: slot.members.map((symbolId) => {
+						const { text, literals } = memberOf(symbolId);
+						return { symbolId, text, literals };
+					}),
 				})),
 			);
 			const members = layout.order.map((symbolId): ArrangeMember => {

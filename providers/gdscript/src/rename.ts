@@ -19,7 +19,7 @@ import type { GDScriptStore } from "./module.js";
 import type { ParsedLine, ReferenceToken } from "./parse-model.js";
 import type { LoaderCall } from "./path-syntax.js";
 import { parameterNamesOf } from "./references.js";
-import { type LexedSource, lexSource, previousReferenceToken } from "./tokens.js";
+import { type LexedSource, lexSource, previousReferenceToken, tokenAt } from "./tokens.js";
 
 const GDSCRIPT_KEYWORDS = new Set([
 	"and",
@@ -123,6 +123,23 @@ function isDynamicLoaderCall(loaders: LoaderCall[], range: Range, role: string |
 	return loaders.some((call) => call.literal === undefined && sameRange(call.range, range));
 }
 
+/** Each site is a member through a receiver other than `self`, so no name in this file captures it. */
+function onlyMemberSites(lexed: LexedSource, sites: RenameEditsRequest["sites"]): boolean {
+	return (
+		sites.length > 0 &&
+		sites.every(({ range }) => {
+			const index = tokenAt(lexed, range.start.line, range.start.character);
+			const receiver = lexed.tokens[index - 2];
+			return (
+				index >= 2 &&
+				lexed.tokens[index - 1]?.value === "." &&
+				receiver?.kind === "identifier" &&
+				receiver.value !== "self"
+			);
+		})
+	);
+}
+
 function blocked(range: Range, reason: BlockedSite["reason"], detail: string): BlockedSite {
 	return { range, reason, detail };
 }
@@ -149,14 +166,16 @@ export function renameGdscript(params: RenameEditsRequest, store: GDScriptStore)
 	}
 	const lexed = lexSource(params.text);
 	const tokens = lexed.tokens;
-	if (parameterNamesOf(tokens).has(params.newName)) {
-		return refused("Collision", "the new name already exists as a function parameter");
+	if (!onlyMemberSites(lexed, params.sites)) {
+		if (parameterNamesOf(tokens).has(params.newName)) {
+			return refused("Collision", "the new name already exists as a function parameter");
+		}
+		if (facts.declarations.some((declaration) => declaration.name === params.newName)) {
+			return refused("Collision", "the new name already exists in this GDScript file");
+		}
+		if (store.get(`name:${params.newName}`).length > 0)
+			return refused("Collision", "the new name is already a registered class_name");
 	}
-	if (facts.declarations.some((declaration) => declaration.name === params.newName)) {
-		return refused("Collision", "the new name already exists in this GDScript file");
-	}
-	if (store.get(`name:${params.newName}`).length > 0)
-		return refused("Collision", "the new name is already a registered class_name");
 
 	const coordinates = coordinatesOf(params.text);
 	const strings = stringContents(tokens, coordinates);

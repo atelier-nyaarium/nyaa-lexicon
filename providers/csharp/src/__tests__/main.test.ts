@@ -17,6 +17,13 @@ import { CsharpProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { CsharpParser } from "../parser.js";
 import { handlersOf, parseThroughKit, startProvider } from "./harness.js";
 
+/** A type in the global namespace, whose name lands on its module. */
+const LOOSE = "public class Item {}\n";
+
+function packageScope(scopeId: string) {
+	return { kind: "packageScope" as const, providerId: "csharp-provider", scopeId };
+}
+
 it("uses qualifier and parameter descriptors", () => {
 	const text = "class C { void IFoo.Bar(int name) {} }\n";
 	const facts = new CsharpParser("qualified.cs", text, false).parse();
@@ -246,7 +253,7 @@ describe("C# facts", () => {
 });
 
 describe("C# workspace resolution", () => {
-	it("resolves using namespaces to a workspace file and binds imported types, never a nested namespace's", () => {
+	it("resolves a using namespace to its package scope and binds imported types, never a nested namespace's", () => {
 		const root = workspace({
 			"src/item.cs": "namespace Demo.Items { public class Item {} namespace Deep { public class Buried {} } }\n",
 			"src/cart.cs":
@@ -259,7 +266,7 @@ describe("C# workspace resolution", () => {
 		const facts = parseThroughKit(provider, { module: "src/cart.cs", contentHash: "hash", text });
 		expect(provider.resolveImport({ fromModule: "src/cart.cs", specifier: "Demo.Items" })).toEqual({
 			status: "resolved",
-			module: "src/item.cs",
+			landing: packageScope("Demo.Items"),
 		});
 		const itemUse = facts.references.find((item) => item.name === "Item" && item.role === "instantiate");
 		if (itemUse === undefined) throw new Error("imported type reference missing");
@@ -271,17 +278,16 @@ describe("C# workspace resolution", () => {
 	});
 
 	it("stops resolving into a file the index let go of, until it is parsed again", () => {
-		const item = "namespace Demo.Items { public class Item {} }\n";
-		const root = workspace({ "src/item.cs": item, "src/copy.cs": item });
+		const root = workspace({ "src/item.cs": LOOSE, "src/copy.cs": LOOSE });
 		const provider = new CsharpProvider();
 		const handlers = startProvider(provider, root);
-		const resolve = () => provider.resolveImport({ fromModule: "src/cart.cs", specifier: "Demo.Items" });
+		const resolve = () => provider.resolveImport({ fromModule: "src/cart.cs", specifier: "Item" });
 		expect(resolve()).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 
 		handlers.forgetModule?.({ module: "src/copy.cs" });
-		expect(resolve()).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolve()).toEqual({ status: "resolved", landing: { kind: "module", module: "src/item.cs" } });
 
-		handlers.parseFile({ module: "src/copy.cs", contentHash: "back", text: item });
+		handlers.parseFile({ module: "src/copy.cs", contentHash: "back", text: LOOSE });
 		expect(resolve()).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 	});
 
@@ -544,13 +550,16 @@ describe("a using directive resolves to what the index holds", () => {
 	it("restores the admitted facts a refused parse displaced, and still fans out to them", () => {
 		const root = workspace({ "src/item.cs": ITEM, "src/other.cs": OTHER });
 		const provider = admitted(root);
-		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", landing: packageScope("Demo.Items") });
 
 		parse(provider, "v2", RENAMED);
-		expect(resolves(provider, "Demo.Renamed")).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolves(provider, "Demo.Renamed")).toEqual({
+			status: "resolved",
+			landing: packageScope("Demo.Renamed"),
+		});
 
 		verdict(provider, "v2", "the index refused these facts");
-		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", landing: packageScope("Demo.Items") });
 		expect(resolves(provider, "Demo.Renamed")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 	});
 
@@ -561,7 +570,10 @@ describe("a using directive resolves to what the index holds", () => {
 		parse(provider, "v2", RENAMED);
 
 		verdict(provider, "v1", "a verdict about replaced bytes");
-		expect(resolves(provider, "Demo.Renamed")).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolves(provider, "Demo.Renamed")).toEqual({
+			status: "resolved",
+			landing: packageScope("Demo.Renamed"),
+		});
 		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "NotIndexed" });
 	});
 
@@ -587,17 +599,20 @@ describe("a using directive resolves to what the index holds", () => {
 	});
 
 	it("keeps a forgotten module withheld across a re-scan, and drops that only on initialize", () => {
-		const root = workspace({ "src/item.cs": ITEM, "src/copy.cs": ITEM });
+		const root = workspace({ "src/item.cs": LOOSE, "src/copy.cs": LOOSE });
 		const provider = scanned(root);
-		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+		expect(resolves(provider, "Item")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 
 		handlersOf(provider).forgetModule?.({ module: "src/copy.cs" });
 		handlersOf(provider).discoverProject({ workspaceRoot: root });
-		expect(resolves(provider, "Demo.Items")).toEqual({ status: "resolved", module: "src/item.cs" });
+		expect(resolves(provider, "Item")).toEqual({
+			status: "resolved",
+			landing: { kind: "module", module: "src/item.cs" },
+		});
 
 		handlersOf(provider).initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
 		handlersOf(provider).discoverProject({ workspaceRoot: root });
-		expect(resolves(provider, "Demo.Items")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
+		expect(resolves(provider, "Item")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 	});
 });
 

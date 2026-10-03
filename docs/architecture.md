@@ -706,7 +706,8 @@ old ids resolve to nothing. The map is journaled with the step; once the files a
 transaction manager rebinds each subject to its new address and records what moved as rows the
 journal's schema vouches for, so undo and recovery put it back, and name any move they could not.
 A subject already at a destination stays, because it describes the code as it stands and
-replacing it would be a silent downgrade.
+replacing it would be a silent downgrade. The step reports it as `KnowledgeKept`, as it does a
+destination the reindexed step does not declare.
 
 The second is files that never change. A module calling a renamed class's METHOD contains no
 occurrence of the class name, so it gets no edit, yet its stored references point at ids that are
@@ -714,9 +715,12 @@ about to stop existing. `modulesBoundTo` finds them and they are reindexed along
 ones, declaring module first so dependents rebind against declarations that already carry the new
 ids.
 
-`refactorRename` in `dispatch.ts` creates one `ReadContext` for its `renameEdits`, `renameIdMap`
-and `modulesBoundTo` reads, so the edits, and the files they write, are planned once outside the
-gate. `renameWrites` stages each file's whole text over the hash its edits were cut from. Inside
-the gate, the stale check compares that context's `seen()` and each edited file's indexed hash, and
+`refactorRename` in `stepRunners.ts` creates one `ReadContext` for its plan, `renameIdMap` and
+`modulesBoundTo` reads, so the edits, and the files they write, are planned once outside the gate.
+The plan pins the index's facts generation. `renameRoutes.ts` resolves routes through export and
+import facts, `exposureDiff.ts` compares what each landing exposes before and after, and
+`renameValidation.ts` proves the candidate texts through `probeBatch`. `renameWrites` stages each
+file's whole text over the hash its edits were cut from. Inside the gate, the stale check compares
+that context's `seen()`, each edited file's indexed hash and each landing the plan relied on, and
 the executor writes the staged texts over their bases. It refuses if indexed rows changed under an
-unchanged hash.
+unchanged hash. When only the pinned generation moved, it plans again, up to twice.

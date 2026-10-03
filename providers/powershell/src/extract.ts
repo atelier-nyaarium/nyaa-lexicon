@@ -1,16 +1,28 @@
 // The walk over the syntax tree: what each node means to an index.
 
-import { coordinatesOf, defined, type HeaderFold, type Range } from "@nyaa-lexicon/protocol";
+import {
+	type Certainty,
+	type Conflict,
+	comparePositions,
+	coordinatesOf,
+	defined,
+	type HeaderFold,
+	type ImportEdge,
+	type Range,
+} from "@nyaa-lexicon/protocol";
 import {
 	baseTypeName,
+	type CommandPrefix,
 	isAutomatic,
 	keyOf,
+	type MemberFilter,
 	type ParsedPowerShellFile,
 	type PowerShellDeclaration,
 	pushLiteral,
 	pushReference,
 	rangeAt,
 	type Scope,
+	type SourceImport,
 	splitScope,
 	staticText,
 	type Walk,
@@ -30,7 +42,46 @@ export type {
 export { LANGUAGE } from "./context.js";
 
 ////////////////////////////////
+//  Interfaces & Types
+
+/** An import edge before the import is recorded and numbered. */
+type Transfer = Omit<ImportEdge, "order">;
+
+/** A static name and the expression writing it. */
+interface NameToken {
+	name: string;
+	at: A.Expression;
+}
+
+/** A part of a list naming nothing static, where it is written. */
+interface Unnamed {
+	name?: undefined;
+	at: A.Span;
+}
+
+type ListPart = NameToken | Unnamed;
+
+/** A command's named parameters by lowercase name as written, each with its value. */
+type NamedArguments = ReadonlyMap<string, A.Expression | undefined>;
+
+////////////////////////////////
 //  Constants
+
+const KNOWN: Certainty = { status: "known" };
+
+const RUNTIME: Certainty = { status: "unknown", reason: "RuntimeConstructed" };
+
+/** A later definition replaces an earlier one, brought in or local. */
+const LATER_WINS: Conflict = { priority: 0, amongTransfers: "laterWins", againstLocal: "sourceOrder" };
+
+/** An import into the global scope, which every name in the script's own scope shadows. */
+const GLOBAL_IMPORT: Conflict = { priority: -1, amongTransfers: "laterWins", againstLocal: "localWins" };
+
+/** A script's own type wins; two namespaces offering one type are ambiguous. */
+const TYPE_LOOKUP: Conflict = { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" };
+
+/** `Import-Module` parameters that limit which members it brings. */
+const MEMBER_FILTERS = ["function", "cmdlet", "alias", "variable"];
 
 /** Scopes a variable path may name; any other prefix is a drive, as `env:`. */
 const SCOPES: ReadonlySet<string> = new Set(["script", "global", "local", "private"]);
@@ -115,29 +166,45 @@ function joinedPath(expression: A.ParenExpression): string | undefined {
 	return isScriptRoot(root) && tail !== undefined && values.length === 2 ? `$PSScriptRoot/${tail}` : undefined;
 }
 
-/** Each name a list of strings holds: one string, an array of them, or a module specification's name. */
-function staticNames(expression: A.Expression | undefined): string[] {
-	if (expression?.type === "ArrayLiteralAst") return expression.elements.flatMap((element) => staticNames(element));
-	if (expression?.type === "HashtableAst") {
+/**
+ * Each part of a list of strings, where it is written: one string, an array of them, or a module
+ * specification's name.
+ */
+function nameTokens(expression: A.Expression | undefined): ListPart[] {
+	if (expression === undefined) return [];
+	if (expression.type === "ArrayLiteralAst") return expression.elements.flatMap((element) => nameTokens(element));
+	if (expression.type === "HashtableAst") {
 		for (const [key, value] of expression.pairs) {
 			if (keyOf(staticText(key) ?? "") !== "modulename") continue;
 			const element = value.type === "PipelineAst" ? value.elements[0] : undefined;
-			return element?.type === "CommandExpressionAst" ? staticNames(element.expression) : [];
+			return element?.type === "CommandExpressionAst" ? nameTokens(element.expression) : [{ at: value }];
 		}
 		return [];
 	}
-	if (expression?.type === "ParenExpressionAst" || expression?.type === "ArrayExpressionAst") {
+	if (expression.type === "ParenExpressionAst" || expression.type === "ArrayExpressionAst") {
 		// `@(...)` may hold a name per line.
 		const inner =
 			expression.type === "ParenExpressionAst" ? [expression.pipeline] : expression.statements.statements;
 		return inner.flatMap((statement) =>
 			statement.type === "PipelineAst" && statement.elements[0]?.type === "CommandExpressionAst"
-				? staticNames(statement.elements[0].expression)
-				: [],
+				? nameTokens(statement.elements[0].expression)
+				: [{ at: statement }],
 		);
 	}
 	const text = staticText(expression);
-	return text === undefined ? [] : [text];
+	return [text === undefined ? { at: expression } : { name: text, at: expression }];
+}
+
+function isNamed(part: ListPart): part is NameToken {
+	return part.name !== undefined;
+}
+
+function staticTokens(expression: A.Expression | undefined): NameToken[] {
+	return nameTokens(expression).filter(isNamed);
+}
+
+function staticNames(expression: A.Expression | undefined): string[] {
+	return staticTokens(expression).map((token) => token.name);
 }
 
 /** `[OutputType([T])]` or `[OutputType("T")]` on a function's `param`. */
@@ -298,18 +365,153 @@ function walkRedirection(w: Walk, scope: Scope, redirection: A.Redirection): voi
 }
 
 function walkUsing(w: Walk, scope: Scope, node: A.UsingStatement): void {
-	const name = node.name?.value;
-	if (node.usingKind === "Module" && name !== undefined) importSource(w, name, node, "module");
-	else if (name !== undefined) w.out.imports.push({ specifier: name, imported: [], reExport: false });
+	const name = node.name;
+	if (name !== undefined) {
+		if (node.usingKind === "Module")
+			bringIn(w, name.value, "module", name, [everything(w, name, importConflict(w, undefined))]);
+		else if (node.usingKind === "Namespace") record(w, name.value, [everything(w, name, TYPE_LOOKUP)]);
+		else record(w, name.value, [sideEffect(w, name)]);
+	}
 	if (node.moduleSpecification !== undefined) {
-		for (const specified of staticNames(node.moduleSpecification)) importSource(w, specified, node, "module");
+		for (const token of staticTokens(node.moduleSpecification))
+			bringIn(w, token.name, "module", token.at, [everything(w, token.at, importConflict(w, undefined))]);
 		walkExpression(w, scope, node.moduleSpecification);
 	}
 }
 
-function importSource(w: Walk, specifier: string, at: A.Span, kind: "dotSource" | "module"): void {
-	w.out.imports.push({ specifier, imported: [], reExport: false });
-	w.out.sources.push({ specifier, kind, range: rangeAt(w, at.pos, at.end) });
+/** One import of `specifier`, its transfers numbered in source order. */
+function record(w: Walk, specifier: string, transfers: Transfer[]): void {
+	let order = w.out.imports.reduce((count, entry) => count + entry.edges.length, 0);
+	const ordered = transfers.toSorted((a, b) => comparePositions(a.span.start, b.span.start));
+	w.out.imports.push({ specifier, edges: ordered.map((transfer) => ({ ...transfer, order: order++ })) });
+}
+
+/** An import whose file a binding may reach. */
+function bringIn(
+	w: Walk,
+	specifier: string,
+	kind: SourceImport["kind"],
+	at: A.Span,
+	transfers: Transfer[],
+	how: Pick<SourceImport, "filter" | "scope" | "prefix"> = {},
+): void {
+	record(w, specifier, transfers);
+	w.out.sources.push({ specifier, kind, range: rangeAt(w, at.pos, at.end), ...how });
+}
+
+/** A module import's rule: in a module's own scope it replaces by order; in the global scope it yields. */
+function importConflict(w: Walk, scope: SourceImport["scope"]): Conflict {
+	const global = scope === undefined ? !isModule(w.module) : scope === "global";
+	return global ? GLOBAL_IMPORT : LATER_WINS;
+}
+
+/** An import's specifier only the run knows: its text as written. */
+function writtenText(w: Walk, at: A.Span): string {
+	return w.text.slice(at.pos, at.end);
+}
+
+/** Every member the landing shows; bound here only under a conflict rule. */
+function everything(w: Walk, at: A.Span, conflict?: Conflict, certainty: Certainty = KNOWN): Transfer {
+	return {
+		kind: "wildcard",
+		span: rangeAt(w, at.pos, at.end),
+		bindsLocally: conflict !== undefined,
+		selector: { kind: "visible" },
+		...defined({ conflict }),
+		certainty,
+	};
+}
+
+function sideEffect(w: Walk, at: A.Span): Transfer {
+	return { kind: "sideEffect", span: rangeAt(w, at.pos, at.end), bindsLocally: false, certainty: KNOWN };
+}
+
+/** A dot-source runs the file in this scope. */
+function injection(w: Walk, start: number, end: number, certainty: Certainty = KNOWN): Transfer {
+	return {
+		kind: "injection",
+		span: rangeAt(w, start, end),
+		bindsLocally: true,
+		selector: { kind: "visible" },
+		conflict: LATER_WINS,
+		certainty,
+	};
+}
+
+/** A member filter's entry: a name brings that member, a pattern what it matches, either case. */
+function filterTransfer(w: Walk, token: NameToken, conflict: Conflict): Transfer {
+	// A class takes ranges, which a selector glob cannot.
+	if (token.name.includes("["))
+		return everything(w, token.at, conflict, { status: "unknown", reason: "NotImplemented" });
+	const span = rangeAt(w, token.at.pos, token.at.end);
+	if (token.name.includes("*") || token.name.includes("?")) {
+		const selector = { kind: "pattern", glob: token.name, caseInsensitive: true } as const;
+		return { kind: "wildcard", span, bindsLocally: true, selector, conflict, certainty: KNOWN };
+	}
+	const inner = unquoted(token.at);
+	const range = rangeAt(w, inner.pos, inner.end);
+	return { kind: "named", span, name: token.name, range, bindsLocally: true, conflict, certainty: KNOWN };
+}
+
+/**
+ * What `Import-Module` brings from one module it names. A member filter written once for one module
+ * names each member; a prefix or a custom object leaves the names unproved.
+ */
+function moduleTransfers(
+	w: Walk,
+	module: NameToken,
+	modules: number,
+	parameters: NamedArguments,
+	conflict: Conflict,
+	prefix: CommandPrefix | undefined,
+): Transfer[] {
+	const unproved: Certainty = { status: "unknown", reason: "NotImplemented" };
+	if (prefix?.kind === "dynamic") return [everything(w, module.at, conflict, RUNTIME)];
+	if (prefix !== undefined || isGiven(parameters, "ascustomobject"))
+		return [everything(w, module.at, conflict, unproved)];
+	const filters = MEMBER_FILTERS.filter((filter) => isGiven(parameters, filter));
+	if (filters.length === 0) return [everything(w, module.at, conflict)];
+	if (modules !== 1) return [everything(w, module.at, conflict, unproved)];
+	const transfers = filters.flatMap((filter) => {
+		const value = filterValue(parameters, filter);
+		if (value === undefined) return [];
+		const tokens = nameTokens(value);
+		if (tokens.length === 0 || !tokens.every(isNamed)) return [everything(w, value, conflict, RUNTIME)];
+		return tokens.map((token) => filterTransfer(w, token, conflict));
+	});
+	return transfers.length > 0 ? transfers : [everything(w, module.at, conflict, unproved)];
+}
+
+/** Whether a parameter is written, under any prefix of its name. */
+function isGiven(parameters: NamedArguments, name: string): boolean {
+	return [...parameters.keys()].some((key) => key !== "" && name.startsWith(key));
+}
+
+/** The value a member filter was given, under any prefix of its name. */
+function filterValue(parameters: NamedArguments, filter: string) {
+	return [...parameters].find(([key]) => filter.startsWith(key))?.[1];
+}
+
+/** `-Global`, or `-Scope Local` or `Global`. */
+function importScope(parameters: NamedArguments): SourceImport["scope"] {
+	if (isGiven(parameters, "global")) return "global";
+	const scope = keyOf(staticText(filterValue(parameters, "scope")) ?? "");
+	return scope === "local" || scope === "global" ? scope : undefined;
+}
+
+function commandPrefix(parameters: NamedArguments): CommandPrefix | undefined {
+	if (!isGiven(parameters, "prefix")) return undefined;
+	const text = staticText(filterValue(parameters, "prefix"));
+	return text === undefined ? { kind: "dynamic" } : { kind: "static", text };
+}
+
+/** What an `Import-Module` lets in by name; none when no member filter was given. */
+function memberFilter(parameters: NamedArguments): MemberFilter | undefined {
+	if (!MEMBER_FILTERS.some((filter) => isGiven(parameters, filter))) return undefined;
+	return {
+		functions: staticNames(filterValue(parameters, "function")),
+		variables: staticNames(filterValue(parameters, "variable")),
+	};
 }
 
 ////////////////////////////////
@@ -654,8 +856,11 @@ function walkCommand(w: Walk, scope: Scope, node: A.Command): void {
 	const name = first.type === "StringConstantExpressionAst" ? first.value : undefined;
 	if (node.invocationOperator === "Dot" && first.type !== "ScriptBlockExpressionAst") {
 		const path = scriptPath(first as A.Expression);
-		if (path !== undefined) importSource(w, path, first, "dotSource");
-		else walkArgument(w, scope, first as A.Expression);
+		if (path !== undefined) bringIn(w, path, "dotSource", first, [injection(w, node.pos, first.end)]);
+		else {
+			record(w, writtenText(w, first), [injection(w, node.pos, first.end, RUNTIME)]);
+			walkArgument(w, scope, first as A.Expression);
+		}
 	} else if (name !== undefined && isCommandName(name)) {
 		pushReference(w, scope, {
 			name,
@@ -725,10 +930,22 @@ function commandFacts(w: Walk, scope: Scope, command: string, elements: A.Comman
 		case "import-module":
 		case "ipmo": {
 			const target = argument("name") ?? positional[0];
-			for (const specifier of staticNames(target)) importSource(w, specifier, target as A.Span, "module");
 			const path = scriptPath(target);
-			if (path !== undefined && staticNames(target).length === 0)
-				importSource(w, path, target as A.Span, "module");
+			const parts = nameTokens(target);
+			const modules: ListPart[] =
+				path !== undefined && target !== undefined && !parts.some(isNamed)
+					? [{ name: path, at: target }]
+					: parts;
+			const filter = memberFilter(named);
+			const scope = importScope(named);
+			const prefix = commandPrefix(named);
+			const conflict = importConflict(w, scope);
+			for (const module of modules) {
+				if (isNamed(module)) {
+					const transfers = moduleTransfers(w, module, modules.length, named, conflict, prefix);
+					bringIn(w, module.name, "module", module.at, transfers, defined({ filter, scope, prefix }));
+				} else record(w, writtenText(w, module.at), [everything(w, module.at, conflict, RUNTIME)]);
+			}
 			break;
 		}
 		case "export-modulemember": {
@@ -770,13 +987,17 @@ function commandFacts(w: Walk, scope: Scope, command: string, elements: A.Comman
 	}
 }
 
-/** A variable a command names in a string: declared the first time, written after. */
-function writeNamed(w: Walk, scope: Scope, path: string, at: A.Expression, statement: A.Span): void {
+/** A one-line string's text inside its quotes. */
+function unquoted(at: A.Expression): A.Span {
 	const quoted =
 		(at.type === "StringConstantExpressionAst" || at.type === "ExpandableStringExpressionAst") &&
 		(at.stringKind === "SingleQuoted" || at.stringKind === "DoubleQuoted");
-	const pos = quoted ? at.pos + 1 : at.pos;
-	const end = quoted ? at.end - 1 : at.end;
+	return quoted ? { pos: at.pos + 1, end: at.end - 1 } : { pos: at.pos, end: at.end };
+}
+
+/** A variable a command names in a string: declared the first time, written after. */
+function writeNamed(w: Walk, scope: Scope, path: string, at: A.Expression, statement: A.Span): void {
+	const { pos, end } = unquoted(at);
 	writeVariable(
 		w,
 		scope,
@@ -1044,15 +1265,25 @@ function walkManifest(w: Walk, script: A.ScriptBlock): void {
 				? value.elements[0].expression
 				: undefined;
 		if (expression === undefined) continue;
-		if (
-			name === "rootmodule" ||
-			name === "moduletoprocess" ||
-			name === "nestedmodules" ||
-			name === "requiredmodules"
-		) {
-			for (const specifier of staticNames(expression)) importSource(w, specifier, expression, "module");
+		if (name === "rootmodule" || name === "moduletoprocess" || name === "nestedmodules") {
+			// The manifest's module is made of these; a manifest binds nothing itself.
+			for (const token of staticTokens(expression))
+				bringIn(w, token.name, "module", token.at, [everything(w, token.at)]);
+		} else if (name === "requiredmodules") {
+			for (const token of staticTokens(expression))
+				bringIn(w, token.name, "module", token.at, [sideEffect(w, token.at)]);
 		} else if (name === "scriptstoprocess") {
-			for (const specifier of staticNames(expression)) importSource(w, specifier, expression, "dotSource");
+			// Each runs in the importer's scope, not the manifest's.
+			for (const token of staticTokens(expression)) {
+				const into: Transfer = {
+					kind: "injection",
+					span: rangeAt(w, token.at.pos, token.at.end),
+					bindsLocally: false,
+					selector: { kind: "visible" },
+					certainty: KNOWN,
+				};
+				bringIn(w, token.name, "importerScript", token.at, [into]);
+			}
 		} else if (name === "functionstoexport") {
 			w.out.exportedFunctions ??= new Set();
 			for (const exported of staticNames(expression)) w.out.exportedFunctions.add(keyOf(exported));

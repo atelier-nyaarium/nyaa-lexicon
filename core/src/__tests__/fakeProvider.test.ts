@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { MethodRequest } from "../providerPort";
 import { FAKE_CLAIMS, fakeSupervisor, parseFake, resolveFake } from "./fakeProvider";
+import { landed } from "./importEdges";
 
 const REQUEST = { module: "a.fake", contentHash: "h", text: "export class X {}" };
 
@@ -34,10 +35,7 @@ describe("the fake provider's defaults", () => {
 	});
 
 	it("resolves a relative specifier against its importer and nothing else", () => {
-		expect(resolveFake({ fromModule: "src/a.fake", specifier: "./b" })).toEqual({
-			status: "resolved",
-			module: "src/b",
-		});
+		expect(resolveFake({ fromModule: "src/a.fake", specifier: "./b" })).toEqual(landed("src/b"));
 		expect(resolveFake({ fromModule: "src/a.fake", specifier: "pkg" })).toMatchObject({ status: "unresolved" });
 	});
 });
@@ -98,13 +96,12 @@ describe("the fake provider set", () => {
 
 	it("lets an answer override a default and throws for a method nothing answers", async () => {
 		const set = fakeSupervisor({
-			answers: { resolveImport: (request) => ({ status: "resolved", module: `${request.specifier}.fake` }) },
+			answers: { resolveImport: (request) => landed(`${request.specifier}.fake`) },
 		});
 
-		expect(await set.ask("a.fake", "resolveImport", { fromModule: "a.fake", specifier: "x" })).toEqual({
-			status: "resolved",
-			module: "x.fake",
-		});
+		expect(await set.ask("a.fake", "resolveImport", { fromModule: "a.fake", specifier: "x" })).toEqual(
+			landed("x.fake"),
+		);
 		await expect(set.ask("a.fake", "bind", {})).rejects.toThrow("unexpected method bind");
 	});
 });

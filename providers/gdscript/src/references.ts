@@ -1,10 +1,19 @@
 // Owns GDScript reference extraction.
 
-import { comparePositions, type Reference } from "@nyaa-lexicon/protocol";
+import { comparePositions, type Reference, type ReferenceOrigin, sameRange } from "@nyaa-lexicon/protocol";
 import { type Blocks, bodyEndLine } from "./blocks.js";
 import { isAccessorHead } from "./declarations.js";
+import type { LogicalLine } from "./expression.js";
 import type { DeclarationFact, ReferenceBlock, ReferenceToken, SourceLine } from "./parse-model.js";
-import { extendsPaths, isLoaderCall, loaderCalls, nodePathNames, type PathLiteral } from "./path-syntax.js";
+import {
+	extendsPaths,
+	isLoaderCall,
+	type LoaderCall,
+	loaderCalls,
+	nodePathNames,
+	type PathLiteral,
+} from "./path-syntax.js";
+import { sameFileCandidates } from "./same-file.js";
 import type { ParsedScript } from "./script.js";
 import {
 	isIgnorable,
@@ -14,6 +23,7 @@ import {
 	referenceAssignmentOperators,
 	referenceCallKeywords,
 	referenceKeywords,
+	tokenAt,
 	tokenRange,
 } from "./tokens.js";
 
@@ -154,10 +164,12 @@ function referenceBinding(
 	scope: ReferenceBlock,
 	localNames: Map<string, Set<string>>,
 	parameterNames: Map<string, Set<string>>,
+	qualified = false,
 ): Reference["binding"] {
 	const functionNames = localNames.get(scope.functionId ?? "");
 	const functionParameters = parameterNames.get(scope.functionId ?? scope.containerId);
-	if (functionNames?.has(name) || functionParameters?.has(name)) {
+	// A member read through a receiver never names a local.
+	if (!qualified && (functionNames?.has(name) || functionParameters?.has(name))) {
 		return { status: "unbound", reason: "NotIndexed", detail: "the declaration is not in the symbol index" };
 	}
 	return { status: "unbound", reason: "NotImplemented", detail: "GDScript binding is not implemented" };
@@ -239,6 +251,86 @@ function addCastType(tokens: ReferenceToken[], keyword: number, typePositions: S
 	if (tokens[open]?.value !== "[") return;
 	const close = matchingReferenceToken(tokens, open, "[", "]");
 	for (let index = open + 1; index < close; index++) if (tokens[index]?.kind === "identifier") mark(index);
+}
+
+/** A member read through a receiver, by its token index. */
+interface QualifiedUse {
+	index: number;
+	reference: Reference;
+}
+
+/** The declaration a receiver token reads, by its token index. */
+type ReceiverDeclaration = (receiver: Reference, index: number) => DeclarationFact | undefined;
+
+/** The token a dotted chain starts from, and the member names after it through `index`. */
+function memberChain(tokens: ReferenceToken[], index: number): { receiver: number; path: string[] } | undefined {
+	const path = [(tokens[index] as ReferenceToken).value];
+	let at = index;
+	while (tokens[at - 1]?.value === ".") {
+		at -= 2;
+		const segment = tokens[at];
+		if (segment?.kind !== "identifier") return undefined;
+		if (tokens[at - 1]?.value !== ".") return { receiver: at, path };
+		path.unshift(segment.value);
+	}
+	return undefined;
+}
+
+/** The function's one local of the receiver's name, declared in an earlier statement whose block holds the read. */
+function visibleLocal(
+	script: ParsedScript,
+	receiver: Reference,
+	index: number,
+	parameters: ReadonlySet<string> | undefined,
+): DeclarationFact | undefined {
+	if (parameters?.has(receiver.name)) return undefined;
+	const [local, ...others] = script.declarations.filter(
+		(declaration) =>
+			declaration.visibility === "local" &&
+			declaration.containerId === receiver.fromId &&
+			declaration.name === receiver.name,
+	);
+	if (local === undefined || others.length > 0) return undefined;
+	const { blocks, lexed } = script;
+	const { start } = local.selectionRange;
+	const declared = blocks.owner[tokenAt(lexed, start.line, start.character)] ?? -1;
+	const read = blocks.owner[index] ?? -1;
+	const statement = blocks.statements[declared];
+	// Its own statement, not an inline block's body.
+	if (statement === undefined || read <= declared || lexed.tokens[statement.start]?.value !== "const")
+		return undefined;
+	for (let at = declared + 1; at <= read; at++) {
+		if ((blocks.statements[at] as LogicalLine).indent < statement.indent) return undefined;
+	}
+	return local;
+}
+
+/** `X.a.b` where X binds to a const preload: that edge's span, and the members after X. */
+function preloadOrigins(
+	tokens: ReferenceToken[],
+	members: readonly QualifiedUse[],
+	receivers: ReadonlyMap<number, Reference>,
+	receiverDeclaration: ReceiverDeclaration,
+	calls: readonly LoaderCall[],
+): Map<Reference, ReferenceOrigin> {
+	const origins = new Map<Reference, ReferenceOrigin>();
+	for (const { index, reference } of members) {
+		const chain = memberChain(tokens, index);
+		const receiver = chain === undefined ? undefined : receivers.get(chain.receiver);
+		if (chain === undefined || receiver === undefined) continue;
+		const declaration = receiverDeclaration(receiver, chain.receiver);
+		if (declaration === undefined) continue;
+		const call = calls.find(
+			(candidate) =>
+				candidate.loader === "preload" &&
+				candidate.literal !== undefined &&
+				candidate.binding?.keyword === "const" &&
+				candidate.binding.whole &&
+				sameRange(candidate.binding.range, declaration.selectionRange),
+		);
+		if (call !== undefined) origins.set(reference, { kind: "import", span: call.span, path: chain.path });
+	}
+	return origins;
 }
 
 function extractGdscriptReferences(script: ParsedScript): Reference[] {
@@ -326,23 +418,30 @@ function extractGdscriptReferences(script: ParsedScript): Reference[] {
 		});
 	};
 	for (const literal of extendsPaths(tokens)) addPathReference(literal, "extends");
-	for (const call of loaderCalls(tokens, script.coordinates, declarations)) {
+	const calls = loaderCalls(tokens, script.coordinates, declarations);
+	for (const call of calls) {
 		if (call.literal === undefined) continue;
 		literalLoaderPositions.add(`${call.range.start.line}:${call.range.start.character}`);
 		addPathReference(call.literal, "import");
 	}
 	pathReferences.sort((left, right) => comparePositions(left.range.start, right.range.start));
+	const receivers = new Map<number, Reference>();
+	const members: QualifiedUse[] = [];
 	const addReference = (index: number, role: Reference["role"], binding?: Reference["binding"]): void => {
 		const token = tokens[index] as ReferenceToken;
 		const scope = referenceScopeAtLine(blocks, rootId, token.line);
-		references.push({
+		const qualified = referenceIsQualified(tokens, index);
+		const reference: Reference = {
 			name: token.value,
 			range: tokenRange(token),
 			role,
-			binding: binding ?? referenceBinding(token.value, scope, localNames, parameterNames),
+			binding: binding ?? referenceBinding(token.value, scope, localNames, parameterNames, qualified),
 			fromId: scope.containerId,
-			qualified: referenceIsQualified(tokens, index),
-		});
+			qualified,
+		};
+		references.push(reference);
+		if (role === "read" || role === "typeUse") receivers.set(index, reference);
+		if (qualified) members.push({ index, reference });
 	};
 	for (let index = 0; index < tokens.length; index++) {
 		const token = tokens[index] as ReferenceToken;
@@ -400,7 +499,24 @@ function extractGdscriptReferences(script: ParsedScript): Reference[] {
 		}
 		addReference(index, "read");
 	}
-	return [...references, ...pathReferences];
+	const receiverDeclaration: ReceiverDeclaration = (receiver, index) => {
+		if (receiver.binding.status !== "unbound") return undefined;
+		if (receiver.binding.reason === "NotIndexed") {
+			const scope = referenceScopeAtLine(blocks, rootId, receiver.range.start.line);
+			const parameters = parameterNames.get(scope.functionId ?? scope.containerId);
+			return visibleLocal(script, receiver, index, parameters);
+		}
+		if (receiver.binding.reason !== "NotImplemented") return undefined;
+		// A type position names the constant as a read does.
+		const [declaration, ...others] = sameFileCandidates(declarations, { ...receiver, role: "read" });
+		return others.length > 0 ? undefined : declaration;
+	};
+	const origins = preloadOrigins(tokens, members, receivers, receiverDeclaration, calls);
+	const traced = references.map((reference) => {
+		const origin = origins.get(reference);
+		return origin === undefined ? reference : { ...reference, origin };
+	});
+	return [...traced, ...pathReferences];
 }
 
 export function referencesOf(script: ParsedScript): Reference[] {

@@ -9,6 +9,7 @@ import {
 	type ProviderMethod,
 	type ProviderTiers,
 	type ProviderWords,
+	type Range,
 } from "@nyaa-lexicon/protocol";
 import { settleDeclaredTiers } from "../declaredTiers";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort";
@@ -64,14 +65,19 @@ export const FAKE_CLAIMS: ProviderClaims = { providerId: "fake", language: "fake
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Classes with the span of their body, so two identical bodies digest alike and an edited one does not. */
-export function parseClasses(module: string, text: string): Declaration[] {
+/** Ranges of `text` by offset; a fake's own scan never names one outside it. */
+export function rangesOf(text: string): (start: number, end: number) => Range {
 	const coordinates = coordinatesOf(text);
-	const rangeOf = (start: number, end: number) => {
+	return (start, end) => {
 		const range = coordinates.rangeAt(start, end);
 		if (range === undefined) throw new Error(`unaddressable fake range: ${start} to ${end}`);
 		return range;
 	};
+}
+
+/** Classes with the span of their body, so two identical bodies digest alike and an edited one does not. */
+export function parseClasses(module: string, text: string): Declaration[] {
+	const rangeOf = rangesOf(text);
 	return fakeClasses(text).map((found) => ({
 		symbolId: `lexicon fake ${module} ${found.name}#`,
 		kind: "class",
@@ -83,8 +89,21 @@ export function parseClasses(module: string, text: string): Declaration[] {
 	}));
 }
 
+/** Each `import "x"` as one side-effect edge spanning the statement. */
 export function importsFrom(text: string): Import[] {
-	return fakeImports(text).map((specifier) => ({ specifier, imported: [], reExport: false }));
+	const rangeOf = rangesOf(text);
+	return fakeImports(text).map((found, order) => ({
+		specifier: found.specifier,
+		edges: [
+			{
+				kind: "sideEffect",
+				span: rangeOf(found.start, found.end),
+				bindsLocally: false,
+				certainty: { status: "known" },
+				order,
+			},
+		],
+	}));
 }
 
 /** The default parse: `export class X` declares, `import "./x"` imports, a `SYNTAX` line fails, an outline answers outline. */
@@ -107,7 +126,10 @@ export function resolveFake(request: MethodRequest<"resolveImport">): MethodResp
 	if (!request.specifier.startsWith(".")) return { status: "unresolved", reason: "NotImplemented" };
 	return {
 		status: "resolved",
-		module: path.posix.normalize(path.posix.join(path.posix.dirname(request.fromModule), request.specifier)),
+		landing: {
+			kind: "module",
+			module: path.posix.normalize(path.posix.join(path.posix.dirname(request.fromModule), request.specifier)),
+		},
 	};
 }
 

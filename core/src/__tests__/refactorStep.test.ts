@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type CommittedFile, hashContent } from "@nyaa-lexicon/protocol";
+import { type CommittedFile, hashContent, type IndexOutcome } from "@nyaa-lexicon/protocol";
 import {
 	journaledStep,
 	type PlannedStep,
@@ -24,6 +24,10 @@ let store: IndexStore;
 let transactions: TransactionManager;
 let reindexed: string[];
 let failReindexOf: string | null;
+/** A module's index answer; absent, it indexes. */
+let answers: Map<string, IndexOutcome>;
+/** Ids the reindexed facts do not declare. */
+let undeclared: Set<string>;
 /** Runs before the `base` check. */
 let beforeWrite: ((module: string) => void) | null;
 /** The workspace's fix; null runs none. */
@@ -64,8 +68,11 @@ const service = {
 	indexFile: async (module: string) => {
 		if (module === failReindexOf) throw new Error("provider gone");
 		reindexed.push(module);
-		return { module, action: "indexed" };
+		return answers.get(module) ?? { module, action: "indexed" };
 	},
+	oweParses: (modules: readonly string[]) => store.oweRebinds(modules),
+	payOwed: () => {},
+	declarationOf: (symbolId: string) => (undeclared.has(symbolId) ? null : { symbolId }),
 	currentHashOf: hashOf,
 	writeModule: (module: string, text: string, base: string | null) => {
 		beforeWrite?.(module);
@@ -108,6 +115,8 @@ beforeEach(() => {
 	transactions = new TransactionManager(store, root);
 	reindexed = [];
 	failReindexOf = null;
+	answers = new Map();
+	undeclared = new Set();
 	beforeWrite = null;
 	fixer = null;
 	write("src/a.ts", "before\n");
@@ -154,6 +163,53 @@ describe("the addresses a step re-mints", () => {
 		expect(outcome.issues.map((issue) => issue.kind)).toContain("ReindexFailed");
 		expect(store.subjects.forAddress(to)?.evidence).toBe("journalMove");
 		expect(store.subjects.forAddress(from)).toBeNull();
+	});
+
+	it("keep their knowledge where another subject holds the new address, and the step says so", async () => {
+		transactions.start();
+		const moving = store.subjects.mint(from, 1);
+		store.subjects.mint(to, 1);
+		const outcome = await run({ rebind });
+
+		expect(outcome.issues.map((issue) => issue.kind)).toEqual(["KnowledgeKept"]);
+		expect(store.subjects.forAddress(from)?.subjectId).toBe(moving.subjectId);
+	});
+
+	// A fix command may change a declaration after the plan; its knowledge then has nowhere to go.
+	it("keep their knowledge where the reindexed step declares no new address, and the step says so", async () => {
+		transactions.start();
+		store.subjects.mint(from, 1);
+		undeclared.add(to);
+		const outcome = await run({ rebind });
+
+		expect(outcome.issues.map((issue) => issue.kind)).toEqual(["KnowledgeKept"]);
+		expect(store.subjects.forAddress(from)).not.toBeNull();
+		expect(store.subjects.forAddress(to)).toBeNull();
+	});
+});
+
+describe("reindexing what a step wrote", () => {
+	it("says a parse that did not land, and leaves it owed", async () => {
+		transactions.start();
+		answers.set("src/a.ts", {
+			module: "src/a.ts",
+			action: "skipped",
+			cause: "providerDown",
+			reason: "provider unavailable",
+			failure: "provider gone",
+		});
+		const outcome = await run();
+
+		expect(outcome.issues).toEqual([expect.objectContaining({ kind: "ReindexFailed", module: "src/a.ts" })]);
+		expect(store.owedRebindAfter(null)).toBe("src/a.ts");
+	});
+
+	it("takes a written file that is gone as reindexed, since no fact of it is left stale", async () => {
+		transactions.start();
+		answers.set("src/a.ts", { module: "src/a.ts", action: "forgotten", cause: "missing", reason: "file is gone" });
+		const outcome = await run();
+
+		expect(outcome).toMatchObject({ ok: true, issues: [] });
 	});
 });
 

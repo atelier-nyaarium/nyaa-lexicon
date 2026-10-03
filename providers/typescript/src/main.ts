@@ -4,12 +4,16 @@ import path from "node:path";
 import {
 	type ArrangeEditsRequest,
 	discoverByWalk,
+	type FileFacts,
 	handlersFor,
+	hashContent,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
+	type ProbeBatchRequest,
+	type ProbeBatchResponse,
 	type ProjectModel,
 	parseSymbolId,
 	runProviderOnStdio,
@@ -17,7 +21,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { TypeScriptAnalyzer } from "./analyzer.js";
+import { type Overlay, TypeScriptAnalyzer } from "./analyzer.js";
 import { isDeclarationModule } from "./bundle.js";
 import { extractTrivia } from "./comments.js";
 import { extractFile, LANGUAGE } from "./extract.js";
@@ -35,6 +39,7 @@ import {
 	landingOf,
 	loadProject,
 	type ModuleResolver,
+	overlaidSystem,
 	projectFingerprint,
 	readableSystem,
 	renderSpecifier,
@@ -64,6 +69,8 @@ export const TIERS = {
 	metrics: true,
 	syntaxDiagnostics: true,
 	fileRoles: true,
+	exports: true,
+	renameKeep: true,
 } as const;
 
 /** JS/TS reserved and contextual keywords. Builtins are the primitive and structural type names. */
@@ -162,6 +169,37 @@ export const WORDS = {
  * as import facts, and emitting them again here would double-count the same edge.
  */
 export const REFERENCE_ROLES = ["call", "read", "write", "typeUse", "instantiate", "extends", "implements"] as const;
+
+////////////////////////////////
+//  Functions & Helpers
+
+type ReadText = { module: string; contentHash: string; text: string };
+
+/** A surface keeps its own depth. */
+function surfaceFacts(params: ReadText): FileFacts {
+	const extracted = extractSurfaceFile(params.module, params.text);
+	return { module: params.module, contentHash: params.contentHash, ...extracted, depth: "surface" };
+}
+
+/** Everything the program says about one module, as `analyzer` reads it. */
+function fullFacts(analyzer: TypeScriptAnalyzer, params: ReadText): FileFacts {
+	const source =
+		analyzer.sourceFile(params.module) ??
+		ts.createSourceFile(params.module, params.text, ts.ScriptTarget.ESNext, true, scriptKindOf(params.module));
+	const extracted = analyzer.extract(params.module, source);
+	return {
+		module: params.module,
+		contentHash: params.contentHash,
+		declarations: extracted.declarations,
+		references: analyzer.bindReferences(params.module, extracted.references, extracted.imports),
+		imports: extracted.imports,
+		exports: extracted.exports,
+		literals: extracted.literals,
+		role: extracted.role,
+		...extractTrivia(source),
+		diagnostics: analyzer.diagnostics(params.module),
+	};
+}
 
 ////////////////////////////////
 //  Class
@@ -269,17 +307,8 @@ export class TypeScriptProvider {
 	parseFile(
 		params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined },
 		value: TypeScriptValue,
-	) {
-		if (value.surface) {
-			const extracted = extractSurfaceFile(params.module, params.text);
-			return {
-				module: params.module,
-				contentHash: params.contentHash,
-				...extracted,
-				// Keep detected surfaces at surface depth.
-				depth: "surface" as const,
-			};
-		}
+	): FileFacts {
+		if (value.surface) return surfaceFacts(params);
 
 		// Outline parses skip binding and type analysis.
 		if (params.depth === "outline") {
@@ -297,6 +326,7 @@ export class TypeScriptProvider {
 				declarations: extracted.declarations,
 				references: [],
 				imports: extracted.imports,
+				exports: extracted.exports,
 				literals: [],
 				role: extracted.role,
 				comments: [],
@@ -304,31 +334,7 @@ export class TypeScriptProvider {
 				depth: "outline" as const,
 			};
 		}
-
-		const analyzer = this.analyzed();
-		const source =
-			analyzer.sourceFile(params.module) ??
-			ts.createSourceFile(params.module, params.text, ts.ScriptTarget.ESNext, true, scriptKindOf(params.module));
-		const extracted = analyzer.extract(params.module, source);
-		const references = extracted.references.map((reference) => ({
-			...reference,
-			binding: analyzer.bindReference(params.module, reference.name, {
-				start: reference.range.start,
-				end: reference.range.start,
-			}),
-		}));
-
-		return {
-			module: params.module,
-			contentHash: params.contentHash,
-			declarations: extracted.declarations,
-			references,
-			imports: extracted.imports,
-			literals: extracted.literals,
-			role: extracted.role,
-			...extractTrivia(source),
-			diagnostics: analyzer.diagnostics(params.module),
-		};
+		return fullFacts(this.analyzed(), params);
 	}
 
 	resolveImport(params: {
@@ -344,14 +350,57 @@ export class TypeScriptProvider {
 			params.surfaceGlobs,
 			(module) => this.runtimeSurface(module),
 		);
-		if (resolution.status === "resolved" && this.store.withheld(resolution.module)) {
-			return {
-				status: "unresolved",
-				reason: "NotIndexed",
-				detail: `the index holds nothing for ${resolution.module}`,
-			};
+		return this.unwithheld(resolution, (module) => this.store.withheld(module));
+	}
+
+	/**
+	 * Facts for each answer module and a landing for each of their specifiers, all read with every
+	 * proposed text in one program. The provider holds what it held before.
+	 */
+	probeBatch(params: ProbeBatchRequest): ProbeBatchResponse {
+		const project = this.currentProject();
+		if (project === undefined) return { status: "unsupported", detail: "no project has been discovered" };
+		const files = new Map(params.files.map(({ module, contentHash, text }) => [module, { contentHash, text }]));
+		const overlay: Overlay = {
+			files,
+			tag: `probe:${hashContent(JSON.stringify(params.files.map(({ module, contentHash }) => [module, contentHash])))}:`,
+			memos: new Map(),
+		};
+		const analyzer = this.analyzed().overlaid(overlay);
+		try {
+			const facts: FileFacts[] = [];
+			for (const module of params.answer) {
+				const held = files.get(module) ?? this.store.text(module);
+				if (held === undefined)
+					return { status: "unsupported", detail: `nothing is held or proposed for ${module}` };
+				const read = { module, contentHash: held.contentHash, text: held.text };
+				facts.push(analyzer.held(module)?.surface === true ? surfaceFacts(read) : fullFacts(analyzer, read));
+			}
+			const setup = { ...project.loaded, system: overlaidSystem(project.root, files, project.loaded.system) };
+			const surface = (module: string) =>
+				!isDeclarationModule(module) &&
+				(files.has(module) ? analyzer.held(module)?.surface === true : this.runtimeSurface(module));
+			const landings = facts.flatMap((answered) =>
+				[...new Set(answered.imports.map((statement) => statement.specifier))].map((specifier) => ({
+					module: answered.module,
+					specifier,
+					resolution: this.unwithheld(
+						resolveSpecifier(project.root, answered.module, specifier, setup, [], surface),
+						(module) => !files.has(module) && this.store.withheld(module),
+					),
+				})),
+			);
+			return { status: "ready", facts, landings };
+		} finally {
+			analyzer.dispose();
 		}
-		return resolution;
+	}
+
+	/** A module the index forgot resolves to nothing it can read. */
+	private unwithheld(resolution: ImportResolution, withheld: (module: string) => boolean): ImportResolution {
+		const module = landingOf(resolution);
+		if (resolution.status !== "resolved" || module === undefined || !withheld(module)) return resolution;
+		return { status: "unresolved", reason: "NotIndexed", detail: `the index holds nothing for ${module}` };
 	}
 
 	bind(params: {

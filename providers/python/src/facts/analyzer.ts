@@ -3,6 +3,7 @@
 
 import type * as A from "../syntax/ast.js";
 import { walk } from "../syntax/ast.js";
+import { moduleExports, readAllList } from "./exports.js";
 import { headerOf } from "./headers.js";
 import { InferenceAnalyzer } from "./inference.js";
 import { LiteralVisitor } from "./literals.js";
@@ -10,7 +11,6 @@ import { metricsOf } from "./metrics.js";
 import {
 	assignmentTargets,
 	type Binder,
-	isAssignment,
 	isBinder,
 	isDefinition,
 	isFunction,
@@ -58,7 +58,7 @@ type Declared = A.FunctionDef | A.ClassDef | A.TypeAlias;
 ////////////////////////////////
 //  Constants
 
-const FINAL_MODULES: ReadonlySet<string> = new Set(["typing", "typing_extensions"]);
+const TYPING_MODULES: ReadonlySet<string> = new Set(["typing", "typing_extensions"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -89,16 +89,6 @@ function nameOf(node: Declared): string {
 	return node.type === "TypeAlias" ? node.name.id : node.name;
 }
 
-function literalNames(value: A.Expression | undefined): string[] | undefined {
-	if (value?.type !== "List" && value?.type !== "Tuple" && value?.type !== "Set") return undefined;
-	const names: string[] = [];
-	for (const element of value.elts) {
-		if (!isStringConstant(element)) return undefined;
-		names.push(element.value.value);
-	}
-	return names;
-}
-
 function visibilityOf(name: string, kind: ScopeKind, exported: boolean): RawDeclaration["visibility"] {
 	if (kind === "function") return "local";
 	if (kind === "module") return exported ? "public" : "fileLocal";
@@ -119,7 +109,6 @@ export class Analyzer {
 	readonly imports: RawImport[] = [];
 	readonly importStatements: RawImportStatement[] = [];
 	readonly importBindings: RawImportBinding[] = [];
-	readonly packageInit: boolean;
 	exportNames: Set<string> | undefined;
 	scopes!: Scopes;
 	private readonly annotations: PendingAnnotation[] = [];
@@ -128,15 +117,13 @@ export class Analyzer {
 	private readonly nodeScopePaths = new Map<A.Node, RawDescriptor[]>();
 	private readonly descriptorCounts = new Map<string, number>();
 	private finalNames = new Set<string>();
-	private finalModules = new Set<string>();
+	private typeCheckingNames = new Set<string>();
+	private typingModules = new Set<string>();
 
 	constructor(
-		module: string,
 		readonly source: Source,
 		readonly tree: A.Module,
-	) {
-		this.packageInit = module.replaceAll("\\", "/").split("/").at(-1) === "__init__.py";
-	}
+	) {}
 
 	////////////////////////////////
 	//  Paths
@@ -148,6 +135,11 @@ export class Analyzer {
 	/** The path a definition records, when it records one. */
 	recordedPath(node: A.Node): RawDescriptor[] | undefined {
 		return this.declarationPaths.get(node);
+	}
+
+	/** Every statement that binds a declaration. */
+	nodesOf(declaration: RawDeclaration): A.Node[] {
+		return this.declarationNodes.get(identityKey(declaration.descriptorPath))?.nodes ?? [];
 	}
 
 	typeAnnotations(): RawTypeAnnotation[] {
@@ -165,34 +157,8 @@ export class Analyzer {
 	////////////////////////////////
 	//  Exports
 
-	private findExportNames(): Set<string> | undefined {
-		let found = new Set<string>();
-		let known = false;
-		for (const statements of statementLists(this.tree.body)) {
-			for (const node of statements) {
-				if (!isAssignment(node)) continue;
-				if (!assignmentTargets(node).some((target) => target.id === "__all__")) continue;
-				const names = literalNames(node.value);
-				if (node.type === "AugAssign") {
-					if (node.op !== "Add" || !known || names === undefined) {
-						known = false;
-						continue;
-					}
-					for (const name of names) found.add(name);
-					continue;
-				}
-				if (names === undefined) {
-					known = false;
-					continue;
-				}
-				found = new Set(names);
-				known = true;
-			}
-		}
-		return known ? found : undefined;
-	}
-
-	private findFinalBindings(): void {
+	/** Names bound only to `typing` itself, or to its `Final` or `TYPE_CHECKING`, by direct module-level imports. */
+	private findTypingBindings(): void {
 		const bindings = new Map<string, Set<string>>();
 		const record = (name: string, kind: string): void => {
 			bindings.set(name, (bindings.get(name) ?? new Set()).add(kind));
@@ -204,17 +170,16 @@ export class Analyzer {
 				if (node.type === "Import") {
 					for (const alias of node.names) {
 						const local = alias.asname ?? (alias.name.split(".")[0] as string);
-						record(local, direct && FINAL_MODULES.has(alias.name) ? "module" : other);
+						record(local, direct && TYPING_MODULES.has(alias.name) ? "module" : other);
 					}
 				} else if (node.type === "ImportFrom") {
+					const typing = direct && node.level === 0 && TYPING_MODULES.has(node.module ?? "");
 					for (const alias of node.names) {
 						if (alias.name === "*") continue;
-						const final =
-							direct &&
-							node.level === 0 &&
-							FINAL_MODULES.has(node.module ?? "") &&
-							alias.name === "Final";
-						record(alias.asname ?? alias.name, final ? "final" : other);
+						let kind = other;
+						if (typing && alias.name === "Final") kind = "final";
+						else if (typing && alias.name === "TYPE_CHECKING") kind = "typeChecking";
+						record(alias.asname ?? alias.name, kind);
 					}
 				}
 				const shadow = direct ? "shadow" : "conditional";
@@ -225,17 +190,41 @@ export class Analyzer {
 		const only = (kind: string): Set<string> =>
 			new Set([...bindings].filter(([, kinds]) => kinds.size === 1 && kinds.has(kind)).map(([name]) => name));
 		this.finalNames = only("final");
-		this.finalModules = only("module");
+		this.typeCheckingNames = only("typeChecking");
+		this.typingModules = only("module");
 	}
 
-	private isFinalValue(node: A.Expression): boolean {
-		if (node.type === "Name") return this.finalNames.has(node.id);
+	/** `member` read through a name bound only to it, or through a typing module. */
+	private readsTyping(node: A.Expression, member: string, names: ReadonlySet<string>): boolean {
+		if (node.type === "Name") return names.has(node.id);
 		return (
 			node.type === "Attribute" &&
 			node.value.type === "Name" &&
-			node.attr === "Final" &&
-			this.finalModules.has(node.value.id)
+			node.attr === member &&
+			this.typingModules.has(node.value.id)
 		);
+	}
+
+	private isFinalValue(node: A.Expression): boolean {
+		return this.readsTyping(node, "Final", this.finalNames);
+	}
+
+	/** `TYPE_CHECKING`, which a static reading takes as true. */
+	isTypeChecking(test: A.Expression): boolean {
+		return this.readsTyping(test, "TYPE_CHECKING", this.typeCheckingNames);
+	}
+
+	/** Statements a static reading runs on load: the module body, and each `if TYPE_CHECKING:` body in it. */
+	loadStatements(): Set<A.Node> {
+		const found = new Set<A.Node>();
+		const add = (statements: readonly A.Statement[]): void => {
+			for (const node of statements) {
+				found.add(node);
+				if (node.type === "If" && this.isTypeChecking(node.test)) add(node.body);
+			}
+		};
+		add(this.tree.body);
+		return found;
 	}
 
 	private isFinalAnnotation(node: A.Node): boolean {
@@ -249,17 +238,6 @@ export class Analyzer {
 		if (!moduleScope) return parentExported;
 		if (this.exportNames !== undefined) return this.exportNames.has(name);
 		return !name.startsWith("_");
-	}
-
-	isExplicitlyExported(name: string): boolean {
-		return this.exportNames?.has(name) === true;
-	}
-
-	/** A package initializer is a barrel; other imports need explicit `__all__` exposure. */
-	isFromReexport(aliases: readonly A.Alias[], scope: readonly RawDescriptor[]): boolean {
-		if (scope.length > 0) return false;
-		if (this.packageInit) return true;
-		return aliases.some((alias) => this.isExplicitlyExported(alias.asname ?? alias.name));
 	}
 
 	////////////////////////////////
@@ -517,8 +495,9 @@ export class Analyzer {
 	//  Main
 
 	analyze(): Omit<RawFacts, "comments" | "blankLines"> {
-		this.exportNames = this.findExportNames();
-		this.findFinalBindings();
+		const allList = readAllList(this.tree, this.source);
+		this.exportNames = allList.state === "static" ? new Set(allList.entries.map(({ name }) => name)) : undefined;
+		this.findTypingBindings();
 		this.walkStatements(this.tree.body, [], "module", true, false);
 		for (const node of walk(this.tree)) {
 			if (node.type !== "AnnAssign") continue;
@@ -530,15 +509,20 @@ export class Analyzer {
 			this.tree,
 			(node, scope, kind) => this.declarationPath(node, scope, kind),
 			this.occurrences,
+			(offset) => this.source.position(offset),
+			(test) => this.isTypeChecking(test),
 		);
 		this.refreshTypeDescriptors();
 		new ReferenceVisitor(this).visit(this.tree);
 		const inferredTypes = new InferenceAnalyzer(this).run();
 		const literals = new LiteralVisitor(this).run();
+		const exposed = moduleExports(this, allList);
 		return {
 			declarations: [...this.declarations.values()],
 			references: this.references,
 			imports: this.imports,
+			exports: exposed.exports,
+			allList: exposed.allList,
 			importStatements: this.importStatements,
 			role: fileRole(this.tree),
 			prologueEnd: this.source.prologueEnd(this.tree),

@@ -33,6 +33,7 @@ import type {
 	RefactorStartResult,
 	RenameStepOutcome,
 	ReplaceOutcome,
+	RouteState,
 	TypeInfo,
 } from "@nyaa-lexicon/protocol";
 
@@ -320,7 +321,10 @@ Cannot rename ${code(plan.oldName || plan.symbolId)}.
 ## Blockers
 `,
 		];
-		for (const blocker of plan.blockers) lines.push(`- **${blocker.kind}:** ${blocker.detail}`);
+		for (const blocker of plan.blockers) {
+			lines.push(`- **${blocker.kind}:** ${blocker.detail}`);
+			for (const site of blocker.sites ?? []) lines.push(`  - ${code(`${site.module}:${site.line}`)}`);
+		}
 		return lines.join("\n");
 	}
 
@@ -341,8 +345,30 @@ Touches ${withCalls} in ${plan.files.length} file${plan.files.length === 1 ? "" 
 	];
 	for (const file of plan.files) {
 		const here = file.ownerCalls?.length ?? 0;
+		const kept = file.sites.filter((site) => site.keep === true).length;
 		lines.push(
-			`- ${code(file.module)}: ${file.sites.length} occurrence${file.sites.length === 1 ? "" : "s"}${here === 0 ? "" : ` plus ${here} call${here === 1 ? "" : "s"}`}`,
+			`- ${code(file.module)}: ${file.sites.length} occurrence${file.sites.length === 1 ? "" : "s"}${kept === 0 ? "" : `, ${kept} kept`}${here === 0 ? "" : ` plus ${here} call${here === 1 ? "" : "s"}`}`,
+		);
+	}
+
+	const exports = plan.routes.edges.filter((edge) => edge.fact === "export" && edge.form !== "direct");
+	if (exports.length > 0) {
+		lines.push(`
+## Routes
+`);
+	}
+	for (const edge of exports) {
+		if (edge.fact !== "export") continue;
+		const stop = edge.stoppable === true ? `, stop ${code(edge.id)}` : "";
+		lines.push(`- ${code(edge.from)}: ${edge.form} export, ${ROUTE_STATES[edge.state]}${stop}`);
+	}
+
+	const { comments, strings, incomplete } = plan.mentions;
+	if (comments + strings > 0 || incomplete === true) {
+		const unread = incomplete === true ? " Some files have no comment or string facts." : "";
+		lines.push(
+			`
+${code(plan.oldName)} also appears in ${comments} comment${comments === 1 ? "" : "s"} and ${strings} string${strings === 1 ? "" : "s"}, which a rename never edits.${unread}`,
 		);
 	}
 
@@ -365,6 +391,14 @@ This set may not be complete.
 	}
 	return lines.join("\n");
 }
+
+/** What a rename does at one route edge, as a preview says it. */
+const ROUTE_STATES: Record<RouteState, string> = {
+	renamed: "renamed",
+	fixed: "name fixed by an alias",
+	stopped: "kept by its stop",
+	unknown: "not proved",
+};
 
 /** What a move would touch. */
 export function renderMovePlan(plan: MovePlan): string {
@@ -984,7 +1018,6 @@ export function renderImports(result: {
 		module: string;
 		specifier: string;
 		name?: string | undefined;
-		reExport: boolean;
 	}>;
 	count: Count;
 }): string {
@@ -996,7 +1029,7 @@ export function renderImports(result: {
 		// The name is shown when there is one. Its absence means the statement binds the module
 		// rather than an export, which is a real import and not a missing field.
 		const named = statement.name === undefined ? "" : `  { ${statement.name} }`;
-		specifiers.add(`${statement.specifier}${named}${statement.reExport ? "  (re-export)" : ""}`);
+		specifiers.add(`${statement.specifier}${named}`);
 		byModule.set(statement.module, specifiers);
 	}
 

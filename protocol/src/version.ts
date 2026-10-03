@@ -119,10 +119,18 @@ export type Compatibility =
 // 4.4.0: `previewArrange` and `refactorArrange` place declarations from one module, or the target's
 // own, in the target as one step, through the provider method `arrangeEdits`. An older daemon
 // answers them as unknown methods; an older provider does not answer it, so the request fails.
-export const PROTOCOL_VERSION = "4.4.0" as const;
+// 5.0.0: a clean break for rename routes. `resolveImport` answers a tagged `landing` (a module, a
+// symbol scope or a package scope) in place of `module`. An import is one edge per transfer, `edges`
+// in place of `imported` and `reExport`, each with its selector, conflict policy, meaning, certainty
+// and order. `FileFacts` gains `exports`, `allList` and `scopeContributions`; a reference may carry
+// its proved `origin`. The provider method `probeBatch`; the tiers `exports` and `renameKeep`;
+// `RenameSite.keep`. Rename requests take `stops`; the plan answers `routes` and `mentions`. The
+// `export` fact kind, and the issues `RouteUnknown`, `RouteChanged`, `StopNotReExport`,
+// `StopUnsupported` and `ProofUnavailable`. `MoveImportSite` drops `reExport`. No 4.x client is served.
+export const PROTOCOL_VERSION = "5.0.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
-export const OLDEST_CLIENT_MAJOR = 4;
+export const OLDEST_CLIENT_MAJOR = 5;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

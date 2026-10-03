@@ -7,6 +7,7 @@ import {
 	type Descriptor,
 	MAX_NESTING,
 	qualifierDescriptors,
+	type Range,
 	type Reference,
 	TOO_DEEP,
 } from "@nyaa-lexicon/protocol";
@@ -15,9 +16,19 @@ import type { DeclaratorSite } from "./declarators.js";
 import { SCOPE_KINDS } from "./drafts.js";
 import { CppFunctionParser } from "./functions.js";
 import type { TokenSpan } from "./header.js";
-import type { DraftInput, DraftRecord, Prefix, Scope, UsingDraft, Visibility } from "./model.js";
-import { isSignificant } from "./tokens.js";
-import { codeText, joinType, matching, significantAfter, statementEnd, tokenAt } from "./tokenWalk.js";
+import type { DraftInput, DraftRecord, Prefix, Scope, TransferDraft, UsingDraft, Visibility } from "./model.js";
+import { isSignificant, rangeOfToken, type Token } from "./tokens.js";
+import {
+	codeText,
+	joinTokens,
+	joinType,
+	matching,
+	rangeFrom,
+	significantAfter,
+	significantBefore,
+	statementEnd,
+	tokenAt,
+} from "./tokenWalk.js";
 import type { DeclarationStatement } from "./variables.js";
 import { CLASS_KEYS, isNameToken, isShoutCase, KEYWORDS } from "./words.js";
 
@@ -27,6 +38,8 @@ import { CLASS_KEYS, isNameToken, isShoutCase, KEYWORDS } from "./words.js";
 /** Declares what the reader reads; a function body's statements are the subclass's to walk. */
 export abstract class CppDeclarationParser extends CppFunctionParser {
 	protected readonly usings: UsingDraft[] = [];
+
+	protected readonly transfers: TransferDraft[] = [];
 
 	/** Scopes and blocks open around the reader. */
 	protected nesting = 0;
@@ -247,6 +260,16 @@ export abstract class CppDeclarationParser extends CppFunctionParser {
 						...(target >= 0 && item === names.at(-1) ? { aliasOf: target } : {}),
 					});
 				}
+				const [alias] = names;
+				if (target >= 0 && alias !== undefined && names.length === 1)
+					this.transfers.push({
+						kind: "namespace",
+						specifier: joinTokens(this.tokens, index + 1, target + 1),
+						span: this.spanThrough(prefix.keywordIndex, aliasEnd, target),
+						tokenStart: prefix.keywordIndex,
+						lastName: target,
+						name: this.writtenName(alias.start),
+					});
 			}
 			return aliasEnd >= 0 ? aliasEnd + 1 : Math.max(prefix.startIndex + 1, index);
 		}
@@ -570,9 +593,20 @@ export abstract class CppDeclarationParser extends CppFunctionParser {
 				...(alternative === undefined ? {} : { alternative }),
 			});
 		};
+		// A class's using-declarations bring in its bases' members, and `using enum` an enum's.
+		const transfers = scope.kind !== "class" && tokenAt(this.tokens, next)?.text !== "enum";
 		if (tokenAt(this.tokens, next)?.text === "namespace") {
 			this.markRoleAfter(prefix.keywordIndex, end, "import");
-			using(this.lastNameIn(next, end), false);
+			const namespace = this.lastNameIn(next, end);
+			using(namespace, false);
+			if (transfers && namespace >= 0)
+				this.transfers.push({
+					kind: "injection",
+					specifier: joinTokens(this.tokens, next + 1, namespace + 1),
+					span: this.spanThrough(prefix.keywordIndex, end, namespace),
+					tokenStart: prefix.keywordIndex,
+					lastName: namespace,
+				});
 			return end + 1;
 		}
 		const equals = this.findNextText(prefix.keywordIndex, "=", end);
@@ -605,8 +639,40 @@ export abstract class CppDeclarationParser extends CppFunctionParser {
 			return end + 1;
 		}
 		this.markRoleAfter(prefix.keywordIndex, end, "import");
-		using(this.lastNameIn(prefix.keywordIndex, end), true);
+		for (const declarator of this.declaratorSegments(prefix.keywordIndex + 1, end)) {
+			const name = this.lastNameIn(declarator.start - 1, declarator.end);
+			using(name, true);
+			const transfer = transfers ? this.declaratorTransfer(declarator.start, declarator.end, name) : null;
+			if (transfer !== null) this.transfers.push(transfer);
+		}
 		return end + 1;
+	}
+
+	/** `N::x` in a using-declaration, a name taken from `N`; null when `name` is not the declarator's last word. */
+	private declaratorTransfer(from: number, to: number, name: number): TransferDraft | null {
+		if (name < 0 || significantAfter(this.tokens, name, to) >= 0) return null;
+		const first = significantAfter(this.tokens, from - 1, to);
+		const colons = significantBefore(this.tokens, name);
+		if (tokenAt(this.tokens, colons)?.text !== "::") return null;
+		return {
+			kind: "named",
+			specifier: colons === first ? "::" : joinTokens(this.tokens, first, colons),
+			span: rangeFrom(this.tokens, first, name + 1) as Range,
+			tokenStart: first,
+			lastName: name,
+			name: this.writtenName(name),
+		};
+	}
+
+	/** From `first` through the `;` at `end`, else through `last`. */
+	private spanThrough(first: number, end: number, last: number): Range {
+		const close = tokenAt(this.tokens, end)?.text === ";" ? end : last;
+		return rangeFrom(this.tokens, first, close + 1) as Range;
+	}
+
+	private writtenName(index: number): { text: string; range: Range } {
+		const token = tokenAt(this.tokens, index) as Token;
+		return { text: token.value, range: rangeOfToken(token) };
 	}
 
 	/** The last name in `(from, to)` outside template arguments, keywords left out; -1 when none. */

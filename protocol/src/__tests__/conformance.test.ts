@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkFacts, checkImport, checkType, describeIdParts } from "../conformance/check";
+import { checkFacts, checkImport, checkProbeBatch, checkType, describeIdParts } from "../conformance/check";
 import { casesForTier, corpusLanguages, loadCorpus } from "../conformance/corpus";
 import { loadMoveCases } from "../conformance/moveCorpus";
 import {
@@ -139,7 +139,6 @@ function referenceNamedMove(id: string, expectedSpecifier: string): MoveCase {
 							importKind: "named",
 							importedName: "add",
 							localName: "add",
-							reExport: false,
 						},
 					],
 					dependencies: [],
@@ -232,6 +231,7 @@ const WRONG_VALUES: Record<string, unknown> = {
 	parseErrors: "required",
 	notes: "required",
 	role: { kind: "entry", how: "main" },
+	exports: [{ form: "direct", name: "missing", target: "symbol" }],
 };
 
 describe("corpus", () => {
@@ -1134,6 +1134,136 @@ describe("checking answers", () => {
 				{ status: "unresolved", reason: "NotImplemented" },
 			)[0],
 		).toMatch(/resolved as unresolved, expected external/);
+	});
+
+	it("compares the whole landing, so a scope never passes as a module", () => {
+		const scope = {
+			status: "resolved",
+			landing: { kind: "packageScope", providerId: "kotlin", scopeId: "p" },
+		} as const;
+		expect(checkImport({ specifier: "p.*", landing: "packageScope", scopeId: "p" }, scope)).toEqual([]);
+		expect(checkImport({ specifier: "p.*", module: "p/A.kt" }, scope)[0]).toMatch(/landed in a packageScope/);
+		expect(checkImport({ specifier: "p.*", landing: "packageScope", scopeId: "q" }, scope)[0]).toMatch(/scope p/);
+	});
+
+	describe("export and origin facts", () => {
+		const span = (line: number): Range => ({ start: { line, character: 0 }, end: { line, character: 4 } });
+		const known = { status: "known" } as const;
+		const conflict = { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" } as const;
+		const plus = {
+			kind: "named",
+			span: span(0),
+			name: "add",
+			range: span(0),
+			local: "plus",
+			localRange: span(0),
+			bindsLocally: true,
+			conflict,
+			certainty: known,
+			order: 0,
+		} as const;
+		const linked = facts({
+			declarations: [decl("add")],
+			imports: [{ specifier: "./a", edges: [plus] }],
+			exports: [
+				{
+					form: "direct",
+					name: "add",
+					span: span(1),
+					target: { kind: "symbol", symbolId: idFor("add") },
+					conflict,
+					certainty: known,
+					order: 1,
+				},
+				{
+					form: "star",
+					span: span(2),
+					target: { kind: "import", span: span(0) },
+					conflict,
+					certainty: known,
+					order: 2,
+				},
+			],
+		});
+		const exactly = (exports: unknown) => ({ exports }) as unknown as ConformanceCase;
+		const call = (origin: NonNullable<Reference["origin"]>): Reference => ({
+			name: "plus",
+			role: "call",
+			range: span(3),
+			binding: { status: "bound", symbolId: idFor("add"), provenance: "bound" },
+			origin,
+		});
+
+		it("states the exports exactly, so a phantom edge fails", () => {
+			const both = [
+				{ form: "direct", name: "add", target: "symbol", targetName: "add" },
+				{ form: "star", target: "import", targetName: "plus" },
+			];
+
+			expect(checkFacts(exactly(both), linked)).toEqual([]);
+			expect(checkFacts(exactly(both.slice(0, 1)), linked)).toHaveLength(1);
+			expect(
+				checkFacts(exactly([...both, { form: "forward", name: "x", target: "import" }]), linked),
+			).toHaveLength(1);
+		});
+
+		it("refuses an import target or origin that names no edge", () => {
+			const dangling = facts({
+				...linked,
+				exports: [
+					{
+						form: "star",
+						span: span(2),
+						target: { kind: "import", span: span(9) },
+						conflict,
+						certainty: known,
+						order: 2,
+					},
+				],
+				references: [call({ kind: "import", span: span(9) })],
+			});
+
+			expect(checkFacts({} as ConformanceCase, linked)).toEqual([]);
+			expect(checkFacts({} as ConformanceCase, dangling)).toHaveLength(2);
+		});
+
+		it("names the edge a use resolves through", () => {
+			const used = facts({ ...linked, references: [call({ kind: "import", span: span(0) })] });
+			const through = (origin: unknown) =>
+				checkFacts({ references: [{ name: "plus", origin }] } as unknown as ConformanceCase, used);
+
+			expect(through({ through: "plus" })).toEqual([]);
+			expect(through({ through: "add" })).toHaveLength(1);
+			expect(through({ through: "plus", path: ["N"] })).toHaveLength(1);
+			expect(through("declaration")).toHaveLength(1);
+		});
+
+		it("holds a ready batch probe to exactly what it was asked", () => {
+			const hashOf = (text: string) => `h:${text}`;
+			const fixture = {
+				files: { "a.ts": "", "b.ts": "" },
+				probe: { "a.ts": "A", "b.ts": "B" },
+				answer: ["b.ts"],
+				sees: [{ module: "b.ts", declaration: "add" }],
+			};
+			const answered = { ...linked, module: "b.ts", contentHash: "h:B" };
+			const ready: Parameters<typeof checkProbeBatch>[1] = {
+				status: "ready",
+				facts: [answered],
+				landings: [
+					{ module: "b.ts", specifier: "./a", resolution: { status: "unresolved", reason: "NotIndexed" } },
+				],
+			};
+
+			expect(checkProbeBatch(fixture, ready, hashOf)).toEqual([]);
+			expect(
+				checkProbeBatch(fixture, { ...ready, facts: [{ ...answered, contentHash: "h:" }] }, hashOf),
+			).toHaveLength(1);
+			expect(
+				checkProbeBatch(fixture, { ...ready, facts: [answered, { ...answered, module: "a.ts" }] }, hashOf),
+			).toHaveLength(2);
+			expect(checkProbeBatch(fixture, { ...ready, landings: [] }, hashOf)).toHaveLength(1);
+		});
 	});
 
 	it("reports an unknown type with its reason rather than as a bare mismatch", () => {

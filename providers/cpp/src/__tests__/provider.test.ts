@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import {
+	type Certainty,
 	composeSymbolId,
 	coordinatesOf,
 	FileFactsSchema,
@@ -23,6 +24,7 @@ import {
 	parseSymbolId,
 	type Range,
 } from "@nyaa-lexicon/protocol";
+import { memberReads, parsedFiles } from "@nyaa-lexicon/protocol/ast";
 import { CppProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import type { CppFacts, ImportFact } from "../model.js";
 import { parseCppFile } from "../parser.js";
@@ -46,6 +48,11 @@ function wire(root = process.cwd()) {
 	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
+}
+
+/** An include resolved to workspace `module`. */
+function landed(module: string) {
+	return { status: "resolved", landing: { kind: "module", module } } as const;
 }
 
 function span(text: string, value: string, from = 0): Range {
@@ -213,13 +220,211 @@ describe("C++ provider contract", () => {
 		expect(facts.literals.find((literal) => literal.value === "2.5")?.containerId).toBe(value?.symbolId);
 	});
 
-	test("emits using references without turning them into imports", () => {
+	test("emits a using's names as import references", () => {
 		const facts = parseCppFile("using.cpp", "using namespace std;\nusing std::vector;\nint size = 1;\n");
 
-		expect(facts.imports).toEqual([]);
 		expect(
 			facts.references.filter((reference) => reference.role === "import").map((reference) => reference.name),
 		).toEqual(["std", "std", "vector"]);
+	});
+
+	test("reports each include, using and namespace alias as one transfer, proved where its namespace is", () => {
+		const header =
+			"namespace geo {\ninline namespace v1 { struct Point {}; }\nint area();\nenum class Tone { Low };\n}\n";
+		const text = [
+			"using namespace missing;",
+			'#include "geo.hpp"',
+			"#include <vector>",
+			"using namespace geo;",
+			"using geo::area, geo::Point;",
+			"namespace g = geo;",
+			"using namespace std;",
+			"using enum geo::Tone;",
+			"struct Base { void run(); };",
+			"struct Derived : Base { using Base::run; };",
+			"int main() { using namespace geo::v1; return 0; }",
+			"",
+		].join("\n");
+		const root = workspace({ "src/geo.hpp": header, "src/use.cpp": text });
+		const provider = wire(root);
+		provider.parseFile({ module: "src/geo.hpp", contentHash: "geo", text: header });
+		const facts = provider.parseFile({ module: "src/use.cpp", contentHash: "use", text });
+		const after = (value: string, written: string) => span(text, value, text.indexOf(written));
+		const injection = (written: string, certainty: Certainty) =>
+			({
+				kind: "injection",
+				span: span(text, written),
+				selector: { kind: "visible" },
+				bindsLocally: true,
+				conflict: { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" },
+				certainty,
+			}) as const;
+		const declared = {
+			bindsLocally: true,
+			conflict: { priority: 1, amongTransfers: "exclude", againstLocal: "localWins" },
+		} as const;
+		const known = { status: "known" } as const;
+		const named = (written: string, name: string) =>
+			({
+				kind: "named",
+				span: span(text, written),
+				name,
+				range: after(name, written),
+				...declared,
+				certainty: known,
+			}) as const;
+		const scope = (scopeId: string) =>
+			({
+				status: "resolved",
+				landing: { kind: "packageScope", providerId: "cpp-provider", scopeId },
+			}) as const;
+		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/use.cpp", specifier });
+
+		expect(FileFactsSchema.safeParse(facts).success).toBe(true);
+		expect(
+			facts.imports.map(({ specifier, edges }) => ({
+				specifier,
+				edges: edges.map(({ order, ...edge }) => edge),
+			})),
+		).toEqual([
+			{
+				specifier: "missing",
+				edges: [injection("using namespace missing;", { status: "unknown", reason: "NotIndexed" })],
+			},
+			{ specifier: "geo.hpp", edges: [injection('#include "geo.hpp"', known)] },
+			{ specifier: "vector", edges: [injection("#include <vector>", known)] },
+			{ specifier: "geo", edges: [injection("using namespace geo;", known)] },
+			{ specifier: "geo", edges: [named("geo::area", "area")] },
+			{ specifier: "geo", edges: [named("geo::Point", "Point")] },
+			{
+				specifier: "geo",
+				edges: [
+					{
+						kind: "namespace",
+						span: span(text, "namespace g = geo;"),
+						local: "g",
+						localRange: after("g", "namespace g ="),
+						...declared,
+						certainty: known,
+					},
+				],
+			},
+			{
+				specifier: "std",
+				edges: [injection("using namespace std;", { status: "unknown", reason: "ExternalDependency" })],
+			},
+			{ specifier: "geo::v1", edges: [injection("using namespace geo::v1;", known)] },
+		]);
+		expect(facts.imports.flatMap(({ edges }) => edges.map((edge) => edge.order))).toEqual([
+			0, 1, 2, 3, 4, 5, 6, 7, 8,
+		]);
+		expect(["geo", "geo::v1", "std", "missing", "geo.hpp"].map(resolve)).toEqual([
+			scope("geo"),
+			scope("geo::v1"),
+			{ status: "external", packageName: "std" },
+			{ status: "unresolved", reason: "NotIndexed", detail: expect.any(String) },
+			landed("src/geo.hpp"),
+		]);
+	});
+
+	test("lands no scope for a name taken from the global namespace", () => {
+		const text = "int top();\nint main() { using ::top; return top(); }\n";
+		const facts = wire().parseFile({ module: "global.cpp", contentHash: "global", text });
+
+		expect(facts.imports).toEqual([
+			{
+				specifier: "::",
+				edges: [
+					{
+						kind: "named",
+						span: span(text, "::top"),
+						name: "top",
+						range: span(text, "top", text.indexOf("::top")),
+						bindsLocally: true,
+						conflict: { priority: 1, amongTransfers: "exclude", againstLocal: "localWins" },
+						certainty: { status: "unknown", reason: "NotImplemented" },
+						order: 0,
+					},
+				],
+			},
+		]);
+	});
+
+	test("binds each name a using-declaration list brings", () => {
+		const text = "namespace a { int x; int y; }\nusing a::x, a::y;\nint sum = x + y;\n";
+		const facts = wire().parseFile({ module: "list.cpp", contentHash: "list", text });
+		const read = (name: string) =>
+			facts.references.find((reference) => reference.name === name && reference.role === "read")?.binding;
+
+		expect([read("x"), read("y")]).toEqual([
+			{
+				status: "bound",
+				symbolId: composeSymbolId({
+					language: "cpp",
+					module: "list.cpp",
+					descriptors: [
+						{ kind: "namespace", name: "a" },
+						{ kind: "term", name: "x" },
+					],
+				}),
+				provenance: "bound",
+			},
+			{
+				status: "bound",
+				symbolId: composeSymbolId({
+					language: "cpp",
+					module: "list.cpp",
+					descriptors: [
+						{ kind: "namespace", name: "a" },
+						{ kind: "term", name: "y" },
+					],
+				}),
+				provenance: "bound",
+			},
+		]);
+	});
+
+	test("answers Ambiguous for a specifier written as a header and as a namespace", () => {
+		const text = '#include "geo"\nnamespace geo {}\nusing namespace geo;\n';
+		const provider = wire(workspace({ "src/use.cpp": text }));
+		const facts = provider.parseFile({ module: "src/use.cpp", contentHash: "use", text });
+
+		expect(facts.imports.map(({ edges }) => edges[0]?.certainty)).toEqual([
+			{ status: "known" },
+			{ status: "unknown", reason: "Ambiguous" },
+		]);
+		expect(provider.resolveImport({ fromModule: "src/use.cpp", specifier: "geo" })).toMatchObject({
+			status: "unresolved",
+			reason: "Ambiguous",
+		});
+	});
+
+	test("contributes each named namespace's members seen outside the file to its scope", () => {
+		const text = [
+			"namespace geo {",
+			"inline namespace v1 { struct Point {}; }",
+			"int area();",
+			"static int hidden;",
+			"namespace { int secret; }",
+			"enum Shade { Dark };",
+			"}",
+			"namespace geo { int perimeter(); }",
+			"namespace g = geo;",
+			"",
+		].join("\n");
+		const facts = wire().parseFile({ module: "geo.hpp", contentHash: "geo", text });
+		const ids = (...names: string[]) =>
+			names.map((name) => facts.declarations.find((declaration) => declaration.name === name)?.symbolId ?? name);
+
+		expect(FileFactsSchema.safeParse(facts).success).toBe(true);
+		expect(facts.scopeContributions).toEqual([
+			{
+				kind: "packageScope" as const,
+				scopeId: "geo",
+				members: ids("v1", "Point", "area", "Shade", "Dark", "perimeter"),
+			},
+			{ kind: "packageScope" as const, scopeId: "geo::v1", members: ids("Point") },
+		]);
 	});
 
 	test("binds same-file names and reports overload ambiguity", () => {
@@ -255,15 +460,14 @@ describe("C++ provider contract", () => {
 		const text = readFileSync(path.join(root, "src/cart.cpp"), "utf8");
 		const facts = provider.parseFile({ module: "src/cart.cpp", contentHash: "cart", text });
 
-		expect(provider.resolveImport({ fromModule: "src/cart.cpp", specifier: "item.hpp" })).toEqual({
-			status: "resolved",
-			module: "src/item.hpp",
-		});
+		expect(provider.resolveImport({ fromModule: "src/cart.cpp", specifier: "item.hpp" })).toEqual(
+			landed("src/item.hpp"),
+		);
 		expect(provider.resolveImport({ fromModule: "src/cart.cpp", specifier: "vector" })).toEqual({
 			status: "external",
 			packageName: "vector",
 		});
-		expect(facts.imports.map((item) => item.specifier)).toEqual(["item.hpp", "vector"]);
+		expect(facts.imports.map((item) => item.specifier)).toEqual(["item.hpp", "vector", "api"]);
 		expect(
 			facts.references.find((reference) => reference.name === "Item" && reference.role === "import")?.binding
 				.status,
@@ -307,11 +511,11 @@ describe("C++ provider contract", () => {
 		expect(
 			["<lib/thing.hpp>", '"config.hpp"', "<config.hpp>", '"foo"', "lib/thing.hpp", "config.hpp"].map(resolve),
 		).toEqual([
-			{ status: "resolved", module: "include/lib/thing.hpp" },
-			{ status: "resolved", module: "src/config.hpp" },
-			{ status: "resolved", module: "include/config.hpp" },
-			{ status: "resolved", module: "include/foo" },
-			{ status: "resolved", module: "include/lib/thing.hpp" },
+			landed("include/lib/thing.hpp"),
+			landed("src/config.hpp"),
+			landed("include/config.hpp"),
+			landed("include/foo"),
+			landed("include/lib/thing.hpp"),
 			{ status: "unresolved", reason: "Ambiguous", detail: expect.any(String) },
 		]);
 		// Through thing.hpp to detail.hpp, whose include of thing.hpp again ends the walk; the nearer
@@ -392,8 +596,8 @@ describe("C++ provider contract", () => {
 		// The database's lists replace the conventional ones; an angle include skips `-iquote`, and a
 		// name is looked up as written, never with an extension added.
 		expect(["api.hpp", '"q.hpp"', "<q.hpp>", '"bare"'].map(resolve)).toEqual([
-			{ status: "resolved", module: "vendor/api/api.hpp" },
-			{ status: "resolved", module: "quoted/q.hpp" },
+			landed("vendor/api/api.hpp"),
+			landed("quoted/q.hpp"),
 			{ status: "external", packageName: "q.hpp" },
 			{ status: "unresolved", reason: "NotIndexed", detail: expect.any(String) },
 		]);
@@ -402,10 +606,7 @@ describe("C++ provider contract", () => {
 			['"cfg.hpp"', "<cfg.hpp>"].map((specifier) =>
 				provider.resolveImport({ fromModule: "src/split.cpp", specifier }),
 			),
-		).toEqual([
-			{ status: "resolved", module: "early/cfg.hpp" },
-			{ status: "resolved", module: "late/cfg.hpp" },
-		]);
+		).toEqual([landed("early/cfg.hpp"), landed("late/cfg.hpp")]);
 		// A forced include is read before the unit's first line.
 		expect(["api_value", "prelude_value"].map(home)).toEqual(["vendor/api/api.hpp", "forced/prelude.hpp"]);
 		expect(first.configFiles).toContain("build/compile_commands.json");
@@ -442,7 +643,7 @@ describe("C++ provider contract", () => {
 
 		expect(forward.resolved).toEqual([
 			{ status: "unresolved", reason: "Ambiguous", detail: expect.any(String) },
-			{ status: "resolved", module: "shared/common.hpp" },
+			landed("shared/common.hpp"),
 		]);
 		expect(discover(["release", "debug"])).toEqual(forward);
 		// A forced include in an excluded directory is still a file of the project.
@@ -478,7 +679,7 @@ describe("C++ provider contract", () => {
 				bound: [before, bound()],
 			}).toEqual({
 				diagnostics: [],
-				api: { status: "resolved", module: "include/api.hpp" },
+				api: landed("include/api.hpp"),
 				bound: ["unbound", "bound"],
 			});
 		} finally {
@@ -540,7 +741,7 @@ describe("C++ provider contract", () => {
 		expect(["<hidden.hpp>", '"../secret/api.hpp"', "<open.hpp>"].map(resolve)).toEqual([
 			{ status: "external", packageName: "hidden.hpp" },
 			{ status: "unresolved", reason: "NotIndexed", detail: expect.any(String) },
-			{ status: "resolved", module: "lib/include/open.hpp" },
+			landed("lib/include/open.hpp"),
 		]);
 	});
 
@@ -559,8 +760,9 @@ describe("C++ provider contract", () => {
 			return { importFacts: next, membersByPath: counted, references: [] } as unknown as CppFacts;
 		};
 		const includeOf = (name: string, at: number): ImportFact => ({
-			imported: { specifier: name, imported: [], reExport: false },
+			specifier: name,
 			quoted: false,
+			span: { start: { line: at, character: 0 }, end: { line: at, character: 1 } },
 			tokenStart: at,
 			tokenEnd: at + 1,
 		});
@@ -574,7 +776,7 @@ describe("C++ provider contract", () => {
 			const reaches = reachesOf("main.cpp", [], unit, {
 				resolve: (_includer, include) => {
 					resolved++;
-					return { status: "resolved", module: include.imported.specifier };
+					return landed(include.specifier);
 				},
 				load: (module) => headers.get(module),
 			});
@@ -732,16 +934,13 @@ describe("C++ provider contract", () => {
 	});
 
 	test("writes the tables that find a draft again only where drafts are added", () => {
-		const sources = path.join(import.meta.dirname, "..");
 		// Kept in step with `drafts` by `addDraft`; the layers above only read them.
-		const uses = readdirSync(sources)
-			.filter((file) => file.endsWith(".ts") && file !== "drafts.ts")
-			.flatMap((file) =>
-				[
-					...readFileSync(path.join(sources, file), "utf8").matchAll(
-						/this\.(declaredIn|typeNames)\s*\.(\w+)/g,
-					),
-				].map((found) => `${file}: ${found[1]}.${found[2]}`),
+		const uses = parsedFiles(path.join(import.meta.dirname, ".."), ["__tests__"])
+			.filter(({ file }) => path.basename(file) !== "drafts.ts")
+			.flatMap(({ file, source }) =>
+				memberReads(source)
+					.filter(({ receiver }) => receiver === "this.declaredIn" || receiver === "this.typeNames")
+					.map(({ receiver, name }) => `${path.basename(file)}: ${receiver}.${name}`),
 			);
 
 		expect(uses.length).toBeGreaterThan(0);

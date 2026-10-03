@@ -242,6 +242,34 @@ test("blocks resource paths and local-only preload bindings", () => {
 	expect(pathResult).toMatchObject({ status: "ready", blocked: [{ reason: "ExternalContract" }] });
 });
 
+test("renders member sites past this file's own names, and checks a bare or self site", () => {
+	const provider = started(path.join(process.cwd(), "providers/gdscript/src/__tests__/fixtures/autoload"));
+	const text = `const D = preload("res://d.gd")
+func bar(taken) -> void:
+	D.foo()
+	self.foo()
+	foo()
+`;
+	const site = (line: number, character: number): RenameSite => ({
+		range: { start: { line, character }, end: { line, character: character + 3 } },
+		role: "call",
+	});
+	const member = site(2, 3);
+	const rename = (newName: string, sites: RenameSite[]) =>
+		provider.renameEdits({ module: "user.gd", text, oldName: "foo", newName, sites });
+
+	// A declaration, a parameter and a registered class_name share the new names.
+	for (const newName of ["bar", "taken", "State"]) {
+		expect(rename(newName, [member])).toEqual({
+			status: "ready",
+			edits: [{ range: member.range, newText: newName }],
+			blocked: [],
+		});
+	}
+	expect(rename("bar", [member, site(3, 6)])).toMatchObject({ status: "refused", reason: "Collision" });
+	expect(rename("bar", [member, site(4, 1)])).toMatchObject({ status: "refused", reason: "Collision" });
+});
+
 test("refuses a class_name collision from the project registry", () => {
 	const fixtureRoot = path.join(process.cwd(), "providers/gdscript/src/__tests__/fixtures/autoload");
 	const provider = started(fixtureRoot);

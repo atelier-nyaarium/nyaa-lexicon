@@ -76,7 +76,10 @@ describe("indexing this repository's own source", () => {
 
 	it("resolves a relative import between two real files", async () => {
 		const resolution = await service.resolveImport("protocol/src/symbolId.ts", "./sourceCursor.js");
-		expect(resolution).toMatchObject({ status: "resolved", module: "protocol/src/sourceCursor.ts" });
+		expect(resolution).toMatchObject({
+			status: "resolved",
+			landing: { kind: "module", module: "protocol/src/sourceCursor.ts" },
+		});
 	}, 40_000);
 
 	it("calls an installed dependency external rather than unresolved", async () => {

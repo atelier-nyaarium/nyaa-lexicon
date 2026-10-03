@@ -10,7 +10,7 @@ import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { coordinatesOf } from "../coordinates.js";
 import type { TextEdit } from "../edits.js";
 import type { MoveEditsRequest, MoveEditsResponse } from "../move.js";
-import type { CommentSpan } from "../project.js";
+import type { CommentSpan, FileFacts } from "../project.js";
 import {
 	notImplementedBinding,
 	notImplementedImport,
@@ -123,7 +123,6 @@ function namedImportEdit(request: MoveEditsRequest, index: number): TextEdit | u
 	if (
 		site === undefined ||
 		site.importKind !== "named" ||
-		site.reExport ||
 		site.importedName !== request.name ||
 		(site.localName !== undefined && site.localName !== request.name)
 	) {
@@ -233,6 +232,18 @@ export const referenceHandlers: ProviderHandlers = {
 
 	// Holds nothing across parses, so a probe is a parse.
 	probeFile: (params) => referenceHandlers.parseFile(params),
+
+	// Holds nothing across parses, so it proves a batch only for modules whose text it was given.
+	probeBatch: (params) => {
+		const given = new Map(params.files.map((file) => [file.module, file]));
+		const facts: FileFacts[] = [];
+		for (const module of params.answer) {
+			const file = given.get(module);
+			if (file === undefined) return { status: "unsupported" as const, detail: `it holds no text for ${module}` };
+			facts.push(referenceHandlers.parseFile({ module, contentHash: file.contentHash, text: file.text }));
+		}
+		return { status: "ready" as const, facts, landings: [] };
+	},
 
 	parseFile: (params) => ({
 		module: params.module,

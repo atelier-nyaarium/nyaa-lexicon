@@ -5,6 +5,7 @@ import path from "node:path";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
+	comparePositions,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
 	defined,
@@ -32,10 +33,43 @@ import {
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import { type BashDeclaration, type BashReference, LANGUAGE, type ParsedBashFile, parseBash } from "./extract.js";
+import {
+	type BashDeclaration,
+	type BashReference,
+	LANGUAGE,
+	type ParsedBashFile,
+	parseBash,
+	type SourceImport,
+} from "./extract.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+type Unresolved = Exclude<ImportResolution, { status: "resolved" }>;
+
+/** One reference settling across the files a module sources. */
+interface Settling {
+	reference: BashReference;
+	report: (status: Unresolved, specifier: string) => void;
+	/** What each sourced file leaves, by module, so a file sourced on two paths is read once. */
+	memo: Map<string, string | undefined>;
+}
+
+/** A file's own definition of a name, and where it last took effect. */
+interface Binder {
+	symbolId: string;
+	/** Absent when it took no effect before the read. */
+	at?: Position;
+}
 
 ////////////////////////////////
 //  Constants
+
+const EXPANDS: Unresolved = {
+	status: "unresolved",
+	reason: "RuntimeConstructed",
+	detail: "the sourced path expands at run time",
+};
 
 const EXTENSIONS = [".sh", ".bash"];
 const FILENAMES = [".bashrc", ".bash_profile", ".bash_aliases", ".bash_logout", ".profile"];
@@ -170,6 +204,39 @@ function contains(range: Range, position: Position): boolean {
 	return afterStart && beforeEnd;
 }
 
+function landed(module: string): ImportResolution {
+	return { status: "resolved", landing: { kind: "module", module } };
+}
+
+/** Where a definition last took effect, before `before` when given: a variable at its last top-level write. */
+function binderOf(facts: ParsedBashFile, declaration: BashDeclaration, before?: Position): Binder {
+	let at: Position | undefined;
+	const consider = (position: Position) => {
+		if (before !== undefined && comparePositions(position, before) >= 0) return;
+		if (at === undefined || comparePositions(position, at) > 0) at = position;
+	};
+	consider(declaration.range.start);
+	if (declaration.kind !== "function") {
+		for (const reference of facts.references) {
+			if (
+				reference.role === "write" &&
+				reference.fromId === undefined &&
+				reference.target === declaration.symbolId
+			)
+				consider(reference.range.start);
+		}
+	}
+	return { symbolId: declaration.symbolId, ...defined({ at }) };
+}
+
+/** A sourced file's own definition: its last function of the name, or its variable. */
+function ownDefinition(facts: ParsedBashFile, reference: BashReference): Binder | undefined {
+	const declaration = reference.ofFunction
+		? facts.functionsByName.get(reference.name)?.at(-1)
+		: facts.globalsByName.get(reference.name);
+	return declaration === undefined ? undefined : binderOf(facts, declaration);
+}
+
 function declarationWire(declaration: BashDeclaration): Declaration {
 	const { declaredType: _type, ...wire } = declaration;
 	return wire;
@@ -248,28 +315,26 @@ export class BashProvider {
 		};
 	}
 
-	/** A sourced path resolves beside the file, then from the root; an expanding one cannot. */
+	/** A sourced path resolves beside the file, then from the root; one that expands or globs cannot. */
 	resolveImport(params: { fromModule: string; specifier: string }): ImportResolution {
 		const specifier = params.specifier;
-		if (/[$`]/.test(specifier))
-			return {
-				status: "unresolved",
-				reason: "RuntimeConstructed",
-				detail: "the sourced path expands at run time",
-			};
+		// An unquoted pattern reads the same as a quoted path; only the file says which was written.
+		const written = this.factsFor(params.fromModule)?.sources.filter((source) => source.specifier === specifier);
+		const expands = written !== undefined && written.length > 0 && written.every((source) => !source.literal);
+		if (expands || /[$`]/.test(specifier)) return EXPANDS;
 		const root = this.store.root;
 		if (path.isAbsolute(specifier)) {
 			const module = workspaceModule(root, specifier);
 			if (module === null) return { status: "external", packageName: specifier };
 			return this.hasFile(module)
-				? { status: "resolved", module }
+				? landed(module)
 				: { status: "unresolved", reason: "NotIndexed", detail: `no workspace file at ${specifier}` };
 		}
 		const fromAbsolute = workspaceFile(root, params.fromModule);
 		const directories = fromAbsolute === null ? [root] : [path.dirname(fromAbsolute), root];
 		for (const directory of directories) {
 			const module = workspaceModule(root, path.resolve(directory, specifier));
-			if (module !== null && this.hasFile(module)) return { status: "resolved", module };
+			if (module !== null && this.hasFile(module)) return landed(module);
 		}
 		return { status: "unresolved", reason: "NotIndexed", detail: `no workspace file matches ${specifier}` };
 	}
@@ -341,54 +406,101 @@ export class BashProvider {
 		);
 	}
 
-	/** Same file first, then every file this one sources, transitively, in source order. */
+	/** At the top level, the last definition or source before the read; in a body, the file's own first. */
 	private bindReference(module: string, parsed: ParsedBashFile, reference: BashReference): Binding {
 		if (reference.role === "import") return this.importBinding(module, reference.name);
-		if (reference.target !== undefined) return bound(reference.target);
-		const candidates: string[] = [];
+		const target = reference.target;
+		// A write names the variable it assigns, whatever a source left.
+		if (target !== undefined && (reference.fromId !== undefined || reference.role === "write"))
+			return bound(target);
 		let reason: UnknownReason = "NotIndexed";
 		let detail = `no bash declaration matches ${reference.name}`;
-		const report = (status: Exclude<ImportResolution, { status: "resolved" }>, specifier: string) => {
-			if (status.status === "external") {
-				reason = "ExternalDependency";
-				detail = `${reference.name} may come from ${specifier}, outside the workspace`;
-			} else {
-				reason = status.reason;
-				detail = status.detail ?? detail;
-			}
+		const settling: Settling = {
+			reference,
+			memo: new Map(),
+			report: (status, specifier) => {
+				if (status.status === "external") {
+					reason = "ExternalDependency";
+					detail = `${reference.name} may come from ${specifier}, outside the workspace`;
+				} else {
+					reason = status.reason;
+					detail = status.detail ?? detail;
+				}
+			},
 		};
-		for (const target of this.sourcedFacts(module, parsed, new Set([module]), report)) {
-			const held = reference.ofFunction
-				? target.functionsByName.get(reference.name)?.at(-1)
-				: target.globalsByName.get(reference.name);
-			if (held !== undefined) candidates.push(held.symbolId);
+		const visiting = new Set([module]);
+		// A function body may run after any source, so each source's definition stands.
+		if (reference.fromId !== undefined) {
+			const candidates = new Set<string>();
+			for (const source of parsed.sources) {
+				const settled = this.settledThrough(settling, module, source, visiting);
+				if (settled !== undefined) candidates.add(settled);
+			}
+			if (candidates.size > 1) return { status: "ambiguous", candidates: [...candidates], provenance: "bound" };
+			const [only] = candidates;
+			return only === undefined ? unbound(reason, detail) : bound(only);
 		}
-		if (candidates.length === 1) return bound(candidates[0] as string);
-		if (candidates.length > 1) return { status: "ambiguous", candidates, provenance: "bound" };
-		return unbound(reason, detail);
+		const declaration = parsed.declarations.find((candidate) => candidate.symbolId === target);
+		const own = declaration === undefined ? undefined : binderOf(parsed, declaration, reference.range.start);
+		const settled = this.settledIn(settling, module, parsed, own, reference.range.start, visiting);
+		return settled === undefined ? unbound(reason, detail) : bound(settled);
 	}
 
-	/** The files a module sources, each followed by what it sources in turn; a file is read once. */
-	private sourcedFacts(
+	/**
+	 * What running `facts` up to `before`, or whole, leaves: the last of its own definition and the
+	 * sources that bring the name.
+	 */
+	private settledIn(
+		s: Settling,
 		module: string,
-		parsed: ParsedBashFile,
-		visited: Set<string>,
-		report: (status: Exclude<ImportResolution, { status: "resolved" }>, specifier: string) => void,
-	): ParsedBashFile[] {
-		const found: ParsedBashFile[] = [];
-		for (const source of parsed.sources) {
-			const resolution = this.resolveImport({ fromModule: module, specifier: source.specifier });
-			if (resolution.status !== "resolved") {
-				report(resolution, source.specifier);
-				continue;
-			}
-			if (visited.has(resolution.module)) continue;
-			visited.add(resolution.module);
-			const target = this.factsFor(resolution.module);
-			if (target === null) continue;
-			found.push(target, ...this.sourcedFacts(resolution.module, target, visited, report));
+		facts: ParsedBashFile,
+		own: Binder | undefined,
+		before: Position | undefined,
+		visiting: ReadonlySet<string>,
+	): string | undefined {
+		let settled = own?.symbolId;
+		let since = own?.at;
+		for (const source of facts.sources) {
+			const at = source.range.start;
+			if (before !== undefined && comparePositions(at, before) >= 0) continue;
+			if (since !== undefined && comparePositions(at, since) < 0) continue;
+			const through = this.settledThrough(s, module, source, visiting);
+			if (through === undefined) continue;
+			settled = through;
+			since = at;
 		}
-		return found;
+		return settled;
+	}
+
+	/** What one source leaves once its file has run. */
+	private settledThrough(
+		s: Settling,
+		module: string,
+		source: SourceImport,
+		visiting: ReadonlySet<string>,
+	): string | undefined {
+		const resolution = this.resolveImport({ fromModule: module, specifier: source.specifier });
+		if (resolution.status !== "resolved") {
+			s.report(resolution, source.specifier);
+			return undefined;
+		}
+		const { landing } = resolution;
+		if (landing.kind !== "module" || visiting.has(landing.module)) return undefined;
+		if (s.memo.has(landing.module)) return s.memo.get(landing.module);
+		const target = this.factsFor(landing.module);
+		const settled =
+			target === null
+				? undefined
+				: this.settledIn(
+						s,
+						landing.module,
+						target,
+						ownDefinition(target, s.reference),
+						undefined,
+						new Set([...visiting, landing.module]),
+					);
+		s.memo.set(landing.module, settled);
+		return settled;
 	}
 
 	private importBinding(module: string, specifier: string): Binding {

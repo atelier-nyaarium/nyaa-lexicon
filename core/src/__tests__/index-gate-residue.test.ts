@@ -45,8 +45,16 @@ const SELF_GATING = [
  * A method of one of these names takes no hold itself, so a call inside one is already held and a
  * call outside one is not. `renameSymbol` and `writeRenameEdits` are here because the refactor
  * executor holds the gate around them from another file, where containment cannot see it.
+ * `reindexOwed` is a step's and a restore's reindex, and `recoverSteps` a recovery's.
  */
-const CALLER_HELD = new Set(["indexFile", "applyBatch", "renameSymbol", "writeRenameEdits"]);
+const CALLER_HELD = new Set([
+	"indexFile",
+	"applyBatch",
+	"renameSymbol",
+	"writeRenameEdits",
+	"reindexOwed",
+	"recoverSteps",
+]);
 
 /**
  * What `journaledStep` runs inside its write. The shape's plan runs before the hold; these members
@@ -132,9 +140,11 @@ function callsNamed(parsed: ParsedSource, names: readonly string[]): ts.CallExpr
 }
 
 /** The method a node sits in, so a road can be excused by where it is declared. */
-function enclosingMethod(node: ts.Node): string | undefined {
+/** The named method or function a node sits in. */
+function enclosingFunction(node: ts.Node): string | undefined {
 	for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent) {
 		if (ts.isMethodDeclaration(current) && ts.isIdentifier(current.name)) return current.name.text;
+		if (ts.isFunctionDeclaration(current) && current.name !== undefined) return current.name.text;
 	}
 	return undefined;
 }
@@ -197,7 +207,7 @@ describe("one gate, every indexing road", () => {
 		const offenders: string[] = [];
 		for (const call of callsNamed(parsed, ["indexOne"])) {
 			if (inside(call, stepped, parsed)) continue;
-			const method = enclosingMethod(call);
+			const method = enclosingFunction(call);
 			if (method !== undefined && CALLER_HELD.has(method)) continue;
 			offenders.push(`indexer.ts:${lineOf(parsed, call)} parses in ${method ?? "a free function"}`);
 		}
@@ -216,7 +226,7 @@ describe("one gate, every indexing road", () => {
 			const held = heldRegions(parsed);
 			for (const call of callsNamed(parsed, [...CALLER_HELD])) {
 				if (inside(call, held, parsed)) continue;
-				const method = enclosingMethod(call);
+				const method = enclosingFunction(call);
 				if (method !== undefined && CALLER_HELD.has(method)) continue;
 				offenders.push(`${shortName(parsed)}:${lineOf(parsed, call)} calls ${calleeName(call)} unheld`);
 			}

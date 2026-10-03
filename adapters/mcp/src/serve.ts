@@ -95,7 +95,8 @@ function backendOver(ask: Asker): ToolBackend {
 		symbolSource: (address) => ask("symbolSource", address),
 		refactorStart: () => ask("refactorStart", {}),
 		refactorStatus: () => ask("refactorStatus", {}),
-		prepareRename: (symbolId, newName) => ask("prepareRename", { symbolId, newName }),
+		prepareRename: (symbolId, newName, stops) =>
+			ask("prepareRename", { symbolId, newName, ...(stops === undefined ? {} : { stops }) }),
 		planMove: (symbolId, toModule) => ask("planMove", { symbolId, toModule }),
 		refactorTrack: (module) => ask("refactorTrack", { module }),
 		refactorUndo: () => ask("refactorUndo", {}),
@@ -104,7 +105,8 @@ function backendOver(ask: Asker): ToolBackend {
 		refactorReplace: (args) => ask("refactorReplace", args),
 		refactorReplaceSpan: (args) => ask("refactorReplaceSpan", args),
 		refactorInsert: (args) => ask("refactorInsert", args),
-		refactorRename: (symbolId, newName) => ask("refactorRename", { symbolId, newName }),
+		refactorRename: (symbolId, newName, stops) =>
+			ask("refactorRename", { symbolId, newName, ...(stops === undefined ? {} : { stops }) }),
 		refactorMove: (symbolId, toModule, together) =>
 			ask("refactorMove", { symbolId, toModule, ...(together.length === 0 ? {} : { together }) }),
 		indexStatus: (concerning) => ask("indexStatus", concerning === undefined ? {} : { concerning }),

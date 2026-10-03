@@ -71,7 +71,6 @@ function importSite(text: string, name: string, localName?: string): ArrangeImpo
 		importKind: "named",
 		importedName: name,
 		...(localName === undefined ? {} : { localName }),
-		reExport: false,
 		symbolId: symbolId(CART, name),
 	};
 }

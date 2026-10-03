@@ -91,7 +91,7 @@ export abstract class CsharpWorkspace {
 	protected indexed(namespace: string, key: string, module: string): IndexedType[] {
 		const projects = new Set<string>();
 		const types: IndexedType[] = [];
-		for (const entry of this.index.types(namespace, key)) {
+		for (const entry of this.index.types(namespace, key, module)) {
 			if (entry.partial) {
 				const project = this.projectOf(entry.module);
 				if (projects.has(project)) continue;
@@ -126,18 +126,12 @@ export abstract class CsharpWorkspace {
 		const ids = this.store.memo(`parts\0${type.meta.declaration.symbolId}`, () => {
 			const project = this.projectOf(type.module);
 			return this.index
-				.types(type.meta.namespaceName, typeKey(type.meta))
+				.types(type.meta.namespaceName, typeKey(type.meta), type.module)
 				.filter((entry) => entry.partial && this.projectOf(entry.module) === project)
 				.map((entry) => entry.symbolId);
 		});
 		const parts = this.typesAt(ids);
 		return parts.length > 0 ? parts : [type];
-	}
-
-	/** The files declaring a type: each of a partial type's parts. */
-	protected declaringModules(type: IndexedType): string[] {
-		const at = this.typeAt(type.symbolId);
-		return at === undefined ? [type.module] : this.typeParts(at).map((part) => part.module);
 	}
 
 	protected typesAt(symbolIds: readonly string[]): TypeAt[] {

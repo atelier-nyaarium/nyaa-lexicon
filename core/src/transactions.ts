@@ -884,8 +884,11 @@ export class TransactionManager {
 			const pending = this.imagesOf(open.id, "step", intent.stepNo);
 			const blocked = this.directoriesAt(pending);
 			if (blocked.length > 0) return { undone: false, reason: directoryInTheWay(blocked, "undo") };
+			this.owe(pending);
 			const restored = this.restoreAll(open.id, pending);
-			if (restored.conflicts.length > 0) return { undone: false, reason: this.unrestored(restored, "undo") };
+			if (restored.conflicts.length > 0) {
+				return { undone: false, reason: this.unrestored(restored, "undo"), modules: restored.restored };
+			}
 			return this.finalizeUndo(open.id, intent.stepNo);
 		}
 
@@ -910,8 +913,11 @@ export class TransactionManager {
 		}
 
 		this.markRecovery(open.id, "undo", top.stepNo);
+		this.owe(images);
 		const restored = this.restoreAll(open.id, images);
-		if (restored.conflicts.length > 0) return { undone: false, reason: this.unrestored(restored, "undo") };
+		if (restored.conflicts.length > 0) {
+			return { undone: false, reason: this.unrestored(restored, "undo"), modules: restored.restored };
+		}
 		this.failAfterRestore?.();
 		return this.finalizeUndo(open.id, top.stepNo);
 	}
@@ -944,21 +950,25 @@ export class TransactionManager {
 		const blocked = this.directoriesAt(images);
 		if (blocked.length > 0) return { reverted: false, modules: [], reason: directoryInTheWay(blocked, "revert") };
 		if (intent !== null) {
+			this.owe(images);
 			const restored = this.restoreAll(open.id, images, intent.diskStates);
 			if (restored.conflicts.length > 0) {
+				const modules = restored.restored;
 				const unsafe = restored.conflicts.find((module) => this.diskState(module).kind === "outside");
-				if (unsafe) return { reverted: false, modules: [], reason: refactorPathLeavesWorkspace(unsafe) };
-				return { reverted: false, modules: [], reason: this.unrestored(restored, "revert") };
+				if (unsafe) return { reverted: false, modules, reason: refactorPathLeavesWorkspace(unsafe) };
+				return { reverted: false, modules, reason: this.unrestored(restored, "revert") };
 			}
 			return this.finalizeRevert(open.id);
 		}
 
 		this.markRecovery(open.id, "revert", null, diskStates);
+		this.owe(images);
 		const restored = this.restoreAll(open.id, images, diskStates);
 		if (restored.conflicts.length > 0) {
+			const modules = restored.restored;
 			const unsafe = restored.conflicts.find((module) => this.diskState(module).kind === "outside");
-			if (unsafe) return { reverted: false, modules: [], reason: refactorPathLeavesWorkspace(unsafe) };
-			return { reverted: false, modules: [], reason: this.unrestored(restored, "revert") };
+			if (unsafe) return { reverted: false, modules, reason: refactorPathLeavesWorkspace(unsafe) };
+			return { reverted: false, modules, reason: this.unrestored(restored, "revert") };
 		}
 		this.failAfterRestore?.();
 		return this.finalizeRevert(open.id);
@@ -1013,7 +1023,9 @@ export class TransactionManager {
 		// Recovery preserves directories at restore paths.
 		const intent = this.recoveryIntent(open.id);
 		if (intent?.operation === "undo" && intent.stepNo !== null) {
-			const { restored, conflicts } = this.restoreAll(open.id, this.imagesOf(open.id, "step", intent.stepNo));
+			const images = this.imagesOf(open.id, "step", intent.stepNo);
+			this.owe(images);
+			const { restored, conflicts } = this.restoreAll(open.id, images);
 			if (conflicts.length > 0) {
 				return { recovered: true, transactionId: open.id, restored, conflicts, unreversed: [] };
 			}
@@ -1027,11 +1039,9 @@ export class TransactionManager {
 			};
 		}
 		if (intent?.operation === "revert") {
-			const { restored, conflicts } = this.restoreAll(
-				open.id,
-				this.imagesOf(open.id, "baseline", 0),
-				intent.diskStates,
-			);
+			const images = this.imagesOf(open.id, "baseline", 0);
+			this.owe(images);
+			const { restored, conflicts } = this.restoreAll(open.id, images, intent.diskStates);
 			if (conflicts.length > 0) {
 				return { recovered: true, transactionId: open.id, restored, conflicts, unreversed: [] };
 			}
@@ -1059,6 +1069,7 @@ export class TransactionManager {
 
 		let retained = false;
 		for (const step of unfinished) {
+			this.owe(this.imagesOf(open.id, "step", step.stepNo));
 			const conflictsBefore = conflicts.length;
 			let failed = false;
 			for (const image of this.imagesOf(open.id, "step", step.stepNo)) {
@@ -1370,6 +1381,11 @@ export class TransactionManager {
 			if (code !== undefined) return "failed";
 			throw error;
 		}
+	}
+
+	/** Owes each image's module a parse before any byte moves, so a crash anywhere after leaves the indexer the work. */
+	private owe(images: ReadonlyArray<{ module: string }>): void {
+		this.store.oweRebinds(images.map((image) => image.module));
 	}
 
 	private restoreAll(

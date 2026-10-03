@@ -1,19 +1,39 @@
 // One reading of every symbol id a provider hands the index, before any of it is written.
 // Refused before the transaction, so the file's previous facts survive.
 
-import type { Declaration, DocRegion, FileRole, Literal, Reference } from "@nyaa-lexicon/protocol";
-import { composeSymbolId, moduleOf, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
+import type {
+	AllList,
+	Declaration,
+	DocRegion,
+	Export,
+	ExportTarget,
+	FileRole,
+	Import,
+	Landing,
+	Literal,
+	Range,
+	Reference,
+	ScopeContribution,
+} from "@nyaa-lexicon/protocol";
+import { composeSymbolId, isCanonicalModule, moduleOf, parseSymbolIdResult } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-/** What a provider's parse contributes that carries a symbol id. */
+/** What a provider's parse contributes that carries a symbol id or names an import edge. */
 export interface ProviderFacts {
 	declarations: Declaration[];
 	references: Reference[];
 	literals: Literal[];
 	docs: DocRegion[];
 	role?: FileRole | undefined;
+	imports?: Import[] | undefined;
+	exports?: Export[] | undefined;
+	allList?: AllList | undefined;
+	/** Where the file's specifiers landed, and the provider that answered, which a scope must name. */
+	landings?: readonly Landing[] | undefined;
+	provider?: string | null | undefined;
+	scopeContributions?: readonly ScopeContribution[] | undefined;
 }
 
 /** A provider contract violation; the file is not written. */
@@ -80,4 +100,47 @@ export function admitFacts(module: string, facts: ProviderFacts): void {
 	if (facts.role?.kind === "entry" && facts.role.how === "main" && facts.role.symbolId !== undefined) {
 		declaredHere("entry point", facts.role.symbolId);
 	}
+
+	// An import edge is named by its span, so no two may share one.
+	const edges = new Set<string>();
+	for (const statement of facts.imports ?? []) {
+		for (const edge of statement.edges) {
+			const key = spanKey(edge.span);
+			if (edges.has(key)) refuse(module, `two import edges share the span ${key}`);
+			edges.add(key);
+		}
+	}
+	const targeted = (what: string, target: ExportTarget): void => {
+		if (target.kind === "symbol") declaredHere(what, target.symbolId);
+		else if (target.kind === "import" && !edges.has(spanKey(target.span))) {
+			refuse(module, `${what} names no import edge at ${spanKey(target.span)}`);
+		}
+	};
+	for (const edge of facts.exports ?? []) targeted(`export ${edge.name ?? "*"}`, edge.target);
+	if (facts.allList?.state === "static") {
+		for (const entry of facts.allList.entries) targeted(`allList entry ${entry.name}`, entry.target);
+	}
+	for (const reference of facts.references) {
+		if (reference.origin?.kind === "import" && !edges.has(spanKey(reference.origin.span))) {
+			refuse(module, `reference ${reference.name} resolves through no import edge`);
+		}
+	}
+	for (const landing of facts.landings ?? []) {
+		if (landing.kind === "module" && !isCanonicalModule(landing.module)) {
+			refuse(module, `a landing names ${JSON.stringify(landing.module)}, which is no workspace module`);
+		}
+		if (landing.kind !== "module" && landing.providerId !== facts.provider) {
+			refuse(module, `a scope landing names provider ${landing.providerId}`);
+		}
+	}
+	const contributions = facts.scopeContributions ?? [];
+	if (contributions.length > 0 && !facts.provider) refuse(module, "a scope contribution names no provider");
+	for (const scope of contributions) {
+		for (const member of scope.members) declaredHere(`scope ${scope.scopeId} member`, member);
+	}
+}
+
+/** An edge's span, as one key. */
+export function spanKey(range: Range): string {
+	return `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
 }

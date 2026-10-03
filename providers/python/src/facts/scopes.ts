@@ -92,11 +92,16 @@ export class Scopes {
 	private readonly declarationsByScope = new Map<string, Map<string, RawDeclaration[]>>();
 	private readonly dynamicCalls = new Map<A.Node, boolean>();
 	private readonly walruses = new Map<A.Node, string[]>();
+	/** Where each import binding is written, by scope and name. */
+	private readonly importEnds = new Map<string, Map<string, Position[]>>();
 
 	constructor(
 		module: A.Module,
 		private readonly declarationPath: DeclarationPath,
 		occurrences: ReadonlyMap<string, readonly RawDeclaration[]>,
+		private readonly positionAt: (offset: number) => Position,
+		/** A test a static reading takes as true, such as `TYPE_CHECKING`. */
+		private readonly alwaysTrue: (test: A.Expression) => boolean,
 	) {
 		this.collect(module.body, [], "module");
 		for (const entries of occurrences.values()) {
@@ -168,6 +173,13 @@ export class Scopes {
 		if (conditional) this.conditionalDeclarations.add(pathKey([...path, { kind: "term", name }]));
 	}
 
+	private addImport(path: RawDescriptor[], name: string, end: number): void {
+		const key = pathKey(path);
+		const byName = this.importEnds.get(key) ?? new Map<string, Position[]>();
+		byName.set(name, [...(byName.get(name) ?? []), this.positionAt(end)]);
+		this.importEnds.set(key, byName);
+	}
+
 	/** A call to `exec` or `eval` in a node, nested scopes aside. */
 	private hasDynamicCall(node: A.Node): boolean {
 		let found = this.dynamicCalls.get(node);
@@ -213,12 +225,15 @@ export class Scopes {
 				case "Import":
 				case "ImportFrom":
 					for (const alias of node.names) {
-						if (alias.name === "*") info.starImport = true;
-						else {
+						if (alias.name === "*") {
+							info.starImport = true;
+							if (conditional) info.conditional.add("*");
+						} else {
 							const local =
 								alias.asname ??
 								(node.type === "Import" ? (alias.name.split(".")[0] as string) : alias.name);
 							this.addName(info, local, conditional);
+							this.addImport(path, local, alias.end);
 						}
 					}
 					continue;
@@ -263,6 +278,9 @@ export class Scopes {
 			}
 			switch (node.type) {
 				case "If":
+					this.collect(node.body, path, kind, conditional || !this.alwaysTrue(node.test));
+					this.collect(node.orelse, path, kind, true);
+					break;
 				case "For":
 				case "AsyncFor":
 				case "While":
@@ -296,13 +314,9 @@ export class Scopes {
 	////////////////////////////////
 	//  Binding
 
-	private declarationCandidate(
-		scope: string,
-		name: string,
-		role: RawReferenceRole,
-		position: Position,
-	): RawBinding | undefined {
-		let entries = this.declarationsByScope.get(scope)?.get(name) ?? [];
+	private declarationCandidate(path: readonly RawDescriptor[], query: BindingQuery): RawBinding | undefined {
+		const { name, role, position } = query;
+		let entries = this.declarationsByScope.get(pathKey(path))?.get(name) ?? [];
 		if (role === "extends") entries = entries.filter((entry) => entry.kind === "class");
 		else if (role === "typeUse") entries = entries.filter((entry) => TYPE_USE_KINDS.has(entry.kind));
 		// A type parameter resolves only through the enclosing-scope lookup.
@@ -316,7 +330,25 @@ export class Scopes {
 		if ((role === "extends" || role === "typeUse") && comparePositions(declaration.range.start, position) > 0) {
 			return unbound("NotImplemented", "forward base or annotation binding is not supported");
 		}
+		if (this.importCompetes(path, declaration, query)) {
+			return unbound("Ambiguous", "an import of this name can be the binding the read sees");
+		}
 		return { status: "bound", descriptorPath: declaration.descriptorPath };
+	}
+
+	/** Whether an import in the declaration's scope can be bound where the read runs. */
+	private importCompetes(path: readonly RawDescriptor[], declaration: RawDeclaration, query: BindingQuery): boolean {
+		const imports = this.importEnds.get(pathKey(path))?.get(query.name);
+		if (imports === undefined) return false;
+		// Only a function body defers the read past the scope's own statements.
+		const inOrder = query.scopePath.slice(path.length).every((item) => item.kind === "type");
+		const bound = declaration.range.end;
+		if (inOrder && comparePositions(bound, query.position) > 0) return true;
+		// A lambda may run after every import.
+		const until = inOrder && query.blockedReason === undefined ? query.position : undefined;
+		return imports.some(
+			(end) => comparePositions(end, bound) > 0 && (until === undefined || comparePositions(end, until) <= 0),
+		);
 	}
 
 	private typeParameterCandidate(owner: readonly RawDescriptor[], name: string): RawBinding | undefined {
@@ -339,12 +371,11 @@ export class Scopes {
 
 	private resolveLevel(
 		path: readonly RawDescriptor[],
-		name: string,
-		role: RawReferenceRole,
-		position: Position,
+		query: BindingQuery,
 		current: string,
 		nonlocal: boolean,
 	): RawBinding | undefined {
+		const { name } = query;
 		const key = pathKey(path);
 		const info = this.infos.get(key);
 		if (info === undefined) return undefined;
@@ -352,7 +383,7 @@ export class Scopes {
 		if (info.dynamic) return unbound("RuntimeConstructed", "exec or eval can change this scope");
 		if (nonlocal && (key === current || info.kind !== "function")) return undefined;
 		if (info.conditional.has(name)) return unbound("Ambiguous", "a conditional definition can shadow this name");
-		const candidate = this.declarationCandidate(key, name, role, position);
+		const candidate = this.declarationCandidate(path, query);
 		if (candidate?.status === "bound" && path.length === 0 && info.starImport) {
 			return unbound("Ambiguous", "a star import can shadow module names");
 		}
@@ -363,7 +394,7 @@ export class Scopes {
 	}
 
 	bindingFor(query: BindingQuery): RawBinding {
-		const { name, role, scopePath, position } = query;
+		const { name, role, scopePath } = query;
 		if (query.bindable === false) return unbound("Ambiguous", "attribute binding requires a resolved receiver");
 		if (!ROLES.has(role)) return unbound("NotImplemented", "this reference role is not indexed");
 		const current = pathKey(scopePath);
@@ -377,7 +408,7 @@ export class Scopes {
 
 		// A closer ordinary binding wins over a type parameter.
 		if (!global && !(nested && info?.kind === "class")) {
-			const result = this.resolveLevel(scopePath, name, role, position, current, nonlocal);
+			const result = this.resolveLevel(scopePath, query, current, nonlocal);
 			if (result !== undefined) return result;
 		}
 
@@ -414,7 +445,7 @@ export class Scopes {
 			}
 		}
 		for (const path of paths) {
-			const result = this.resolveLevel(path, name, role, position, current, nonlocal);
+			const result = this.resolveLevel(path, query, current, nonlocal);
 			if (result !== undefined) return result;
 		}
 		return unbound("NotImplemented", "no certain same-file declaration; cross-file binding is not implemented");

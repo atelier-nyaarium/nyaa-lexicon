@@ -147,6 +147,28 @@ describe("rename edits", () => {
 		expect(syntaxErrors(destructuringApplied.text)).toEqual([]);
 	});
 
+	it("renames a key read off a namespace and keeps the local it binds", () => {
+		const text = 'import * as d from "./d";\nconst { parse } = d;\nconst { parse: p } = d;\nparse() + p();\n';
+		const keyAt = (from: string) => ({
+			range: rangeForText(text, "parse", text.indexOf(from)),
+			role: "read" as const,
+		});
+		const response = rename(workspace({ "d.ts": "export function parse() {}\n", "use.ts": text }), {
+			module: "use.ts",
+			text,
+			oldName: "parse",
+			newName: "load",
+			sites: [keyAt("{ parse }"), keyAt("{ parse: p")],
+		});
+		if (response.status !== "ready") throw new Error("namespace key rename was refused");
+		expect({ blocked: response.blocked, text: applyEdits(text, response.edits) }).toEqual({
+			blocked: [],
+			text: {
+				text: 'import * as d from "./d";\nconst { load: parse } = d;\nconst { load: p } = d;\nparse() + p();\n',
+			},
+		});
+	});
+
 	it("rewrites only the source side of an aliased import", () => {
 		const text = 'import { oldName as localName } from "./source";\nlocalName();\n';
 		const response = rename(workspace({ "use.ts": text }), {
@@ -300,5 +322,154 @@ describe("rename edits", () => {
 		if (response.status !== "ready") throw new Error("JSX rename was refused");
 		expect(response.edits).toEqual([]);
 		expect(response.blocked[0]).toMatchObject({ reason: "NotImplemented" });
+	});
+});
+
+describe("kept names", () => {
+	/** Renames `oldName` in `text`, a site at its first occurrence after each `from`, kept where flagged. */
+	function renameIn(text: string, sites: Array<{ from: string; keep?: true }>, names = ["hashBytes", "digestBytes"]) {
+		const [oldName, newName] = names as [string, string];
+		const hash = { "hash.ts": `export function ${oldName}() {}\n` };
+		const response = rename(workspace({ ...hash, "barrel.ts": text }), {
+			module: "barrel.ts",
+			text,
+			oldName,
+			newName,
+			sites: sites.map(({ from, keep }) => ({
+				range: rangeForText(text, oldName, text.indexOf(from)),
+				...(keep ? { keep } : {}),
+			})),
+		});
+		if (response.status !== "ready") throw new Error(`rename was refused: ${JSON.stringify(response)}`);
+		return { blocked: response.blocked, text: applyEdits(text, response.edits) };
+	}
+
+	it("keeps the old exported name at a stopped re-export, and the old local at a stopped import", () => {
+		expect(renameIn('export { hashBytes } from "./hash";\n', [{ from: "export", keep: true }])).toEqual({
+			blocked: [],
+			text: { text: 'export { digestBytes as hashBytes } from "./hash";\n' },
+		});
+		const local = 'import { hashBytes } from "./hash";\nexport { hashBytes };\nhashBytes();\n';
+		expect(renameIn(local, [{ from: "import", keep: true }])).toEqual({
+			blocked: [],
+			text: { text: 'import { digestBytes as hashBytes } from "./hash";\nexport { hashBytes };\nhashBytes();\n' },
+		});
+		// An alias already keeps its name.
+		expect(renameIn('export { hashBytes as h } from "./hash";\n', [{ from: "export", keep: true }])).toEqual({
+			blocked: [],
+			text: { text: 'export { digestBytes as h } from "./hash";\n' },
+		});
+	});
+
+	it("collapses an alias renamed back to its own name", () => {
+		const text =
+			'export { digestBytes as hashBytes } from "./hash";\nimport { type digestBytes as hashBytes } from "./hash";\n';
+		const back = renameIn(text, [{ from: "export" }, { from: "import" }], ["digestBytes", "hashBytes"]);
+		expect(back).toEqual({
+			blocked: [],
+			text: { text: 'export { hashBytes } from "./hash";\nimport { type hashBytes } from "./hash";\n' },
+		});
+	});
+
+	it("blocks a kept site that is no specifier's source name", () => {
+		const text = "export function hashBytes() {}\n";
+		const response = rename(workspace({ "barrel.ts": text }), {
+			module: "barrel.ts",
+			text,
+			oldName: "hashBytes",
+			newName: "digestBytes",
+			sites: [{ range: rangeForText(text, "hashBytes"), keep: true }],
+		});
+		expect(response).toMatchObject({ status: "ready", edits: [], blocked: [{ reason: "NotImplemented" }] });
+	});
+
+	it("renames an aliased import's source beside an unrelated local of the new name", () => {
+		const text = 'import { hashBytes as h } from "./hash";\nconst digestBytes = h;\n';
+		expect(renameIn(text, [{ from: "import" }])).toEqual({
+			blocked: [],
+			text: { text: 'import { digestBytes as h } from "./hash";\nconst digestBytes = h;\n' },
+		});
+	});
+});
+
+describe("collisions", () => {
+	const use = 'import { N } from "./source";\nconsole.log(N);\n';
+
+	/** Renames `N` to `M` in `module`, a site at the first `N` after each anchor. */
+	function renameN(files: Record<string, string>, module: string, anchors: string[]) {
+		const text = files[module] ?? "";
+		return rename(workspace(files), {
+			module,
+			text,
+			oldName: "N",
+			newName: "M",
+			sites: anchors.map((anchor) => site(text, "N", text.indexOf(anchor))),
+		});
+	}
+
+	function renamed(files: Record<string, string>, module: string, anchors: string[]) {
+		const response = renameN(files, module, anchors);
+		if (response.status !== "ready") throw new Error(`rename was refused: ${JSON.stringify(response)}`);
+		return { blocked: response.blocked, text: applyEdits(files[module] ?? "", response.edits) };
+	}
+
+	it("renames through a second star that re-exports the same symbol under the new name", () => {
+		const files = {
+			"source.ts": "export const N = 1;\n",
+			"alias.ts": 'export { N as M } from "./source";\n',
+			"hub.ts": 'export * from "./source";\nexport * from "./alias";\n',
+			"use.ts": 'import { N } from "./hub";\nconsole.log(N);\n',
+		};
+		expect(renamed(files, "use.ts", ["{ N", "(N"])).toEqual({
+			blocked: [],
+			text: { text: 'import { M } from "./hub";\nconsole.log(M);\n' },
+		});
+	});
+
+	it("renames a value onto the name of a type declared beside it", () => {
+		const files = { "source.ts": "export const N = 1;\nexport type M = string;\n", "use.ts": use };
+		expect([renamed(files, "source.ts", ["const N"]), renamed(files, "use.ts", ["{ N", "(N"])]).toEqual([
+			{ blocked: [], text: { text: "export const M = 1;\nexport type M = string;\n" } },
+			{ blocked: [], text: { text: 'import { M } from "./source";\nconsole.log(M);\n' } },
+		]);
+	});
+
+	it("renames an imported value beside a local type of the new name", () => {
+		const files = {
+			"source.ts": "export const N = 1;\n",
+			"use.ts": 'import { N } from "./source";\ntype M = string;\nexport const y: M = String(N);\n',
+		};
+		expect(renamed(files, "use.ts", ["{ N", "(N"])).toEqual({
+			blocked: [],
+			text: { text: 'import { M } from "./source";\ntype M = string;\nexport const y: M = String(M);\n' },
+		});
+	});
+
+	it("refuses a different symbol of a shared meaning, and a second binding of the same one", () => {
+		const imported = [
+			{ "source.ts": "export const N = 1;\nexport const M = 2;\n", "use.ts": use },
+			// A class shares the type meaning.
+			{ "source.ts": "export class N {}\nexport type M = string;\n", "use.ts": use },
+			// The barrel's own type shadows the value its star carries.
+			{
+				"source.ts": "export const N = 1;\n",
+				"hub.ts": 'export * from "./source";\nexport type M = string;\n',
+				"use.ts": 'import { N } from "./hub";\nconsole.log(N);\n',
+			},
+			{
+				"source.ts": "export const N = 1;\n",
+				"alias.ts": 'export { N as M } from "./source";\n',
+				"use.ts": 'import { N } from "./source";\nimport { M } from "./alias";\nconsole.log(N, M);\n',
+			},
+		].map((files) => renameN(files, "use.ts", ["{ N", "(N"]));
+		const local = { "local.ts": "class N {}\ntype M = string;\nnew N();\n" };
+		const responses = [...imported, renameN(local, "local.ts", ["class N", "new N"])];
+		expect(responses.map((response) => (response.status === "refused" ? response.reason : "ready"))).toEqual([
+			"Collision",
+			"Collision",
+			"Collision",
+			"Collision",
+			"Collision",
+		]);
 	});
 });

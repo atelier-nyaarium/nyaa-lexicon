@@ -7,6 +7,11 @@ function at(span: Range): [number, number, number] {
 	return [span.start.line, span.start.character, span.end.character];
 }
 
+/** A one-line range. */
+function on(line: number, start: number, end: number): Range {
+	return { start: { line, character: start }, end: { line, character: end } };
+}
+
 async function extract(module: string, text: string) {
 	return extractFacts(module, text);
 }
@@ -189,32 +194,31 @@ test("extracts decorators, nested declarations, relative imports, and call candi
 		].join("\n"),
 	);
 
+	const site = { conditional: false, moduleLevel: true };
 	expect(facts.imports).toEqual([
 		{
 			specifier: ".",
-			imported: [
-				{ name: "sibling", range: { start: { line: 0, character: 14 }, end: { line: 0, character: 21 } } },
-			],
-			reExport: false,
+			edges: [{ kind: "named", span: on(0, 14, 21), name: "sibling", range: on(0, 14, 21), ...site }],
+			load: { kind: "sideEffect", span: on(0, 5, 6), ...site },
 		},
 		{
 			specifier: "..common",
-			imported: [
+			edges: [
 				{
+					kind: "named",
+					span: on(1, 21, 35),
 					name: "value",
-					range: { start: { line: 1, character: 21 }, end: { line: 1, character: 26 } },
+					range: on(1, 21, 26),
 					local: "alias",
-					localRange: { start: { line: 1, character: 30 }, end: { line: 1, character: 35 } },
+					localRange: on(1, 30, 35),
+					...site,
 				},
 			],
-			reExport: false,
+			load: { kind: "sideEffect", span: on(1, 5, 13), ...site },
 		},
 		{
 			specifier: "bpy",
-			imported: [
-				{ local: "bpy", localRange: { start: { line: 2, character: 7 }, end: { line: 2, character: 10 } } },
-			],
-			reExport: false,
+			edges: [{ kind: "namespace", span: on(2, 7, 10), local: "bpy", localRange: on(2, 7, 10), ...site }],
 		},
 	]);
 	expect(facts.declarations.map((declaration) => declaration.name)).toEqual([
@@ -396,40 +400,66 @@ test("keeps imports and exports in import facts rather than duplicate references
 		['__all__ = ["thing"]', "from .other import thing", "import sibling"].join("\n"),
 	);
 
+	const site = { conditional: false, moduleLevel: true };
 	expect(facts.imports).toEqual([
 		{
 			specifier: ".other",
-			imported: [
-				{ name: "thing", range: { start: { line: 1, character: 19 }, end: { line: 1, character: 24 } } },
-			],
-			reExport: true,
+			edges: [{ kind: "named", span: on(1, 19, 24), name: "thing", range: on(1, 19, 24), ...site }],
+			load: { kind: "sideEffect", span: on(1, 5, 11), ...site },
 		},
 		{
 			specifier: "sibling",
-			imported: [
-				{ local: "sibling", localRange: { start: { line: 2, character: 7 }, end: { line: 2, character: 14 } } },
-			],
-			reExport: false,
+			edges: [{ kind: "namespace", span: on(2, 7, 14), local: "sibling", localRange: on(2, 7, 14), ...site }],
 		},
 	]);
 	expect(facts.references).toEqual([]);
 });
 
-test("marks only deliberate imports as re-exports", async () => {
-	const leaf = await extract(
-		"pkg/leaf.py",
-		["import os", "from .item import Item", "from .other import Public", '__all__ = ["Public"]'].join("\n"),
+test("reads __all__ as absent, a static list matched to its bindings, or dynamic once anything changes it", async () => {
+	const absent = await extract("pkg/mod.py", "x = 1\n");
+	const listed = await extract(
+		"pkg/mod.py",
+		['__all__ = ["thing", "local", "missing"]', "from .other import thing", "local = 1", ""].join("\n"),
 	);
-	const packageInit = await extract("pkg/__init__.py", "from .item import Item\nimport os\n");
+	const reassigned = await extract("pkg/mod.py", '__all__ = names()\n__all__ = ["a"]\na = 1\n');
+	const read = await extract(
+		"pkg/mod.py",
+		'__all__ = ["a"]\nif "a" in __all__:\n    for name in __all__[:]:\n        print(name, *__all__)\na = 1\n',
+	);
+	const changed = [
+		'__all__ = ["a"]\n__all__ += ["b"]\n',
+		'__all__ = ["a"]\n__all__.append("b")\n',
+		'__all__ = ["a"]\n__all__.extend(more)\n',
+		"__all__ = names()\n",
+		'if flag:\n    __all__ = ["a"]\n',
+		"def reset():\n    global __all__\n    __all__ = []\n",
+		'__all__ = ["a"]\nnames = __all__\nnames.clear()\n',
+		'__all__ = ["a"]\nmutate(__all__)\n',
+	];
+	const dynamic = await Promise.all(changed.map((text) => extract("pkg/mod.py", text)));
+	const fallback = await extract("pkg/mod.py", '__all__ = ["a"]\n__all__ += ["b"]\na = 1\n_c = 2\n');
 
-	expect(leaf.imports.map((item) => [item.specifier, item.reExport])).toEqual([
-		["os", false],
-		[".item", false],
-		[".other", true],
-	]);
-	expect(packageInit.imports.map((item) => [item.specifier, item.reExport])).toEqual([
-		[".item", true],
-		["os", false],
+	expect(absent.allList).toEqual({ state: "absent" });
+	expect(listed.allList).toEqual({
+		state: "static",
+		entries: [
+			{ name: "thing", range: on(0, 11, 18), target: { kind: "import", span: on(1, 19, 24) } },
+			{
+				name: "local",
+				range: on(0, 20, 27),
+				target: { kind: "symbol", descriptorPath: [{ kind: "term", name: "local" }] },
+			},
+			{ name: "missing", range: on(0, 29, 38), target: { kind: "unknown", reason: "NotIndexed" } },
+		],
+	});
+	expect(reassigned.allList).toMatchObject({ state: "static", entries: [{ name: "a" }] });
+	expect(read.allList).toMatchObject({ state: "static", entries: [{ name: "a" }] });
+	expect(dynamic.map((facts) => facts.allList)).toEqual(
+		changed.map(() => ({ state: "dynamic", reason: "RuntimeConstructed" })),
+	);
+	expect(fallback.declarations.map((declaration) => [declaration.name, declaration.exported])).toEqual([
+		["a", true],
+		["_c", false],
 	]);
 });
 
@@ -439,54 +469,84 @@ test("emits exact import name ranges for aliases and multiline lists", async () 
 		["from .item import helper as h", "from .item import (", "    Item,", "    other as alias,", ")"].join("\n"),
 	);
 
+	const site = { conditional: false, moduleLevel: true };
 	expect(facts.imports).toEqual([
 		{
 			specifier: ".item",
-			imported: [
+			edges: [
 				{
+					kind: "named",
+					span: on(0, 18, 29),
 					name: "helper",
-					range: { start: { line: 0, character: 18 }, end: { line: 0, character: 24 } },
+					range: on(0, 18, 24),
 					local: "h",
-					localRange: { start: { line: 0, character: 28 }, end: { line: 0, character: 29 } },
+					localRange: on(0, 28, 29),
+					...site,
 				},
 			],
-			reExport: false,
+			load: { kind: "sideEffect", span: on(0, 5, 10), ...site },
 		},
 		{
 			specifier: ".item",
-			imported: [
-				{ name: "Item", range: { start: { line: 2, character: 4 }, end: { line: 2, character: 8 } } },
+			edges: [
+				{ kind: "named", span: on(2, 4, 8), name: "Item", range: on(2, 4, 8), ...site },
 				{
+					kind: "named",
+					span: on(3, 4, 18),
 					name: "other",
-					range: { start: { line: 3, character: 4 }, end: { line: 3, character: 9 } },
+					range: on(3, 4, 9),
 					local: "alias",
-					localRange: { start: { line: 3, character: 13 }, end: { line: 3, character: 18 } },
+					localRange: on(3, 13, 18),
+					...site,
 				},
 			],
-			reExport: false,
+			load: { kind: "sideEffect", span: on(1, 5, 10), ...site },
 		},
 	]);
 });
 
-test("keeps star imports empty and preserves local import bindings", async () => {
-	const facts = await extract("pkg/mod.py", "from .item import *\nimport os.path as p\nimport os\n");
+test("reports a star as one selecting edge, and a dotted import as its package binding plus a load per submodule", async () => {
+	const facts = await extract(
+		"pkg/mod.py",
+		"from .item import *\nimport os.path as p\nimport os\nimport a.b\nimport x . y.z\n",
+	);
 
+	const site = { conditional: false, moduleLevel: true };
 	expect(facts.imports).toEqual([
-		{ specifier: ".item", imported: [], reExport: false },
+		{
+			specifier: ".item",
+			edges: [{ kind: "wildcard", span: on(0, 18, 19), selector: { kind: "allList" }, ...site }],
+			load: { kind: "sideEffect", span: on(0, 5, 10), ...site },
+		},
 		{
 			specifier: "os.path",
-			imported: [
-				{ local: "p", localRange: { start: { line: 1, character: 18 }, end: { line: 1, character: 19 } } },
-			],
-			reExport: false,
+			edges: [{ kind: "namespace", span: on(1, 7, 19), local: "p", localRange: on(1, 18, 19), ...site }],
 		},
 		{
 			specifier: "os",
-			imported: [
-				{ local: "os", localRange: { start: { line: 2, character: 7 }, end: { line: 2, character: 9 } } },
-			],
-			reExport: false,
+			edges: [{ kind: "namespace", span: on(2, 7, 9), local: "os", localRange: on(2, 7, 9), ...site }],
 		},
+		{
+			specifier: "a",
+			edges: [{ kind: "namespace", span: on(3, 7, 8), local: "a", localRange: on(3, 7, 8), ...site }],
+		},
+		{ specifier: "a.b", edges: [{ kind: "sideEffect", span: on(3, 7, 10), ...site }] },
+		{
+			specifier: "x",
+			edges: [{ kind: "namespace", span: on(4, 7, 8), local: "x", localRange: on(4, 7, 8), ...site }],
+		},
+		{ specifier: "x.y", edges: [{ kind: "sideEffect", span: on(4, 7, 12), ...site }] },
+		{ specifier: "x.y.z", edges: [{ kind: "sideEffect", span: on(4, 7, 14), ...site }] },
+	]);
+	expect(facts.importBindings.find((binding) => binding.specifier === "a.b")).toMatchObject({
+		lands: "a",
+		localName: "a",
+		span: on(3, 7, 8),
+		loads: [on(3, 7, 10)],
+	});
+	expect(facts.importBindings.find((binding) => binding.specifier === "x.y.z")?.loads).toEqual([
+		on(4, 7, 12),
+		on(4, 7, 14),
 	]);
 });
 
@@ -541,23 +601,17 @@ test("keeps exact ranges for imports in conditional blocks", async () => {
 	expect(facts.imports).toEqual([
 		{
 			specifier: "optional",
-			imported: [
+			edges: [
 				{
+					kind: "namespace",
+					span: on(1, 11, 19),
 					local: "optional",
-					localRange: { start: { line: 1, character: 11 }, end: { line: 1, character: 19 } },
+					localRange: on(1, 11, 19),
+					conditional: true,
+					moduleLevel: true,
 				},
 			],
-			reExport: false,
 		},
-	]);
-});
-
-test("accumulates literal __all__ additions", async () => {
-	const facts = await extract("pkg/mod.py", '__all__ = ["a"]\n__all__ += ["b"]\na = 1\nb = 2\n');
-
-	expect(facts.declarations.filter((declaration) => declaration.name === "a" || declaration.name === "b")).toEqual([
-		expect.objectContaining({ name: "a", exported: true, visibility: "public" }),
-		expect.objectContaining({ name: "b", exported: true, visibility: "public" }),
 	]);
 });
 
@@ -566,6 +620,7 @@ test("reports syntax errors without inventing facts", async () => {
 
 	expect(facts.declarations).toEqual([]);
 	expect(facts.imports).toEqual([]);
+	expect({ exports: facts.exports, allList: facts.allList }).toEqual({ exports: null, allList: null });
 	expect(facts.diagnostics).toHaveLength(1);
 	expect(facts.diagnostics[0]?.severity).toBe("error");
 });

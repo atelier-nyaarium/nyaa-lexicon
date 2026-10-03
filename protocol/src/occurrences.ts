@@ -3,7 +3,7 @@
 
 import { comparePositions } from "./coordinates.js";
 import { defined } from "./defined.js";
-import type { FileFacts } from "./project.js";
+import type { ExportTarget, FileFacts } from "./project.js";
 import { composeSymbolId, type Descriptor, parseSymbolId, rebaseSymbolId, type SymbolId } from "./symbolId.js";
 import type { Declaration, Range, Reference } from "./symbols.js";
 
@@ -201,6 +201,25 @@ export function withOccurrences(facts: FileFacts): FileFacts {
 			return { ...binding, candidates: binding.candidates.map((candidate) => follow(candidate, range)) };
 		return binding;
 	};
+	// A member list carries no position: the nth repeat of an id is the nth reopening, in source order.
+	const reopenings = new Map<string, string[]>();
+	for (const index of order) {
+		const original = (facts.declarations[index] as Declaration).symbolId;
+		reopenings.set(original, [...(reopenings.get(original) ?? []), finalIds.get(index) as string]);
+	}
+	const members = (ids: readonly string[]): string[] => {
+		const seen = new Map<string, number>();
+		return ids.map((member) => {
+			const nth = seen.get(member) ?? 0;
+			seen.set(member, nth + 1);
+			return reopenings.get(member)?.[nth] ?? member;
+		});
+	};
+	const target = <T extends { target: ExportTarget }>(holder: T, range: Range): T =>
+		holder.target.kind === "symbol"
+			? { ...holder, target: { ...holder.target, symbolId: repoint(holder.target.symbolId, range) } }
+			: holder;
+	const allList = facts.allList;
 	return {
 		...facts,
 		declarations: facts.declarations.map((declaration, index) => ({
@@ -228,6 +247,18 @@ export function withOccurrences(facts: FileFacts): FileFacts {
 							? region
 							: { ...region, anchorId: repoint(region.anchorId, region.range) },
 					),
+				}),
+		...(facts.exports === undefined ? {} : { exports: facts.exports.map((edge) => target(edge, edge.span)) }),
+		...(allList?.state === "static"
+			? { allList: { ...allList, entries: allList.entries.map((entry) => target(entry, entry.range)) } }
+			: {}),
+		...(facts.scopeContributions === undefined
+			? {}
+			: {
+					scopeContributions: facts.scopeContributions.map((scope) => ({
+						...scope,
+						members: members(scope.members),
+					})),
 				}),
 	};
 }

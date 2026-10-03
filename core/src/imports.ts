@@ -1,19 +1,21 @@
 // Which module a specifier names, and which statements brought a name into a file.
 //
-// The knowledge layer and the rename planner both need this, and two answers would be one fact
-// under two names. Providers through a port, never a supervisor.
+// The knowledge layer, the move planner and the indexer share it, so one fact has one answer.
+// Providers through a port, never a supervisor.
 
 import {
 	defined,
 	type FindImportsResult,
-	type ImportKind,
 	type ImportOrigin,
 	type ImportResolution,
 	type IndexDepth,
+	type Landing,
 	type ModuleExclusion,
 	type MoveImportSite,
+	moduleOf,
 	type Range,
 } from "@nyaa-lexicon/protocol";
+import type { ScopeLanding } from "./exportProjection.js";
 import { DEFAULT_REFERENCE_LIMIT } from "./indexReads.js";
 import { type Paged, pageProbed, pageScanned, wire } from "./paging.js";
 import { compileSearchRegex } from "./search.js";
@@ -25,10 +27,10 @@ import type { IndexStore, StoredImport } from "./store.js";
 /** Resolving or regex-searching imports reads at most this many rows. */
 const IMPORT_SCAN_LIMIT = 20_000;
 
-/** Where a resolution points and how deeply that target is worth reading, or nowhere. */
+/** Where a resolution points and how deeply that target is worth reading, or nowhere. A scope is no one module. */
 export function importTarget(resolution: ImportResolution): { module: string; depth: IndexDepth } | null {
-	if (resolution.status === "resolved") {
-		return { module: resolution.module, depth: resolution.depth ?? "full" };
+	if (resolution.status === "resolved" && resolution.landing.kind === "module") {
+		return { module: resolution.landing.module, depth: resolution.depth ?? "full" };
 	}
 	if (resolution.status === "external" && resolution.surface !== undefined) {
 		return { module: resolution.surface.module, depth: "surface" };
@@ -36,33 +38,30 @@ export function importTarget(resolution: ImportResolution): { module: string; de
 	return null;
 }
 
-/** The provider's stated form; without one, a statement naming no export binds the module itself. */
-function kindOf(statement: StoredImport): ImportKind {
-	return statement.kind ?? (statement.name === undefined ? "namespace" : "named");
-}
-
-/** A statement as a move or an arrangement re-points it. */
+/** An edge as a move or an arrangement re-points it. */
 function siteOf(statement: StoredImport, range: Range): MoveImportSite {
 	return {
 		range,
 		specifier: statement.specifier,
-		importKind: kindOf(statement),
+		importKind: statement.kind,
 		...(statement.typeOnly === true ? { typeOnly: true } : {}),
 		...defined({ importedName: statement.name, localName: statement.local }),
-		reExport: statement.reExport,
 	};
 }
 
 ////////////////////////////////
 //  Interfaces & Types
 
-/** The one provider capability this needs. Its supplier owns caching and surface globs. */
-export type ResolveSpecifier = (fromModule: string, specifier: string) => Promise<ImportResolution>;
+/** The one provider capability this needs. Its supplier owns caching and surface globs; `fresh` skips its cache. */
+export type ResolveSpecifier = (fromModule: string, specifier: string, fresh?: boolean) => Promise<ImportResolution>;
 
-/** Only the import rows a resolver takes for planning; a store or a stamping context both satisfy it. */
+/** Only the rows a resolver takes for planning; a store or a stamping context both satisfy it. */
 export interface ImportReads {
 	importsNamed(name: string): StoredImport[];
 	importsIn(module: string): StoredImport[];
+	/** Each module whose effective exports name `name`, with what it binds to there. */
+	exposuresNamed(name: string): Array<{ module: string; originSymbolId: string | null }>;
+	scopeMembers(landing: ScopeLanding): Array<{ symbolId: string; name: string }> | null;
 }
 
 ////////////////////////////////
@@ -74,7 +73,6 @@ export class ImportResolver {
 		private readonly store: IndexStore,
 		private readonly resolve: ResolveSpecifier,
 	) {}
-
 	/** Import statements in one module naming the moved symbol, which must now address its target.
 	 * A move plans through the context, so `reads` stamps what it answers. */
 	importSitesForMove(module: string, name: string, reads: ImportReads): MoveImportSite[] {
@@ -99,7 +97,8 @@ export class ImportResolver {
 		const found: Array<{ module: string; site: MoveImportSite }> = [];
 		for (const statement of reads.importsNamed(name)) {
 			if (statement.range === undefined || statement.module === declaringModule) continue;
-			if ((await resolve(statement.module, statement.specifier)) !== declaringModule) continue;
+			const landed = await resolve(statement.module, statement.specifier);
+			if (landed?.kind !== "module" || landed.module !== declaringModule) continue;
 			found.push({ module: statement.module, site: siteOf(statement, statement.range) });
 		}
 		return found;
@@ -112,7 +111,7 @@ export class ImportResolver {
 			if (statement.name !== name && statement.local !== name) continue;
 			return {
 				specifier: statement.specifier,
-				importKind: kindOf(statement),
+				importKind: statement.kind,
 				...(statement.typeOnly === true ? { typeOnly: true } : {}),
 				...defined({ importedName: statement.name, localName: statement.local }),
 			};
@@ -196,11 +195,15 @@ export class ImportResolver {
 	/**
 	 * Where a specifier lands. Asked of the provider, since the index does not hold specifiers.
 	 *
-	 * Cached because it is the one hot question here: it costs a provider round trip, a rename asks
-	 * it once per same-named import, and the re-export walk asks the same handful repeatedly.
+	 * Cached because it is the one hot question here: the indexer asks it for every import it writes.
 	 */
 	resolveImport(fromModule: string, specifier: string): Promise<ImportResolution> {
 		return this.resolve(fromModule, specifier);
+	}
+
+	/** Where a specifier lands now, asked of the provider past every cache. */
+	resolveLive(fromModule: string, specifier: string): Promise<ImportResolution> {
+		return this.resolve(fromModule, specifier, true);
 	}
 
 	/**
@@ -211,10 +214,10 @@ export class ImportResolver {
 	 *
 	 * Specifiers are resolved here rather than at index time. Resolving all of them while indexing
 	 * costs a provider round trip per import across the whole workspace, to answer a question only
-	 * the handful sharing a name with a rename target ever ask.
+	 * the handful sharing a name with a cited declaration ever ask.
 	 *
-	 * A rename plans through the context, so `reads` stamps what it answers; a read-only caller
-	 * names its own unstamped source explicitly, never by an omitted argument.
+	 * A caller planning through a context passes it, so `reads` stamps what it answers; a read-only
+	 * caller names its own unstamped source explicitly, never by an omitted argument.
 	 */
 	async importSitesFor(
 		declaringModule: string,
@@ -223,7 +226,7 @@ export class ImportResolver {
 	): Promise<Array<{ module: string; range: Range; factId: string }>> {
 		const statements = reads.importsNamed(name);
 		const resolve = this.resolutionCache();
-		const exposing = await this.modulesExposing(declaringModule, statements, resolve);
+		const exposing = this.modulesExposing(declaringModule, name, reads);
 
 		const found: Array<{ module: string; range: Range; factId: string }> = [];
 		for (const statement of statements) {
@@ -231,15 +234,22 @@ export class ImportResolver {
 			// The row exists for the import GRAPH, which is a different question.
 			if (statement.range === undefined) continue;
 			const landed = await resolve(statement.module, statement.specifier);
-			if (landed !== null && exposing.has(landed))
-				found.push({ module: statement.module, range: statement.range, factId: statement.factId });
+			const reaches =
+				landed === null
+					? false
+					: landed.kind === "module"
+						? exposing.has(landed.module)
+						: (reads.scopeMembers(landed) ?? []).some(
+								(member) => member.name === name && moduleOf(member.symbolId) === declaringModule,
+							);
+			if (reaches) found.push({ module: statement.module, range: statement.range, factId: statement.factId });
 		}
 		return found;
 	}
 
-	/** One provider round trip per distinct specifier, since the re-export walk revisits them. */
-	private resolutionCache(): (fromModule: string, specifier: string) => Promise<string | null> {
-		const seen = new Map<string, Promise<string | null>>();
+	/** One provider round trip per distinct specifier, since a plan revisits them. */
+	private resolutionCache(): (fromModule: string, specifier: string) => Promise<Landing | null> {
+		const seen = new Map<string, Promise<Landing | null>>();
 
 		return (fromModule, specifier) => {
 			// Escaped, never raw: a raw NUL makes the whole file binary to git and invisible to grep.
@@ -247,7 +257,7 @@ export class ImportResolver {
 			let answer = seen.get(key);
 			if (answer === undefined) {
 				answer = this.resolveImport(fromModule, specifier)
-					.then((r) => (r.status === "resolved" ? r.module : null))
+					.then((r) => (r.status === "resolved" ? r.landing : null))
 					.catch(() => null);
 				seen.set(key, answer);
 			}
@@ -259,32 +269,14 @@ export class ImportResolver {
 	 * Every module through which this name can be reached, the declaring one included.
 	 *
 	 * A barrel is the normal case, not an exotic one: `import { X } from "@scope/pkg"` resolves to
-	 * the package entry, while X is declared in some file that entry re-exports. Demanding the two
-	 * be the same module made every such import invisible to a rename, which was found by asking
-	 * this tool about its own `ProviderHandlers` and getting 9 of 12 occurrences.
-	 *
-	 * A fixpoint rather than one hop, because barrels chain. Bounded by the number of re-export
-	 * rows, so a cycle of barrels terminates instead of walking forever.
+	 * the package entry, while X is declared in some file that entry re-exports. Read from the export
+	 * projection, so chained barrels and stars come from the same resolver as the surface.
 	 */
-	async modulesExposing(
-		declaringModule: string,
-		statements: StoredImport[],
-		resolve: (fromModule: string, specifier: string) => Promise<string | null>,
-	): Promise<Set<string>> {
+	modulesExposing(declaringModule: string, name: string, reads: ImportReads): Set<string> {
 		const exposing = new Set([declaringModule]);
-		const reExports = statements.filter((statement) => statement.reExport);
-
-		for (let pass = 0; pass <= reExports.length; pass++) {
-			let grew = false;
-			for (const statement of reExports) {
-				if (exposing.has(statement.module)) continue;
-				const landed = await resolve(statement.module, statement.specifier);
-				if (landed !== null && exposing.has(landed)) {
-					exposing.add(statement.module);
-					grew = true;
-				}
-			}
-			if (!grew) break;
+		for (const row of reads.exposuresNamed(name)) {
+			if (row.originSymbolId !== null && moduleOf(row.originSymbolId) === declaringModule)
+				exposing.add(row.module);
 		}
 		return exposing;
 	}

@@ -40,6 +40,7 @@ const ROW_READERS: Record<string, string> = {
 	"refusals.ts": "names an unminted id's neighbours",
 	"knowledge.ts": "walks a file's declarations for gaps",
 	"paintFacts.ts": "renders a module's rows as paint spans, no nesting asked",
+	"renameValidation.ts": "compares an edited module's ids before and after a candidate, no nesting asked",
 };
 
 /** The store's every id for a module: the id grammar's own subtree, never the container walk. */
@@ -74,6 +75,7 @@ const IMPORTS_IN_READERS: Record<string, string> = {
 	"indexer.ts": "walks the import closure while indexing, not a plan",
 	"service.ts": "warms a symbol's tree before answering, not a plan",
 	"paintFacts.ts": "finds the imported name under a cursor, not a plan",
+	"renameRoutes.ts": "a rename's other wildcards in one module; `reads` is the plan's context",
 };
 
 const ROOT = path.resolve(import.meta.dirname, "..");
