@@ -60,12 +60,16 @@ test("extracts the GDScript declaration forms used by the project", () => {
 	expect(declarations.every((declaration) => declaration.exported === undefined)).toBe(true);
 });
 
-test("an unnamed enum's members are the class's constants, and an enum spans its braces", () => {
+test("an unnamed enum's members are the class's constants, and an enum spans and reads its own braces", () => {
 	const text = `enum { IDLE, RUNNING = 2 }
 enum Mode { A, B = 1 << 2,
 	C, D,
 	E
 }
+enum Near { F }; enum Far { G }
+enum { H }; enum { I }
+enum Split \\
+	{ J }
 `;
 	const declarations = extractDeclarationsCore("scripts/enums.gd", text, composeSymbolId);
 	const shape = declarations.slice(1).map((declaration) => ({
@@ -84,6 +88,14 @@ enum Mode { A, B = 1 << 2,
 		{ name: "C", container: "Mode", lines: "2-2" },
 		{ name: "D", container: "Mode", lines: "2-2" },
 		{ name: "E", container: "Mode", lines: "3-3" },
+		{ name: "Near", container: "enums", lines: "5-5" },
+		{ name: "F", container: "Near", lines: "5-5" },
+		{ name: "Far", container: "enums", lines: "5-5" },
+		{ name: "G", container: "Far", lines: "5-5" },
+		{ name: "H", container: "enums", lines: "6-6" },
+		{ name: "I", container: "enums", lines: "6-6" },
+		{ name: "Split", container: "enums", lines: "7-8" },
+		{ name: "J", container: "Split", lines: "8-8" },
 	]);
 	expect(references).toEqual([]);
 });
@@ -111,6 +123,231 @@ func run():
 	expect([read("amount")?.binding, read("a")?.binding]).toMatchObject([
 		{ reason: "NotIndexed" },
 		{ reason: "NotIndexed" },
+	]);
+});
+
+test("a lambda's block inside a bracket belongs to the variable it initializes, which ends at the bracket", () => {
+	const text = `var x = foo(func(v):
+	var inner = [
+		1,
+	]
+	return inner
+); var b = 1
+var y = bar(
+	func named():
+		var deep = 1; var other = 2
+		return deep
+, 2)
+func run():
+	var z = foo(func():
+		var local = 1
+		return local
+	)
+`;
+	const facts = started().parseFile({ module: "bracketed.gd", contentHash: "bracketed", text });
+	const source = coordinatesOf(text);
+	const owner = (id: string | undefined) =>
+		facts.declarations.find((declaration) => declaration.symbolId === id)?.name;
+	const read = (name: string) =>
+		facts.references.find((reference) => reference.name === name && reference.role === "read");
+
+	expect(
+		facts.declarations
+			.slice(1)
+			.map((declaration) => [
+				declaration.name,
+				declaration.kind,
+				owner(declaration.containerId),
+				source.sliceRange(declaration.range),
+			]),
+	).toEqual([
+		["x", "property", "bracketed", "var x = foo(func(v):\n\tvar inner = [\n\t\t1,\n\t]\n\treturn inner\n)"],
+		["inner", "variable", "x", "\tvar inner = [\n\t\t1,\n\t]"],
+		["b", "property", "bracketed", "var b = 1"],
+		[
+			"y",
+			"property",
+			"bracketed",
+			"var y = bar(\n\tfunc named():\n\t\tvar deep = 1; var other = 2\n\t\treturn deep\n, 2)",
+		],
+		["deep", "variable", "y", "\t\tvar deep = 1"],
+		["other", "variable", "y", "var other = 2"],
+		["run", "method", "bracketed", text.slice(text.indexOf("func run"), -1)],
+		["z", "variable", "run", "\tvar z = foo(func():\n\t\tvar local = 1\n\t\treturn local\n\t)"],
+		["local", "variable", "run", "\t\tvar local = 1"],
+	]);
+	expect(["inner", "deep", "local"].map((name) => [owner(read(name)?.fromId), read(name)?.binding])).toMatchObject([
+		["x", { reason: "NotIndexed" }],
+		["y", { reason: "NotIndexed" }],
+		["run", { reason: "NotIndexed" }],
+	]);
+});
+
+test("an initializer's reads outside its bracketed lambda belong to the enclosing class", () => {
+	const text = `var x = foo(KEY, func(v):
+	return v + KEY
+); var b = KEY
+var y = bar(
+	func():
+		return KEY
+, KEY)
+`;
+	const declarations = extractDeclarationsCore("scripts/outside.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/outside.gd", text, composeSymbolId);
+	const owner = (id: string | undefined) => declarations.find((declaration) => declaration.symbolId === id)?.name;
+	const reads = (name: string) =>
+		references.filter((reference) => reference.name === name && reference.role === "read");
+
+	expect(reads("KEY").map((reference) => owner(reference.fromId))).toEqual([
+		"outside",
+		"x",
+		"outside",
+		"y",
+		"outside",
+	]);
+	// The lambda's own parameter, not a member to bind.
+	expect(reads("v")).toMatchObject([{ binding: { reason: "NotIndexed" } }]);
+});
+
+test("sibling bracketed lambdas keep their own parameters and locals", () => {
+	const text = `var token = 1
+var count = 2
+var x = foo(func(token):
+	var count = token
+	return count
+, func():
+	return token + count
+)
+`;
+	const declarations = extractDeclarationsCore("scripts/siblings.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/siblings.gd", text, composeSymbolId);
+	const owner = (id: string | undefined) => declarations.find((declaration) => declaration.symbolId === id)?.name;
+
+	// The second lambda reads the members the first one shadows.
+	expect(
+		references
+			.filter((reference) => reference.role === "read")
+			.map((reference) => [reference.name, owner(reference.fromId), reference.binding]),
+	).toMatchObject([
+		["token", "x", { reason: "NotIndexed" }],
+		["count", "x", { reason: "NotIndexed" }],
+		["token", "x", { reason: "NotImplemented" }],
+		["count", "x", { reason: "NotImplemented" }],
+	]);
+});
+
+test("an inline lambda's parameters name nothing past its own body", () => {
+	const text = `var token = 1
+var x = foo(func(token): return token, token)
+var z = func(token): return token; var cb = func(a):
+	return token
+var w = func(token): return func(u):
+	return u + token
+var y = token
+`;
+	const declarations = extractDeclarationsCore("scripts/inline.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/inline.gd", text, composeSymbolId);
+	const owner = (id: string | undefined) => declarations.find((declaration) => declaration.symbolId === id)?.name;
+
+	// A later block lambda on its line holds none of it; one in its body holds its parameters.
+	expect(
+		references
+			.filter((reference) => reference.role === "read")
+			.map((reference) => [reference.name, owner(reference.fromId), reference.binding]),
+	).toMatchObject([
+		["token", "x", { reason: "NotIndexed" }],
+		["token", "inline", { reason: "NotImplemented" }],
+		["token", "z", { reason: "NotIndexed" }],
+		["token", "cb", { reason: "NotImplemented" }],
+		["u", "w", { reason: "NotIndexed" }],
+		["token", "w", { reason: "NotIndexed" }],
+		["token", "inline", { reason: "NotImplemented" }],
+	]);
+});
+
+test("a nested lambda keeps its own parameters and reads the names of the lambdas around it", () => {
+	const text = `var token = 1
+var f = func(): return call(token, func(token): return token)
+var g = func(a): return func(): return a
+var x = foo(func():
+	var b = token
+	return bar(func(token): return token + b)
+)
+`;
+	const declarations = extractDeclarationsCore("scripts/nested.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/nested.gd", text, composeSymbolId);
+	const owner = (id: string | undefined) => declarations.find((declaration) => declaration.symbolId === id)?.name;
+
+	expect(
+		references
+			.filter((reference) => reference.role === "read")
+			.map((reference) => [reference.name, owner(reference.fromId), reference.binding]),
+	).toMatchObject([
+		["token", "f", { reason: "NotImplemented" }],
+		["token", "f", { reason: "NotIndexed" }],
+		["a", "g", { reason: "NotIndexed" }],
+		["token", "x", { reason: "NotImplemented" }],
+		["token", "x", { reason: "NotIndexed" }],
+		["b", "x", { reason: "NotIndexed" }],
+	]);
+});
+
+test("a block lambda in a bracketed lambda's body keeps its parameters to its indented body", () => {
+	const text = `var token = 1
+var x = foo(func():
+	var cb = func(token):
+		return token
+	return token
+)
+var y = foo(func():
+	var cb = func(a):
+		var cc = func(token):
+			return token + a
+		return token
+	return token
+)
+`;
+	const declarations = extractDeclarationsCore("scripts/nested.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/nested.gd", text, composeSymbolId);
+	const owner = (id: string | undefined) => declarations.find((declaration) => declaration.symbolId === id)?.name;
+
+	expect(
+		references
+			.filter((reference) => reference.role === "read")
+			.map((reference) => [reference.name, owner(reference.fromId), reference.binding]),
+	).toMatchObject([
+		["token", "x", { reason: "NotIndexed" }],
+		["token", "x", { reason: "NotImplemented" }],
+		["token", "y", { reason: "NotIndexed" }],
+		["a", "y", { reason: "NotIndexed" }],
+		["token", "y", { reason: "NotImplemented" }],
+		["token", "y", { reason: "NotImplemented" }],
+	]);
+});
+
+test("a class-level const's lambda holds its parameters as a var's does", () => {
+	const text = `var token = 1
+const F = func(token): return token
+const G = func(token):
+	get(token)
+var v = func(token):
+	get(token)
+var y = token
+`;
+	const declarations = extractDeclarationsCore("scripts/const.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/const.gd", text, composeSymbolId);
+	const owner = (id: string | undefined) => declarations.find((declaration) => declaration.symbolId === id)?.name;
+
+	// A block lambda's body opening with `get(` is no accessor.
+	expect(
+		references
+			.filter((reference) => reference.role === "read")
+			.map((reference) => [reference.name, owner(reference.fromId), reference.binding]),
+	).toMatchObject([
+		["token", "F", { reason: "NotIndexed" }],
+		["token", "G", { reason: "NotIndexed" }],
+		["token", "v", { reason: "NotIndexed" }],
+		["token", "const", { reason: "NotImplemented" }],
 	]);
 });
 
@@ -247,6 +484,154 @@ test("extracts every semicolon-separated local declaration", () => {
 	expect(locals.map((declaration) => declaration?.name)).toEqual(["R", "L", "B", "F"]);
 	expect(locals.map((declaration) => declaration?.kind)).toEqual(["variable", "variable", "variable", "variable"]);
 	expect(locals.every((declaration) => declaration?.containerId === run?.symbolId)).toBe(true);
+});
+
+test("ends each declaration sharing a line where its own text ends", () => {
+	const text = `var f = 1; @export var g = 2
+enum E { A, B = 2 }; const C = 3
+signal s; signal t(a)
+var q = 1; var r: int:
+	get: return 2
+var ended = 1;
+func run(v):
+	var a = 1; var b = 2
+	match v:
+		[var h, var k]:
+			pass
+	if v: var m = 1; pass
+`;
+	const declarations = extractDeclarationsCore("scripts/shared.gd", text, composeSymbolId);
+	const source = coordinatesOf(text);
+	const own = declarations
+		.slice(1)
+		.filter((declaration) => declaration.kind !== "method" && declaration.languageKind !== "parameter")
+		.map((declaration) => [declaration.name, source.sliceRange(declaration.range)]);
+
+	expect(own).toEqual([
+		["f", "var f = 1"],
+		["g", "@export var g = 2"],
+		["E", "enum E { A, B = 2 }"],
+		["A", "A"],
+		["B", "B = 2"],
+		["C", "const C = 3"],
+		["s", "signal s"],
+		["t", "signal t(a)"],
+		["q", "var q = 1"],
+		["r", "var r: int:\n\tget: return 2"],
+		["ended", "var ended = 1;"],
+		["a", "\tvar a = 1"],
+		["b", "var b = 2"],
+		["h", "var h"],
+		["k", "var k"],
+		["m", "var m = 1"],
+	]);
+});
+
+test("reads a multi-line initializer before a semicolon in the class, not as a block", () => {
+	const text = `const K = 1
+var x = [
+	K,
+]; var y = K
+`;
+	const declarations = extractDeclarationsCore("scripts/spread.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/spread.gd", text, composeSymbolId);
+	const x = declarations.find((declaration) => declaration.name === "x");
+
+	expect(x === undefined ? undefined : coordinatesOf(text).sliceRange(x.range)).toBe("var x = [\n\tK,\n]");
+	expect(references.filter((reference) => reference.name === "K").map((reference) => reference.fromId)).toEqual([
+		declarations[0]?.symbolId,
+		declarations[0]?.symbolId,
+	]);
+});
+
+test("ends a declaration spanning lines where its statement closes", () => {
+	const text = `const X = {
+	"a": 1,
+} # kept
+var y = [
+	1,
+]
+signal s(
+	a,
+)
+signal t \\
+	(b)
+var z = 1 + \\
+	2
+var doc = """
+text
+"""
+var semi = [
+	1,
+];
+var acc = [
+	1,
+]:
+	get: return acc
+var d = {
+	get = 1,
+}
+var a = 1 \\
+; var b = 2
+func run(v):
+	var local = {
+		"k": 1,
+	}
+	if v: var m = [
+		1,
+	]
+`;
+	const facts = started().parseFile({ module: "spans.gd", contentHash: "spans", text });
+	const source = coordinatesOf(text);
+	const own = facts.declarations
+		.filter((declaration) => declaration.kind !== "class" && declaration.kind !== "method")
+		.filter((declaration) => declaration.languageKind !== "parameter")
+		.map((declaration) => [declaration.name, source.sliceRange(declaration.range)]);
+
+	expect(own).toEqual([
+		["X", 'const X = {\n\t"a": 1,\n} # kept'],
+		["y", "var y = [\n\t1,\n]"],
+		["s", "signal s(\n\ta,\n)"],
+		["t", "signal t \\\n\t(b)"],
+		["z", "var z = 1 + \\\n\t2"],
+		["doc", 'var doc = """\ntext\n"""'],
+		["semi", "var semi = [\n\t1,\n];"],
+		["acc", "var acc = [\n\t1,\n]:\n\tget: return acc"],
+		["d", "var d = {\n\tget = 1,\n}"],
+		["a", "var a = 1"],
+		["b", "var b = 2"],
+		["local", '\tvar local = {\n\t\t"k": 1,\n\t}'],
+		["m", "var m = [\n\t\t1,\n\t]"],
+	]);
+});
+
+test("reads a multi-line initializer in the enclosing scope, and a key there as no accessor word", () => {
+	const text = `const K = 1
+var acc = [
+		K,
+]:
+	get: return acc
+var d = {
+	get: K,
+}
+`;
+	const declarations = extractDeclarationsCore("scripts/initializers.gd", text, composeSymbolId);
+	const references = extractReferencesCore("scripts/initializers.gd", text, composeSymbolId);
+	const owner = (id: string | undefined) => declarations.find((declaration) => declaration.symbolId === id)?.name;
+
+	expect(
+		references.map((reference) => [
+			reference.name,
+			reference.role,
+			reference.range.start.line,
+			owner(reference.fromId),
+		]),
+	).toEqual([
+		["K", "read", 2, "initializers"],
+		["acc", "read", 4, "acc"],
+		["get", "read", 6, "initializers"],
+		["K", "read", 6, "initializers"],
+	]);
 });
 
 test("extracts typed and untyped for bindings as local variables", () => {
@@ -468,19 +853,30 @@ var inline: int: get = get_inline
 func run():
 	var node = 1
 	set("value", 2)
+var cached: int:
+	get:
+		var computed = 2
+		return computed
 `,
 		composeSymbolId,
 	);
+	const found = (name: string) => declarations.find((declaration) => declaration.name === name);
 	const lines = (name: string) => {
-		const range = declarations.find((declaration) => declaration.name === name)?.range;
+		const range = found(name)?.range;
 		return `${range?.start.line}-${range?.end.line}`;
 	};
 
-	expect(declarations.find((declaration) => declaration.name === "value")?.range.end).toEqual({
+	expect(found("value")?.range.end).toEqual({
 		line: 2,
 		character: "\t\tvalue = value".length,
 	});
-	expect(["speed", "inline", "node"].map(lines)).toEqual(["3-4", "5-5", "7-7"]);
+	expect(["speed", "inline", "node", "cached"].map(lines)).toEqual(["3-4", "5-5", "7-7", "9-12"]);
+	// An accessor's local is not a member.
+	expect(found("computed")).toMatchObject({
+		kind: "variable",
+		visibility: "local",
+		containerId: found("cached")?.symbolId,
+	});
 });
 
 test("treats accessor parameters as local reference candidates, and accessor words as no reference", () => {

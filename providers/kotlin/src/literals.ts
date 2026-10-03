@@ -1,10 +1,12 @@
-import { childOfType, type SyntaxNode } from "./tree.js";
+import { childOfType, nameText, type SyntaxNode } from "./tree.js";
 
 export interface LiteralShape {
 	kind: "string" | "number" | "boolean" | "null";
 	display: string;
 	value: string;
 	number?: number;
+	/** Its lines lose their common indentation. */
+	dedented?: true;
 }
 
 const ESCAPES: Record<string, string> = {
@@ -32,6 +34,26 @@ function stringValue(text: string, node: SyntaxNode): string {
 		else if (child.type === "escape_sequence") value += decodeEscape(part);
 	}
 	return value;
+}
+
+/** A raw string receiving `.trimIndent()` directly; a non-blank first line joins the indent, so it must be blank. */
+function trimsIndent(text: string, node: SyntaxNode): boolean {
+	const navigation = node.parent;
+	const call = navigation?.parent;
+	if (navigation?.type !== "navigation_expression" || navigation.children[0] !== node) return false;
+	const [, operator, name] = navigation.children;
+	if ((operator?.type !== "." && operator?.type !== "?.") || name?.type !== "identifier") return false;
+	if (nameText(text, name) !== "trimIndent") return false;
+	if (call?.type !== "call_expression" || call.children[0] !== navigation) return false;
+	const args = call.children[1];
+	// The standard library's takes none.
+	if (args?.type !== "value_arguments" || args.children.some((arg) => arg.type !== "(" && arg.type !== ")"))
+		return false;
+	const opener = node.children[0];
+	if (opener === undefined) return false;
+	const content = text.slice(opener.end, node.end);
+	const lineBreak = content.search(/[\r\n]/u);
+	return lineBreak !== -1 && content.slice(0, lineBreak).trim() === "";
 }
 
 function numberShape(raw: string): LiteralShape | null {
@@ -71,8 +93,12 @@ function numberShape(raw: string): LiteralShape | null {
 export function literalShape(text: string, node: SyntaxNode): LiteralShape | null {
 	switch (node.type) {
 		case "string_literal":
-		case "multiline_string_literal":
 			return { kind: "string", display: "String", value: stringValue(text, node) };
+		case "multiline_string_literal": {
+			const shape: LiteralShape = { kind: "string", display: "String", value: stringValue(text, node) };
+			if (trimsIndent(text, node)) shape.dedented = true;
+			return shape;
+		}
 		case "character_literal": {
 			const sequence = childOfType(node, "escape_sequence");
 			const value =

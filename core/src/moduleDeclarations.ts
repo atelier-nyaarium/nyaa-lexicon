@@ -2,7 +2,13 @@
 // watcher batch cannot land between the read and the rows.
 
 import type { ModuleDeclarations, ModuleStatus, SourceReadOutcome, StoredDeclaration } from "@nyaa-lexicon/protocol";
-import { OUTSIDE_WORKSPACE_REASON, type SourceRead, type SourceReader, unreadableReason } from "./sourceRead.js";
+import {
+	DENIED_BY_SCOPE_REASON,
+	OUTSIDE_WORKSPACE_REASON,
+	type SourceRead,
+	type SourceReader,
+	unreadableReason,
+} from "./sourceRead.js";
 import { hashContent } from "./watcher.js";
 
 ////////////////////////////////
@@ -20,6 +26,7 @@ export interface ModuleStoreReads {
 
 export interface ModuleDeclarationsDeps {
 	claimOf(module: string): ModuleClaim;
+	denies(module: string): boolean;
 	readSource: SourceReader;
 	store: ModuleStoreReads;
 }
@@ -27,16 +34,21 @@ export interface ModuleDeclarationsDeps {
 ////////////////////////////////
 //  Functions & Helpers
 
-/** What `moduleStatus` answers, from a claim and a read already made. */
-export function statusOf(module: string, claim: ModuleClaim, read: SourceRead, store: ModuleStoreReads): ModuleStatus {
+/** What `moduleStatus` answers, from a claim and a read already made; null for a module scope denies, never read. */
+export function statusOf(
+	module: string,
+	claim: ModuleClaim,
+	read: SourceRead | null,
+	store: ModuleStoreReads,
+): ModuleStatus {
 	const depth = store.depthOf(module);
 	const failure = store.parseFailureOf(module);
 	// An outside read outranks a claim.
 	const judged: ModuleClaim =
-		read.kind === "outside" ? { claimed: false, unclaimedReason: OUTSIDE_WORKSPACE_REASON } : claim;
+		read?.kind === "outside" ? { claimed: false, unclaimedReason: OUTSIDE_WORKSPACE_REASON } : claim;
 	return {
 		module,
-		exists: read.kind !== "missing" && read.kind !== "outside",
+		exists: read !== null && read.kind !== "missing" && read.kind !== "outside",
 		claimed: judged.claimed,
 		...(judged.claimed ? { provider: judged.provider } : { unclaimedReason: judged.unclaimedReason }),
 		indexed: depth !== null,
@@ -46,7 +58,8 @@ export function statusOf(module: string, claim: ModuleClaim, read: SourceRead, s
 }
 
 /** An older client's closed enum has no `outside`, so it reads as missing. */
-function readOutcome(read: SourceRead): SourceReadOutcome {
+function readOutcome(read: SourceRead | null): SourceReadOutcome {
+	if (read === null) return { kind: "missing", detail: DENIED_BY_SCOPE_REASON };
 	switch (read.kind) {
 		case "binary":
 		case "tooLarge":
@@ -59,13 +72,14 @@ function readOutcome(read: SourceRead): SourceReadOutcome {
 }
 
 export function moduleDeclarations(module: string, deps: ModuleDeclarationsDeps): ModuleDeclarations {
-	const read = deps.readSource(module);
+	// Neither the presence nor the bytes of a denied file leave the daemon.
+	const read = deps.denies(module) ? null : deps.readSource(module);
 	const contentHash = deps.store.contentHashOf(module);
 	return {
 		...statusOf(module, deps.claimOf(module), read, deps.store),
 		read: readOutcome(read),
 		contentHash,
-		diskHash: read.kind === "text" ? hashContent(read.text) : null,
+		diskHash: read?.kind === "text" ? hashContent(read.text) : null,
 		declarations: contentHash === null ? [] : deps.store.declarationsIn(module),
 	};
 }

@@ -1373,15 +1373,11 @@ ${modules.length} file${modules.length === 1 ? "" : "s"} written: ${modules.map(
 		lines.push(`
 Moved in order, one step each: ${outcome.order.map((name) => code(name)).join(", ")}`);
 	}
-	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
-		lines.push(`
-Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
-	}
 	if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
 	return lines.join("\n");
 }
 
-/** A rename step, including what it carried across and what the index could not promise. */
+/** A rename step, with what the index could not promise. */
 export function renderRenameStep(newName: string, outcome: RenameStepOutcome): string {
 	if (!outcome.renamed) {
 		const lines = [
@@ -1399,12 +1395,6 @@ ${outcome.reason ?? `the rename could not be carried out`}`,
 
 ${modules.length} file${modules.length === 1 ? "" : "s"} reindexed: ${modules.map((m) => code(m)).join(", ")}`,
 	];
-
-	// Worth saying: the prose written about a symbol is the one thing a re-index cannot rebuild.
-	if (outcome.migrated && outcome.migrated.answers + outcome.migrated.gaps > 0) {
-		lines.push(`
-Carried across ${outcome.migrated.answers} answer(s) and ${outcome.migrated.gaps} gap(s).`);
-	}
 
 	if (outcome.issues.length > 0) lines.push("", ...renderIssues(outcome.issues));
 	return lines.join("\n");

@@ -5,6 +5,7 @@ import { declarationStart } from "./line-syntax.js";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
 import {
 	firstLineToken,
+	isContinuation,
 	isIgnorable,
 	type LexedSource,
 	nextReferenceToken,
@@ -53,13 +54,6 @@ const OPERATOR_WORDS = new Set(["and", "or", "not", "in", "if", "else", "return"
 
 /** After a colon, an accessor rather than a type. */
 const ACCESSORS = new Set(["get", "set"]);
-
-//////// Helpers
-
-/** A line-joining backslash. */
-function isContinuation(token: ReferenceToken | undefined): boolean {
-	return token?.kind === "symbol" && token.value === "\\";
-}
 
 //////// Headers
 

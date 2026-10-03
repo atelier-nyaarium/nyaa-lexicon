@@ -204,7 +204,8 @@ starting daemon is a `DaemonError` at once, for a caller with something better t
 
 ## A store directory
 
-A store directory holds everything one daemon owns: the lock `daemon.json`, `index.sqlite`,
+A store directory holds everything one daemon owns: the lock `daemon.json`, one
+`index-<schema>.sqlite` per schema version (`indexFiles`; `index.sqlite` from before that),
 `daemon.log`, `diagnostics.json` and `reports/`, all derived from the directory by `storePaths`.
 The directory IS the store's identity: a different directory is a different lock, so a different
 daemon, and one directory holds exactly one store. Two workspaces cannot share a directory: the
@@ -243,7 +244,7 @@ root is present. It reads as the later of the stamp and the newest indexing, so 
 before the stamp existed reads as its last indexed time, and a write never moves it backwards.
 `list_projects` shows it as Last Seen beside Last Indexed, and an orphaned row in
 `list_project_stores` says when its workspace was last seen. An orphan unseen for more than 30
-days is deleted, recorded answers included, through the same road as `delete_project_store`, by
+days is deleted, recorded notes included, through the same road as `delete_project_store`, by
 `list_project_stores` and by any daemon once it is serving; the listing reports what it pruned. A store
 that never recorded its root, one whose root is present, one nothing dates, and one a daemon is
 serving are never pruned. A delete, and so a prune, drops the store's registry entry with it, so

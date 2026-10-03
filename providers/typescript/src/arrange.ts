@@ -21,7 +21,8 @@ import {
 } from "./move.js";
 import { sameModulePath } from "./move-dependencies.js";
 import { blockedSite, type WorkMeter } from "./move-imports.js";
-import { orphanedImports } from "./move-sites.js";
+import { settleBlankLines } from "./move-layout.js";
+import { type Leaving, orphanedImports, repointLeavingExports } from "./move-sites.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";
 
 ////////////////////////////////
@@ -60,41 +61,31 @@ export function makeArrangeEdits(
 
 	const blocked: MoveBlockedSite[] = [];
 	const edits: TextEdit[] = [];
-	const removed: OffsetRange[] = [];
+	const leaving: Leaving[] = [];
 	for (const member of request.members) {
 		if (member.removal === undefined) continue;
 		const removal = removalOf(scope, member.removal, member.name);
 		if ("blocked" in removal) blocked.push(removal.blocked);
 		else {
-			removed.push(removal.removed);
+			leaving.push({ name: member.name, removed: removal.removed });
 			edits.push({ range: member.removal, newText: "" });
 		}
 	}
-	// The target keeps every import.
-	if (!target && removed.length > 0) edits.push(...orphanedImports(source, coordinates, removed));
-
-	const names = new Map(request.members.map((member) => [member.symbolId, member.name]));
-	const importSites: ArrangeImportSite[] = [];
-	for (const site of request.importSites) {
-		if (names.has(site.symbolId)) importSites.push(site);
-		else blocked.push(blockedSite(site.range, "NotImplemented", "the import names no member of the arrangement"));
+	const removed = leaving.map((member) => member.removed);
+	let repointed: OffsetRange[] = [];
+	// The target keeps every import and export.
+	if (!target && leaving.length > 0) {
+		const exports = repointLeavingExports(
+			source,
+			coordinates,
+			leaving,
+			() => scope.render(request.module, request.toModule, undefined, scope.style),
+			scope.quote,
+		);
+		edits.push(...orphanedImports(source, coordinates, removed), ...exports.edits);
+		blocked.push(...exports.blocked);
+		repointed = exports.spans;
 	}
-	planImports(
-		scope,
-		{
-			module: request.module,
-			fromModule: request.fromModule,
-			toModule: request.toModule,
-			nameOf: (site) => names.get(site.symbolId) as string,
-			importSites,
-			sites: request.members.flatMap((member) => member.sites),
-			// The target's own members stay bound.
-			removed: target ? [] : removed,
-			dependencies: request.dependencies,
-		},
-		edits,
-		blocked,
-	);
 
 	// Members sharing a point land as one edit, in member order.
 	const landings = new Map<number, TextEdit>();
@@ -113,7 +104,32 @@ export function makeArrangeEdits(
 		if (landing === undefined) landings.set(offset, { range: { start: point, end: point }, newText: text });
 		else landing.newText += text;
 	}
+
+	const names = new Map(request.members.map((member) => [member.symbolId, member.name]));
+	const importSites: ArrangeImportSite[] = [];
+	for (const site of request.importSites) {
+		if (names.has(site.symbolId)) importSites.push(site);
+		else blocked.push(blockedSite(site.range, "NotImplemented", "the import names no member of the arrangement"));
+	}
+	planImports(
+		scope,
+		{
+			module: request.module,
+			fromModule: request.fromModule,
+			toModule: request.toModule,
+			nameOf: (site) => names.get(site.symbolId) as string,
+			importSites,
+			sites: request.members.flatMap((member) => member.sites),
+			// The target's own members stay bound.
+			removed: target ? [] : [...removed, ...repointed],
+			landings: [...landings.values()],
+			dependencies: request.dependencies,
+		},
+		edits,
+		blocked,
+	);
+	// After the imports, which may share a point.
 	edits.push(...landings.values());
 
-	return validateEdits(coordinates, edits, blocked);
+	return validateEdits(coordinates, settleBlankLines(source.text, coordinates, edits), blocked);
 }

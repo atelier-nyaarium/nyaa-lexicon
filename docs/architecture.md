@@ -83,11 +83,11 @@ Two rules hold the design together:
   Traversal, cycle finding and ranking are application code. No recursive CTEs.
 - **The index is always derivable.** A schema mismatch or an unreadable file is a rebuild, never
   data loss, so no migration path has to be carried forever. The one exception is the knowledge
-  layer: recorded answers cannot be regenerated from source, so they are salvaged across a rebuild
-  with their subjects, and their citations heal on their own, because unchanged code mints
-  identical fact ids. Every salvaged row is normalized to a closed value and placed through the
-  identity owner's one placement method; a row it cannot read or place is a count in the daemon
-  log, never a merge. A store written before subjects is re-keyed in place on first open.
+  layer: notes cannot be regenerated from source, so they are salvaged across a rebuild with their
+  subjects, links and proposals. Every salvaged row is normalized to a closed value and placed
+  through the identity owner's one placement method; a row it cannot read or place is a count in
+  the daemon log, never a merge. A new schema's first open copies the newest readable older index
+  forward (`core/src/indexSeed.ts`) and migrates the copy.
 
 **What the index admitted is published, after it is written.** Once the core has asked for a parse,
 any failure but a provider outage refuses it: a thrown request, an `error` diagnostic, `admitFacts`
@@ -149,7 +149,7 @@ prune and the ages.
 
 **A reader that derives topology takes a context; one that does not reads the store.** `describe`,
 `usesFrom`, `findReferences`, the two hierarchies, `mostReferenced`, `headingPath`, the scoped
-searches, `factsFor`, `knowledgeScope` and `outline`, which leaves locals out, all ask about
+searches, `scopeSymbols` and `outline`, which leaves locals out, all ask about
 nesting, locality, containment or a summary, so each mints one context and hands it down.
 `findByName`, `declarationsIn`, `fileNotes`, `commentsFor` and `docsFor` ask nothing about nesting:
 they answer rows the store already orders, each summarized at most once, so a context would add an
@@ -171,10 +171,8 @@ store inside the planner.
 
 The import rows a rename's edits or a move's dependency walk depend on are `ImportResolver`'s, not
 the planner's own: `core/src/imports.ts` reads `importsNamed` and `importsIn` behind
-`importSitesFor`, `importSitesForMove` and `importOriginFor`, each taking a `reads: ImportReads`
-parameter that defaults to the raw store for a read-only caller (`knowledge.ts`'s own
-`importSitesFor` call, unstamped, since it answers a fact set rather than a plan) and takes the
-step's context for a rename or a move. `read-context-residue.test.ts` names every direct reader of
+`importSitesResolvingTo` and `importOriginFor`, each taking the step's context as a required
+`reads: ImportReads`. `read-context-residue.test.ts` names every direct reader of
 those two store methods, refuses either read straight off the store inside `imports.ts`, and pins
 that every planning call in `refactorPlanner.ts` hands the resolver the context. A move's importer
 is usually stamped twice over: once through `referencesTo` for the bound edge that put it in
@@ -360,12 +358,12 @@ rather than per-file on purpose: a reverse lookup consults every file, so the pr
 harder to get right and barely narrower, and getting it wrong means serving a confidently stale
 answer.
 
-`IndexStore` owns knowledge generation. Answer saves and doubt updates to existing answers advance it.
-Subject transitions advance it when rows change. Demand counts do not advance it.
+`IndexStore` owns knowledge generation. Note writes, doubts, confirmations and proposals advance it.
+Subject transitions advance it when rows change.
 
 Two questions live behind two caches, because they turn over at different rates. `IndexCaches` in
-`core/src/indexer.ts` names them. A stored ANSWER is drawn from facts and dies the moment any fact
-moves. Where a SPECIFIER LANDS is not drawn from facts at all: a provider resolves it against the
+`core/src/indexer.ts` names them. A cached query result is drawn from facts and dies the moment any
+fact moves. Where a SPECIFIER LANDS is not drawn from facts at all: a provider resolves it against the
 files on disk and its own project model, so it survives every edit to a file's body. Its generation
 turns over on three things and nothing else: a file leaving, a file arriving as a root the scope
 admits, and an edit to a config file the provider named in `configFiles`. Held in one cache the
@@ -384,8 +382,8 @@ Three id grammars, each with exactly one owner.
 package-and-version, because a monorepo has no useful package identity. One module composes,
 parses and inspects them, so no caller ever splits an id by hand.
 
-**Fact ids** name a single row: a declaration, a reference, an import, a literal, a comment, a
-document region, or an answer.
+**Fact ids** name a single row: a declaration, a reference, an import, an export, a literal, a
+comment, or a document region.
 Fact ids hash each fact's fields and position relative to its owner: declarations own themselves,
 references use `fromId`, literals use their container, and comments or doc regions use their
 anchor. Editing above an owner or moving it within its file preserves the ids of facts it owns.
@@ -393,8 +391,8 @@ Unowned facts, including imports and module-level references, use absolute posit
 mints ids because it has every owner's start. A residue test enforces that boundary.
 
 **Subject ids** name what knowledge is about: an opaque identity minted once from a declaration's
-first address and the clock, whose current address is a symbol id. Answers and gaps key by it, so
-a move or a rename rebinds the address and no row changes key. `core/src/subjects.ts` owns the
+first address and the clock, whose current address is a symbol id. Notes key by it, so a move or a
+rename rebinds the address and no row changes key. `core/src/subjects.ts` owns the
 table and every transition; `docs/knowledge-layer.md` has the rules.
 
 ## Cycles
@@ -430,8 +428,7 @@ writes inside one hold, so two callers racing on the same file cannot both concl
 preconditions still hold. Every daemon handler declares its effect, `read`, `write` or `staged`,
 and only those three constructors mint a handler, so the dispatcher takes the gate by tag and a
 bare function cannot sit in the table; a residue pins by name the few methods that take the gate
-in parts, since a handler handed the gate may ignore it. A recall is a read, and the demand it
-found is counted afterwards as the daemon's own write.
+in parts, since a handler handed the gate may ignore it.
 
 Nothing acquires the gate twice. Whatever a held operation calls runs already held, which is why
 the service methods do not take it defensively.
@@ -492,9 +489,11 @@ absence from an empty file and store regular-file bytes by content hash. A step 
 decided operation and any known output hash before it writes.
 
 `track` adds a baseline once. `beginStep` adds a baseline for any module a step touches, even if
-the caller did not track it first. After a write, `completeStep` records the observed output hash
-and advances the step. Undo restores step images. When an output hash is present, Undo refuses if
-the current file no longer matches it, unless the file is already at its before-image. An output
+the caller did not track it first. A step that names its writes records, for a module it only
+reindexes, its before-image as its output. After a write, `completeStep` records the observed output hash
+and advances the step. Undo and recovery restore step images, skipping a module the step left as
+found, so a save made to it during the step stays. For a module the step wrote, Undo refuses if the
+current file no longer matches its output hash, unless the file is already at its before-image. An output
 without a hash has no such check.
 
 Each tracked module has a known state: a raw-byte hash or absence. It starts at the baseline.

@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { bunCommand } from "@nyaa-lexicon/client";
 import { hashBytes, type RefactorWriteFileResult, type RequestOf } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { LexiconService } from "../service";
@@ -288,7 +289,7 @@ describe("a gated write while a refactor is open", () => {
 			putBlob(blobHash, bytes);
 		};
 
-		await expect(write("a.ref", text, hash(ORIGINAL))).rejects.toThrow();
+		expect(await rethrown(write("a.ref", text, hash(ORIGINAL)))).toThrow();
 
 		expect(bytesAt("a.ref")?.toString("utf8")).toBe(text);
 		expect(transactions.status()).toMatchObject({

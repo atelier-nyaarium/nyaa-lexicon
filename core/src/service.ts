@@ -9,7 +9,6 @@ import {
 	type CoChangedWithResult,
 	type CommitsMentioningResult,
 	type Cycle,
-	defined,
 	type FileEdits,
 	type FileHistory,
 	type ImportResolution,
@@ -54,7 +53,6 @@ import {
 	type SymbolSummary,
 	type TypeHierarchy,
 } from "./indexReads.js";
-import { KnowledgeLedger } from "./knowledge.js";
 import { NoteLedger } from "./notes.js";
 import { PaintReads } from "./paintFacts.js";
 import type { ProviderPort } from "./providerPort.js";
@@ -115,7 +113,6 @@ export class LexiconService {
 			const configKey = surfaceGlobs.join("\u0000");
 			return this.caches.resolutions.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, ask);
 		});
-		this.knowledge = new KnowledgeLedger(store, this.imports, this.clock);
 		this.notes = new NoteLedger(store, this.clock);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
 		this.indexer = new WorkspaceIndexer(
@@ -172,8 +169,6 @@ export class LexiconService {
 	readonly reads: IndexReadModel;
 
 	readonly imports: ImportResolver;
-
-	readonly knowledge: KnowledgeLedger;
 
 	readonly notes: NoteLedger;
 
@@ -461,6 +456,10 @@ export class LexiconService {
 		return this.reads.describe(symbolId);
 	}
 
+	scopeSymbols(...args: Parameters<IndexReadModel["scopeSymbols"]>): ReturnType<IndexReadModel["scopeSymbols"]> {
+		return this.reads.scopeSymbols(...args);
+	}
+
 	declarationOf(symbolId: string): StoredDeclaration | null {
 		return this.reads.declarationOf(symbolId);
 	}
@@ -486,8 +485,13 @@ export class LexiconService {
 		return this.reads.searchSymbols(...args);
 	}
 
-	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT, within?: string): ReferencesResult {
-		return this.reads.findReferences(symbolId, limit, within);
+	findReferences(
+		symbolId: string,
+		limit = DEFAULT_REFERENCE_LIMIT,
+		within?: string,
+		module?: string,
+	): ReferencesResult {
+		return this.reads.findReferences(symbolId, limit, within, module);
 	}
 
 	usesFrom(...args: Parameters<IndexReadModel["usesFrom"]>): ReturnType<IndexReadModel["usesFrom"]> {
@@ -566,61 +570,11 @@ export class LexiconService {
 	}
 
 	////////////////////////////////
-	//  Knowledge, answered by KnowledgeLedger
-
-	factsFor(...args: Parameters<KnowledgeLedger["factsFor"]>): ReturnType<KnowledgeLedger["factsFor"]> {
-		return this.knowledge.factsFor(...args);
-	}
-
-	resolveFacts(...args: Parameters<KnowledgeLedger["resolveFacts"]>): ReturnType<KnowledgeLedger["resolveFacts"]> {
-		return this.knowledge.resolveFacts(...args);
-	}
-
-	recordAnswer(...args: Parameters<KnowledgeLedger["recordAnswer"]>): ReturnType<KnowledgeLedger["recordAnswer"]> {
-		return this.knowledge.recordAnswer(...args);
-	}
-
-	invalidateAnswer(
-		...args: Parameters<KnowledgeLedger["invalidateAnswer"]>
-	): ReturnType<KnowledgeLedger["invalidateAnswer"]> {
-		return this.knowledge.invalidateAnswer(...args);
-	}
-
-	reaffirmAnswer(
-		...args: Parameters<KnowledgeLedger["reaffirmAnswer"]>
-	): ReturnType<KnowledgeLedger["reaffirmAnswer"]> {
-		return this.knowledge.reaffirmAnswer(...args);
-	}
-
-	recallAnswer(...args: Parameters<KnowledgeLedger["recallAnswer"]>): ReturnType<KnowledgeLedger["recallAnswer"]> {
-		return this.knowledge.recallAnswer(...args);
-	}
+	//  Subjects
 
 	/** Why an id names no declaration, as every tool answers it. */
 	diagnoseSubject(symbolId: string): SubjectDiagnosis {
 		return diagnoseSubject(symbolId, this.store);
-	}
-
-	demandOf(...args: Parameters<KnowledgeLedger["demandOf"]>): ReturnType<KnowledgeLedger["demandOf"]> {
-		return this.knowledge.demandOf(...args);
-	}
-
-	recordDemand(...args: Parameters<KnowledgeLedger["recordDemand"]>): ReturnType<KnowledgeLedger["recordDemand"]> {
-		return this.knowledge.recordDemand(...args);
-	}
-
-	recallAnswers(...args: Parameters<KnowledgeLedger["recallAnswers"]>): ReturnType<KnowledgeLedger["recallAnswers"]> {
-		return this.knowledge.recallAnswers(...args);
-	}
-
-	knowledgeGaps(...args: Parameters<KnowledgeLedger["knowledgeGaps"]>): ReturnType<KnowledgeLedger["knowledgeGaps"]> {
-		return this.knowledge.knowledgeGaps(...args);
-	}
-
-	knowledgeScope(
-		...args: Parameters<KnowledgeLedger["knowledgeScope"]>
-	): ReturnType<KnowledgeLedger["knowledgeScope"]> {
-		return this.knowledge.knowledgeScope(...args);
 	}
 
 	////////////////////////////////
@@ -691,19 +645,6 @@ export class LexiconService {
 				row.content === "data" || row.content === "document",
 		);
 
-		// Knowledge coverage belongs in the first answer a fresh agent reads. The layer was
-		// discoverable only through describe's inline line, so an agent arriving with an ordinary
-		// task never learned it existed: overview is the front door, and the front door said nothing.
-		//
-		// Staleness is exact only while the knowledge base is small. It costs a citation resolve per
-		// answer, and the front door is the most-called tool, so past the cap it is honestly SKIPPED
-		// rather than sampled: a number that silently covered part of the base would read as the
-		// whole. Stale entries still surface individually on recall and in knowledge_gaps.
-		const counts = this.store.answerCounts();
-		const stale = this.knowledge.staleAnswerCount();
-		// A COUNT query, so unlike staleness it stays cheap at any size and is never skipped.
-		const doubted = this.store.doubtedCount();
-
 		const scan = this.store.readScanSummary();
 		// A document's headings are symbols and belong in the total, but a reader taking that total
 		// for callable code reads it wrong the moment one is indexed, so the split rides alongside.
@@ -723,11 +664,6 @@ export class LexiconService {
 			largestData: data
 				.slice(0, topData)
 				.map(({ module, symbols, content: kind }) => ({ module, symbols, content: kind })),
-			knowledge: {
-				answers: counts.total,
-				...defined({ stale }),
-				...(doubted === 0 ? {} : { doubted }),
-			},
 			...(entries === null ? {} : { entryPoints: entries.entries }),
 			...(entries === null || entries.more === 0 ? {} : { moreEntryPoints: entries.more }),
 		};
@@ -786,12 +722,6 @@ export class LexiconService {
 			return { name, mentions, commits: commits.length };
 		});
 	}
-
-	////////////////////////////////
-	//  Type hierarchy
-
-	////////////////////////////////
-	//  Facts and citations
 
 	////////////////////////////////
 	//  The knowledge layer

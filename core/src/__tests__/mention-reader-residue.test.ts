@@ -19,8 +19,6 @@ const MENTION_READERS: Record<string, number> = {
 	"core/src/renameValidation.ts": 2,
 	// Re-points every importer and qualified use.
 	"core/src/arrangePlanner.ts": 2,
-	// Mention is citable evidence.
-	"core/src/knowledge.ts": 1,
 	// Stamps the row's own module.
 	"core/src/readContext.ts": 2,
 	// Painting and the cursor see every reference span, imports and exports included.

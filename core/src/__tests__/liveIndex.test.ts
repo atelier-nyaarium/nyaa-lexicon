@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashContent } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import type { IndexOutcome } from "../indexer";
 import type { FileEvent } from "../invalidation";
 import { holdBatches, type LiveIndex, serializeBatches, startLiveIndex } from "../liveIndex";
@@ -205,7 +206,7 @@ describe("holding batches under the scan", () => {
 		const released = held.until(Promise.reject(new Error("discovery broke")));
 
 		held.push([change("src/a.ts")]);
-		await expect(released).rejects.toThrow("discovery broke");
+		expect(await rethrown(released)).toThrow("discovery broke");
 		held.push([change("src/b.ts")]);
 
 		expect(pushed).toEqual([]);
@@ -289,7 +290,7 @@ describe("watching under the warm scan", () => {
 		live.inject("a.fake");
 		clock.advance(DEBOUNCE_MS);
 
-		await expect(live.warmed).rejects.toThrow("discovery broke");
+		expect(await rethrown(live.warmed)).toThrow("discovery broke");
 		await live.settled();
 		expect(applied).toEqual([]);
 		expect(store.contentHashOf("a.fake")).toBeNull();

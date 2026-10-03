@@ -15,6 +15,12 @@ const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
 /** Trivia before a statement. */
 const LINE_TRIVIA: ReadonlySet<TokenType> = new Set(["INDENT", "DEDENT", "NL", "COMMENT"]);
 
+/** Placed after a line's comments, before its first token. */
+const BLOCK_MARKS: ReadonlySet<TokenType> = new Set(["INDENT", "DEDENT"]);
+
+/** PEP 263's encoding declaration, read on the first two lines. */
+const CODING = /^#.*?coding[:=][ \t]*[-\w.]+/;
+
 export const OPEN_BRACKETS: ReadonlySet<string> = new Set(["(", "[", "{"]);
 export const CLOSE_BRACKETS: ReadonlySet<string> = new Set([")", "]", "}"]);
 
@@ -119,6 +125,34 @@ export class Source {
 		const at = this.operatorBefore(first.pos, "@");
 		if (at === undefined) throw new Error("python decorator has no @ before it");
 		return at.pos;
+	}
+
+	/**
+	 * Comment lines directly above `start` at its own indentation, else `start`; a run reaching the
+	 * file's pragmas is the file's.
+	 */
+	commentedStart(start: number): number {
+		const at = this.tokenAt(start);
+		const first = this.tokens[at];
+		if (first === undefined) return start;
+		const indent = this.indentOf(first);
+		let earliest = start;
+		let index = at - 1;
+		while (index >= 0 && BLOCK_MARKS.has((this.tokens[index] as Token).type)) index--;
+		// A comment line ends in an NL; matching a line-leading indent means nothing precedes it.
+		while (this.tokens[index]?.type === "NL") {
+			const comment = this.tokens[index - 1];
+			if (comment?.type !== "COMMENT" || this.indentOf(comment) !== indent) break;
+			if (isPragma(comment)) return start;
+			earliest = comment.pos;
+			index -= 2;
+		}
+		return earliest;
+	}
+
+	/** The text before a token on its line. */
+	private indentOf(token: Token): string {
+		return this.parsed.slice(token.pos - token.column, token.pos);
 	}
 
 	/** The name token a node binds. */
@@ -284,4 +318,12 @@ export class Source {
 		}
 		return latest;
 	}
+}
+
+////////////////////////////////
+//  Functions & Helpers
+
+/** A shebang or an encoding declaration. */
+function isPragma(comment: Token): boolean {
+	return (comment.pos === 0 && comment.string.startsWith("#!")) || (comment.line <= 1 && CODING.test(comment.string));
 }

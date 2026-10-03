@@ -209,6 +209,7 @@ describe("getting a daemon", () => {
 		let started = 0;
 		const start = () => {
 			started++;
+			return undefined;
 		};
 		const look = looking([{ action: "connect", lock: LOCK }]);
 

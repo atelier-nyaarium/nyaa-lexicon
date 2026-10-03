@@ -15,6 +15,7 @@ import {
 } from "@nyaa-lexicon/client";
 import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
 import { nodesIn, parseSource, stringsIn, usesName } from "@nyaa-lexicon/protocol/ast";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import ts from "typescript";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { resumeAbandonedDelete } from "../daemonCli";
@@ -122,7 +123,7 @@ describe("starting and publishing", () => {
 
 		expect(daemon.holdsLock()).toBe(false);
 		// The reconnect path is a lost connection, never a stale answer or a bare error.
-		await expect(client.request("describe", {})).rejects.toThrow(ConnectionLostError);
+		expect(await rethrown(client.request("describe", {}))).toThrow(ConnectionLostError);
 		expect(client.closed).toBe(true);
 		expect(lost).toEqual([expect.stringMatching(/lock is gone/)]);
 		expect(daemon.connections()).toBe(0);
@@ -135,7 +136,7 @@ describe("starting and publishing", () => {
 		writeFileSync(lockFile, JSON.stringify({ ...daemon.lock, pid: 4242, token: "s".repeat(48) }));
 
 		expect(daemon.holdsLock()).toBe(false);
-		await expect(callDaemon(daemon.lock, "describe", {})).rejects.toThrow(ConnectionLostError);
+		expect(await rethrown(callDaemon(daemon.lock, "describe", {}))).toThrow(ConnectionLostError);
 		expect(lost).toEqual([expect.stringMatching(/names pid 4242/)]);
 		await daemon.stop();
 		daemon = undefined;
@@ -365,7 +366,7 @@ describe("the token gate", () => {
 
 	it("rejects a wrong token before anything else is said", async () => {
 		daemon = await launch();
-		await expect(callDaemon({ ...daemon.lock, token: "w".repeat(48) }, "describe")).rejects.toThrow(/bad token/);
+		expect(await rethrown(callDaemon({ ...daemon.lock, token: "w".repeat(48) }, "describe"))).toThrow(/bad token/);
 	});
 
 	it("cuts off a caller that skips the hello, so it learns nothing", async () => {
@@ -450,7 +451,7 @@ describe("the starting window", () => {
 		if (!outcome.claimed) throw new Error(outcome.reason);
 		daemon = outcome.daemon;
 
-		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/the language providers to start/);
+		expect(await rethrown(callDaemon(daemon.lock, "describe"))).toThrow(/the language providers to start/);
 	});
 
 	it("answers or refuses at once when the early answer says so, and asks it per request", async () => {
@@ -468,7 +469,7 @@ describe("the starting window", () => {
 		daemon = outcome.daemon;
 
 		await expect(callDaemon(daemon.lock, "shutdown")).resolves.toEqual({ stopping: true });
-		await expect(callDaemon(daemon.lock, "noSuchMethod")).rejects.toThrow(/^unknown method: noSuchMethod$/);
+		expect(await rethrown(callDaemon(daemon.lock, "noSuchMethod"))).toThrow(/^unknown method: noSuchMethod$/);
 		expect(asked).toEqual(["shutdown", "noSuchMethod"]);
 	});
 
@@ -483,7 +484,7 @@ describe("the starting window", () => {
 
 		// The allowance is spent on the fake, so the client is told to stop waiting at once.
 		clock.advance(15_000);
-		await expect(callDaemon(daemon.lock, "describe")).rejects.toThrow(/startup/);
+		expect(await rethrown(callDaemon(daemon.lock, "describe"))).toThrow(/startup/);
 	});
 });
 

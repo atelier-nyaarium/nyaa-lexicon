@@ -1,10 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
-	answerFactId,
 	commentFactId,
 	declarationFactId,
 	docFactId,
-	doubtFactId,
 	exportFactId,
 	factKindOf,
 	factModuleOf,
@@ -128,6 +126,9 @@ describe("the grammar", () => {
 		expect(isFactId(ADD_ID)).toBe(false);
 		expect(isFactId("lexfact declaration src/a.ts")).toBe(false);
 		expect(isFactId("lexfact nonsense src/a.ts 0123456789abcdef")).toBe(false);
+		// Retired kinds stay refused.
+		expect(isFactId("lexfact answer src/a.ts 0123456789abcdef")).toBe(false);
+		expect(isFactId("lexfact doubt src/a.ts 0123456789abcdef")).toBe(false);
 		expect(isFactId("lexfact declaration src/a.ts NOTHEX0123456789")).toBe(false);
 		expect(isFactId("lexfact declaration src/a.ts 0123456789abcdef trailing")).toBe(false);
 	});
@@ -138,12 +139,7 @@ describe("the grammar", () => {
 	});
 });
 
-/**
- * The property the knowledge layer is built on.
- *
- * An answer cites the facts it read and the citation must go stale when one of them changes, so
- * "resolve this id" and "has this fact changed" have to be the same question.
- */
+/** Fact ids change when an identity-bearing field of their row changes. */
 describe("identity is content", () => {
 	it("gives the same fact the same id every time", () => {
 		expect(declarationFactId("src/a.ts", DECL)).toBe(declarationFactId("src/a.ts", DECL));
@@ -177,7 +173,7 @@ describe("identity is content", () => {
 		expect(literalFactId("src/b.ts", LIT, NO_OWNERS)).not.toBe(literalFactId("src/a.ts", LIT, NO_OWNERS));
 	});
 
-	// A citation must stale on a reword: the reason comments are facts, not a declaration field.
+	// A reword is a new fact: comments are facts, not a declaration field.
 	it("gives a reworded comment a different id", () => {
 		const comment = { range: LIT.range, text: "// refusal beats clamping", anchorId: null };
 		const reworded = { ...comment, text: "// refusal beats guessing" };
@@ -214,7 +210,7 @@ describe("identity is content", () => {
 	});
 });
 
-/** Owned citations survive owner moves. */
+/** Owned fact ids survive owner moves. */
 describe("position is relative to the owner", () => {
 	const owned: Reference = { ...REF, fromId: ADD_ID };
 
@@ -305,8 +301,7 @@ describe("position is relative to the owner", () => {
 });
 
 describe("what each kind counts as its identity", () => {
-	// A call that newly resolves is news. Leaving the binding out would report the same fact id for
-	// "we could not resolve this" and "we resolved it", which is the one thing a citation must catch.
+	// Unresolved and resolved must not share an id.
 	it("treats a reference's binding as part of the fact", () => {
 		const unbound = referenceFactId(
 			"src/b.ts",
@@ -444,34 +439,5 @@ describe("what each kind counts as its identity", () => {
 		const text = literalFactId("src/a.ts", { ...LIT, kind: "number", value: "0xFF", number: 255 }, NO_OWNERS);
 
 		expect(text).not.toBe(numeric);
-	});
-
-	// The clear-handshake token. The timestamp is IN the identity so a doubt declared again after a
-	// clear mints a fresh id, and a saved-up old token cannot clear the new doubt.
-	it("gives a re-declared doubt a fresh id, so an old token cannot clear it", () => {
-		const address = "lexicon ts src/a.ts add().";
-		const first = doubtFactId("s1", address, "describe", "purpose drifted", 1000);
-
-		expect(isFactId(first)).toBe(true);
-		expect(factKindOf(first)).toBe("doubt");
-		expect(doubtFactId("s1", address, "describe", "purpose drifted", 1000)).toBe(first);
-		expect(doubtFactId("s1", address, "describe", "purpose drifted", 2000)).not.toBe(first);
-		expect(doubtFactId("s1", address, "why", "purpose drifted", 1000)).not.toBe(first);
-		expect(doubtFactId("s2", address, "describe", "purpose drifted", 1000)).not.toBe(first);
-	});
-
-	// The subject is in the identity, so an address a subject vacated and another took cannot mint
-	// the id the first one holds.
-	it("separates two subjects recording the same prose at one address", () => {
-		const address = "lexicon ts src/a.ts add().";
-		const first = answerFactId("s1", address, "describe", "Adds.", [
-			"lexfact declaration src/a.ts 0000000000000000",
-		]);
-		const second = answerFactId("s2", address, "describe", "Adds.", [
-			"lexfact declaration src/a.ts 0000000000000000",
-		]);
-
-		expect(isFactId(first)).toBe(true);
-		expect(second).not.toBe(first);
 	});
 });

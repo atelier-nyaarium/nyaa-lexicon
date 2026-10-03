@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { DAEMON_METHODS, type DaemonMethod } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch } from "../dispatch";
 import type { CommentQuery, LiteralQuery } from "../indexReads";
 import type { LexiconService } from "../service";
@@ -80,18 +81,18 @@ describe("gating daemon mutations", () => {
 
 	it("refuses a refactor call when the daemon has no journal", async () => {
 		const dispatch = createDispatch(tracingService([]));
-		await expect(dispatch("refactorStart", {})).rejects.toThrow(/without refactor support/);
+		expect(await rethrown(dispatch("refactorStart", {}))).toThrow(/without refactor support/);
 	});
 
 	it("rejects an unknown method rather than answering nothing", async () => {
 		const dispatch = createDispatch(tracingService([]));
-		await expect(dispatch("noSuchMethod", {})).rejects.toThrow(/unknown method/);
+		expect(await rethrown(dispatch("noSuchMethod", {}))).toThrow(/unknown method/);
 	});
 
 	// The answer side of the table: a malformed answer is an error to the caller, never a result.
 	it("refuses a malformed answer instead of shipping it", async () => {
 		const dispatch = createDispatch(asService({ cacheStats: () => ({ hits: "many", misses: 0, entries: 0 }) }));
-		await expect(dispatch("cacheStats", {})).rejects.toThrow(/hits/);
+		expect(await rethrown(dispatch("cacheStats", {}))).toThrow(/hits/);
 	});
 });
 
@@ -184,7 +185,6 @@ describe("the tree-first tier", () => {
 			findReferences: traced("findReferences", NO_REFERENCES),
 			usesFrom: traced("usesFrom", NO_REFERENCES),
 			typeOf: traced("typeOf", { status: "unknown", reason: "NotImplemented" }),
-			factsFor: traced("factsFor", null),
 			symbolSource: traced("symbolSource", { found: false, reason: "stub" }),
 		});
 	}

@@ -21,7 +21,7 @@ import {
 	servesClient,
 } from "@nyaa-lexicon/protocol";
 import type { DaemonRef } from "./daemonRef.js";
-import { DaemonError, Incompatible } from "./errors.js";
+import { DaemonError, Incompatible, mismatchText } from "./errors.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -237,14 +237,18 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 				if (welcomed) return;
 				// Judged here as well as from the lock, so a direct connection cannot bypass the rule. The
 				// retirement conversation reads any older daemon; none is asked of one that outgrew us.
-				if (
-					(behindUs(frame.protocolVersion) && options.acceptOlder !== true) ||
-					outgrewUs(frame.protocolVersion, frame.oldestClientMajor)
-				) {
+				const behind = behindUs(frame.protocolVersion) && options.acceptOlder !== true;
+				if (behind || outgrewUs(frame.protocolVersion, frame.oldestClientMajor)) {
 					handshakeOver();
 					rejectConnect(
 						new Incompatible(
-							`the daemon speaks protocol ${frame.protocolVersion}, this client speaks ${PROTOCOL_VERSION}`,
+							mismatchText(
+								PROTOCOL_VERSION,
+								{ label: "Version of the running daemon", version: frame.protocolVersion },
+								behind
+									? "Stop the running daemon so this window's version replaces it"
+									: "Reload this window to use the daemon's version",
+							),
 							PROTOCOL_VERSION,
 							frame.protocolVersion,
 						),

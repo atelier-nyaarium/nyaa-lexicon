@@ -34,7 +34,16 @@ import { fileRoleOf } from "./file-role.js";
 import { scriptKindOf } from "./file-types.js";
 import { headerOf } from "./header.js";
 import { literalOf } from "./literals.js";
-import { memberBodyOf, memberInsertLineOf, ownedTypeLiterals, partsOf, passesReach, unwrapped } from "./members.js";
+import {
+	isWrapper,
+	memberBodyOf,
+	memberInsertLineOf,
+	ownedTypeLiterals,
+	partsOf,
+	passesReach,
+	statedObjectOf,
+	unwrapped,
+} from "./members.js";
 import { metricsOf } from "./metrics.js";
 import { declarationRangeOf, defaultSelectionRange, nameRange, parameterRangeOf, rangeOf } from "./ranges.js";
 import {
@@ -141,9 +150,20 @@ export function extractFileWithNodes(
 		if (scope.runs === true && scope.containerId !== undefined) running.add(scope.containerId);
 	}
 
-	/** A type literal's member counts only in a recorded declaration's own object type. */
+	/** The recorded declaration holding an object or class expression as its member body. */
+	function holderOf(body: ts.Node): ts.Node | undefined {
+		let value = body;
+		while (isWrapper(value.parent)) value = value.parent;
+		const holder = value.parent;
+		return declarationNodes.has(holder) && memberBodyOf(holder) === body ? holder : undefined;
+	}
+
+	/** A member of a type literal, object or class expression counts only where a recorded declaration owns it. */
 	function isOwnedMember(node: ts.Node): boolean {
 		const literal = node.parent;
+		if (ts.isObjectLiteralExpression(literal) || ts.isClassExpression(literal)) {
+			return holderOf(literal) !== undefined;
+		}
 		if (!ts.isTypeLiteralNode(literal)) return true;
 		let owner = literal.parent;
 		while (partsOf(owner) !== undefined) owner = owner.parent;
@@ -156,23 +176,15 @@ export function extractFileWithNodes(
 		return owned.has(literal);
 	}
 
-	/** A property holding members or a body, in an object a declaration owns: `b` in `{ b: { m() {} } }`. */
+	/** A property of an object a declaration owns: any in a typed object, else one holding members or a body. */
 	function isObjectMember(node: ts.Node): boolean {
+		if (!ts.isPropertyAssignment(node) && !ts.isShorthandPropertyAssignment(node)) return false;
+		const holder = holderOf(node.parent);
+		if (holder === undefined) return false;
+		if (statedObjectOf(holder) === node.parent) return true;
 		if (!ts.isPropertyAssignment(node)) return false;
 		const held = unwrapped(node.initializer);
-		const runs = ts.isArrowFunction(held) || ts.isFunctionExpression(held);
-		if (!runs && memberBodyOf(node) === undefined) return false;
-		let value: ts.Node = node.parent;
-		while (
-			ts.isParenthesizedExpression(value.parent) ||
-			ts.isAsExpression(value.parent) ||
-			ts.isTypeAssertionExpression(value.parent) ||
-			ts.isSatisfiesExpression(value.parent) ||
-			ts.isNonNullExpression(value.parent)
-		) {
-			value = value.parent;
-		}
-		return declarationNodes.has(value.parent) && memberBodyOf(value.parent) === node.parent;
+		return ts.isArrowFunction(held) || ts.isFunctionExpression(held) || memberBodyOf(node) !== undefined;
 	}
 
 	function markReference(node: ts.Node, role: ReferenceRole): void {

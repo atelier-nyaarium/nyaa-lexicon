@@ -464,23 +464,6 @@ describe("renaming as a transaction step", () => {
 
 		expect(result.isError).toBe(true);
 	});
-
-	// The prose written about a symbol is the one thing a re-index cannot rebuild, so a rename that
-	// carried some says so rather than leaving the caller to wonder.
-	it("says what knowledge it carried across", async () => {
-		const migrated = {
-			renamed: true,
-			modules: ["src/cart.ts"],
-			migrated: { answers: 3, gaps: 1 },
-			issues: [],
-		};
-		const result = await refactorRename(backend({ ...found, refactorRename: async () => migrated }), {
-			name: "Cart",
-			newName: "Basket",
-		});
-
-		expect(result.content[0]?.text).toContain("3 answer(s)");
-	});
 });
 
 describe("asking for a type", () => {
@@ -510,25 +493,26 @@ describe("find_references passes its limit through", () => {
 });
 
 describe("index-state honesty notes", () => {
-	it("marks counts as lower bounds while outline files remain", async () => {
-		const result = await findReferences(
-			backend({
-				indexStatus: async () => ({
-					state: "upgrading",
-					done: 3,
-					total: 10,
-					failures: 0,
-					failed: [],
-					stored: 10,
-					fullFiles: 3,
-					outlineFiles: 7,
-				}),
+	it("marks counts as lower bounds while outline files remain, once per project", async () => {
+		const upgrading = backend({
+			indexStatus: async () => ({
+				state: "upgrading",
+				done: 3,
+				total: 10,
+				failures: 0,
+				failed: [],
+				stored: 10,
+				fullFiles: 3,
+				outlineFiles: 7,
 			}),
-			{ symbolId: "x" },
-		);
-		const text = (result.content[0] as { text: string }).text;
-		expect(text).toContain("lower bounds");
-		expect(text).toContain("7 of 10");
+		});
+		const first = await findReferences(upgrading, { symbolId: "x" });
+		const second = await findReferences(upgrading, { symbolId: "x" });
+		const text = (result: typeof first) => (result.content[0] as { text: string }).text;
+		expect({ first: text(first).includes("7 of 10"), second: text(second).includes("lower bounds") }).toEqual({
+			first: true,
+			second: false,
+		});
 	});
 
 	it("says nothing extra once every file is full and ready, or when the status read fails", async () => {
@@ -871,6 +855,29 @@ describe("previewing a refactor without a transaction", () => {
 			{ symbolId: "lexicon ts src/a.ts Cart#", toModule: "./src/b.ts" },
 		);
 		expect((result.content[0] as { text: string }).text).toContain("Moved to `src/b.ts`");
+	});
+
+	it("lands a move beside a declaration of the target, and refuses both sides at once", async () => {
+		const anchors: unknown[] = [];
+		const moving = backend({
+			findByName: async (name, module) => [summary(name, { module: module ?? "src/a.ts" })],
+			refactorMove: async (_symbolId, _toModule, _together, anchor) => {
+				anchors.push(anchor);
+				return { moved: true, toModule: "src/b.ts", modules: ["src/a.ts", "src/b.ts"], issues: [] };
+			},
+		});
+		await refactorMove(moving, { symbolId: "lexicon ts src/a.ts Cart#", toModule: "src/b.ts", before: "Item" });
+		const both = await refactorMove(moving, {
+			symbolId: "lexicon ts src/a.ts Cart#",
+			toModule: "src/b.ts",
+			before: "Item",
+			after: "Item",
+		});
+
+		expect({ anchors, refused: both.isError }).toEqual({
+			anchors: [{ symbolId: "lexicon ts src/a.ts Item.", side: "before" }],
+			refused: true,
+		});
 	});
 
 	it("renders a thrown plan as a tool error rather than a transport error", async () => {

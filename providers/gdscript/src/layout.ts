@@ -1,7 +1,7 @@
 // Owns the layout facts core decides from: comment trivia, blank lines, and member insertion lines.
 
 import type { CommentSpan, TextCoordinates } from "@nyaa-lexicon/protocol";
-import { type Blocks, blockHeader, indentedBodyEnd } from "./blocks.js";
+import { type Blocks, blockHeader, indentedBodyEnd, topLevel } from "./blocks.js";
 import type { DeclarationFact, ReferenceToken } from "./parse-model.js";
 import {
 	type LexedSource,
@@ -99,7 +99,7 @@ export function withMemberInsertLines(
 	const bodyEnd = (index: number, indent: number): number | undefined => {
 		const first = statements[index + 1];
 		if (first === undefined || first.indent <= indent) return undefined;
-		return indentedBodyEnd(blocks, index, indent, first.lastLine);
+		return indentedBodyEnd(blocks, topLevel(blocks, index), indent, first.lastLine);
 	};
 	const insertLine = (declaration: DeclarationFact): number | undefined => {
 		if (isRootClass(declaration)) return after(bodyEnd(-1, -1));

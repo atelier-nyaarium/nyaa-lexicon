@@ -10,6 +10,7 @@ import {
 	type IndexStatus,
 	PROTOCOL_VERSION,
 } from "@nyaa-lexicon/protocol";
+import { rejection } from "@nyaa-lexicon/protocol/rejection";
 import { type DaemonChannelOptions, daemonChannel } from "../channel";
 import type { EnsureResult } from "../ensure";
 import { DaemonError, Incompatible } from "../errors";
@@ -193,7 +194,7 @@ describe("daemon channel reconnects", () => {
 		writeLock(fake.port);
 
 		const session = channel();
-		await expect(session.ask("refactorCommit", {})).rejects.toMatchObject({
+		expect(await rejection(session.ask("refactorCommit", {}))).toMatchObject({
 			cause: "connectionLost",
 			message: expect.stringContaining("outcome is unknown"),
 		});
@@ -213,7 +214,7 @@ describe("daemon channel reconnects", () => {
 			source: { root: workspaceRoot, buildVersion: BUILD, bundleStamp: null },
 			budgetMs: () => 100,
 		});
-		await expect(session.ask("cacheStats", {})).rejects.toMatchObject({ cause: "requestTimeout" });
+		expect(await rejection(session.ask("cacheStats", {}))).toMatchObject({ cause: "requestTimeout" });
 		expect(await session.ask("cacheStats", {})).toEqual(STATS);
 		expect({ connections: fake.connections, requests: fake.requests }).toEqual({ connections: 1, requests: 2 });
 		session.close();
@@ -265,7 +266,7 @@ describe("daemon channel reconnects", () => {
 		while (fake.connections === 0) await new Promise((resolve) => setTimeout(resolve, 5));
 		session.close();
 
-		await expect(connecting).rejects.toMatchObject({ cause: "closed" });
+		expect(await rejection(connecting)).toMatchObject({ cause: "closed" });
 		for (let wait = 0; wait < 100 && fake.open > 0; wait++) await new Promise((resolve) => setTimeout(resolve, 10));
 		expect({ connections: fake.connections, requests: fake.requests, open: fake.open }).toEqual({
 			connections: 1,

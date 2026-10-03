@@ -1,10 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
 import type {
-	Answer,
 	CallHierarchy,
 	DescribeResult,
 	FileEdits,
-	RecalledAnswer,
 	ReferencesResult,
 	RenameEditPlan,
 	RenamePlan,
@@ -14,6 +12,7 @@ import type {
 	TypeHierarchy,
 	TypeInfo,
 } from "@nyaa-lexicon/core";
+import type { Note } from "@nyaa-lexicon/protocol";
 import type { LexiconReads } from "../reads";
 import { LspServer, pathFromUri, type Range, type TypeHierarchyItem, toModule, toUri } from "../server";
 
@@ -76,21 +75,24 @@ function described(referenceCount: number, docComment?: string): DescribeResult 
 	};
 }
 
-function recalled(prose: string, overrides: Partial<RecalledAnswer> = {}): RecalledAnswer {
-	const answer: Answer = {
-		symbolId: "symbol:item",
-		question: "describe",
-		factId: "answer:item",
-		prose,
-		citations: [],
-		thin: true,
-		createdAt: 1,
-	};
+function noted(summary: string, overrides: Partial<Note> = {}): Note {
 	return {
-		answer,
-		stale: [],
-		inheritedStale: [],
-		doubtedUpstream: [],
+		symbolId: "symbol:item",
+		recordedAs: "symbol:item",
+		revision: 1,
+		text: summary,
+		summary,
+		restAt: summary.length,
+		author: null,
+		authoredAt: 1,
+		editedBy: null,
+		editedAt: 1,
+		confirmedBy: null,
+		confirmedAt: null,
+		doubt: null,
+		sourceChanged: false,
+		links: [],
+		proposal: null,
 		...overrides,
 	};
 }
@@ -124,7 +126,7 @@ function reads(overrides: Partial<LexiconReads> = {}): LexiconReads {
 			unboundSupertypes: [],
 		}),
 		callHierarchy: async (symbolId) => ({ symbolId, incoming: [], outgoing: [] }),
-		recallAnswers: async () => [],
+		readNote: async () => null,
 		prepareRename: async (symbolId, newName) => plan(symbolId, newName),
 		renameEdits: async (symbolId, newName) => ({ ok: true, plan: plan(symbolId, newName), files: [] }),
 		transactionOpen: async () => false,
@@ -243,12 +245,12 @@ describe("hover", () => {
 	});
 	const documentation = "The item documentation.";
 
-	it("omits inferred and usage lines for unknown types and marks stale prose", async () => {
+	it("omits inferred and usage lines for unknown types and marks a note whose source changed", async () => {
 		const server = new LspServer(
 			reads({
 				declarationsIn: async () => [found],
 				typeOf: async () => ({ status: "unknown", reason: "NotImplemented" }),
-				recallAnswers: async () => [recalled("Remembered stale prose.", { stale: ["old-fact"] })],
+				readNote: async () => noted("Remembered stale prose.", { sourceChanged: true }),
 				describe: async () => described(0, documentation),
 			}),
 			ROOT,
@@ -257,22 +259,20 @@ describe("hover", () => {
 
 		expect(result?.contents.value).toContain(found.signature);
 		expect(result?.contents.value).toContain(documentation);
-		expect(result?.contents.value).toContain("Remembered stale prose. *(stale)*");
+		expect(result?.contents.value).toContain("Remembered stale prose. *(source changed)*");
 		expect(result?.contents.value).not.toContain("*inferred*");
 		expect(result?.contents.value).not.toContain("Used in");
 		expect(result?.range).toEqual(found.selectionRange);
 	});
 
-	it("adds inferred type information and marks doubted prose", async () => {
+	it("adds inferred type information and marks a doubted note", async () => {
 		const type: TypeInfo = { status: "inferred", display: "string", basis: "return statements" };
-		const doubt = { factId: "doubt:item", reason: "meaning changed", at: 2 };
-		const doubted = recalled("Remembered doubted prose.");
-		doubted.answer.doubt = doubt;
+		const doubted = noted("Remembered doubted prose.", { doubt: { by: null, reason: "meaning changed", at: 2 } });
 		const server = new LspServer(
 			reads({
 				declarationsIn: async () => [found],
 				typeOf: async () => type,
-				recallAnswers: async () => [doubted],
+				readNote: async () => doubted,
 				describe: async () => described(0),
 			}),
 			ROOT,
@@ -282,15 +282,15 @@ describe("hover", () => {
 
 		expect(result?.contents.value).toContain("*inferred* `string` from return statements");
 		expect(result?.contents.value).toContain("Remembered doubted prose. *(doubted)*");
-		expect(result?.contents.value).not.toContain("*(stale)*");
+		expect(result?.contents.value).not.toContain("*(source changed)*");
 	});
 
-	it("leaves clean recalled prose unmarked", async () => {
+	it("leaves a sound note unmarked", async () => {
 		const server = new LspServer(
 			reads({
 				declarationsIn: async () => [found],
 				typeOf: async () => ({ status: "known", display: "number", provenance: "declared" }),
-				recallAnswers: async () => [recalled("Clean remembered prose.")],
+				readNote: async () => noted("Clean remembered prose."),
 				describe: async () => described(2),
 			}),
 			ROOT,
@@ -299,7 +299,7 @@ describe("hover", () => {
 		const result = await server.hover(URI, { line: 3, character: 5 });
 
 		expect(result?.contents.value).toContain("Clean remembered prose.");
-		expect(result?.contents.value).not.toContain("*(stale)*");
+		expect(result?.contents.value).not.toContain("*(source changed)*");
 		expect(result?.contents.value).not.toContain("*(doubted)*");
 		expect(result?.contents.value).toContain("Used in 2 places.");
 	});

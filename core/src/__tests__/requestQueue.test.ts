@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { RequestQueue } from "../requestQueue";
 
 ////////////////////////////////
@@ -63,17 +64,19 @@ describe("a failure settles its own caller only", () => {
 		});
 		const following = queue.run(async () => "fine");
 
-		await expect(failing).rejects.toThrow("boom");
+		expect(await rethrown(failing)).toThrow("boom");
 		await expect(following).resolves.toBe("fine");
 	});
 
 	it("keeps serving after a failure rather than wedging the queue", async () => {
 		const queue = new RequestQueue();
-		await expect(
-			queue.run(async () => {
-				throw new Error("boom");
-			}),
-		).rejects.toThrow();
+		expect(
+			await rethrown(
+				queue.run(async () => {
+					throw new Error("boom");
+				}),
+			),
+		).toThrow();
 		await expect(queue.run(async () => "still here")).resolves.toBe("still here");
 		expect(queue.stats()).toEqual({ pending: 0, running: false });
 	});
@@ -88,16 +91,16 @@ describe("closing when the provider dies", () => {
 
 		queue.close(new Error("provider exited"));
 
-		await expect(waiting).rejects.toThrow("provider exited");
 		// Settled by the close itself, not by the work: a tick later is too late.
-		const settled = await Promise.race([
+		const settled = Promise.race([
 			running.then(
 				() => "resolved",
 				() => "rejected",
 			),
 			tick().then(() => "pending"),
 		]);
-		expect(settled).toBe("rejected");
+		expect(await rethrown(waiting)).toThrow("provider exited");
+		expect(await settled).toBe("rejected");
 
 		// The late answer settles nothing and wedges nothing.
 		blocker.resolve("done");
@@ -108,7 +111,7 @@ describe("closing when the provider dies", () => {
 	it("refuses new work while closed", async () => {
 		const queue = new RequestQueue();
 		queue.close(new Error("provider exited"));
-		await expect(queue.run(async () => 1)).rejects.toThrow("provider exited");
+		expect(await rethrown(queue.run(async () => 1))).toThrow("provider exited");
 	});
 
 	it("serves again once reopened, so a restart reuses the queue", async () => {

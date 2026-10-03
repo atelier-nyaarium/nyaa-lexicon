@@ -103,8 +103,16 @@ export type ArrangedFiles =
 			issues: RefactorIssue[];
 			/** Every file went through `fixText` cleanly. */
 			formatted: boolean;
+			/** Each top-level declaration's span in the target's final text; a member by its id before the move. */
+			placed: Array<{ symbolId: string; range: Range }>;
 	  }
-	| { ok: false; issues: RefactorIssue[]; reason: Refusal };
+	| {
+			ok: false;
+			issues: RefactorIssue[];
+			reason: Refusal;
+			/** The provider does not arrange. */
+			unsupported?: true;
+	  };
 
 /** `lexicon.json`'s `fixText` on one file; null when it is not set. */
 export type FormatText = (module: string, text: string) => Promise<{ text: string } | { failed: string } | null>;
@@ -236,7 +244,12 @@ export class ArrangePlanner {
 		// Imports of each member that resolve to the source, a barrel's re-export included.
 		const importSites = new Map<string, ArrangeImportSite[]>();
 		for (const member of incoming) {
-			const found = await this.imports.importSitesResolvingTo(member.module, member.name, context);
+			const found = await this.imports.importSitesResolvingTo(
+				member.symbolId,
+				member.module,
+				member.name,
+				context,
+			);
 			for (const { module, site } of found) {
 				importSites.set(module, [...(importSites.get(module) ?? []), { ...site, symbolId: member.symbolId }]);
 			}
@@ -359,7 +372,12 @@ export class ArrangePlanner {
 				...this.partOf(module, text, plan, context),
 			});
 			if (answer.status === "refused") {
-				return { ok: false, issues: [], reason: providerRefused(module, answer.reason, answer.detail) };
+				return {
+					ok: false,
+					issues: [],
+					reason: providerRefused(module, answer.reason, answer.detail),
+					...(answer.reason === "NotImplemented" ? { unsupported: true as const } : {}),
+				};
 			}
 			for (const site of answer.blocked) {
 				blocked.push({
@@ -379,8 +397,10 @@ export class ArrangePlanner {
 
 		const issues = this.planner.importersUnfound([fromModule, ...others]);
 		let formatted = true;
-		for (const file of files) {
-			const result = await this.formatText(file.module, file.text);
+		// Each file formats on its own, so they run at once.
+		const results = await Promise.all(files.map((file) => this.formatText(file.module, file.text)));
+		for (const [index, file] of files.entries()) {
+			const result = results[index] ?? null;
 			if (result !== null && "text" in result) {
 				file.text = result.text;
 				continue;
@@ -391,9 +411,9 @@ export class ArrangePlanner {
 			}
 		}
 
-		const misplaced = await this.misplaced(plan, files);
-		if (misplaced !== null) return { ok: false, issues, reason: misplaced };
-		return { ok: true, files, issues, formatted };
+		const located = await this.located(plan, files);
+		if ("refused" in located) return { ok: false, issues, reason: located.refused };
+		return { ok: true, files, issues, formatted, placed: located.placed };
 	}
 
 	/** One module's part: its members, the imports naming them, and what it must reach. */
@@ -472,30 +492,53 @@ export class ArrangePlanner {
 		};
 	}
 
-	/** A member the edits leave undeclared where it lands, or still declared where it left. */
-	private async misplaced(
+	/**
+	 * Top-level spans in the target's final text, a member under its pre-move id; refuses a member
+	 * missing where it lands or left where it left.
+	 */
+	private async located(
 		plan: Extract<PlannedArrange, { ok: true }>,
 		files: ReadonlyArray<{ module: string; text: string }>,
-	): Promise<Refusal | null> {
+	): Promise<{ placed: Array<{ symbolId: string; range: Range }> } | { refused: Refusal }> {
+		const placed: Array<{ symbolId: string; range: Range }> = [];
 		for (const module of plan.fromModule === plan.toModule ? [plan.toModule] : [plan.toModule, plan.fromModule]) {
 			const file = files.find((each) => each.module === module);
 			if (file === undefined) {
 				// Unchanged: fine for a reorder that changes nothing, never with a member arriving.
 				const stranded = plan.members.find((member) => member.incoming);
-				if (stranded === undefined) continue;
-				return arrangeMisplaced(stranded.name, module);
+				if (stranded !== undefined) return { refused: arrangeMisplaced(stranded.name, module) };
+				if (module === plan.toModule) {
+					const context = new ReadContext(this.store);
+					for (const symbolId of context.symbolIdsIn(module)) {
+						const held = context.declaration(symbolId);
+						if (held === null || context.isLocal(held) || context.ancestorsOf(held).length > 0) continue;
+						placed.push({ symbolId, range: held.range });
+					}
+				}
+				continue;
 			}
 			const parsed = await this.probe.parseCandidate(module, file.text);
-			if (!parsed.parsed) return candidateDoesNotParse("candidate", parsed.reason);
-			const declared = new Set(parsed.facts.declarations.map((declaration) => declaration.symbolId));
+			if (!parsed.parsed) return { refused: candidateDoesNotParse("candidate", parsed.reason) };
+			const declared = new Map(
+				parsed.facts.declarations.map((declaration) => [declaration.symbolId, declaration.range] as const),
+			);
+			const landing = module === plan.toModule;
 			for (const member of plan.members) {
-				const landing = module === plan.toModule;
 				if (landing ? !declared.has(member.landsAs) : member.incoming && declared.has(member.symbolId)) {
-					return arrangeMisplaced(member.name, module);
+					return { refused: arrangeMisplaced(member.name, module) };
 				}
 			}
+			if (!landing) continue;
+			const asMember = new Map(plan.members.map((member) => [member.landsAs, member.symbolId] as const));
+			for (const declaration of parsed.facts.declarations) {
+				if (declaration.containerId !== undefined) continue;
+				placed.push({
+					symbolId: asMember.get(declaration.symbolId) ?? declaration.symbolId,
+					range: declaration.range,
+				});
+			}
 		}
-		return null;
+		return { placed };
 	}
 
 	/** Members not declared in the target after the step, read from the reindexed facts. */

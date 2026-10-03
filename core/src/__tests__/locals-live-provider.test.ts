@@ -129,11 +129,11 @@ const idOf = (name: string) => store.declarationsNamed(name)[0]?.symbolId as str
 
 describe("a real provider's function values and namespaces", () => {
 	it.skipIf(sourceProvider("typescript").length === 0)(
-		"keeps arrow and getter locals out of members, their evidence on the function, and namespaces holding nothing",
+		"keeps arrow and getter locals out of members, and namespaces holding nothing",
 		async () => {
 			const service = await indexed({ "src/work.ts": TYPESCRIPT }, ["typescript"]);
 
-			const scope = service.knowledgeScope({ module: "src/work.ts" });
+			const scope = service.scopeSymbols({ module: "src/work.ts" });
 			expect(scope?.symbols.map((entry) => [entry.symbol.name, entry.depth])).toEqual([
 				["handler", 0],
 				["total", 1],
@@ -143,17 +143,6 @@ describe("a real provider's function values and namespaces", () => {
 				["add", 1],
 				["Cart", 0],
 			]);
-
-			const evidence = async (name: string) => {
-				const facts = (await service.factsFor(idOf(name)))?.facts ?? [];
-				return facts
-					.filter((fact) => fact.kind !== "declaration" && fact.kind !== "reference")
-					.map((fact) => fact.kind);
-			};
-			expect(await evidence("handler")).toEqual(["literal", "literal", "comment", "comment", "export"]);
-			expect(await evidence("total")).toEqual(["literal", "comment"]);
-			expect(await evidence("price")).toEqual(["literal", "comment"]);
-			expect(await evidence("Shop")).toEqual(["export"]);
 
 			const line = service.findReferences(idOf("Line"), 50).references;
 			expect(line.map((row) => row.topLevel?.name)).toEqual(["Cart", "Cart"]);
@@ -167,7 +156,7 @@ describe("a real provider's function values and namespaces", () => {
 		async () => {
 			const service = await indexed({ "Shop.cs": CSHARP }, ["csharp"]);
 
-			const scope = service.knowledgeScope({ module: "Shop.cs" });
+			const scope = service.scopeSymbols({ module: "Shop.cs" });
 			expect(scope?.symbols.map((entry) => [entry.symbol.name, entry.depth])).toEqual([
 				["Tax", 1],
 				["Run", 1],
@@ -185,23 +174,13 @@ describe("a real provider's function values and namespaces", () => {
 		async () => {
 			const service = await indexed({ "src/Shop.kt": KOTLIN }, ["kotlin"]);
 
-			const scope = service.knowledgeScope({ module: "src/Shop.kt" });
+			const scope = service.scopeSymbols({ module: "src/Shop.kt" });
 			expect(scope?.symbols.map((entry) => [entry.symbol.name, entry.depth])).toEqual([
 				["total", 1],
 				["label", 1],
 				["checkout", 1],
 				["Shop", 0],
 			]);
-
-			const evidence = async (name: string) => {
-				const facts = (await service.factsFor(idOf(name)))?.facts ?? [];
-				return facts
-					.filter((fact) => fact.kind !== "declaration" && fact.kind !== "reference")
-					.map((fact) => fact.kind);
-			};
-			expect(await evidence("total")).toEqual(["literal", "comment"]);
-			expect(await evidence("label")).toEqual(["literal"]);
-			expect(await evidence("Shop")).toEqual([]);
 		},
 		60_000,
 	);
@@ -263,7 +242,7 @@ describe("a real provider's data", () => {
 			if (sourceProvider(provider).length === 0) return;
 			const service = await indexed({ [module]: text }, [provider]);
 
-			const scope = service.knowledgeScope({ module });
+			const scope = service.scopeSymbols({ module });
 			expect(scope?.symbols.map((entry) => [entry.symbol.name, entry.depth])).toEqual([
 				["port", 1],
 				["cert", 2],

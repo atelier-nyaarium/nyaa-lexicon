@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { ResultCache } from "../resultCache";
 
 describe("caching an answer", () => {
@@ -35,11 +36,13 @@ describe("caching an answer", () => {
 	// A transient provider failure must not be remembered as an answer.
 	it("stores nothing when the computation throws", async () => {
 		const cache = new ResultCache();
-		await expect(
-			cache.through("k", async () => {
-				throw new Error("provider died");
-			}),
-		).rejects.toThrow("provider died");
+		expect(
+			await rethrown(
+				cache.through("k", async () => {
+					throw new Error("provider died");
+				}),
+			),
+		).toThrow("provider died");
 
 		expect(await cache.through("k", async () => "recovered")).toBe("recovered");
 	});

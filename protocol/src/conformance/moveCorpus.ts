@@ -484,7 +484,7 @@ const MOVE_CASES: MoveCase[] = [
 					kind: "ready",
 					files: {
 						"src/items.ts":
-							'import { helper } from "./cart";\nexport function add(value: number) { return helper(value); }\n',
+							'import { helper } from "./cart";\n\nexport function add(value: number) { return helper(value); }\n',
 					},
 				},
 			},
@@ -620,7 +620,7 @@ const MOVE_CASES: MoveCase[] = [
 				expect: {
 					kind: "ready",
 					files: {
-						"src/items.ts": 'import { z } from "zod";\nexport const schema = z.string();\n',
+						"src/items.ts": 'import { z } from "zod";\n\nexport const schema = z.string();\n',
 					},
 				},
 			},
@@ -759,7 +759,7 @@ const MOVE_CASES: MoveCase[] = [
 					kind: "ready",
 					files: {
 						"src/nested/items.ts":
-							'import { helper } from "../util";\nexport function add(value: number) { return helper(value); }\n',
+							'import { helper } from "../util";\n\nexport function add(value: number) { return helper(value); }\n',
 					},
 				},
 			},

@@ -11,6 +11,7 @@ export const EMPTY_READS: DeclarationReads & {
 	declarationsIn: () => [],
 	declarationsNamed: () => [],
 	referencesTo: () => [],
+	usesTo: () => [],
 	referencesIn: () => [],
 	referencesSpelled: () => [],
 	importsBinding: () => [],

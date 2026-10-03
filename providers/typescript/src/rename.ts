@@ -215,9 +215,12 @@ function classifySite(
 	const replacement = token.kind === ts.SyntaxKind.PrivateIdentifier ? `#${candidateName}` : candidateName;
 	if (isObjectShorthand(token)) {
 		const range = widerRange(source, coordinates, token);
+		const newText = isShorthandKey(site)
+			? `${replacement}: ${request.oldName}`
+			: `${request.oldName}: ${replacement}`;
 		return range === undefined
 			? blocked(site.site.range, "ParseError", "the rename span is outside the module")
-			: { edit: { range, newText: `${request.oldName}: ${replacement}` } };
+			: { edit: { range, newText } };
 	}
 	if (isDestructuringShorthand(token)) {
 		const side = shorthandSide(site.site.role);
@@ -269,6 +272,24 @@ function isObjectShorthand(token: ts.Node): boolean {
 	return ts.isIdentifier(token) && ts.isShorthandPropertyAssignment(token.parent) && token.parent.name === token;
 }
 
+/** A role-less site is the member's own declaration: `{ N }`'s key, not its value. */
+function isShorthandKey(site: SiteContext): boolean {
+	return site.token !== undefined && isObjectShorthand(site.token) && site.site.role === undefined;
+}
+
+/** A site renaming an object literal's key: `N` in `{ N: x }`, or the key of `{ N }`. */
+function isObjectKey(site: SiteContext): boolean {
+	const token = site.token;
+	if (token === undefined) return false;
+	return (ts.isPropertyAssignment(token.parent) && token.parent.name === token) || isShorthandKey(site);
+}
+
+/** The object literal already has a property of the new name. */
+function objectKeyCollision(checker: ts.TypeChecker, token: ts.Node, newName: string): boolean {
+	const object = token.parent.parent;
+	return checker.getPropertyOfType(checker.getTypeAtLocation(object), newName) !== undefined;
+}
+
 function isDestructuringShorthand(token: ts.Node): boolean {
 	const element = destructuredElement(token);
 	return element !== undefined && element.propertyName === undefined;
@@ -291,6 +312,7 @@ function hasCollision(checker: ts.TypeChecker, sites: SiteContext[], newName: st
 		if (moduleExportCollision(checker, token, newName, renamed)) return true;
 		const key = isDestructuredKey(site);
 		if (propertyCollision(checker, token, newName) || (key && keyCollision(checker, token, newName))) return true;
+		if (isObjectKey(site)) return objectKeyCollision(checker, token, newName);
 		if (key || isPropertyName(token) || bindsNoLocal(site)) return false;
 		const position = meaningOf(token);
 		const meaning = sharedMeaning(position, symbolMeaning(renamed)) || position;

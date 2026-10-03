@@ -31,6 +31,20 @@ describe("method table", () => {
 		).toBe(false);
 	});
 
+	it("takes one literal criterion: a value, a regex or a range, never two", () => {
+		const accepts = (request: Record<string, unknown>) =>
+			DAEMON_METHODS.findLiterals.request.safeParse(request).success;
+
+		expect([
+			accepts({ value: "a" }),
+			accepts({ regex: "/a/" }),
+			accepts({ min: 1, max: 2 }),
+			accepts({ value: "a", min: 1 }),
+			accepts({ regex: "/a/", max: 2 }),
+			accepts({ value: "a", regex: "/a/" }),
+		]).toEqual([true, true, true, false, false, false]);
+	});
+
 	it("covers every declared method, so a dispatcher cannot silently miss one", () => {
 		for (const name of PROVIDER_METHODS) {
 			expect(METHOD_SCHEMAS[name], name).toBeDefined();

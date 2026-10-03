@@ -115,7 +115,10 @@ describe("rename edits", () => {
 			text: objectText,
 			oldName: "oldName",
 			newName: "newName",
-			sites: [site(objectText, "oldName"), site(objectText, "oldName", objectText.indexOf("{ oldName"))],
+			sites: [
+				site(objectText, "oldName"),
+				{ ...site(objectText, "oldName", objectText.indexOf("{ oldName")), role: "read" },
+			],
 		});
 		if (objectResponse.status !== "ready") throw new Error("object rename was refused");
 		expect(objectResponse.edits[1]).toEqual({
@@ -145,6 +148,46 @@ describe("rename edits", () => {
 		const destructuringApplied = applyEdits(destructuringText, destructuringResponse.edits);
 		if ("problem" in destructuringApplied) throw new Error(destructuringApplied.problem);
 		expect(syntaxErrors(destructuringApplied.text)).toEqual([]);
+	});
+
+	it("renames an object member's own key, keeping a shorthand's value and colliding only with its siblings", () => {
+		const text = [
+			"interface Box { oldName: number; other: number }",
+			"const oldName = 1;",
+			"const outer = 2;",
+			"export const box = { oldName, other: 2 } satisfies Box;",
+			"export const keyed = { oldName: 3 } satisfies Partial<Box>;",
+			"box.oldName;",
+		].join("\n");
+		const root = workspace({ "member.ts": text });
+		const request = (newName: string, declaredAt: string, readAt?: string) => ({
+			module: "member.ts",
+			text,
+			oldName: "oldName",
+			newName,
+			sites: [
+				site(text, "oldName", text.indexOf(declaredAt)),
+				...(readAt === undefined ? [] : [{ ...site(text, "oldName", text.indexOf(readAt)), role: "read" }]),
+			],
+		});
+		const renamed = (response: ReturnType<typeof rename>) => {
+			if (response.status !== "ready") throw new Error(`rename was refused: ${JSON.stringify(response)}`);
+			const applied = applyEdits(text, response.edits);
+			if ("problem" in applied) throw new Error(applied.problem);
+			return applied.text.split("\n").slice(3);
+		};
+
+		expect(renamed(rename(root, request("outer", "oldName,", "box.")))).toEqual([
+			"export const box = { outer: oldName, other: 2 } satisfies Box;",
+			"export const keyed = { oldName: 3 } satisfies Partial<Box>;",
+			"box.outer;",
+		]);
+		expect(renamed(rename(root, request("outer", "oldName: 3")))).toEqual([
+			"export const box = { oldName, other: 2 } satisfies Box;",
+			"export const keyed = { outer: 3 } satisfies Partial<Box>;",
+			"box.oldName;",
+		]);
+		expect(rename(root, request("other", "oldName,"))).toMatchObject({ status: "refused", reason: "Collision" });
 	});
 
 	it("renames a key read off a namespace and keeps the local it binds", () => {

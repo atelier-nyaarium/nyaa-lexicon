@@ -2,7 +2,7 @@
 // original text: whole-line removals, each blank separator owned once, and the insertions landing
 // at one point framed as one group.
 
-import { coordinatesOf, type OffsetRange, type Position, type Range } from "@nyaa-lexicon/protocol";
+import { comparePositions, coordinatesOf, type OffsetRange, type Position, type Range } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -34,6 +34,23 @@ interface Span {
 ////////////////////////////////
 //  Functions & Helpers
 
+/** A removal sharing its line takes the `;` joining it to a neighbor, unless it ends its own statement. */
+export function separatedRemoval(text: string, range: Range): Range {
+	const coords = coordinatesOf(text);
+	const end = coords.offsetAt(range.end);
+	if (end === undefined || text.slice(0, end).trimEnd().endsWith(";")) return range;
+	const head = coords.lineText(range.start.line)?.slice(0, range.start.character) ?? "";
+	const tail = coords.lineText(range.end.line)?.slice(range.end.character) ?? "";
+	const after = /^\s*;\s*/.exec(tail);
+	if (after !== null && tail.trim() !== ";") {
+		return { start: range.start, end: { line: range.end.line, character: range.end.character + after[0].length } };
+	}
+	const ahead = /\s*;\s*$/.exec(head);
+	if (ahead !== null && tail.trim() === "")
+		return { start: { ...range.start, character: ahead.index }, end: range.end };
+	return range;
+}
+
 /** Each line break as `eol`, but inside a literal, where a break is part of the value. */
 function withEndings(text: string, eol: string, literals: readonly OffsetRange[]): string {
 	return text.replace(/\r?\n/g, (written, at: number) =>
@@ -53,15 +70,23 @@ export function layoutModule(text: string, removals: ReadonlyMap<string, Range>,
 	const lineStart = (line: number): Position => (line < count ? { line, character: 0 } : textEnd);
 	const layout: Layout = { removals: new Map(), insertions: new Map(), order: [] };
 
-	// A declaration sharing a line keeps its own range and owns no separator.
+	// A declaration sharing a line keeps its own range and the `;` joining it, and owns no blank line.
 	const whole: Array<{ symbolId: string; start: number; end: number }> = [];
+	const shared: Array<[string, Range]> = [];
 	for (const [symbolId, range] of removals) {
 		const toLineStart = range.end.character === 0 && range.end.line > range.start.line;
 		const before = coords.lineText(range.start.line)?.slice(0, range.start.character);
 		const after = toLineStart ? "" : coords.lineText(range.end.line)?.slice(range.end.character);
 		if (before?.trim() === "" && after?.trim() === "") {
 			whole.push({ symbolId, start: range.start.line, end: toLineStart ? range.end.line : range.end.line + 1 });
-		} else layout.removals.set(symbolId, range);
+		} else shared.push([symbolId, separatedRemoval(text, range)]);
+	}
+	// Two removals on one line never claim the same separator.
+	let previous: Position | undefined;
+	for (const [symbolId, range] of shared.sort(([, left], [, right]) => comparePositions(left.start, right.start))) {
+		const start = previous !== undefined && comparePositions(range.start, previous) < 0 ? previous : range.start;
+		layout.removals.set(symbolId, { start, end: range.end });
+		previous = range.end;
 	}
 
 	// Removals with only blank lines between them leave as one span.

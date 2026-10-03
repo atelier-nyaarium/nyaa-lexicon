@@ -38,6 +38,7 @@ import { patternDigests } from "./patternDigest.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import type { ResultCache } from "./resultCache.js";
 import {
+	DENIED_BY_SCOPE_REASON,
 	insideWorkspace,
 	OUTSIDE_WORKSPACE_REASON,
 	readHead,
@@ -116,12 +117,8 @@ export const RESOLVE_RETRY_MS = 1_000;
 const RESOLVE_RETRY_MAX_MS = 60_000;
 
 /**
- * Two questions with two lifetimes, so one turnover rule cannot serve both.
- *
- * A stored answer is drawn from facts and dies the moment any fact moves. Where a specifier LANDS
- * is not drawn from facts: it survives every edit to a file's body, and only moves when the set of
- * modules changes or a provider's config does. Keeping them in one cache made the second question
- * as expensive as the first, which is a whole workspace of provider round trips on every batch.
+ * Two questions with two lifetimes: a cached query result dies the moment any fact moves; where a
+ * specifier lands survives body edits, and moves only when the module set or a provider's config does.
  */
 export interface IndexCaches {
 	facts: ResultCache;
@@ -989,7 +986,7 @@ export class WorkspaceIndexer {
 		depth = this.depths.get(module) ?? this.rootDepth(module),
 		skipIfCurrent = false,
 	): Promise<IndexOutcome> {
-		if (this.scopeOrThrow().denies(module)) return this.unadmitted(module, "denied by scope");
+		if (this.scopeOrThrow().denies(module)) return this.unadmitted(module, DENIED_BY_SCOPE_REASON);
 		return this.parseAndStore(module, depth, skipIfCurrent);
 	}
 
@@ -1037,7 +1034,7 @@ export class WorkspaceIndexer {
 
 	/** Whether anything will index a module: the scope's word, then the routing's. */
 	claimOf(module: string): ModuleClaim {
-		if (this.scopeOrThrow().denies(module)) return { claimed: false, unclaimedReason: "denied by scope" };
+		if (this.scopeOrThrow().denies(module)) return { claimed: false, unclaimedReason: DENIED_BY_SCOPE_REASON };
 		const route = this.supervisor.route(module);
 		if (route.owned) return { claimed: true, provider: route.providerId };
 		return {
@@ -1528,7 +1525,8 @@ export class WorkspaceIndexer {
 
 	/** What `indexFile` would find, decided in its order, without asking a provider or writing. */
 	moduleStatus(module: string): ModuleStatus {
-		return statusOf(module, this.claimOf(module), this.readSource(module), this.store);
+		const denied = this.scopeOrThrow().denies(module);
+		return statusOf(module, this.claimOf(module), denied ? null : this.readSource(module), this.store);
 	}
 
 	/** Why the index may read a module: discovered by scope, or reached by import. Narrower than a claim. */
@@ -1548,6 +1546,7 @@ export class WorkspaceIndexer {
 	moduleDeclarations(module: string): ModuleDeclarations {
 		return moduleDeclarations(module, {
 			claimOf: (m) => this.claimOf(m),
+			denies: (m) => this.scopeOrThrow().denies(m),
 			readSource: this.readSource,
 			store: this.store,
 		});

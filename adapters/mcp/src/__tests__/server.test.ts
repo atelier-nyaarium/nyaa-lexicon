@@ -377,7 +377,7 @@ describe("query project routing", () => {
 	it.each([
 		["missing", {}],
 		["both", { text: "foo", regex: "/foo/" }],
-	])("requires exactly one search selector: %s", async (_case, query) => {
+	])("refuses a query with no selector or with both patterns: %s", async (_case, query) => {
 		const routes: string[] = [];
 		const options: Array<Record<string, unknown>> = [];
 		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
@@ -386,6 +386,18 @@ describe("query project routing", () => {
 
 		expect(result.isError).toBe(true);
 		expect(options).toEqual([]);
+	});
+
+	it("reaches the backend with a filter alone", async () => {
+		const routes: string[] = [];
+		const options: Array<Record<string, unknown>> = [];
+		const client = await connectClient(searchSource(routes, options), binding([project("alpha", true)]));
+		const queries = [{ kind: "function" }, { module: "src" }, { within: "Widget" }];
+
+		const result = await call(client, "search_symbols", { queries });
+
+		expect(result.isError).toBeUndefined();
+		expect(options).toEqual(queries);
 	});
 
 	it("runs several queries in one call", async () => {

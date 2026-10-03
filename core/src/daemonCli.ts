@@ -37,6 +37,7 @@ import { type Collector, makeReportsDir, startDiagnostics } from "./diagnostics.
 import { createDispatch, unknownMethod } from "./dispatch.js";
 import { driftedTo } from "./drift.js";
 import { storeCompatibilityKey } from "./fingerprint.js";
+import { seedIndex } from "./indexSeed.js";
 import { DEFAULT_LINGER_MS, lingerWhileEmpty } from "./lifetime.js";
 import { startLiveIndex } from "./liveIndex.js";
 import { ownSource } from "./ownSource.js";
@@ -351,6 +352,8 @@ async function main(argv: string[]): Promise<void> {
 			log(`a delete of ${paths.dir} was left unfinished; removed what it left behind`);
 		}
 
+		const seeded = seedIndex(paths.dir);
+		if (seeded !== null) log(`copied ${seeded} forward to ${paths.index}`);
 		const source = ownSource();
 		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root, clock);
 		store = opened.store;

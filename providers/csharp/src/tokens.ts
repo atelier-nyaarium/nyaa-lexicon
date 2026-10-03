@@ -48,6 +48,16 @@ export interface Token {
 	literalType?: string;
 	/** A number literal's value; none for an integer past 2^53. */
 	number?: number;
+	/** A multi-line raw string, whose lines lose the closing line's indentation. */
+	dedented?: true;
+}
+
+/** A string or character literal as read from its quote. */
+interface StringRead {
+	value: string;
+	closed: boolean;
+	invalidNewline: boolean;
+	dedented?: true;
 }
 
 /** Whether a code token shares a comment's first line before it and its last line after it. */
@@ -435,6 +445,7 @@ class CsharpLexer {
 		if (utf8) cursor.take(`${cursor.peek()}8`);
 		const literalType = utf8 ? "ReadOnlySpan<byte>" : string ? "string" : "char";
 		const item: Token = { ...token(cursor, string ? "string" : "character", read.value, start), literalType };
+		if (read.dedented) item.dedented = true;
 		if (dollars === 0) this.emit(item);
 		else this.interpolated.push(item);
 		if (!read.closed)
@@ -445,12 +456,7 @@ class CsharpLexer {
 	}
 
 	/** A regular or verbatim string or character, from its quote. */
-	private readQuoted(
-		start: CursorMark,
-		quote: string,
-		verbatim: boolean,
-		dollars: number,
-	): { value: string; closed: boolean; invalidNewline: boolean } {
+	private readQuoted(start: CursorMark, quote: string, verbatim: boolean, dollars: number): StringRead {
 		const cursor = this.cursor;
 		const text = { start };
 		let value = "";
@@ -488,10 +494,7 @@ class CsharpLexer {
 	}
 
 	/** A raw string, from its opening quotes; a hole opens with as many braces as it has dollars. */
-	private readRawString(
-		start: CursorMark,
-		dollars: number,
-	): { value: string; closed: boolean; invalidNewline: false } {
+	private readRawString(start: CursorMark, dollars: number): StringRead {
 		const cursor = this.cursor;
 		const text = { start };
 		// Closes only on a run as long as the opener; a shorter run is content.
@@ -530,7 +533,8 @@ class CsharpLexer {
 		}
 		flush();
 		if (dollars > 0) this.emitText(text.start);
-		return { value: closed && multiline ? dedented(parts) : joined(parts), closed, invalidNewline: false };
+		if (closed && multiline) return { value: dedented(parts), closed, invalidNewline: false, dedented: true };
+		return { value: joined(parts), closed, invalidNewline: false };
 	}
 
 	/** An interpolated string's run of text from `start`, as a string token. */

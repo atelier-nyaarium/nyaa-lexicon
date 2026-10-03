@@ -47,13 +47,15 @@ const WRITERS = new Set([
 
 const TEMPORARY_SUFFIX = "lexicon-tmp";
 
-/** The one writer. daemonLock.ts, projectRegistry.ts, projectStores.ts (moving a store aside) and
- * diagnostics.ts (the memory collection) write lexicon's OWN state, never source. */
+/** The one writer. daemonLock.ts, projectRegistry.ts, projectStores.ts (moving a store aside),
+ * indexSeed.ts (a new schema's index) and diagnostics.ts (the memory collection) write lexicon's
+ * OWN state, never source. */
 const OWNERS = new Set([
 	"sourceWriter.ts",
 	"daemonLock.ts",
 	"projectRegistry.ts",
 	"projectStores.ts",
+	"indexSeed.ts",
 	"diagnostics.ts",
 ]);
 

@@ -1008,8 +1008,13 @@ class RouteResolver {
 				const own = at.kind === "module" && at.module === this.request.subject.module;
 				return bound && own ? "renames" : "unproved";
 			}
-			// A use bound to the subject reads its row where a declaration of another meaning shares the name.
-			const subjects = last && bound ? named.filter((each) => this.isSubject(each)) : [];
+			// A use bound to the subject reads its row where a declaration of another meaning shares the name:
+			// the subject itself last, before that the declaration holding it.
+			const subjects = !bound
+				? []
+				: last
+					? named.filter((each) => this.isSubject(each))
+					: named.filter((each) => each.origin.kind === "symbol" && this.within(each.origin.symbolId));
 			const candidates = subjects.length === 1 ? subjects : named;
 			const [row] = candidates;
 			if (candidates.length > 1 || row === undefined || row.certainty.status !== "known") return "unproved";

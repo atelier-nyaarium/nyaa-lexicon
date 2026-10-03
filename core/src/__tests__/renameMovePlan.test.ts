@@ -135,7 +135,9 @@ function plannerFor(world: World): RefactorPlanner {
 		probeBatch: () => Promise.reject(new Error("not asked")),
 	};
 
-	const imports = { importSitesFor: async () => [], importSitesForMove: () => [] } as unknown as ImportResolver;
+	const imports = {
+		importSitesResolvingTo: async () => [],
+	} as unknown as ImportResolver;
 
 	return new RefactorPlanner(storeFor(world), imports, source as unknown as SourceWorkspace, probe, PROVED);
 }
@@ -309,7 +311,7 @@ describe("moving a declaration into a module that imports it", () => {
 			probeBatch: () => Promise.reject(new Error("not asked")),
 		};
 		const imports = {
-			importSitesForMove: (module: string) => (module === TARGET ? [site] : []),
+			importSitesResolvingTo: async () => [{ module: TARGET, site }],
 		} as unknown as ImportResolver;
 		const source = { writable: (module: string) => ({ text: texts[module] ?? null }) };
 		const planner = new RefactorPlanner(
@@ -348,6 +350,59 @@ describe("moving a declaration into a module that imports it", () => {
 				[TARGET, "greet();\nexport function greet() {}\n"],
 			],
 		});
+	});
+});
+
+describe("moving a declaration that shares its line", () => {
+	it("takes the `;` joining it to its neighbor, and none it ends with", async () => {
+		const moved = async (text: string, removal: Range) => {
+			const probe: ProviderProbe = {
+				owner: () => ({ owned: true, providerId: "test" }),
+				declares: () => true,
+				words: () => ({ keywords: [], builtins: [], literals: [] }),
+				parseCandidate: (): Promise<CandidateParse> => Promise.reject(new Error("not asked")),
+				renameEdits: () => Promise.reject(new Error("not asked")),
+				moveEdits: async (_module, request) => ({
+					status: "ready",
+					edits: request.role.removal === undefined ? [] : [{ range: request.role.removal, newText: "" }],
+					blocked: [],
+				}),
+				arrangeEdits: () => Promise.reject(new Error("not asked")),
+				probeBatch: () => Promise.reject(new Error("not asked")),
+			};
+			const source = { writable: (module: string) => ({ text: module === MODULE ? text : "" }) };
+			const planner = new RefactorPlanner(
+				storeFor({ text: "", declarations: [] }),
+				{ importSitesResolvingTo: async () => [] } as unknown as ImportResolver,
+				source as unknown as SourceWorkspace,
+				probe,
+			);
+			const outcome = await planner.moveEdits(
+				{
+					ok: true,
+					symbolId: id("f"),
+					name: "f",
+					fromModule: MODULE,
+					toModule: TARGET,
+					text: sliced(text, removal),
+					removal,
+					closure: [],
+					dependencies: [],
+					referencing: [],
+					usedAtSource: false,
+					exportsAtTarget: false,
+					baseHash: hashContent(text),
+				},
+				{} as never,
+			);
+			return outcome.ok ? outcome.files.find((file) => file.module === MODULE)?.text : outcome;
+		};
+
+		expect([
+			await moved("var f = 1; var g = 2\n", range(0, 0, 0, 9)),
+			await moved("var g = 2; var f = 1\n", range(0, 11, 0, 20)),
+			await moved("let g = 2; let f = 1;\n", range(0, 11, 0, 21)),
+		]).toEqual(["var g = 2\n", "var g = 2\n", "let g = 2; \n"]);
 	});
 });
 

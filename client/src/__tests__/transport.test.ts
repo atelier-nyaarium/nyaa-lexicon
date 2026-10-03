@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createServer, type Socket } from "node:net";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { rejection, rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { DaemonError, Incompatible } from "../errors";
 import { connectFrames, notifyWaiting, requestOnce } from "../transport";
 import { type FakeAnswer, type FakeDaemon, fakeDaemon } from "./fakeDaemon";
@@ -58,8 +59,8 @@ describe("the welcome check", () => {
 
 		const refused = connectFrames(fake.port, TOKEN);
 
-		await expect(refused).rejects.toThrow(Incompatible);
-		await expect(refused).rejects.toMatchObject({ installed: "1.0.0", client: expect.stringMatching(/^\d/) });
+		expect(await rethrown(refused)).toThrow(Incompatible);
+		expect(await rejection(refused)).toMatchObject({ installed: "1.0.0", client: expect.stringMatching(/^\d/) });
 		expect(await settledAt(fake, 0)).toBe(0);
 	});
 
@@ -73,7 +74,7 @@ describe("the welcome check", () => {
 
 		for (const oldest of [undefined, ours + 1]) {
 			const outgrown = await daemonAnswering(() => ({ ok: true, result: "served" }), "99.0.0", oldest);
-			await expect(connectFrames(outgrown.port, TOKEN, { acceptOlder: true })).rejects.toThrow(Incompatible);
+			expect(await rethrown(connectFrames(outgrown.port, TOKEN, { acceptOlder: true }))).toThrow(Incompatible);
 		}
 	});
 
@@ -121,8 +122,8 @@ describe("patience with a starting daemon", () => {
 
 		const started = Date.now();
 		const failed = client.request("overview", {});
-		await expect(failed).rejects.toThrow(DaemonError);
-		await expect(failed).rejects.toMatchObject({ waitingFor: "the language providers to start" });
+		expect(await rethrown(failed)).toThrow(DaemonError);
+		expect(await rejection(failed)).toMatchObject({ waitingFor: "the language providers to start" });
 
 		const elapsed = Date.now() - started;
 		expect(elapsed).toBeGreaterThanOrEqual(250);
@@ -135,7 +136,7 @@ describe("patience with a starting daemon", () => {
 		const fake = await daemonAnswering(() => STARTING);
 		const client = await connectFrames(fake.port, TOKEN, { patience: 0 });
 
-		await expect(client.request("overview", {})).rejects.toThrow(DaemonError);
+		expect(await rethrown(client.request("overview", {}))).toThrow(DaemonError);
 		expect(fake.asked).toHaveLength(1);
 		client.close();
 	});
@@ -179,7 +180,7 @@ describe("daemon refusal causes", () => {
 		}));
 		const client = await connectFrames(fake.port, TOKEN);
 
-		await expect(client.request("overview", {})).rejects.toMatchObject({ cause: "refusedModule" });
+		expect(await rejection(client.request("overview", {}))).toMatchObject({ cause: "refusedModule" });
 		client.close();
 	});
 
@@ -190,7 +191,7 @@ describe("daemon refusal causes", () => {
 		}));
 		const client = await connectFrames(fake.port, TOKEN);
 
-		await expect(client.request("overview", {})).rejects.toMatchObject({ cause: "daemon" });
+		expect(await rejection(client.request("overview", {}))).toMatchObject({ cause: "daemon" });
 		client.close();
 	});
 });
@@ -212,9 +213,9 @@ describe("aborting", () => {
 			const closed = new Promise((resolve) => sockets[0]?.once("close", resolve));
 			abort.abort();
 
-			await expect(handshake).rejects.toThrow();
+			expect(await rethrown(handshake)).toThrow();
 			await closed;
-			await expect(connectFrames(port, TOKEN, { signal: abort.signal })).rejects.toThrow();
+			expect(await rethrown(connectFrames(port, TOKEN, { signal: abort.signal }))).toThrow();
 			expect(sockets).toHaveLength(1);
 		} finally {
 			await new Promise((resolve) => silent.close(resolve));
@@ -229,7 +230,7 @@ describe("aborting", () => {
 		while (fake.asked.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
 		abort.abort();
 
-		await expect(asked).rejects.toThrow();
+		expect(await rethrown(asked)).toThrow();
 		expect(await settledAt(fake, 0)).toBe(0);
 	});
 });

@@ -10,7 +10,7 @@ import ts from "typescript";
  * Swept only where `reason:` always names one; elsewhere it also names an enum value and a tally
  * field, and the brand guards those slots instead.
  */
-const SWEPT = ["knowledge.ts", "answers.ts"].map((name) => join(import.meta.dirname, "..", name));
+const SWEPT = ["notes.ts"].map((name) => join(import.meta.dirname, "..", name));
 
 const OWNER = join(import.meta.dirname, "..", "refusals.ts");
 
@@ -148,21 +148,21 @@ describe("one module composes every refusal", () => {
 			"const r = text as Refusal;",
 			"const r = <refusal.Refusal>text;",
 			"const r = text satisfies Refusal;",
-			"const r = text as ReturnType<typeof refusal.needsProse>;",
+			"const r = text as ReturnType<typeof refusal.doubtNeedsReason>;",
 		];
 		for (const line of planted) expect(mints(parseSource("probe.ts", line).source), line).toHaveLength(1);
 		expect(mints(parseSource("probe.ts", 'const note = "text as Refusal";').source)).toEqual([]);
 	});
 
 	it("catches a planted literal under each of the three shapes", () => {
-		expect(inlineRefusals(`return { recorded: false, reason: "an answer needs prose" };`)).toHaveLength(1);
+		expect(inlineRefusals(`return { outcome: "refused", reason: "a doubt needs a reason" };`)).toHaveLength(1);
 		expect(inlineRefusals("return { symbolId, refused: `nothing to doubt` };")).toHaveLength(1);
 		expect(inlineRefusals(`return { ok: false, reason: 'cites none' };`)).toHaveLength(1);
-		expect(inlineRefusals(`return { ok: false, reason: refusal.citesNothing() };`)).toHaveLength(0);
-		expect(inlineRefusals(`return { recorded: false, reason: check.reason };`)).toHaveLength(0);
+		expect(inlineRefusals(`return { ok: false, reason: refusal.doubtNeedsReason() };`)).toHaveLength(0);
+		expect(inlineRefusals(`return { outcome: "refused", reason: check.reason };`)).toHaveLength(0);
 	});
 
-	it("has the ledger and the checker composing no refusal of their own", () => {
+	it("has the note ledger composing no refusal of its own", () => {
 		const offenders = SWEPT.flatMap((file) => {
 			const source = readSwept(file);
 			if (source === null) return [];
@@ -170,7 +170,7 @@ describe("one module composes every refusal", () => {
 		});
 		expect(
 			offenders,
-			"a knowledge refusal is a named constructor in core/src/refusals.ts; put its result in the reason slot rather than a sentence",
+			"a note refusal is a named constructor in core/src/refusals.ts; put its result in the reason slot rather than a sentence",
 		).toEqual([]);
 	});
 });

@@ -36,7 +36,7 @@ export interface Subject {
 	lastCoverage: PatternCoverage | null;
 }
 
-/** What stands at an address, in one read each: for a refusal to say and a recall to carry. */
+/** What stands at an address, in one read each: for diagnosis and forwarding. */
 export interface SubjectStatus {
 	subject: string | null;
 	state: SubjectState | "none";
@@ -50,8 +50,6 @@ export interface SubjectStatus {
 	/** The address's module is present and failing to parse, so nothing about it is judged. */
 	exempt: boolean;
 	reason: string | null;
-	answers: number;
-	gaps: number;
 }
 
 export interface RebindEntry {
@@ -73,8 +71,6 @@ export interface AppliedRebind {
 
 export interface RebindResult {
 	subjects: number;
-	answers: number;
-	gaps: number;
 	applied: AppliedRebind[];
 	/** Entries whose subject stayed because another already holds its `to`. */
 	blocked: RebindEntry[];
@@ -90,8 +86,6 @@ export interface KeptRebind {
 
 export interface RebindBackResult {
 	subjects: number;
-	answers: number;
-	gaps: number;
 	kept: KeptRebind[];
 }
 
@@ -132,32 +126,6 @@ export interface SalvagedSubject {
 	lastCoverage: PatternCoverage | null;
 }
 
-/** A salvaged answer; `subjectId` is null for a row written by address before subjects existed. */
-export interface SalvagedAnswer {
-	subjectId: string | null;
-	recordedAs: string;
-	question: string;
-	factId: string;
-	prose: string;
-	citations: string;
-	thin: number;
-	model: string | null;
-	createdAt: number;
-	doubtId: string | null;
-	doubtReason: string | null;
-	doubtAt: number | null;
-	doubtBy: string | null;
-}
-
-/** A salvaged demand row; `subjectId` is null for a row written by address before subjects existed. */
-export interface SalvagedGap {
-	subjectId: string | null;
-	recordedAs: string;
-	question: string;
-	askCount: number;
-	lastAsked: number;
-}
-
 /** A salvaged note row, columns as the notes table holds them. */
 export interface SalvagedNote {
 	subjectId: string | null;
@@ -195,8 +163,6 @@ export interface SalvagedNoteProposal {
 /** The salvaged knowledge in closed shapes, and how many rows were unreadable. */
 export interface NormalizedSalvage {
 	subjects: SalvagedSubject[];
-	answers: SalvagedAnswer[];
-	gaps: SalvagedGap[];
 	notes: SalvagedNote[];
 	noteLinks: SalvagedNoteLink[];
 	noteProposals: SalvagedNoteProposal[];
@@ -205,19 +171,6 @@ export interface NormalizedSalvage {
 
 /** Where a salvaged row's subject is, or why it has none: another subject holds its address. */
 export type Placement = { placed: true; subjectId: string } | { placed: false; reason: "held" };
-
-/** One orphaned subject's row, for the gap window: never work, always shown with its date. */
-export interface StrandedRow {
-	symbolId: string;
-	question: string;
-	held: "answer" | "demand";
-	/** An answer under a standing doubt keeps saying so. */
-	doubted: boolean;
-	askCount: number;
-	recordedAs: string;
-	orphanedAt: number;
-	evidence: SubjectEvidence;
-}
 
 ////////////////////////////////
 //  Constants
@@ -258,35 +211,6 @@ CREATE TABLE IF NOT EXISTS knowledge_subjects (
 CREATE INDEX IF NOT EXISTS knowledge_subjects_orphaned ON knowledge_subjects(orphanedAt);
 CREATE INDEX IF NOT EXISTS knowledge_subjects_state ON knowledge_subjects(state);
 CREATE INDEX IF NOT EXISTS knowledge_subjects_from ON knowledge_subjects(fromSymbolId);
-
--- Prose about a subject, cited from facts. recordedAs is the address at record time, never
--- rewritten, because the answer's own id digests it.
-CREATE TABLE IF NOT EXISTS answers (
-  subjectId   TEXT NOT NULL,
-  question    TEXT NOT NULL,
-  recordedAs  TEXT NOT NULL,
-  factId      TEXT NOT NULL UNIQUE,
-  prose       TEXT NOT NULL,
-  citations   TEXT NOT NULL,
-  thin        INTEGER NOT NULL DEFAULT 0,
-  model       TEXT,
-  createdAt   INTEGER NOT NULL,
-  doubtId     TEXT,
-  doubtReason TEXT,
-  doubtAt     INTEGER,
-  doubtBy     TEXT,
-  PRIMARY KEY (subjectId, question)
-);
-
--- Demand for knowledge nobody has written, counted per ask.
-CREATE TABLE IF NOT EXISTS gaps (
-  subjectId  TEXT NOT NULL,
-  question   TEXT NOT NULL,
-  recordedAs TEXT NOT NULL,
-  askCount   INTEGER NOT NULL,
-  lastAsked  INTEGER NOT NULL,
-  PRIMARY KEY (subjectId, question)
-);
 
 -- One note per subject: markdown opening with its summary paragraph. Author columns hold the
 -- harness's JSON; sourceDigest is the subject's digest when last saved or confirmed.
@@ -333,10 +257,6 @@ CREATE TABLE IF NOT EXISTS symbol_note_proposals (
 -- A key never changes: identity moves by rebinding the subject's address and by nothing else.
 CREATE TRIGGER IF NOT EXISTS knowledge_subjects_key_frozen BEFORE UPDATE OF subjectId ON knowledge_subjects
   BEGIN SELECT RAISE(ABORT, 'knowledge_subjects.subjectId never changes'); END;
-CREATE TRIGGER IF NOT EXISTS answers_key_frozen BEFORE UPDATE OF subjectId ON answers
-  BEGIN SELECT RAISE(ABORT, 'answers.subjectId never changes'); END;
-CREATE TRIGGER IF NOT EXISTS gaps_key_frozen BEFORE UPDATE OF subjectId ON gaps
-  BEGIN SELECT RAISE(ABORT, 'gaps.subjectId never changes'); END;
 CREATE TRIGGER IF NOT EXISTS symbol_notes_key_frozen BEFORE UPDATE OF subjectId ON symbol_notes
   BEGIN SELECT RAISE(ABORT, 'symbol_notes.subjectId never changes'); END;
 CREATE TRIGGER IF NOT EXISTS symbol_note_links_key_frozen BEFORE UPDATE OF subjectId ON symbol_note_links
@@ -347,38 +267,17 @@ CREATE TRIGGER IF NOT EXISTS symbol_note_proposals_key_frozen BEFORE UPDATE OF s
 CREATE VIEW IF NOT EXISTS subjects_addressed AS
   SELECT subjectId, currentSymbolId AS symbolId, state, boundAt, orphanedAt, fromSymbolId, evidence, lastDigest, lastCoverage
   FROM knowledge_subjects;
-CREATE VIEW IF NOT EXISTS answers_addressed AS
-  SELECT a.*, s.currentSymbolId AS symbolId, s.state, s.orphanedAt, s.evidence, s.boundAt
-  FROM answers a JOIN knowledge_subjects s ON s.subjectId = a.subjectId;
-CREATE VIEW IF NOT EXISTS gaps_addressed AS
-  SELECT g.*, s.currentSymbolId AS symbolId, s.state, s.orphanedAt, s.evidence
-  FROM gaps g JOIN knowledge_subjects s ON s.subjectId = g.subjectId;
 CREATE VIEW IF NOT EXISTS notes_addressed AS
   SELECT n.*, s.currentSymbolId AS symbolId, s.state, s.lastDigest
   FROM symbol_notes n JOIN knowledge_subjects s ON s.subjectId = n.subjectId;
-
--- Work: rows whose address the index holds. A ranking reader reads these and cannot see a dead address.
-CREATE VIEW IF NOT EXISTS answers_live AS
-  SELECT a.* FROM answers_addressed a JOIN symbols y ON y.symbolId = a.symbolId;
-CREATE VIEW IF NOT EXISTS gaps_live AS
-  SELECT g.* FROM gaps_addressed g JOIN symbols y ON y.symbolId = g.symbolId;
 `;
 
 /** The view names, so a rebuild can drop them before the tables they read. */
-export const KNOWLEDGE_VIEWS = [
-	"subjects_addressed",
-	"answers_addressed",
-	"gaps_addressed",
-	"notes_addressed",
-	"answers_live",
-	"gaps_live",
-] as const;
+export const KNOWLEDGE_VIEWS = ["subjects_addressed", "notes_addressed"] as const;
 
 /** The tables a rebuild salvages, subjects first so the rows that key by them restore after. */
 export const KNOWLEDGE_TABLES = [
 	"knowledge_subjects",
-	"answers",
-	"gaps",
 	"symbol_notes",
 	"symbol_note_links",
 	"symbol_note_proposals",
@@ -426,57 +325,6 @@ function digestAt(db: DatabaseSync, symbolId: string): { digest: string; coverag
 		| undefined;
 	if (row === undefined || row.patternDigest === null || row.patternCoverage === null) return null;
 	return { digest: row.patternDigest, coverage: row.patternCoverage };
-}
-
-/** In the caller's transaction. One subject per address; rows keep their fact ids, so citations still resolve. */
-export function rekeyKnowledge(db: DatabaseSync, now: number): void {
-	// A rename rewrites any view over the table; none should exist here, and none may survive it.
-	for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
-	db.exec("ALTER TABLE answers RENAME TO answers_by_address");
-	db.exec("ALTER TABLE gaps RENAME TO gaps_by_address");
-	db.exec(KNOWLEDGE_SCHEMA);
-
-	const addresses = db
-		.prepare("SELECT symbolId FROM answers_by_address UNION SELECT symbolId FROM gaps_by_address ORDER BY symbolId")
-		.all() as Array<{ symbolId: string }>;
-	const held = db.prepare("SELECT 1 FROM symbols WHERE symbolId = ?");
-	const insert = db.prepare(INSERT_SUBJECT);
-	const subjects = new Map<string, string>();
-	for (const { symbolId } of addresses) {
-		const subjectId = mintSubjectId(symbolId, now);
-		const bound = held.get(symbolId) !== undefined;
-		const digest = bound ? digestAt(db, symbolId) : null;
-		insert.run(
-			subjectId,
-			symbolId,
-			bound ? "bound" : "orphaned",
-			now,
-			bound ? null : now,
-			null,
-			"none",
-			digest?.digest ?? null,
-			digest?.coverage ?? null,
-		);
-		subjects.set(symbolId, subjectId);
-	}
-
-	const answer = db.prepare(
-		`INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, thin, model, createdAt,
-		 doubtId, doubtReason, doubtAt, doubtBy)
-		 SELECT ?, question, symbolId, factId, prose, citations, thin, model, createdAt, doubtId, doubtReason, doubtAt, doubtBy
-		 FROM answers_by_address WHERE symbolId = ?`,
-	);
-	const gap = db.prepare(
-		`INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked)
-		 SELECT ?, question, symbolId, askCount, lastAsked FROM gaps_by_address WHERE symbolId = ?`,
-	);
-	for (const [symbolId, subjectId] of subjects) {
-		answer.run(subjectId, symbolId);
-		gap.run(subjectId, symbolId);
-	}
-
-	db.exec("DROP TABLE answers_by_address");
-	db.exec("DROP TABLE gaps_by_address");
 }
 
 /** A four-field note as paragraphs, in field order. */
@@ -592,17 +440,6 @@ export function normalizeSalvaged(
 	// The address a row was keyed by, in either shape it was written in; an empty one is none.
 	const addressOf = (row: Record<string, unknown>): string | null =>
 		(str(row["recordedAs"]) || null) ?? (str(row["symbolId"]) || null);
-	// Citations must read back as a list of ids, or the answer cannot be recalled at all.
-	const citationsOf = (value: unknown): string | null => {
-		const text = str(value) ?? "[]";
-		try {
-			const parsed: unknown = JSON.parse(text);
-			return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? text : null;
-		} catch {
-			return null;
-		}
-	};
-
 	const subjects: SalvagedSubject[] = [];
 	for (const row of raw["knowledge_subjects"] ?? []) {
 		const subjectId = str(row["subjectId"]);
@@ -628,49 +465,6 @@ export function normalizeSalvaged(
 				lastDigest !== null && lastCoverage !== null && COVERAGE.has(lastCoverage)
 					? (lastCoverage as PatternCoverage)
 					: null,
-		});
-	}
-
-	const answers: SalvagedAnswer[] = [];
-	for (const row of raw["answers"] ?? []) {
-		const recordedAs = addressOf(row);
-		const prose = str(row["prose"]);
-		const factId = str(row["factId"]);
-		const citations = citationsOf(row["citations"]);
-		if (recordedAs === null || prose === null || factId === null || citations === null) {
-			dropped++;
-			continue;
-		}
-		answers.push({
-			subjectId: str(row["subjectId"]),
-			recordedAs,
-			question: str(row["question"]) ?? "describe",
-			factId,
-			prose,
-			citations,
-			thin: num(row["thin"], 0),
-			model: str(row["model"]),
-			createdAt: num(row["createdAt"], 0),
-			doubtId: str(row["doubtId"]),
-			doubtReason: str(row["doubtReason"]),
-			doubtAt: num(row["doubtAt"], -1) < 0 ? null : num(row["doubtAt"], -1),
-			doubtBy: str(row["doubtBy"]),
-		});
-	}
-
-	const gaps: SalvagedGap[] = [];
-	for (const row of raw["gaps"] ?? []) {
-		const recordedAs = addressOf(row);
-		if (recordedAs === null) {
-			dropped++;
-			continue;
-		}
-		gaps.push({
-			subjectId: str(row["subjectId"]),
-			recordedAs,
-			question: str(row["question"]) ?? "describe",
-			askCount: num(row["askCount"], 1),
-			lastAsked: num(row["lastAsked"], 0),
 		});
 	}
 
@@ -733,7 +527,7 @@ export function normalizeSalvaged(
 			proposedAt: num(row["proposedAt"], 0),
 		});
 	}
-	return { subjects, answers, gaps, notes, noteLinks, noteProposals, dropped };
+	return { subjects, notes, noteLinks, noteProposals, dropped };
 }
 
 /** Salvaged subject rows put back as they were; every other row finds its subject through `placeRow`. */
@@ -782,14 +576,6 @@ export class KnowledgeSubjects {
 		const resolves = this.db.prepare("SELECT 1 FROM symbols WHERE symbolId = ?").get(symbolId) !== undefined;
 		const module = moduleOf(symbolId);
 		const reason = module === null ? null : failureOf(module);
-		const count = (table: "answers" | "gaps"): number =>
-			subject === null
-				? 0
-				: (
-						this.db
-							.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE subjectId = ?`)
-							.get(subject.subjectId) as { n: number }
-					).n;
 		return {
 			subject: subject?.subjectId ?? null,
 			state: subject?.state ?? "none",
@@ -799,8 +585,6 @@ export class KnowledgeSubjects {
 			forwardedTo: forwarded?.symbolId ?? null,
 			exempt: reason !== null,
 			reason,
-			answers: count("answers"),
-			gaps: count("gaps"),
 		};
 	}
 
@@ -901,13 +685,9 @@ export class KnowledgeSubjects {
 	rebind(entries: RebindEntry[], evidence: RebindEvidence, now: number): RebindResult {
 		const applied: AppliedRebind[] = [];
 		const blocked: RebindEntry[] = [];
-		let answers = 0;
-		let gaps = 0;
 		const move = this.db.prepare(
 			"UPDATE knowledge_subjects SET currentSymbolId = ?, fromSymbolId = ?, boundAt = ?, state = 'bound', orphanedAt = NULL, evidence = ? WHERE subjectId = ?",
 		);
-		const countAnswers = this.db.prepare("SELECT COUNT(*) AS n FROM answers WHERE subjectId = ?");
-		const countGaps = this.db.prepare("SELECT COUNT(*) AS n FROM gaps WHERE subjectId = ?");
 		for (const { from, to } of entries) {
 			if (from === to) continue;
 			const subject = this.forAddress(from);
@@ -927,25 +707,19 @@ export class KnowledgeSubjects {
 				priorState: subject.state,
 				priorOrphanedAt: subject.orphanedAt,
 			});
-			answers += (countAnswers.get(subject.subjectId) as { n: number }).n;
-			gaps += (countGaps.get(subject.subjectId) as { n: number }).n;
 		}
 		this.recordKnowledgeWrite(applied.length > 0);
-		return { subjects: applied.length, answers, gaps, applied, blocked };
+		return { subjects: applied.length, applied, blocked };
 	}
 
 	/** Puts back exactly what a rebind moved: each subject still at its `to`, to the state it had.
 	 * A move it cannot put back is named, never forced: two subjects never merge. */
 	rebindBack(applied: readonly AppliedRebind[]): RebindBackResult {
 		let subjects = 0;
-		let answers = 0;
-		let gaps = 0;
 		const kept: KeptRebind[] = [];
 		const back = this.db.prepare(
 			"UPDATE knowledge_subjects SET currentSymbolId = ?, fromSymbolId = ?, boundAt = ?, evidence = ?, state = ?, orphanedAt = ? WHERE subjectId = ?",
 		);
-		const countAnswers = this.db.prepare("SELECT COUNT(*) AS n FROM answers WHERE subjectId = ?");
-		const countGaps = this.db.prepare("SELECT COUNT(*) AS n FROM gaps WHERE subjectId = ?");
 		// Newest move first, so a subject moved twice in one step comes all the way back.
 		for (const entry of [...applied].reverse()) {
 			const subject = this.byId(entry.subjectId);
@@ -971,22 +745,18 @@ export class KnowledgeSubjects {
 				entry.subjectId,
 			);
 			subjects++;
-			answers += (countAnswers.get(entry.subjectId) as { n: number }).n;
-			gaps += (countGaps.get(entry.subjectId) as { n: number }).n;
 		}
 		this.recordKnowledgeWrite(subjects > 0);
-		return { subjects, answers, gaps, kept };
+		return { subjects, kept };
 	}
 
 	/** The subject and its rows, gone. */
 	delete(subjectId: string): void {
-		const answers = this.db.prepare("DELETE FROM answers WHERE subjectId = ?").run(subjectId);
-		const gaps = this.db.prepare("DELETE FROM gaps WHERE subjectId = ?").run(subjectId);
 		const notes = this.db.prepare("DELETE FROM symbol_notes WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM symbol_note_proposals WHERE subjectId = ?").run(subjectId);
 		const subject = this.db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(subjectId);
-		this.recordKnowledgeWrite(answers.changes > 0 || gaps.changes > 0 || notes.changes > 0 || subject.changes > 0);
+		this.recordKnowledgeWrite(notes.changes > 0 || subject.changes > 0);
 	}
 
 	/** Orphans whose kept address the module holds again are bound: the address resolves, so nothing was lost. */
@@ -1037,43 +807,6 @@ export class KnowledgeSubjects {
 			this.db.prepare("SELECT COUNT(*) AS n FROM knowledge_subjects WHERE state = 'orphaned'").get() as {
 				n: number;
 			}
-		).n;
-	}
-
-	/** Orphaned subjects' rows in pass A's order; for the window, never for ranking. */
-	strandedRows(limit: number): StrandedRow[] {
-		const rows = this.db
-			.prepare(
-				`SELECT subjectId, symbolId, question, 'answer' AS held, doubtId IS NOT NULL AS doubted, 0 AS askCount,
-				        recordedAs, orphanedAt, evidence
-				 FROM answers_addressed WHERE state = 'orphaned'
-				 UNION ALL
-				 SELECT subjectId, symbolId, question, 'demand' AS held, 0 AS doubted, askCount,
-				        recordedAs, orphanedAt, evidence
-				 FROM gaps_addressed WHERE state = 'orphaned'
-				 ORDER BY orphanedAt, subjectId, question LIMIT ?`,
-			)
-			.all(limit) as Array<Record<string, unknown>>;
-		return rows.map((row) => ({
-			symbolId: row["symbolId"] as string,
-			question: row["question"] as string,
-			held: row["held"] as "answer" | "demand",
-			doubted: row["doubted"] === 1,
-			askCount: row["askCount"] as number,
-			recordedAs: row["recordedAs"] as string,
-			orphanedAt: row["orphanedAt"] as number,
-			evidence: row["evidence"] as SubjectEvidence,
-		}));
-	}
-
-	strandedCount(): number {
-		return (
-			this.db
-				.prepare(
-					`SELECT (SELECT COUNT(*) FROM answers_addressed WHERE state = 'orphaned')
-					      + (SELECT COUNT(*) FROM gaps_addressed WHERE state = 'orphaned') AS n`,
-				)
-				.get() as { n: number }
 		).n;
 	}
 

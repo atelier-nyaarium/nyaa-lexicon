@@ -5,8 +5,8 @@ that no parse can recover: why a design was abandoned, which two constants must 
 residue test enforces an invariant by grep. No reference edge connects any of that.
 
 Lexicon never calls a model. The consumer of these tools is already an agent reading the code, so a
-second model call inside the core would pay twice and bind the tool to a key and a bill. The core
-hands over facts, takes back prose, refuses what it cannot verify, and remembers.
+second model call inside the core would pay twice and bind the tool to a key. The core hands over
+facts, stores notes and refuses what it cannot resolve.
 
 ## Notes
 
@@ -35,46 +35,15 @@ wrote or confirmed becomes a proposal for that person. A newer proposal replaces
 `at`; resolving names the revision and the `at` shown, so a replaced proposal refuses.
 
 The MCP tools are `read_note`, `write_note`, `doubt_note` and `note_backlinks`. Notes are written on
-demand, never as a coverage sweep.
-
-The answer layer below predates notes. The daemon still serves it; the MCP adapter does not.
-
-## The citation rule
-
-An answer is prose PLUS the fact ids it consumed. That pairing is the whole design, because it
-makes "never answer cold" a property of the store rather than a slogan: an answer citing nothing
-cannot be written down at all.
-
-What counts as a fact ABOUT a subject is its declaration, the references to it, the literals and
-comments inside it, the literals and comments on its parameters and locals, the imports that reach
-it, the answers already recorded on it, and, for a heading, the prose under it. A local's literals
-and comments belong to its nearest enclosing declaration that is not itself local, and to no
-declaration further out; `describe`'s notes read the same set. Stored anchors and fact ids do not
-move. An answer is never ABOUT prose, but prose is evidence, so a section's own text is what an
-explanation of that section cites.
-
-Four citation refusals, each closing a different way of recording something ungrounded:
-
-- **No citations.** The cold answer this layer exists to prevent.
-- **A citation that is not a fact id.** Diagnosed separately from one that does not resolve,
-  because the usual cause is copying only the trailing digest, and the unresolved wording sends
-  that author off to re-fetch ids that were never the problem.
-- **A citation that resolves to nothing.** A fact id is a digest of its own contents, so an id that
-  does not resolve was either invented or describes something that has since changed.
-- **Nothing cited about the subject.** An answer may cite a neighbour, since answers compound, but
-  one citing only neighbours describes them rather than the symbol it claims to be about.
-
-An answer whose citations all sit on the subject's own declaration is stored and graded THIN. It is
-a paraphrase of what a reader already sees: grounded, legitimate, and adding little. Refusing it
-would teach citation padding, so a visible grade invites a better answer instead.
+demand, never as a coverage sweep. A parameter or a local takes no note; its owner does.
 
 ## Refusals name the mistake
 
 A refusal is the only channel through which an author learns what to do, since the core never
 calls a model and cannot fix a write itself. So every refusal names what the author did and what to
 do instead, and every one is composed in one module, `core/src/refusals.ts`, as a named constructor
-returning a branded sentence. The ledger and the citation checker choose an outcome and put a
-constructor's result in the reason slot; they compose none of their own. A raw string in that slot
+returning a branded sentence. The note ledger chooses an outcome and puts a constructor's result in
+the reason slot; it composes none of its own. A raw string in that slot
 is a type error in core, and a residue test refuses the cast, in every spelling, outside the owner.
 
 That holds beyond the knowledge layer. Everything that says why a read, a refactor step, a journal
@@ -85,44 +54,6 @@ string on the wire, `core/src/refusalSlots.ts` narrows the shape for core alone,
 `string` fails the build. A warning is not a refusal and stays a string: `RefactorIssue.detail`
 rides a step that succeeded, and putting it in the catalog would claim otherwise.
 
-## Question classes
-
-A closed vocabulary rather than free-form chat, because a class the core cannot render is worse
-than one it refuses.
-
-| Question | Answers |
-|---|---|
-| `describe` | what this is and its role |
-| `why` | rationale and scar tissue |
-| `relate` | how it connects to what surrounds it |
-| `contract` | what callers may assume, and what breaks them |
-| `effects` | what it mutates, influences, or lets escape |
-| `usage` | how to call it |
-
-## Answers are facts one layer up
-
-An answer carries its own citable id, so a description of a class can cite the descriptions of its
-members. Knowledge compounds, and the walk that reads an answer is what carries doubt back down
-from anything it leaned on.
-
-## Three ways an answer goes bad
-
-**Mechanical.** A cited fact's id stops resolving, because a fact id is a digest of its contents.
-Noticing costs a lookup, not a model call. This is why a provider improving its analysis retires
-ids: the facts genuinely changed identity, and the layer feels it.
-
-**Declared.** Someone read the code and no longer trusts an answer, without rewriting it. Doubt
-does not retire the answer's id, so citations still resolve; the recall walk carries it downstream
-instead. Clearing a doubt requires citing the doubt's own id, which only a recall shows, so a
-writer who never looked cannot erase a warning. An uncited doubt rides forward onto the rewrite
-rather than being dropped.
-
-**Rewritten.** The answer is wrong while every input still holds. Anyone records a new one over
-it, citing whatever supports the new prose; the old citations are not required.
-
-Re-affirming is the heal: the same prose re-grounded on current ids in one call, which retires the
-old id so anything citing it heals the same way, leaves first.
-
 ## Knowledge is about a subject
 
 A symbol id embeds the symbol's name and its module, and a member's id embeds its container's, so
@@ -131,17 +62,15 @@ parameters, everything declared inside it. Nothing about the code changed meanin
 written about it stops resolving.
 
 Knowledge is therefore not keyed by the id. It is keyed by a subject: an opaque identity minted
-the first time anything is written about a declaration, whose current address is the symbol id.
+the first time a note is written about a declaration, whose current address is the symbol id.
 `core/src/subjects.ts` owns the table and every transition. The store reads through views that
-join a row to its subject and hand back the current address, with the address the row was
-recorded at beside it, and recall carries the subject: where the answer was recorded, the
-evidence that brought it to this address, and since when. A row's key never changes: a trigger
-refuses the update, no merge exists, and identity moves only by rebinding the address.
+join a row to its subject and hand back the current address, with the address the note was saved
+at beside it. A row's key never changes: a trigger refuses the update, no merge exists, and
+identity moves only by rebinding the address.
 
 A write claims through one owner method: where the address resolves to a declaration it mints a
-subject or restores the orphan kept there; where it does not, an orphan is kept as it is, and an
-address holding neither is refused with the catalog's diagnosis. A recall is a read; the demand
-it found is counted afterwards as the daemon's own write.
+subject or restores the orphan kept there; where it does not, the write is refused with the
+catalog's diagnosis.
 
 A rename or move through a refactor step builds the old-to-new address map from the id grammar
 before it writes anything and journals it with the step. Once the files are written and the
@@ -153,9 +82,8 @@ rows in the same commit, so a crash between the two cannot report a reversed mov
 a reversal cannot put back, because its subject is gone, has moved on, or another subject holds
 its old address, is named with that reason on the undo and revert results and in the recovery
 log rather than silently left. An address that already holds a subject is never a rebind target:
-two subjects never merge, and the one already there keeps describing the code as it stands.
-Prose survives a move; its citations go stale on their own, which is correct, because the facts
-underneath really did change identity.
+two subjects never merge, and the one already there keeps describing the code as it stands. A note
+survives a move.
 
 An address that stops resolving keeps its subject, bound and unresolved, until a sweep judges it.
 The indexer runs one after every prune, at the end of a full scan and of every watcher batch, and
@@ -174,11 +102,11 @@ covers kind, name and text, with comments cut and whitespace collapsed outside s
   has no new modules, so it never rebinds. A target another subject already holds is refused, and
   the refusal reads `ambiguous` naming the holder.
 - **Orphaned.** Otherwise the subject is dated, with evidence `ambiguous` and the candidates when
-  several declarations matched, `none` when none did. An orphan leaves every queue at once and
-  costs nothing until a module write restores it: a re-index that puts the declaration back at the
+  several declarations matched, `none` when none did. An orphan costs nothing until a module write
+  restores it: a re-index that puts the declaration back at the
   kept address restores the subject as it lands, so does a write there, and a compat rebuild keeps
   an orphan orphaned with its date.
-- **Deleted.** Thirty days after the date, with its answers and its demand. A date ahead of the
+- **Deleted.** Thirty days after the date, with its note. A date ahead of the
   clock reads as now, so a clock that went backwards deletes nothing early.
 
 A sweep examines at most `ORPHAN_SWEEP_CAP` subjects and persists a cursor in store meta, so the
@@ -189,28 +117,26 @@ workspace in a test.
 
 A compat rebuild salvages the knowledge tables before the index is emptied and puts them back
 after. `normalizeSalvaged` maps every raw row into a closed value first, so nothing past it reads a
-raw row: a row missing its address, its prose or its fact id, or whose citations do not parse, is
-dropped and counted. The subject rows go back as they were, and every answer and gap is placed
-through `placeRow`, the one method that decides which subject a salvaged row belongs to. A row
-naming a subject that survived keeps it. A row naming a subject that is gone revives that id, bound
-at its recorded address, and is refused `held` when another subject holds the address, since two
-subjects never merge. A row naming no subject joins the holder of its address, or mints one there
-with evidence `none`. Rows are placed subject-keyed first and newest first, so a subject is judged
-at its newest address, and one refused there is refused whole rather than revived by an older row.
-The open result carries the unplaced and dropped counts and the daemon logs both.
+raw row: a row missing its address or its text is dropped and counted. The subject rows go back as
+they were, and every note is placed through `placeRow`, the one method that decides which subject a
+salvaged row belongs to. A row naming a subject that survived keeps it. A row naming a subject that
+is gone revives that id, bound at the address its note was saved at, and is refused `held` when
+another subject holds the address, since two subjects never merge. A row naming no subject joins
+the holder of its address, or mints one there with evidence `none`. The open result carries the
+unplaced and dropped counts and the daemon logs both.
 
 ## A refusal says what stands at the address
 
-Every write at an address the index does not hold, and every recall of an answer whose address no
-longer resolves, is diagnosed from the subject's state (`KnowledgeSubjects.stateOf`) before any
-sentence is composed, so the wording agrees with what the identity owner last recorded:
+Every write at an address the index does not hold is diagnosed from the subject's state
+(`KnowledgeSubjects.stateOf`) before any sentence is composed, so the wording agrees with what the
+identity owner last recorded:
 
 - **Moved.** The address was vacated by a rebind: the refusal names the new address and the
-  evidence, and says the knowledge is recalled there. Only the last vacated address of a subject
+  evidence, and says the note moved there. Only the last vacated address of a subject
   forwards; one two rebinds old reads as unminted.
 - **Stranded.** A subject still names the address and the index no longer holds it: the refusal
-  says whose knowledge stands there (the answers, or only the demand), the date it was orphaned if
-  it was, and where a reader might find the declaration now. Candidates are declarations elsewhere
+  says a note stands there, the date it was orphaned if it was, and where a reader might find the
+  declaration now. Candidates are declarations elsewhere
   with the same name and kind (`sameNameAndKind` in the id grammar, applied by `candidatesFor`);
   they are for a person to read, and nothing is ever bound by one.
 - **Waiting on a parse failure.** A bound subject whose module is present and not parsing: the
@@ -221,65 +147,24 @@ sentence is composed, so the wording agrees with what the identity owner last re
   `spellsName` matches a name against those descriptors and the whole tokens of that rest, so a
   name like `at` is not promoted by every id containing those letters.
 
-Recall carries the same diagnosis as `stranded` beside the answer.
+A stranded note is still read at its address.
 
 The diagnosis is one value, `diagnoseSubject` in `core/src/refusals.ts`: a closed kind
 (`factIdAsSubject`, `unminted`, `moved`, `stranded`, `waiting`, `unknown`), the sentence, the ids a
 reader might mean, and for a vacated address where it forwards. `subjectRefused` is its sentence,
-and every site in core that meets a symbol id naming nothing routes through it: the knowledge
-writers, `typeOf`, `SourceWorkspace`, and the refactor planner. The daemon exposes it as the read
+and every site in core that meets a symbol id naming nothing routes through it: the note writer,
+`typeOf`, `SourceWorkspace`, and the refactor planner. The daemon exposes it as the read
 method `diagnoseSubject`; the MCP adapter's `resolveOne` asks `declarationOf` for any supplied id
 and answers with the diagnosis on a miss, so every tool taking a symbol id says what a writer says.
 An indexed module holding no declarations is unminted territory; an unindexed one is unknown. A
 residue forbids the two absence sentences in production outside the owner.
 
-## Work exists only at an address the index holds
-
-The identity owner declares `answers_live` and `gaps_live`, the addressed views joined to
-`symbols`, and every ranking reader in the ledger (the gap queue, both recheck scans, the overview's
-stale count) reads them through the store's `live*` surfaces, so a dead address cannot reach a
-queue. The raw readers stay for recall, doubt and diagnosis, which must see stranded rows, and a
-residue forbids them in the ledger's ranking paths. Demand is decided at the write: `recordGap`
-inserts only where `symbols` holds the address, so a recall of a stranded answer counts nothing,
-and the `stranded` field on the wire is explanation, never eligibility.
-
-Orphaned subjects are still seen. The workspace gap list appends their rows after the actionable
-ones, each flagged `stranded` with the date and the evidence, and carries their count apart from
-`total`, which counts actionable rows only; the seeded fallback decides on actionable rows, so a
-workspace whose only knowledge is stranded still seeds its hubs. The rows come from
-`strandedRows`, the identity owner's one reader over the addressed views, in the order pass A
-reads. That is a window, not a task, and a module scope or subtree walk never holds one.
-
-The seeded fallback, which runs when the ledger holds no demand, ranks per language rather than
-across the workspace, since cross-language calls never bind and a global fan-in rank buries every
-language called over a wire. A candidate is a declaration the store's `seedCandidates` admits: not
-`exported: false`, not in a file git calls generated, and carrying a comment, prose under it, a
-use from outside itself, or in a code file a literal, since a data field's value is the field
-itself; an unknown export or generated status keeps it eligible and is counted
-on the page as `seededUnknown`, which the renderer says under the header. `RESERVED_HUBS` hubs by
-global fan-in lead, then the languages take turns, ordered by their declaration count, each
-offering its next candidate by fan-in and then id, so two runs agree. A use and a fan-in leave out
-import and export lines, by the store's `isUse`. Git's word on a file is a
-three-valued verdict persisted on its `files` row, written by the pass that read the file and
-refreshed by every later admission, so a file a pass left unread never keeps a stale one.
-
-The gap list says whether it filtered by the asked question: `filtered` is set by every core
-return, `false` from the workspace demand sweep, which carries every question with rechecks first,
-and `true` from the seeded fallback, the module scope and the subtree walk. A client names the
-question only when the core says so, and reads an omitted flag as unfiltered.
-
-A row's `why` reads `answerHealth`. The module scope, the subtree walk and the unasked sweep list an
-answer's own doubt or staleness only, since a shaky answer's cause is its own row. A demand row for a
-shaky answer reads `why: "stale"` with `shaky: true`, so a client that predates the flag still parses
-it, and drops out once its answer is sound again.
-
 ## A scope, members first
 
-`knowledgeScope` answers a symbol, a symbol with its declared members, or a whole module: each
-declaration with every question's state, the recorded answer's `createdAt`, and the ask count.
-Members come before the declaration holding them, siblings by line then character, so answering in
-order lets a container cite its members' answers. A symbol id the index does not hold answers null,
-as `factsFor` does; a module the index does not hold answers an empty scope.
+`scopeSymbols` answers a symbol, a symbol with its declared members, or a whole module: each
+declaration with its depth. Members come before the declaration holding them, siblings by line then
+character, so a container is noted after its members. A symbol id the index does not hold answers
+null; a module the index does not hold answers an empty scope.
 
 - **Groupings hold nothing:** a `file`, `module`, `namespace` or `package` is not listed, and what
   it groups sits a level up, so a namespace's classes are a module's top level.
@@ -291,19 +176,12 @@ as `factsFor` does; a module the index does not hold answers an empty scope.
   `locals`, and a nested JSON or YAML key under its parent key stays a member. `core/src/locals.ts`
   owns the rule.
 - **Live declarations only:** a scope lists what the index holds, so it carries no stranded state.
-- **State:** `stale` and `doubted` are the answer's own, as `knowledgeGaps` reads them; `shaky` says
-  an answer it cites is stale or doubted beneath it, as recall reports SHAKY. One function,
-  `answerHealth`, reads them for recall, gaps, demand and the scope: `upstreamStale` and
-  `upstreamDoubted` apart, and `shaky` as either, which every caller asking "shaky" reads.
 
-It walks containment. `knowledgeGaps` under a root walks what the root uses, which answers a class
-alone, since a class's references belong to its methods. The two stay separate reads.
+It walks containment.
 
 ## Rules
 
-- **Narration never edits facts.** The answer path can only resolve ids, so a hallucinated edge has
-  nowhere to land. That is enforced by construction, not by care.
-- **Generate on demand.** Bulk-describing a repository is expensive vanity; the gap ledger records
-  what people actually asked for and could not get.
-- **Report health honestly.** An answer over a partial index says so. A caveat that is usually
-  wrong is one a reader learns to skip.
+- **Narration never edits facts.** A note only resolves refs; it never adds an edge.
+- **Write on demand.** A note records what a reader learned that the code does not show, never a
+  sweep for coverage.
+- **Report health honestly.** A note's advisories say when its source or a ref changed.

@@ -672,7 +672,7 @@ describe("reads a plan relies on", () => {
 		});
 	});
 
-	it("find an import site that lands on a scope holding the declaration, and none on another scope", async () => {
+	it("take a move site that lands on a scope holding the declaration, and none on another scope", async () => {
 		const other = { ...ACME, scopeId: "com.other" };
 		write("m.ts", acmeMember("m.ts", "Foo"));
 		write("u.ts", { imports: [named("com.acme", "Foo", onLine(1))], lands: { "com.acme": ACME } });
@@ -681,8 +681,9 @@ describe("reads a plan relies on", () => {
 			status: "resolved",
 			landing: specifier === "com.acme" ? ACME : other,
 		}));
+		const sites = await resolver.importSitesResolvingTo(idOf("m.ts", "Foo"), "m.ts", "Foo", store);
 
-		expect((await resolver.importSitesFor("m.ts", "Foo", store)).map((site) => site.module)).toEqual(["u.ts"]);
+		expect(sites.map((each) => each.module)).toEqual(["u.ts"]);
 	});
 
 	it("cite an export exposing the symbol under another name", () => {

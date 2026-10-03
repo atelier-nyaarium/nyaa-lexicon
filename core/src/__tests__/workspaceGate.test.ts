@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { WorkspaceGate } from "../workspaceGate";
 
 ////////////////////////////////
@@ -118,11 +119,13 @@ describe("serializing workspace mutations", () => {
 	it("releases the gate when work throws, rather than wedging every later caller", async () => {
 		const gate = new WorkspaceGate();
 
-		await expect(
-			gate.exclusive(async () => {
-				throw new Error("step failed");
-			}),
-		).rejects.toThrow("step failed");
+		expect(
+			await rethrown(
+				gate.exclusive(async () => {
+					throw new Error("step failed");
+				}),
+			),
+		).toThrow("step failed");
 
 		await expect(gate.exclusive(async () => "next")).resolves.toBe("next");
 		expect(gate.stats()).toEqual({ readers: 0, writing: false, waiting: 0 });

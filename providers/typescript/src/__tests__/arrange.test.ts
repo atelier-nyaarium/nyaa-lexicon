@@ -106,14 +106,14 @@ function importSite(text: string, name: string): ArrangeImportSite {
 	};
 }
 
-function imported(name: string): MoveDependency {
+function imported(name: string, specifier = `./${name}`): MoveDependency {
 	return {
 		name,
 		origin: {
 			kind: "workspaceModule",
 			symbolId: `lexicon typescript ${name}.ts ${name}.`,
 			module: `${name}.ts`,
-			via: { specifier: `./${name}`, importKind: "named", importedName: name, localName: name },
+			via: { specifier, importKind: "named", importedName: name, localName: name },
 		},
 	};
 }
@@ -301,6 +301,169 @@ describe("arrange edits", () => {
 			"export function a() { return 1; }\n\nexport function b() { return 2; }\n",
 		);
 		expect(result.files["source.ts"]).toBe('import { a, b } from "./target";\n\nexport const kept = a() + b();\n');
+	});
+
+	it("imports what the source still uses in one statement, marking a member used only as a type, in the source's specifier style", () => {
+		const source = [
+			'import { y } from "./y.js";',
+			"",
+			"export interface Shape { size: number }",
+			"",
+			"export function make(): Shape { return { size: y }; }",
+			"",
+			"export const kept: Shape = make();",
+			"",
+		].join("\n");
+		const result = arrange({ "source.ts": source, "y.ts": "export const y = 1;\n" }, "source.ts", "target.ts", [
+			{
+				module: "target.ts",
+				members: [
+					lands("Shape", "export interface Shape { size: number }\n", { line: 0, character: 0 }),
+					lands("make", "\nexport function make(): Shape { return { size: y }; }\n", {
+						line: 0,
+						character: 0,
+					}),
+				],
+				importSites: [],
+				dependencies: [inside("Shape"), imported("y", "./y.js")],
+			},
+			{
+				module: "source.ts",
+				members: [leaves("Shape", lines(2, 4)), leaves("make", lines(4, 6))],
+				importSites: [],
+				dependencies: ["Shape", "make"].map((name) => ({
+					name,
+					origin: { kind: "workspaceModule", symbolId: id(name), module: "target.ts" },
+				})),
+			},
+		]);
+
+		expect(result.blocked).toEqual([]);
+		expect(result.files["target.ts"]).toBe(
+			[
+				'import { y } from "./y.js";',
+				"",
+				"export interface Shape { size: number }",
+				"",
+				"export function make(): Shape { return { size: y }; }",
+				"",
+			].join("\n"),
+		);
+		expect(result.files["source.ts"]).toBe(
+			'import { type Shape, make } from "./target.js";\n\nexport const kept: Shape = make();\n',
+		);
+	});
+
+	it("repoints the source's own exports of leaving members, or blocks where the new home may not export them", () => {
+		const cases: {
+			source: string;
+			members: ArrangeMember[];
+			back?: string[];
+			expected?: string;
+			site?: string;
+		}[] = [
+			{
+				source: "export function a() { return 1; }\n\nexport const kept = 1;\n\nexport { a as b };\n",
+				members: [leaves("a", lines(0, 2))],
+				expected: 'export const kept = 1;\n\nexport { a as b } from "./target";\n',
+			},
+			{
+				source: [
+					"export function a() { return 1; }",
+					"",
+					"export interface Shape { size: number }",
+					"",
+					"export const kept = 1;",
+					"",
+					"export { a as first, kept as k, Shape as Form };",
+					"",
+				].join("\n"),
+				members: [leaves("a", lines(0, 2)), leaves("Shape", lines(2, 4))],
+				expected: [
+					"export const kept = 1;",
+					"",
+					"export { kept as k };",
+					'export { a as first, type Shape as Form } from "./target";',
+					"",
+				].join("\n"),
+			},
+			{
+				source: [
+					"export interface Shape { size: number }",
+					"",
+					"export const kept: Shape = { size: 1 };",
+					"",
+					"export { Shape as Form };",
+					"",
+				].join("\n"),
+				members: [leaves("Shape", lines(0, 2))],
+				back: ["Shape"],
+				expected: [
+					'import type { Shape } from "./target";',
+					"",
+					"export const kept: Shape = { size: 1 };",
+					"",
+					'export type { Shape as Form } from "./target";',
+					"",
+				].join("\n"),
+			},
+			// The target may land it unexported.
+			{ source: "function a() { return 1; }\n\nexport { a };\n", members: [leaves("a", lines(0, 2))], site: "a" },
+		];
+
+		for (const { source, members, back = [], expected, site } of cases) {
+			const result = arrange({ "source.ts": source, "target.ts": "" }, "source.ts", "target.ts", [
+				{
+					module: "source.ts",
+					members,
+					importSites: [],
+					dependencies: back.map((name) => ({
+						name,
+						origin: { kind: "workspaceModule", symbolId: id(name), module: "target.ts" },
+					})),
+				},
+			]);
+
+			if (site !== undefined) {
+				const start = source.indexOf(site, source.lastIndexOf("export {"));
+				const range = coordinatesOf(source).rangeAt(start, start + site.length);
+				expect(result.blocked, source).toMatchObject([{ reason: "NotImplemented", range }]);
+			} else {
+				expect(result.blocked, source).toEqual([]);
+				expect(result.files["source.ts"], source).toBe(expected as string);
+			}
+		}
+	});
+
+	it("keeps one blank line between the import block and the members, and none left where the block goes", () => {
+		const member = "export function a() { return x; }\n";
+		const part = (text: string, line: number): Part => ({
+			module: "target.ts",
+			members: [lands("a", text, { line, character: 0 })],
+			importSites: [],
+			dependencies: [imported("x")],
+		});
+		const files = {
+			"source.ts": `import { x } from "./x";\n\n${member}\nexport const kept = 1;\n`,
+			"x.ts": "export const x = 1;\n",
+		};
+		const created = arrange(files, "source.ts", "target.ts", [
+			part(member, 0),
+			{ module: "source.ts", members: [leaves("a", lines(2, 4))], importSites: [], dependencies: [] },
+		]);
+		expect(created.blocked).toEqual([]);
+		expect(created.files["target.ts"]).toBe(`import { x } from "./x";\n\n${member}`);
+		expect(created.files["source.ts"]).toBe("export const kept = 1;\n");
+
+		// Core frames a landing under the imports with its own blank line.
+		const target = 'import { y } from "./y";\n';
+		const below = arrange(
+			{ ...files, "target.ts": target, "y.ts": "export const y = 1;\n" },
+			"source.ts",
+			"target.ts",
+			[part(`\n${member}`, 1)],
+		);
+		expect(below.files["target.ts"]).toBe(`import { y } from "./y";\nimport { x } from "./x";\n\n${member}`);
 	});
 
 	it("rewrites a statement naming two members once, and splits one naming a member and a staying name", () => {

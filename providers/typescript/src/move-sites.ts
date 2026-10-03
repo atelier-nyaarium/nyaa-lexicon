@@ -1,10 +1,17 @@
 // Repointing the import statements that name a moved symbol.
 
-import type { MoveBlockedSite, MoveImportSite, OffsetRange, TextCoordinates, TextEdit } from "@nyaa-lexicon/protocol";
+import type {
+	MoveBlockedReason,
+	MoveBlockedSite,
+	MoveImportSite,
+	OffsetRange,
+	TextCoordinates,
+	TextEdit,
+} from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import { sameModulePath } from "./move-dependencies.js";
-import { append, blockedSite, type PlannedImport, quoted, type WorkMeter } from "./move-imports.js";
-import type { SpecifierRenderer } from "./project.js";
+import { moduleBindings, sameModulePath } from "./move-dependencies.js";
+import { append, blockedSite, type PlannedImport, type Quote, quoted, type WorkMeter } from "./move-imports.js";
+import type { SpecifierRenderer, SpecifierRenderResult } from "./project.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -37,6 +44,20 @@ export interface SiteRewrite {
 	planned: PlannedImport[];
 	/** Every name moves: repoint the statement, or drop it once each name joins another import. */
 	whole?: { rewrite: TextEdit; removal?: TextEdit };
+}
+
+/** A declaration leaving its module: the name it binds and its span. */
+export interface Leaving {
+	name: string;
+	removed: OffsetRange;
+}
+
+/** What repointing a module's own exports of the names that leave it does. */
+export interface LocalExports {
+	edits: TextEdit[];
+	blocked: MoveBlockedSite[];
+	/** The repointed names, which no longer read the module's binding. */
+	spans: OffsetRange[];
 }
 
 ////////////////////////////////
@@ -163,13 +184,7 @@ export function rewriteImportSites<S extends MoveImportSite>(
 		return { blocked: [], planned, whole: removal === undefined ? { rewrite } : { rewrite, removal } };
 	}
 
-	let kept = "";
-	let cursor = 0;
-	for (const span of removedSpans(source, node, moved)) {
-		kept += raw.slice(cursor, span.start - start);
-		cursor = span.end - start;
-	}
-	kept += raw.slice(cursor);
+	let kept = keptText(source, node, moved, start);
 	if (ts.isExportDeclaration(node)) {
 		const names = bound.flatMap((binding) => (moved.has(binding.node) ? [binding.node.getText(source)] : []));
 		kept += `\nexport ${node.isTypeOnly ? "type " : ""}{ ${names.join(", ")} } from ${specifier};`;
@@ -219,16 +234,125 @@ export function orphanedImports(
 		const start = statement.getStart(source);
 		const range = coordinates.rangeAt(start, statement.getEnd());
 		if (range === undefined) continue;
-		const raw = source.text.slice(start, statement.getEnd());
-		let kept = "";
-		let cursor = 0;
-		for (const span of removedSpans(source, statement, orphaned)) {
-			kept += raw.slice(cursor, span.start - start);
-			cursor = span.end - start;
-		}
-		edits.push({ range, newText: kept + raw.slice(cursor) });
+		edits.push({ range, newText: keptText(source, statement, orphaned, start) });
 	}
 	return edits;
+}
+
+////////////////////////////////
+//  Local Exports
+
+/**
+ * Repoints each `export { name }` outside the leaving spans to the name's new home, one edit per
+ * clause, splitting the leaving names out of a clause that keeps others. Blocks a name its new home
+ * may not export, or that still binds here.
+ */
+export function repointLeavingExports(
+	source: ts.SourceFile,
+	coordinates: TextCoordinates,
+	leaving: readonly Leaving[],
+	render: () => SpecifierRenderResult,
+	quote: Quote,
+): LocalExports {
+	const result: LocalExports = { edits: [], blocked: [], spans: [] };
+	const names = new Set(leaving.map((declaration) => declaration.name));
+	const declared = new Map<string, ts.Statement[]>();
+	const clauses: { node: ts.ExportDeclaration; clause: ts.NamedExports; moved: ts.ExportSpecifier[] }[] = [];
+	for (const statement of source.statements) {
+		const start = statement.getStart(source);
+		const within = leaving.filter(({ removed }) => removed.start <= start && statement.getEnd() <= removed.end);
+		if (within.length > 0) {
+			for (const { name } of within) append(declared, name, statement);
+			continue;
+		}
+		if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier !== undefined) continue;
+		const clause = statement.exportClause;
+		if (clause === undefined || !ts.isNamedExports(clause)) continue;
+		const moved = clause.elements.filter((element) => names.has(exportedLocal(element)));
+		if (moved.length > 0) clauses.push({ node: statement, clause, moved });
+	}
+	if (clauses.length === 0) return result;
+
+	const refusals = new Map<string, { reason: MoveBlockedReason; detail: string }>();
+	const spans = leaving.map((declaration) => declaration.removed);
+	const bound = moduleBindings(source, spans);
+	const exported = new Set(clauses.flatMap(({ moved }) => moved.map(exportedLocal)));
+	for (const name of exported) {
+		// Only the declaration's own `export` lands with it.
+		const statements = declared.get(name) ?? [];
+		if (statements.length === 0 || !statements.every(exportsByName)) {
+			const detail = `the declaration of ${name} does not export it by name, so its new home may not`;
+			refusals.set(name, { reason: "NotImplemented", detail });
+		} else if (bound.has(name)) {
+			const detail = `${name} also names a declaration that stays, and splitting its export is not implemented`;
+			refusals.set(name, { reason: "NotImplemented", detail });
+		}
+	}
+	let from = "";
+	if (refusals.size < exported.size) {
+		const rendered = render();
+		if ("reason" in rendered) {
+			for (const name of exported) if (!refusals.has(name)) refusals.set(name, rendered);
+		} else from = quoted(rendered.specifier, quote);
+	}
+
+	const block = (element: ts.ExportSpecifier, reason: MoveBlockedReason, detail: string) => {
+		const range = coordinates.rangeAt(element.getStart(source), element.getEnd());
+		result.blocked.push(blockedSite(range, reason, detail));
+	};
+	const typed = (element: ts.ExportSpecifier) =>
+		(declared.get(exportedLocal(element)) ?? []).every(
+			(statement) => ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement),
+		);
+	for (const { node, clause, moved } of clauses) {
+		const moving = moved.filter((element) => {
+			const refusal = refusals.get(exportedLocal(element));
+			if (refusal !== undefined) block(element, refusal.reason, refusal.detail);
+			return refusal === undefined;
+		});
+		if (moving.length === 0) continue;
+		const start = clause.getStart(source);
+		const range = coordinates.rangeAt(start, node.getEnd());
+		if (range === undefined) {
+			for (const element of moving) block(element, "ParseError", "the export is outside the module");
+			continue;
+		}
+		// A re-exported type needs `type` under isolatedModules.
+		const marked = !node.isTypeOnly && moving.every(typed);
+		const typeOnly = node.isTypeOnly || marked;
+		const elements = moving.map((element) => {
+			if (typeOnly) return bareExport(element, source);
+			return `${typed(element) && !element.isTypeOnly ? "type " : ""}${element.getText(source)}`;
+		});
+		const repointed = `{ ${elements.join(", ")} } from ${from};`;
+		const newText =
+			moving.length === clause.elements.length
+				? `${marked ? "type " : ""}${repointed}`
+				: `${keptText(source, node, new Set(moving), start)}\nexport ${typeOnly ? "type " : ""}${repointed}`;
+		result.edits.push({ range, newText });
+		for (const element of moving) result.spans.push({ start: element.getStart(source), end: element.getEnd() });
+	}
+	return result;
+}
+
+/** The module binding an export specifier reads. */
+function exportedLocal(element: ts.ExportSpecifier): string {
+	return (element.propertyName ?? element.name).text;
+}
+
+/** Exported under a name, not as the default. */
+function exportsByName(statement: ts.Statement): boolean {
+	const modifiers = ts.canHaveModifiers(statement) ? (ts.getModifiers(statement) ?? []) : [];
+	return (
+		modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) &&
+		!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
+	);
+}
+
+/** The element without an inline `type`. */
+function bareExport(element: ts.ExportSpecifier, source: ts.SourceFile): string {
+	const local = element.propertyName === undefined ? "" : `${element.propertyName.getText(source)} as `;
+	return `${local}${element.name.getText(source)}`;
 }
 
 function localNameOf(binding: StatementBinding): string {
@@ -361,6 +485,23 @@ function removedSpans(
 		spans.push({ start: separatorAt(source, (elements[lastKept] as ts.Node).getEnd()), end: last.getEnd() });
 	}
 	return spans;
+}
+
+/** `node`'s text from `start`, without the moved names. */
+function keptText(
+	source: ts.SourceFile,
+	node: ts.ImportDeclaration | ts.ExportDeclaration,
+	moved: ReadonlySet<ts.Node>,
+	start: number,
+): string {
+	const raw = source.text.slice(start, node.getEnd());
+	let kept = "";
+	let cursor = 0;
+	for (const span of removedSpans(source, node, moved)) {
+		kept += raw.slice(cursor, span.start - start);
+		cursor = span.end - start;
+	}
+	return kept + raw.slice(cursor);
 }
 
 /** Where the comma after `offset` starts, past whitespace and comments. */

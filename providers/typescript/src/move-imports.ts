@@ -14,6 +14,9 @@ export type PlannedNamed = Extract<PlannedImport, { clause: "named" }>;
 
 export type Quote = "'" | '"';
 
+/** What an existing import can take: named values, named types, or a default. */
+export type MergeSlot = "value" | "type" | "default";
+
 /** One key per module a specifier written here lands on; an unresolved one keys by its text. */
 export type LandingKey = (specifier: string) => string;
 
@@ -25,18 +28,25 @@ export interface WorkMeter {
 ////////////////////////////////
 //  Rendering
 
-/** One statement: a named group from one module, or one default, namespace or `require` binding. */
+/**
+ * One statement: a value default and named list from one module, or one namespace, `require` or
+ * lone default binding. A list of types only is `import type`; a mixed one marks each type.
+ */
 export function renderImport(group: readonly PlannedImport[], quote: Quote): string {
 	const planned = group[0] as PlannedImport;
-	const keyword = planned.typeOnly ? "import type" : "import";
 	const from = quoted(planned.specifier, quote);
-	if (planned.clause === "require") return `${keyword} ${planned.localName} = require(${from});`;
-	if (planned.clause !== "named") {
-		const binding = planned.clause === "namespace" ? `* as ${planned.localName}` : planned.localName;
-		return `${keyword} ${binding} from ${from};`;
+	if (planned.clause === "require" || planned.clause === "namespace" || group.length === 1) {
+		const keyword = planned.typeOnly ? "import type" : "import";
+		if (planned.clause === "require") return `${keyword} ${planned.localName} = require(${from});`;
+		if (planned.clause === "namespace") return `${keyword} * as ${planned.localName} from ${from};`;
+		if (planned.clause === "default") return `${keyword} ${planned.localName} from ${from};`;
 	}
-	const elements = group.flatMap((item) => (item.clause === "named" ? [namedElement(item, quote)] : []));
-	return `${keyword} { ${elements.join(", ")} } from ${from};`;
+	const named = group.filter((item): item is PlannedNamed => item.clause === "named");
+	const head = group.find((item) => item.clause === "default");
+	const typeOnly = head === undefined && named.every((item) => item.typeOnly);
+	const elements = named.map((item) => (typeOnly ? namedElement(item, quote) : markedElement(item, quote)));
+	const binding = head === undefined ? "" : `${head.localName}, `;
+	return `${typeOnly ? "import type" : "import"} ${binding}{ ${elements.join(", ")} } from ${from};`;
 }
 
 /** An export name that is no identifier stays a string, as `import { "a-b" as ab }` writes it. */
@@ -45,6 +55,11 @@ function namedElement(planned: PlannedNamed, quote: Quote): string {
 		? planned.importedName
 		: quoted(planned.importedName, quote);
 	return imported === planned.localName ? imported : `${imported} as ${planned.localName}`;
+}
+
+/** The element in a list that also holds values. */
+function markedElement(planned: PlannedNamed, quote: Quote): string {
+	return `${planned.typeOnly ? "type " : ""}${namedElement(planned, quote)}`;
 }
 
 function isIdentifierName(name: string): boolean {
@@ -57,12 +72,17 @@ function isIdentifierName(name: string): boolean {
 	);
 }
 
-/** Named imports of one form and module share a statement. */
+/** Named imports of one module share a statement, with one value default. */
 export function standaloneImports(planned: readonly PlannedImport[], quote: Quote): string[] {
 	const groups = new Map<string, PlannedImport[]>();
 	for (const item of planned) {
-		const key = item.clause === "named" ? `named ${item.typeOnly} ${item.specifier}` : renderImport([item], quote);
-		append(groups, key, item);
+		const list = `list\0${item.specifier}`;
+		const joins =
+			item.clause === "named" ||
+			(item.clause === "default" &&
+				!item.typeOnly &&
+				!(groups.get(list) ?? []).some((other) => other.clause === "default"));
+		append(groups, joins ? list : renderImport([item], quote), item);
 	}
 	return [...groups.values()].map((group) => renderImport(group, quote));
 }
@@ -84,8 +104,9 @@ export function quoted(value: string, quote: Quote): string {
 //  Merging
 
 /**
- * The first import a named addition can join, by form and landing: its own named list, or a lone
- * default binding. Skips `excluded` and statements other edits touch.
+ * The first import each slot can take additions into, by landing: a value list or lone value
+ * default, a type-only list, or a value list with no default. Skips `excluded` and statements
+ * other edits touch.
  */
 export function mergeIndex(
 	source: ts.SourceFile,
@@ -109,14 +130,34 @@ export function mergeIndex(
 		const loneDefault = clause.namedBindings === undefined && clause.name !== undefined && !clause.isTypeOnly;
 		if (!named && !loneDefault) continue;
 		if (touched(statement.getStart(source), statement.getEnd())) continue;
-		const key = mergeKey(clause.isTypeOnly, landingKey(statement.moduleSpecifier.text));
-		if (!index.has(key)) index.set(key, statement);
+		const landing = landingKey(statement.moduleSpecifier.text);
+		const slots: MergeSlot[] = clause.isTypeOnly
+			? ["type"]
+			: named && clause.name === undefined
+				? ["value", "default"]
+				: ["value"];
+		for (const slot of slots) {
+			const key = mergeKey(slot, landing);
+			if (!index.has(key)) index.set(key, statement);
+		}
 	}
 	return index;
 }
 
-export function mergeKey(typeOnly: boolean, landing: string): string {
-	return `${typeOnly ? "type" : "value"}\0${landing}`;
+export function mergeKey(slot: MergeSlot, landing: string): string {
+	return `${slot}\0${landing}`;
+}
+
+/** The statement an addition joins: a type prefers a type-only list, a value a value one. */
+export function joinTarget(
+	index: ReadonlyMap<string, ts.ImportDeclaration>,
+	planned: PlannedImport,
+	landing: string,
+): ts.ImportDeclaration | undefined {
+	const slot = (name: MergeSlot) => index.get(mergeKey(name, landing));
+	if (planned.clause === "named")
+		return planned.typeOnly ? (slot("type") ?? slot("value")) : (slot("value") ?? slot("type"));
+	return planned.clause === "default" && !planned.typeOnly ? slot("default") : undefined;
 }
 
 /** Whether an offset span overlaps any edit, answered after one sort. */
@@ -150,35 +191,63 @@ function overlapIndex(
 	};
 }
 
-/** Adds names after the last element, or a list after a lone default, leaving the rest as written. */
+/**
+ * Adds names after the last element, a list after a lone default, or a default before the list,
+ * leaving the rest as written. A type-only list taking a value drops its `type` for one per name.
+ */
 export function mergedImport(
 	source: ts.SourceFile,
 	coordinates: TextCoordinates,
 	statement: ts.ImportDeclaration,
-	planned: readonly PlannedNamed[],
+	planned: readonly PlannedImport[],
 	quote: Quote,
-): TextEdit | undefined {
+): TextEdit[] | undefined {
 	const clause = statement.importClause;
-	const named = clause?.namedBindings;
-	const elements = planned.map((item) => namedElement(item, quote)).join(", ");
-	if (named === undefined && clause?.name !== undefined) {
-		const point = coordinates.positionAt(clause.name.getEnd());
-		return point === undefined ? undefined : { range: { start: point, end: point }, newText: `, { ${elements} }` };
+	if (clause === undefined) return undefined;
+	const additions = planned.filter((item): item is PlannedNamed => item.clause === "named");
+	const head = planned.find((item) => item.clause === "default");
+	const opens = clause.isTypeOnly && additions.some((item) => !item.typeOnly);
+	const elements = additions
+		.map((item) => (clause.isTypeOnly && !opens ? namedElement(item, quote) : markedElement(item, quote)))
+		.join(", ");
+	const edits: TextEdit[] = [];
+	const replace = (start: number, end: number, newText: string): boolean => {
+		const range = coordinates.rangeAt(start, end);
+		if (range !== undefined) edits.push({ range, newText });
+		return range !== undefined;
+	};
+
+	const named = clause.namedBindings;
+	if (named === undefined && clause.name !== undefined) {
+		if (head !== undefined || elements === "") return undefined;
+		return replace(clause.name.getEnd(), clause.name.getEnd(), `, { ${elements} }`) ? edits : undefined;
 	}
 	if (named === undefined || !ts.isNamedImports(named)) return undefined;
+	const open = named.getStart(source);
+	if (
+		head !== undefined &&
+		(clause.isTypeOnly || clause.name !== undefined || !replace(open, open, `${head.localName}, `))
+	) {
+		return undefined;
+	}
+	if (opens) {
+		const keyword = clause.getStart(source);
+		if (!source.text.startsWith("type", keyword)) return undefined;
+		let after = keyword + "type".length;
+		while (/\s/.test(source.text[after] ?? "")) after++;
+		if (!replace(keyword, after, "")) return undefined;
+		for (const element of named.elements) {
+			if (!replace(element.getStart(source), element.getStart(source), "type ")) return undefined;
+		}
+	}
+	if (elements === "") return edits;
 	const last = named.elements.at(-1);
 	if (last === undefined) {
-		const open = named.getStart(source);
-		if (named.getEnd() - open === 2) {
-			const range = coordinates.rangeAt(open, named.getEnd());
-			return range === undefined ? undefined : { range, newText: `{ ${elements} }` };
-		}
+		if (named.getEnd() - open === 2) return replace(open, named.getEnd(), `{ ${elements} }`) ? edits : undefined;
 		// Whatever sits between the braces stays after the names.
-		const point = coordinates.positionAt(open + 1);
-		return point === undefined ? undefined : { range: { start: point, end: point }, newText: ` ${elements}` };
+		return replace(open + 1, open + 1, ` ${elements}`) ? edits : undefined;
 	}
-	const point = coordinates.positionAt(last.getEnd());
-	return point === undefined ? undefined : { range: { start: point, end: point }, newText: `, ${elements}` };
+	return replace(last.getEnd(), last.getEnd(), `, ${elements}`) ? edits : undefined;
 }
 
 ////////////////////////////////

@@ -455,7 +455,11 @@ export type SpecifierRenderer = (
 	fromModule: string,
 	targetModule: string,
 	preferredSpecifier?: string,
+	style?: ExtensionStyle,
 ) => SpecifierRenderResult;
+
+/** How a relative specifier ends: the runtime extension (`./a.js`), the source one (`./a.ts`), or none. */
+export type ExtensionStyle = "runtime" | "source" | "none";
 
 /** The workspace module a specifier lands on, when it lands on one. */
 export type ModuleResolver = (fromModule: string, specifier: string) => string | undefined;
@@ -476,6 +480,8 @@ export function renderSpecifier(
 	setup: CompilerSetup,
 	preferredSpecifier?: string,
 	lookupSurface: (module: string, fileName: string) => boolean = () => false,
+	/** The importing file's own; outranks the preferred specifier's extension. */
+	style?: ExtensionStyle,
 ): SpecifierRenderResult {
 	const root = path.resolve(workspaceRoot);
 	const from = moduleAbsolute(root, fromModule);
@@ -497,7 +503,7 @@ export function renderSpecifier(
 	}
 	const candidates = dedupeCandidates([
 		{
-			specifier: relativeSpecifier(fromModule, targetModule, options, preferredSpecifier),
+			specifier: relativeSpecifier(fromModule, targetModule, options, preferredSpecifier, style),
 			kind: "relative" as const,
 		},
 		...pathAliasCandidates(root, target, options),
@@ -544,38 +550,40 @@ function relativeSpecifier(
 	targetModule: string,
 	options: ts.CompilerOptions,
 	preferredSpecifier: string | undefined,
+	style: ExtensionStyle | undefined,
 ): string {
 	const targetBase = stripModuleExtension(targetModule);
 	const relativeBase = toPosix(path.relative(path.posix.dirname(fromModule), targetBase));
 	const base = relativeBase === "" ? "" : relativeBase;
-	const extension = relativeImportExtension(targetModule, options, preferredSpecifier);
+	const preferred =
+		preferredSpecifier?.startsWith(".") === true ? (extensionStyleOf(preferredSpecifier) ?? "none") : undefined;
+	const chosen = style ?? preferred ?? (isNodeEsm(options) ? "runtime" : "none");
+	const targetExtension = moduleExtension(targetModule);
+	const extension =
+		chosen === "runtime" ? runtimeExtension(targetExtension) : chosen === "source" ? targetExtension : "";
 	const rendered = `${base}${extension}`;
 	return rendered.startsWith(".") ? rendered : `./${rendered}`;
 }
 
-function relativeImportExtension(
-	targetModule: string,
-	options: ts.CompilerOptions,
-	preferredSpecifier: string | undefined,
-): string {
-	const targetExtension = moduleExtension(targetModule);
-	if (preferredSpecifier?.startsWith(".")) {
-		const preferredPath = preferredSpecifier.split(/[?#]/, 1)[0] ?? preferredSpecifier;
-		const preferredExtension = path.posix.extname(preferredPath);
-		if ([".js", ".jsx", ".mjs", ".cjs"].includes(preferredExtension)) {
-			return runtimeExtension(targetExtension);
-		}
-		if ([".ts", ".tsx", ".mts", ".cts", ".d.ts"].includes(preferredExtension)) {
-			return targetExtension;
-		}
-		return "";
+/** A specifier's style; undefined for an extension no module has, such as `.json`. */
+function extensionStyleOf(specifier: string): ExtensionStyle | undefined {
+	const extension = path.posix.extname(specifier.split(/[?#]/, 1)[0] ?? specifier);
+	if (extension === "") return "none";
+	if ([".js", ".jsx", ".mjs", ".cjs"].includes(extension)) return "runtime";
+	if ([".ts", ".tsx", ".mts", ".cts"].includes(extension)) return "source";
+	return undefined;
+}
+
+/** The style most of these relative specifiers share, the earliest on a tie. */
+export function relativeStyle(specifiers: readonly string[]): ExtensionStyle | undefined {
+	const counts = new Map<ExtensionStyle, number>();
+	for (const specifier of specifiers) {
+		const style = specifier.startsWith(".") ? extensionStyleOf(specifier) : undefined;
+		if (style !== undefined) counts.set(style, (counts.get(style) ?? 0) + 1);
 	}
-	if (isNodeEsm(options)) {
-		if ([".ts", ".tsx", ".mts", ".cts", ".d.ts"].includes(targetExtension))
-			return runtimeExtension(targetExtension);
-		if ([".js", ".jsx", ".mjs", ".cjs"].includes(targetExtension)) return targetExtension;
-	}
-	return "";
+	let chosen: ExtensionStyle | undefined;
+	for (const [style, count] of counts) if (chosen === undefined || count > (counts.get(chosen) ?? 0)) chosen = style;
+	return chosen;
 }
 
 function runtimeExtension(extension: string): string {
@@ -588,10 +596,13 @@ function runtimeExtension(extension: string): string {
 }
 
 function isNodeEsm(options: ts.CompilerOptions): boolean {
-	return (
-		options.moduleResolution === ts.ModuleResolutionKind.Node16 ||
-		options.moduleResolution === ts.ModuleResolutionKind.NodeNext
-	);
+	const resolution = options.moduleResolution;
+	if (resolution !== undefined) {
+		return resolution === ts.ModuleResolutionKind.Node16 || resolution === ts.ModuleResolutionKind.NodeNext;
+	}
+	// A node module kind implies its own resolution.
+	const kind = options.module;
+	return kind !== undefined && kind >= ts.ModuleKind.Node16 && kind <= ts.ModuleKind.NodeNext;
 }
 
 function pathAliasCandidates(root: string, target: string, options: ts.CompilerOptions): RenderCandidate[] {

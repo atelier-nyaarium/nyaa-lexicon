@@ -1,8 +1,19 @@
 // Owns GDScript declaration extraction and declaration spans.
 
 import { defined, type Metrics, type Position, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
-import { type Blocks, blockHeader, bodyEndLine, hasCode, headerEndLine, indentedBodyEnd } from "./blocks.js";
-import type { LogicalLine } from "./expression.js";
+import {
+	type Blocks,
+	blockHeader,
+	bodyEndLine,
+	hasCode,
+	headerEndLine,
+	inBracket,
+	indentedBodyEnd,
+	lambdaBlockOf,
+	type Segment,
+	segmentOf,
+	statementAt,
+} from "./blocks.js";
 import { HeaderReader, type HeaderRequest, type HeaderStop } from "./header.js";
 import { withMemberInsertLines } from "./layout.js";
 import { annotationLine, basenameOf, declarationStart, parseLineHeads } from "./line-syntax.js";
@@ -28,6 +39,7 @@ import {
 	matchingReferenceToken,
 	nextReferenceToken,
 	tokenAt,
+	tokenRange,
 } from "./tokens.js";
 
 //////// Declarations
@@ -42,9 +54,13 @@ function rangeStart(lexed: LexedSource, line: number, head: number): Position {
 	return first !== undefined && first.character < start.character ? start : { line: start.line, character: 0 };
 }
 
-function rangeTo(coordinates: TextCoordinates, start: Position, end: SourceLine): Range {
+function lineEnd(line: SourceLine): Position {
+	return { line: line.line, character: line.end };
+}
+
+function rangeTo(coordinates: TextCoordinates, start: Position, end: Position): Range {
 	const startOffset = coordinates.offsetAt(start);
-	const endOffset = coordinates.offsetAt({ line: end.line, character: end.end });
+	const endOffset = coordinates.offsetAt(end);
 	if (startOffset === undefined || endOffset === undefined) throw new Error("source line has no coordinate");
 	const range = coordinates.rangeAt(startOffset, endOffset);
 	if (range === undefined) throw new Error("source line range is invalid");
@@ -52,8 +68,23 @@ function rangeTo(coordinates: TextCoordinates, start: Position, end: SourceLine)
 }
 
 /** Its own start through `end`. */
-function extendTo(coordinates: TextCoordinates, declaration: DeclarationFact, end: SourceLine): void {
+function endAt(coordinates: TextCoordinates, declaration: DeclarationFact, end: Position): void {
 	declaration.range = rangeTo(coordinates, declaration.range.start, end);
+}
+
+/** Its own start through the end of `line`. */
+function extendTo(coordinates: TextCoordinates, declaration: DeclarationFact, line: SourceLine): void {
+	endAt(coordinates, declaration, lineEnd(line));
+}
+
+function segmentEnd(blocks: Blocks, segment: Segment): Position {
+	return tokenRange(blocks.lexed.tokens[segment.last] as ReferenceToken).end;
+}
+
+/** Before the `;` ending the segment from `name` on; undefined when none does. */
+function separatedEnd(blocks: Blocks, name: number): Position | undefined {
+	const segment = segmentOf(blocks, name);
+	return segment?.separated === true ? segmentEnd(blocks, segment) : undefined;
 }
 
 function selectionRangeOf(line: SourceLine, token: Token): Range {
@@ -92,13 +123,14 @@ export function isAccessorHead(lexed: LexedSource, line: number): boolean {
 	return second?.value === "(" || second?.value === ":" || second?.value === "=";
 }
 
-function accessorEndLine(lexed: LexedSource, declarationIndex: number, declarationIndent: number): SourceLine {
+/** The last accessor line after line `last`, else `last`. */
+function accessorEndLine(lexed: LexedSource, last: number, declarationIndent: number): SourceLine {
 	const lines = lexed.lines;
-	let index = declarationIndex + 1;
+	let index = last + 1;
 	while (index < lines.length && isIgnorable(lexed, index)) index++;
 	const accessor = lines[index] as SourceLine | undefined;
 	if (accessor === undefined || accessor.indent < declarationIndent || !isAccessorHead(lexed, index)) {
-		return lines[declarationIndex] as SourceLine;
+		return lines[last] as SourceLine;
 	}
 
 	let end = index;
@@ -174,7 +206,7 @@ function makeDeclaration(
 		kind: declarationKindFor(keyword, local),
 		...defined({ languageKind }),
 		name,
-		range: rangeTo(coordinates, rangeStart(lexed, line.line, head), line),
+		range: rangeTo(coordinates, rangeStart(lexed, line.line, head), lineEnd(line)),
 		selectionRange: selectionRangeOf(line, { name, start: request.name }),
 		visibility,
 		...defined({ exported, signature }),
@@ -323,24 +355,34 @@ function addFunctionParameters(
 	}
 }
 
+interface EnumMember {
+	name: ReferenceToken;
+	/** Its name, or its value's last token. */
+	last: ReferenceToken;
+}
+
 interface EnumBody {
-	members: ReferenceToken[];
+	members: EnumMember[];
 	/** The closing brace's line; the opening line when unclosed. */
 	lastLine: number;
 }
 
-/** Members between the braces opened on `line`; an unclosed enum's on that line alone. */
-function enumBody(lexed: LexedSource, line: number): EnumBody {
+/** Members between the first braces after token `from` in its statement; an unclosed enum's on the brace's line alone. */
+function enumBody(blocks: Blocks, line: number, from: number): EnumBody {
+	const { lexed } = blocks;
 	const tokens = lexed.tokens;
-	const lineTokens = lexed.lineTokens[line] ?? [];
-	const open = lineTokens.find((index) => tokens[index]?.value === "{");
-	if (open === undefined) return { members: [], lastLine: line };
+	const statementEnd = blocks.statements[blocks.owner[from] ?? -1]?.end ?? from;
+	let open = from;
+	while (open < statementEnd && (tokens[open] as ReferenceToken).value !== "{") open++;
+	if (open >= statementEnd) return { members: [], lastLine: line };
 	const close = matchingReferenceToken(tokens, open, "{", "}");
-	const end = close < 0 ? (lineTokens.at(-1) as number) + 1 : close;
-	const members: ReferenceToken[] = [];
+	const openLine = (tokens[open] as ReferenceToken).line;
+	const end = close < 0 ? (lexed.lineTokens[openLine]?.at(-1) as number) + 1 : close;
+	const members: EnumMember[] = [];
 	const names = new Set<string>();
 	let depth = 0;
 	let expectName = true;
+	let member: EnumMember | undefined;
 	for (let index = open + 1; index < end; index++) {
 		const token = tokens[index] as ReferenceToken;
 		const value = token.value;
@@ -349,15 +391,17 @@ function enumBody(lexed: LexedSource, line: number): EnumBody {
 		else if (value === ")" || value === "]" || value === "}") depth--;
 		if (depth === 0 && value === ",") {
 			expectName = true;
+			member = undefined;
 			continue;
 		}
 		if (expectName && depth === 0 && token.kind === "identifier" && !names.has(value)) {
-			members.push(token);
+			member = { name: token, last: token };
+			members.push(member);
 			names.add(value);
-		}
+		} else if (member !== undefined) member.last = token;
 		expectName = false;
 	}
-	return { members, lastLine: close < 0 ? line : (tokens[close] as ReferenceToken).line };
+	return { members, lastLine: close < 0 ? openLine : (tokens[close] as ReferenceToken).line };
 }
 
 /** `var` names bound mid-line: match patterns and inline bodies. */
@@ -373,19 +417,6 @@ function inlineBindings(lexed: LexedSource, line: number): Array<{ head: number;
 		bindings.push({ head: token.character, name: { name: name.value, start: name.character } });
 	}
 	return bindings;
-}
-
-/** The statement holding `name` ends by opening a lambda's block. */
-function opensLambdaBlock(blocks: Blocks, statement: LogicalLine, name: number): boolean {
-	const tokens = blocks.lexed.tokens;
-	let last = statement.end - 1;
-	while (last > name && (tokens[last] as ReferenceToken).kind === "newline") last--;
-	if ((tokens[last] as ReferenceToken).value !== ":") return false;
-	for (let index = name + 1; index < last; index++) {
-		const token = tokens[index] as ReferenceToken;
-		if (token.kind === "identifier" && token.value === "func") return true;
-	}
-	return false;
 }
 
 /** A script's `class_name` and `extends` lines, which only annotations and strings may precede. */
@@ -453,7 +484,7 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 		scriptHeader === undefined
 			? { line: 0, character: 0 }
 			: rangeStart(lexed, scriptHeader.line, scriptHeader.head);
-	const rootRange = rangeTo(coordinates, rootStart, lines[lines.length - 1] ?? rootLine);
+	const rootRange = rangeTo(coordinates, rootStart, lineEnd(lines[lines.length - 1] ?? rootLine));
 	const root = makeImplicitClass(compose, module, rootRange, rootLine, rootName, className, classHeader);
 	const declarations: DeclarationFact[] = [root];
 	const scopes: Scope[] = [
@@ -465,22 +496,31 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 		},
 	];
 	let activeFunctionHeader: ActiveFunctionHeader | null = null;
-	const addEnumMembers = (members: ReferenceToken[], scope: Scope): void => {
-		for (const token of members) {
+	// A class-level statement's bracketed lambda bodies, and the scope declared in them.
+	let bracketed: { start: number; end: number; scope: Scope } | undefined;
+	const scopeAt = (token: number): Scope =>
+		bracketed !== undefined &&
+		(blocks.bodyOwner[token] ?? -1) >= 0 &&
+		bracketed.start < token &&
+		token < bracketed.end
+			? bracketed.scope
+			: (scopes[scopes.length - 1] as Scope);
+	const addEnumMembers = (members: EnumMember[], scope: Scope): void => {
+		for (const { name: token, last } of members) {
 			const memberLine = lines[token.line] as SourceLine;
 			const member = { name: token.value, start: token.character };
-			declarations.push(
-				makeDeclaration(
-					script,
-					headers,
-					memberRequest(memberLine, member),
-					"const",
-					member.name,
-					scope,
-					"enumMember",
-					visibilityOf(member.name, false),
-				),
+			const declaration = makeDeclaration(
+				script,
+				headers,
+				memberRequest(memberLine, member),
+				"const",
+				member.name,
+				scope,
+				"enumMember",
+				visibilityOf(member.name, false),
 			);
+			endAt(coordinates, declaration, tokenRange(last).end);
+			declarations.push(declaration);
 		}
 	};
 	const openFunction = (header: ActiveFunctionHeader): void => {
@@ -513,8 +553,13 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 		}
 		for (const parsed of parsedLines) {
 			if (parsed.keyword === "class_name") continue;
-			const scope = scopes[scopes.length - 1] as Scope;
-			if (parsed.keyword === "func" && parsed.name === null) {
+			const scope = scopeAt(tokenAt(lexed, line.line, parsed.head));
+			// A lambda, named or not, declares nothing.
+			const lambdaHead =
+				parsed.keyword === "func" &&
+				(parsed.name === null ||
+					(!statementLines.has(line.line) && inBracket(blocks, tokenAt(lexed, line.line, parsed.head))));
+			if (lambdaHead) {
 				scopes.push({
 					indent,
 					descriptors: scope.descriptors,
@@ -525,7 +570,8 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 			}
 			// An unnamed enum's members are the enclosing class's constants.
 			if (parsed.keyword === "enum" && parsed.name === null) {
-				addEnumMembers(enumBody(lexed, line.line).members, { ...scope, functionScope: false });
+				const head = tokenAt(lexed, line.line, parsed.head);
+				addEnumMembers(enumBody(blocks, line.line, head).members, { ...scope, functionScope: false });
 				continue;
 			}
 			if (parsed.name === null || parsed.keyword === "extends") continue;
@@ -561,8 +607,10 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 					"enum",
 					visibilityOf(parsed.name.name, false),
 				);
-				const body = enumBody(lexed, line.line);
-				extendTo(coordinates, declaration, lines[body.lastLine] as SourceLine);
+				const nameIndex = tokenAt(lexed, line.line, parsed.name.start);
+				const body = enumBody(blocks, line.line, nameIndex);
+				const separated = separatedEnd(blocks, nameIndex);
+				endAt(coordinates, declaration, separated ?? lineEnd(lines[body.lastLine] as SourceLine));
 				declarations.push(declaration);
 				addEnumMembers(body.members, {
 					...scope,
@@ -586,23 +634,37 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 				visibilityOf(parsed.name.name, local),
 			);
 			const nameIndex = tokenAt(lexed, line.line, parsed.name.start);
-			const statementIndex = blocks.owner[nameIndex] ?? -1;
-			const statement = blocks.statements[statementIndex];
-			if ((parsed.keyword === "var" || parsed.keyword === "const") && statement !== undefined) {
-				if (opensLambdaBlock(blocks, statement, nameIndex)) {
-					const end = indentedBodyEnd(blocks, statementIndex, statement.indent, statement.lastLine);
-					extendTo(coordinates, declaration, lines[end] as SourceLine);
-					// A class-level lambda's locals are not members.
-					if (!local)
-						scopes.push({
-							indent,
-							descriptors: [...scope.descriptors, { kind: "term", name: declaration.name }],
-							containerId: declaration.symbolId,
-							functionScope: true,
-						});
-				} else if (parsed.keyword === "var" && !local) {
-					extendTo(coordinates, declaration, accessorEndLine(lexed, lineIndex, indent));
-				}
+			const at = statementAt(blocks, nameIndex);
+			const statement = at?.statements[at.index];
+			const terms = parsed.keyword === "var" || parsed.keyword === "const";
+			// A `for` or a header's text runs past the `;` into its body.
+			const segment = terms || parsed.keyword === "signal" ? segmentOf(blocks, nameIndex) : undefined;
+			// Inside a bracket, its own line.
+			const lastLine = segment?.statement.lastLine ?? lineIndex;
+			const lambda = terms ? lambdaBlockOf(blocks, nameIndex) : undefined;
+			// A lambda's block or accessors, indented after the statement.
+			let bodyAfter = lambda === "after";
+			// Accessors and a lambda's block follow only the statement's last segment.
+			if (segment?.separated === true) endAt(coordinates, declaration, segmentEnd(blocks, segment));
+			else if (lambda === "after" && at !== undefined && statement !== undefined) {
+				const end = indentedBodyEnd(blocks, at, statement.indent, statement.lastLine);
+				extendTo(coordinates, declaration, lines[end] as SourceLine);
+			} else if (parsed.keyword === "var" && !local) {
+				const end = accessorEndLine(lexed, lastLine, indent);
+				extendTo(coordinates, declaration, end);
+				bodyAfter = end.line > lastLine;
+			} else extendTo(coordinates, declaration, lines[lastLine] as SourceLine);
+			// A class-level lambda's or accessor's locals are not members.
+			if (!local && (bodyAfter || lambda === "inside")) {
+				const own: Scope = {
+					indent,
+					descriptors: [...scope.descriptors, { kind: "term", name: declaration.name }],
+					containerId: declaration.symbolId,
+					functionScope: true,
+				};
+				if (bodyAfter) scopes.push(own);
+				if (lambda === "inside" && statement !== undefined)
+					bracketed = { start: nameIndex, end: statement.end, scope: own };
 			}
 			declarations.push(declaration);
 			if (parsed.keyword !== "func") continue;
@@ -610,21 +672,25 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 			if (header.endLine > line.line) activeFunctionHeader = header;
 			else openFunction(header);
 		}
-		const scope = scopes[scopes.length - 1] as Scope;
-		if (!scope.functionScope) continue;
 		for (const binding of inlineBindings(lexed, line.line)) {
-			declarations.push(
-				makeDeclaration(
-					script,
-					headers,
-					{ line, head: binding.head, name: binding.name.start, stop: "member" },
-					"var",
-					binding.name.name,
-					scope,
-					undefined,
-					"local",
-				),
+			const scope = scopeAt(tokenAt(lexed, line.line, binding.head));
+			if (!scope.functionScope) continue;
+			const declaration = makeDeclaration(
+				script,
+				headers,
+				{ line, head: binding.head, name: binding.name.start, stop: "member" },
+				"var",
+				binding.name.name,
+				scope,
+				undefined,
+				"local",
 			);
+			const segment = segmentOf(blocks, tokenAt(lexed, line.line, binding.name.start));
+			// A pattern's binding is its `var` and name alone.
+			if (segment === undefined) endAt(coordinates, declaration, declaration.selectionRange.end);
+			else if (segment.separated) endAt(coordinates, declaration, segmentEnd(blocks, segment));
+			else extendTo(coordinates, declaration, lines[segment.statement.lastLine] as SourceLine);
+			declarations.push(declaration);
 		}
 	}
 
@@ -633,7 +699,7 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 		const end = lines[bodyEndLine(blocks, declaration) - 1] as SourceLine | undefined;
 		return end === undefined
 			? declaration
-			: { ...declaration, range: rangeTo(coordinates, declaration.range.start, end) };
+			: { ...declaration, range: rangeTo(coordinates, declaration.range.start, lineEnd(end)) };
 	});
 	return withMemberInsertLines(spanned, blocks, coordinates);
 }

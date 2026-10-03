@@ -3,7 +3,7 @@
 // A fixture proves the code runs. Real source proves it is right, because the expectations here
 // are things a reader can check by opening the file.
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -31,19 +31,25 @@ async function index(module: string): Promise<void> {
 	if (outcome.action !== "indexed") throw new Error(`${module}: ${outcome.action} ${outcome.reason ?? ""}`);
 }
 
-beforeEach(async () => {
+// One provider for the suite: its first parse builds the repository's program, which a loaded gate
+// can stretch past half a minute.
+beforeAll(async () => {
+	supervisor = new ProviderSupervisor();
+	await supervisor.start({ command: [process.execPath, "run", PROVIDER], timeoutMs: 90_000 }, REPO);
+});
+
+beforeEach(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-dogfood-"));
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
-	supervisor = new ProviderSupervisor();
-	await supervisor.start({ command: [process.execPath, "run", PROVIDER], timeoutMs: 20_000 }, REPO);
 	service = new LexiconService(store, supervisor, sourceReader(REPO));
 });
 
 afterEach(() => {
-	supervisor?.stopAll();
 	store.close();
 	rmSync(dir, { recursive: true, force: true });
 });
+
+afterAll(() => supervisor?.stopAll());
 
 ////////////////////////////////
 //  Tests
@@ -58,7 +64,7 @@ describe("indexing this repository's own source", () => {
 		const described = service.describe(found[0]?.symbolId ?? "");
 		const members = described?.members.map((m) => m.name) ?? [];
 		expect(members).toEqual(expect.arrayContaining(["peek", "next", "good", "readWhile", "mark", "failure"]));
-	}, 40_000);
+	}, 120_000);
 
 	it("separates an exported function from a file-local one, in a real file", async () => {
 		await index("protocol/src/symbolId.ts");
@@ -66,13 +72,13 @@ describe("indexing this repository's own source", () => {
 		expect(service.findByName("composeSymbolId")[0]?.exported).toBe(true);
 		// `readName` is a helper the module does not export.
 		expect(service.findByName("readName")[0]?.exported).toBe(false);
-	}, 40_000);
+	}, 120_000);
 
 	it("carries a real signature, so a caller can read a function without the file", async () => {
 		await index("protocol/src/symbolId.ts");
 
 		expect(service.findByName("normalizeModulePath")[0]?.signature).toContain("normalizeModulePath(raw: string)");
-	}, 40_000);
+	}, 120_000);
 
 	it("resolves a relative import between two real files", async () => {
 		const resolution = await service.resolveImport("protocol/src/symbolId.ts", "./sourceCursor.js");
@@ -80,12 +86,12 @@ describe("indexing this repository's own source", () => {
 			status: "resolved",
 			landing: { kind: "module", module: "protocol/src/sourceCursor.ts" },
 		});
-	}, 40_000);
+	}, 120_000);
 
 	it("calls an installed dependency external rather than unresolved", async () => {
 		const resolution = await service.resolveImport("protocol/src/values.ts", "zod");
 		expect(resolution.status).toBe("external");
-	}, 40_000);
+	}, 120_000);
 
 	it("gives every symbol in a real file a parseable, distinct id", async () => {
 		await index("core/src/store.ts");
@@ -93,7 +99,7 @@ describe("indexing this repository's own source", () => {
 		const ids = store.declarationsIn("core/src/store.ts").map((d) => d.symbolId);
 		expect(ids.length).toBeGreaterThan(10);
 		expect(new Set(ids).size).toBe(ids.length);
-	}, 40_000);
+	}, 120_000);
 
 	it("answers through the daemon dispatch the MCP tools actually use", async () => {
 		await index("protocol/src/parseResult.ts");
@@ -106,5 +112,5 @@ describe("indexing this repository's own source", () => {
 			symbol: { kind: string };
 		};
 		expect(described.symbol.kind).toBe("function");
-	}, 40_000);
+	}, 120_000);
 });

@@ -59,6 +59,19 @@ describe("why the index may read a module", () => {
 		expect(service.moduleStatus("stray.fake").claimed).toBe(true);
 	});
 
+	it("never reads a denied file for its status or rows, so neither its presence nor a hash leaves", async () => {
+		await service.indexWorkspace();
+
+		const status = service.moduleStatus("vault.fake");
+		const rows = service.moduleDeclarations("vault.fake");
+		expect({ exists: status.exists, rowsExist: rows.exists, read: rows.read, diskHash: rows.diskHash }).toEqual({
+			exists: false,
+			rowsExist: false,
+			read: { kind: "missing", detail: "denied by scope" },
+			diskHash: null,
+		});
+	});
+
 	it("drops an import once nothing reaches it", async () => {
 		await service.indexWorkspace();
 		put("root.fake", "export class Root {}\n");

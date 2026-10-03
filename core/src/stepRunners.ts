@@ -61,7 +61,6 @@ export type StepResult =
 			toModule?: string;
 			files: CommittedFile[];
 			reverse: ReverseStep;
-			migrated?: { answers: number; gaps: number };
 			/** A rename's export fact ids kept at the old name. */
 			stops?: string[];
 			issues: RefactorIssue[];
@@ -98,7 +97,6 @@ export function refactorMove(
 	let source = "";
 	let target = args.toModule;
 	let restore: MoveAnchor | undefined;
-	let migrated: { answers: number; gaps: number } | undefined;
 	const idMap = new Map<string, string>();
 
 	return journaledStep<StepResult>(
@@ -121,7 +119,6 @@ export function refactorMove(
 						reverseOf("move", requested, root) ?? { kind: "move", symbolId: root, toModule: source },
 						restore,
 					),
-					...defined({ migrated }),
 					issues,
 				};
 			},
@@ -164,8 +161,7 @@ export function refactorMove(
 						// already exists in its new home rather than one that has just vanished.
 						reindex: [plan.toModule, ...touched.filter((m) => m !== plan.toModule)],
 						issues: edits.issues,
-						finish: (issues, rebound) => {
-							if (rebound !== undefined) migrated = { answers: rebound.answers, gaps: rebound.gaps };
+						finish: (issues) => {
 							// Asked of the reindexed facts, since a specifier can be well formed and
 							// still point nowhere.
 							issues.push(...service.checkMoveLanded(plan.name, touched));
@@ -193,7 +189,6 @@ export function refactorRename(
 ): Promise<StepResult> {
 	let modules: string[] = [];
 	let oldName = "";
-	let migrated: { answers: number; gaps: number } | undefined;
 	let idMap = new Map<string, string>();
 
 	return journaledStep<StepResult>(
@@ -217,7 +212,7 @@ export function refactorRename(
 						symbolId: root,
 						newName: oldName,
 					},
-					...defined({ migrated, stops: args.stops?.length ? [...args.stops] : undefined }),
+					...defined({ stops: args.stops?.length ? [...args.stops] : undefined }),
 					issues,
 				};
 			},
@@ -282,9 +277,6 @@ export function refactorRename(
 						}),
 						reindex: modules,
 						issues: plan.warnings.map((warning) => ({ kind: warning.kind, detail: warning.detail })),
-						finish: (_issues, rebound) => {
-							if (rebound !== undefined) migrated = { answers: rebound.answers, gaps: rebound.gaps };
-						},
 					},
 				};
 			},
@@ -442,13 +434,14 @@ export function renameStepOutcome(result: StepResult): RenameStepOutcome {
 	return {
 		renamed: true,
 		modules: result.modules,
-		...defined({ migrated: result.migrated, stops: result.stops }),
+		...defined({ stops: result.stops }),
 		issues: result.issues,
 	};
 }
 
 /**
- * Moves a set of declarations to one target, one joined step each.
+ * Moves a set of declarations to one target: one arrangement step where the language arranges,
+ * else one joined step each.
  *
  * Each moves after the unexported siblings it uses, since a move refuses to leave one behind. A
  * refused step stops the rest; the steps already taken stay, for the caller to keep or undo.
@@ -482,6 +475,18 @@ export async function refactorMoveTogether(
 	const anchored = args.anchor?.symbolId;
 	const mover = members.find((member) => anchored !== undefined && member.closure.includes(anchored));
 	if (mover !== undefined) return { moved: false, issues: [], reason: anchorNotTopLevel(mover.name, args.toModule) };
+
+	// A language that arranges moves the set as one step: exports planned for the set, one format.
+	const placements = ordered.order.map((member, index) => {
+		const previous = ordered.order[index - 1];
+		const anchor = previous === undefined ? args.anchor : { symbolId: previous.symbolId, side: "after" as const };
+		return { symbolId: member.symbolId, ...defined({ anchor }) };
+	});
+	const arranged = await arrangeStep(service, transactions, write, { toModule: args.toModule, placements });
+	if (!arranged.unsupported) {
+		const order = ordered.order.map((member) => member.name);
+		return arranged.outcome.moved ? { ...arranged.outcome, order } : arranged.outcome;
+	}
 
 	const order: string[] = [];
 	const modules = new Set<string>();
@@ -534,12 +539,22 @@ export function refactorArrange(
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
 	args: { toModule: string; placements: readonly ArrangePlacement[]; expect: readonly PreviewedFile[] },
 ): Promise<MoveOutcome> {
+	return arrangeStep(service, transactions, write, args).then(({ outcome }) => outcome);
+}
+
+/** `refactorArrange`, and whether the provider declined to arrange at all. Without `expect` it writes what it plans. */
+async function arrangeStep(
+	service: LexiconService,
+	transactions: TransactionManager,
+	write: <T>(work: () => Promise<T> | T) => Promise<T>,
+	args: { toModule: string; placements: readonly ArrangePlacement[]; expect?: readonly PreviewedFile[] },
+): Promise<{ outcome: MoveOutcome; unsupported: boolean }> {
+	let unsupported = false;
 	let touched: string[] = [];
 	let target = args.toModule;
-	let migrated: { answers: number; gaps: number } | undefined;
 	const idMap = new Map<string, string>();
 
-	return journaledStep<MoveOutcome>(
+	const outcome = await journaledStep<MoveOutcome>(
 		{ service, transactions, write },
 		{
 			kind: "move",
@@ -549,7 +564,6 @@ export function refactorArrange(
 				moved: true,
 				toModule: target,
 				modules: touched,
-				...defined({ migrated }),
 				issues,
 			}),
 			plan: async () => {
@@ -558,8 +572,11 @@ export function refactorArrange(
 				if (!plan.ok) return { refused: plan.reason };
 				target = plan.toModule;
 				const arranged = await service.arrangedFiles(plan, context);
-				if (!arranged.ok) return { refused: arranged.reason, issues: arranged.issues };
-				const differs = previewDiffers(args.expect, arranged.files);
+				if (!arranged.ok) {
+					unsupported = arranged.unsupported === true;
+					return { refused: arranged.reason, issues: arranged.issues };
+				}
+				const differs = args.expect === undefined ? null : previewDiffers(args.expect, arranged.files);
 				if (differs !== null) return { refused: arrangeNotAsPreviewed(differs) };
 				// Nothing to write, so no step.
 				if (arranged.files.length === 0) {
@@ -605,8 +622,7 @@ export function refactorArrange(
 						// Target first, so every other module rebinds against declarations already in their new home.
 						reindex: [plan.toModule, ...touched.filter((module) => module !== plan.toModule), ...bound],
 						issues: arranged.issues,
-						finish: (issues, rebound) => {
-							if (rebound !== undefined) migrated = { answers: rebound.answers, gaps: rebound.gaps };
+						finish: (issues) => {
 							for (const member of plan.members)
 								issues.push(...service.checkMoveLanded(member.name, touched));
 							issues.push(...service.notLanded(plan));
@@ -616,13 +632,14 @@ export function refactorArrange(
 			},
 		},
 	);
+	return { outcome, unsupported };
 }
 
 export function moveOutcome(result: StepResult): MoveOutcome {
 	if (!result.done) return { moved: false, issues: result.issues, reason: result.reason };
 	return {
 		moved: true,
-		...defined({ toModule: result.toModule, migrated: result.migrated }),
+		...defined({ toModule: result.toModule }),
 		modules: result.modules,
 		issues: result.issues,
 	};
@@ -646,7 +663,7 @@ export function committedOutcome(kind: "rename" | "move"): (result: StepResult) 
 			files: result.files,
 			forwarded: result.forwarded,
 			reverse: result.reverse,
-			...defined({ migrated: result.migrated, stops: result.stops }),
+			...defined({ stops: result.stops }),
 			issues: result.issues,
 		};
 	};

@@ -89,7 +89,7 @@ function backendOver(ask: Asker): ToolBackend {
 	return {
 		findByName: (name, module) => ask("findByName", { name, module }),
 		describe: (symbolId) => ask("describe", { symbolId }),
-		findReferences: (symbolId, limit, within) => ask("findReferences", { symbolId, limit, within }),
+		findReferences: (symbolId, limit, within, module) => ask("findReferences", { symbolId, limit, within, module }),
 		resolveImport: (fromModule, specifier) => ask("resolveImport", { fromModule, specifier }),
 		typeOf: (symbolId) => ask("typeOf", { symbolId }),
 		symbolSource: (address) => ask("symbolSource", address),
@@ -107,8 +107,13 @@ function backendOver(ask: Asker): ToolBackend {
 		refactorInsert: (args) => ask("refactorInsert", args),
 		refactorRename: (symbolId, newName, stops) =>
 			ask("refactorRename", { symbolId, newName, ...(stops === undefined ? {} : { stops }) }),
-		refactorMove: (symbolId, toModule, together) =>
-			ask("refactorMove", { symbolId, toModule, ...(together.length === 0 ? {} : { together }) }),
+		refactorMove: (symbolId, toModule, together, anchor) =>
+			ask("refactorMove", {
+				symbolId,
+				toModule,
+				...(together.length === 0 ? {} : { together }),
+				...(anchor === undefined ? {} : { anchor }),
+			}),
 		indexStatus: (concerning) => ask("indexStatus", concerning === undefined ? {} : { concerning }),
 		findLiterals: (query) => ask("findLiterals", query),
 		findComments: (query) => ask("findComments", query),

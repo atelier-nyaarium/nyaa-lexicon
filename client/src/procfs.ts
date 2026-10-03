@@ -102,7 +102,7 @@ export function processesMatching(pattern: string): string[] {
 	for (const entry of entries) {
 		if (!/^\d+$/.test(entry)) continue;
 		const cmdline = readProc(`${entry}/cmdline`);
-		if (cmdline !== null && cmdline.includes(pattern)) found.push(entry);
+		if (cmdline?.includes(pattern) === true) found.push(entry);
 	}
 	return found;
 }

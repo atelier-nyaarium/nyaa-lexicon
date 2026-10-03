@@ -175,6 +175,9 @@ one; bun treats the signal as a death.
 
 ## Verifying a change
 
+A test awaits a rejection with `rejection` or `rethrown` from `@nyaa-lexicon/protocol/rejection`,
+never `expect(...).rejects`, which stalls bun's loop while I/O is pending; a residue enforces it.
+
 Ordered by how much they prove:
 
 1. `bun run test` for the unit level.
@@ -271,8 +274,7 @@ Ordered by how much they prove:
 - **A daemon handler declares its effect.** Only `read`, `write` and `staged` in `core/src/dispatch.ts`
   mint one, so a bare function cannot sit in the table and the dispatcher takes the workspace gate
   by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore
-  it; a residue pins those methods by name, and adding one is a reviewed edit. A read never
-  counts demand: the recall handler counts it afterwards as the daemon's own write.
+  it; a residue pins those methods by name, and adding one is a reviewed edit.
 - **Every indexing road takes the workspace gate, and says which way.** A caller-held road,
   `indexFile` and `applyBatch`, runs inside a hold its caller took around a larger unit. A
   self-driven road, the scans and the upgrade walk, takes the gate itself once per file, around the
@@ -326,15 +328,12 @@ Ordered by how much they prove:
   (`docs/daemon-protocol.md`'s Painting section) shape stored rows or a freshly parsed candidate into
   ranges and kinds for a client to color; `core/src/paintFacts.ts` reads the store's rows or the
   probe's `parseCandidate` exactly as the refactor planner does, and mints no fact of its own.
-- **Work exists only at an address the index holds.** A ranking reader in the ledger reads the
-  store's `live*` surfaces, views joined to `symbols`, and a residue forbids the raw readers there.
-  Recall, doubt and diagnosis read raw rows on purpose, since a stranded subject must still be seen.
 - **A daemon wire object strips unknown keys; never `strict`, never `passthrough`.** A client and a
   daemon are separately versioned, so a strict schema refuses a newer peer's extra field and a
   passthrough one carries it somewhere nothing validates it. Tool argument schemas are the opposite
   case and do reject the unknown, since a typo there is the caller's mistake, not a version skew.
 - **A pattern digest is evidence, never an identity key.** Two declarations can be textually
-  identical and carry different knowledge and citations, so a digest may support `batchExactMatch`
+  identical and carry different notes, so a digest may support `batchExactMatch`
   and may never key a row.
 
 ## Blind test corpora
@@ -349,7 +348,7 @@ already knows the answer is being graded on a test it has seen.
 - **nyaaskills** (its `dist/`) - the HARD test. A single minified bundle where every identifier is
   two characters, so names become noise, the reference graph stays structurally intact and
   semantically useless, and LITERALS carry the entire public contract verbatim. This is where the
-  free facts run out and the citation discipline either holds or does not.
+  free facts run out and only literals carry meaning.
   Minification strips comments, so the comment tier has nothing to report here and finding nothing
   is the right answer rather than a gap. Use this corpus for literals; use evie-bot for prose.
 

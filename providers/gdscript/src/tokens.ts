@@ -120,15 +120,25 @@ export function lastLineToken(lexed: LexedSource, line: number): ReferenceToken 
 
 //////// Navigation
 
+/** A line-joining backslash. */
+export function isContinuation(token: ReferenceToken | undefined): boolean {
+	return token?.kind === "symbol" && token.value === "\\";
+}
+
+/** A newline or a continuation: no code. */
+export function isLineBreak(token: ReferenceToken | undefined): boolean {
+	return token?.kind === "newline" || isContinuation(token);
+}
+
 export function nextReferenceToken(tokens: ReferenceToken[], index: number): number {
 	let next = index + 1;
-	while (next < tokens.length && tokens[next]?.kind === "newline") next++;
+	while (next < tokens.length && isLineBreak(tokens[next])) next++;
 	return next < tokens.length ? next : -1;
 }
 
 export function previousReferenceToken(tokens: ReferenceToken[], index: number): number {
 	let previous = index - 1;
-	while (previous >= 0 && tokens[previous]?.kind === "newline") previous--;
+	while (previous >= 0 && isLineBreak(tokens[previous])) previous--;
 	return previous;
 }
 

@@ -1,8 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { canonicalRoot, type PlatformEnv, stateRoot, storePaths, workspaceKey, workspacePaths } from "../paths";
+import { SCHEMA_VERSION } from "@nyaa-lexicon/protocol";
+import {
+	canonicalRoot,
+	indexFiles,
+	type PlatformEnv,
+	stateRoot,
+	storedIndex,
+	storePaths,
+	workspaceKey,
+	workspacePaths,
+} from "../paths";
 
 ////////////////////////////////
 //  Helpers
@@ -105,5 +115,39 @@ describe("workspacePaths", () => {
 		expect(paths.dir).toBe("/elsewhere/store");
 		expect(paths.lockFile).toBe("/elsewhere/store/daemon.json");
 		expect(paths).toEqual(storePaths("/elsewhere/store"));
+	});
+});
+
+describe("index files", () => {
+	it("names this schema's file, and lists every schema's newest first with the unnumbered one last", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "lexicon-index-files-"));
+		try {
+			for (const name of [
+				"index.sqlite",
+				"index-24.sqlite",
+				"index-24.sqlite-wal",
+				"index-99.sqlite",
+				"daemon.json",
+			]) {
+				writeFileSync(path.join(dir, name), "");
+			}
+			expect({
+				current: path.basename(storePaths(dir).index),
+				files: indexFiles(dir).map(({ file, schema }) => [path.basename(file), schema]),
+				stored: path.basename(storedIndex(dir) ?? ""),
+				empty: storedIndex(path.join(dir, "none")),
+			}).toEqual({
+				current: `index-${SCHEMA_VERSION}.sqlite`,
+				files: [
+					["index-99.sqlite", 99],
+					["index-24.sqlite", 24],
+					["index.sqlite", 0],
+				],
+				stored: "index-99.sqlite",
+				empty: null,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

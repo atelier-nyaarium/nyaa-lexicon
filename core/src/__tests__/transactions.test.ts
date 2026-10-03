@@ -476,6 +476,39 @@ describe("undoing a step", () => {
 		expect(read("a.ts")).toBe("changed by hand\n");
 	});
 
+	it("keeps a save to a module the step only reindexed, while undoing what it wrote", () => {
+		write("b.ts", "bound\n");
+		const begun = manager.beginStep("rename", ["a.ts", "b.ts"], undefined, [{ module: "a.ts", text: "renamed\n" }]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("a.ts", "renamed\n");
+		write("b.ts", "saved during the step\n");
+		manager.completeStep(begun.stepNo, "written");
+		manager.completeStep(begun.stepNo, "finalized");
+
+		expect({ undone: manager.undo().undone, a: read("a.ts"), b: read("b.ts") }).toEqual({
+			undone: true,
+			a: "original\n",
+			b: "saved during the step\n",
+		});
+	});
+
+	it("undoes past a directory now at a path the step only reindexed", () => {
+		write("b.ts", "bound\n");
+		const begun = manager.beginStep("rename", ["a.ts", "b.ts"], undefined, [{ module: "a.ts", text: "renamed\n" }]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("a.ts", "renamed\n");
+		manager.completeStep(begun.stepNo, "written");
+		manager.completeStep(begun.stepNo, "finalized");
+		rmSync(path.join(root, "b.ts"));
+		write("b.ts/inner.ts", "mine\n");
+
+		expect({ undone: manager.undo().undone, a: read("a.ts"), inner: read("b.ts/inner.ts") }).toEqual({
+			undone: true,
+			a: "original\n",
+			inner: "mine\n",
+		});
+	});
+
 	it("deletes a file the step created, rather than leaving an empty one", () => {
 		step("replace", { "b.ts": "new file\n" });
 
@@ -755,6 +788,21 @@ describe("recovering after a crash", () => {
 		expect(outcome.restored).toEqual(["a.ts"]);
 		expect(read("a.ts")).toBe("original\n");
 		expect(manager.status().drifted).toEqual([]);
+	});
+
+	it("rolls back what the step wrote and keeps a save to a module it only reindexed", () => {
+		write("b.ts", "bound\n");
+		const begun = manager.beginStep("rename", ["a.ts", "b.ts"], undefined, [{ module: "a.ts", text: "renamed\n" }]);
+		if (!begun.ok) throw new Error(begun.reason);
+		write("a.ts", "renamed\n");
+		write("b.ts", "saved during the step\n");
+
+		const outcome = manager.recover();
+		expect({ conflicts: outcome.conflicts, a: read("a.ts"), b: read("b.ts") }).toEqual({
+			conflicts: [],
+			a: "original\n",
+			b: "saved during the step\n",
+		});
 	});
 
 	it("leaves a step alone when its files were never written", () => {

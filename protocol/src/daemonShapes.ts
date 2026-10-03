@@ -26,7 +26,6 @@ import {
 	RangeSchema,
 	ReferenceOriginSchema,
 	ReferenceRoleSchema,
-	type SymbolKind,
 	SymbolKindSchema,
 	VisibilitySchema,
 } from "./symbols.js";
@@ -34,57 +33,6 @@ import { UnknownReasonSchema } from "./values.js";
 
 ////////////////////////////////
 //  Vocabularies
-
-/** The closed question vocabulary from `docs/knowledge-layer.md`. */
-export const QUESTION_CLASSES = ["describe", "why", "relate", "contract", "effects", "usage"] as const;
-
-export const QuestionClassSchema = z.enum(QUESTION_CLASSES).meta({ id: "QuestionClass" });
-
-export type QuestionClass = z.infer<typeof QuestionClassSchema>;
-
-/** Kind and structural locality decide a symbol's applicable questions. */
-export interface QuestionSubject {
-	kind: SymbolKind;
-	/** A parameter, or nested inside a declaration that runs, per `core/src/locals.ts`'s `isLocal`. */
-	local: boolean;
-}
-
-const RUNNING_QUESTIONS: readonly QuestionClass[] = QUESTION_CLASSES;
-const CLASS_QUESTIONS: readonly QuestionClass[] = ["describe", "why", "relate", "contract", "usage"];
-const SHAPE_QUESTIONS: readonly QuestionClass[] = ["describe", "why", "relate", "contract"];
-const FIELD_QUESTIONS: readonly QuestionClass[] = ["describe", "contract"];
-const VALUE_QUESTIONS: readonly QuestionClass[] = ["describe", "why", "contract", "usage"];
-const NAME_QUESTIONS: readonly QuestionClass[] = ["describe"];
-const GROUP_QUESTIONS: readonly QuestionClass[] = ["describe", "why"];
-
-/** Applicable questions per kind. A Record over SymbolKind so a new kind fails to compile here. */
-const QUESTIONS_BY_KIND: Record<SymbolKind, readonly QuestionClass[]> = {
-	function: RUNNING_QUESTIONS,
-	method: RUNNING_QUESTIONS,
-	constructor: RUNNING_QUESTIONS,
-	operator: RUNNING_QUESTIONS,
-	class: CLASS_QUESTIONS,
-	struct: CLASS_QUESTIONS,
-	interface: SHAPE_QUESTIONS,
-	enum: SHAPE_QUESTIONS,
-	property: FIELD_QUESTIONS,
-	field: FIELD_QUESTIONS,
-	event: FIELD_QUESTIONS,
-	constant: VALUE_QUESTIONS,
-	variable: VALUE_QUESTIONS,
-	typeParameter: NAME_QUESTIONS,
-	heading: NAME_QUESTIONS,
-	file: GROUP_QUESTIONS,
-	module: GROUP_QUESTIONS,
-	namespace: GROUP_QUESTIONS,
-	package: GROUP_QUESTIONS,
-};
-
-/** Questions applicable to a symbol, in `QUESTION_CLASSES` order. A local symbol has none. */
-export function questionsFor(subject: QuestionSubject): readonly QuestionClass[] {
-	if (subject.local) return [];
-	return QUESTIONS_BY_KIND[subject.kind];
-}
 
 /** How a fact was obtained, carried on every answer so a consumer can weigh it. */
 export const AnswerTierSchema = z.enum(["bound", "nameMatched", "unknown"]).meta({ id: "AnswerTier" });
@@ -142,7 +90,7 @@ export type Counted = z.infer<typeof CountedSchema>;
 //  Rows
 
 export const StoredDeclarationSchema = DeclarationSchema.extend({
-	/** Citable id for this row, which is what a knowledge answer cites. */
+	/** Names this row, as find_literals and rename stops name theirs. */
 	factId: z.string(),
 	module: z.string(),
 }).meta({ id: "StoredDeclaration" });
@@ -243,45 +191,7 @@ export type StoredExport = z.infer<typeof StoredExportSchema>;
 ////////////////////////////////
 //  Knowledge
 
-/** A declared invalidation: someone read the code and no longer trusts this answer. */
-export const DoubtSchema = z
-	.object({
-		/** The handshake token. Clearing this doubt requires citing it. */
-		factId: z.string(),
-		reason: z.string(),
-		at: z.number(),
-		/** Who declared it. Absent when the caller did not say. */
-		by: z.string().optional(),
-	})
-	.meta({ id: "Doubt" });
-
-export type Doubt = z.infer<typeof DoubtSchema>;
-
-export const AnswerSchema = z
-	.object({
-		/** The subject's current address. */
-		symbolId: z.string(),
-		/** The address the answer was recorded at, kept when the subject has since moved. */
-		recordedAs: z.string().optional(),
-		question: QuestionClassSchema,
-		/** The answer's own citable id, in the fact grammar with kind `answer`. */
-		factId: z.string(),
-		prose: z.string(),
-		/** Fact ids consumed, in the order the author gave them. May include other answers' ids. */
-		citations: z.array(z.string()),
-		/** True when nothing cited reaches beyond the subject's own declaration. */
-		thin: z.boolean(),
-		/** Who wrote it. Absent when the caller did not say. */
-		model: z.string().optional(),
-		createdAt: z.number(),
-		/** Present while someone's declared distrust stands. */
-		doubt: DoubtSchema.optional(),
-	})
-	.meta({ id: "Answer" });
-
-export type Answer = z.infer<typeof AnswerSchema>;
-
-/** Any one row, tagged with what it is. What a stored citation resolves to. */
+/** Any one stored row, tagged by kind, as the store's `factById` answers it. */
 export const StoredFactSchema = z
 	.discriminatedUnion("fact", [
 		StoredDeclarationSchema.extend({ fact: z.literal("declaration") }),
@@ -291,119 +201,10 @@ export const StoredFactSchema = z
 		StoredLiteralSchema.extend({ fact: z.literal("literal") }),
 		StoredCommentSchema.extend({ fact: z.literal("comment") }),
 		StoredDocSchema.extend({ fact: z.literal("doc") }),
-		AnswerSchema.extend({ fact: z.literal("answer") }),
 	])
 	.meta({ id: "StoredFact" });
 
 export type StoredFact = z.infer<typeof StoredFactSchema>;
-
-/** One fact, named so an answer can cite it and a later reader can resolve it. */
-export const CitedFactSchema = z
-	.object({ factId: z.string(), kind: FactKindSchema, module: z.string(), summary: z.string() })
-	.meta({ id: "CitedFact" });
-
-export type CitedFact = z.infer<typeof CitedFactSchema>;
-
-/** Everything tier 1 knows about one symbol, as citable facts. */
-export const FactSetSchema = z
-	.object({
-		symbolId: z.string(),
-		facts: z.array(CitedFactSchema),
-		/** Kinds that were cut off by a limit, so a thin answer is never mistaken for a complete one. */
-		truncated: z.array(FactKindSchema),
-	})
-	.meta({ id: "FactSet" });
-
-export type FactSet = z.infer<typeof FactSetSchema>;
-
-export const ResolveFactsResultSchema = z
-	.object({ resolved: z.array(StoredFactSchema), missing: z.array(z.string()) })
-	.meta({ id: "ResolveFactsResult" });
-
-export type ResolveFactsResult = z.infer<typeof ResolveFactsResultSchema>;
-
-export const RecordOutcomeSchema = z
-	.discriminatedUnion("recorded", [
-		z.object({
-			recorded: z.literal(true),
-			answer: AnswerSchema,
-			/** A doubt the previous answer carried that this write did NOT cite, so it rode forward. */
-			doubtCarried: DoubtSchema.optional(),
-		}),
-		z.object({
-			recorded: z.literal(false),
-			reason: z.string(),
-			unresolved: z.array(z.string()).optional(),
-		}),
-	])
-	.meta({ id: "RecordOutcome" });
-
-export type RecordOutcome = z.infer<typeof RecordOutcomeSchema>;
-
-/** What a recall gives back: the answer, and whether its ground has moved since. */
-export const RecalledAnswerSchema = z
-	.object({
-		answer: AnswerSchema,
-		/** The durable subject the answer belongs to, and how it came to sit at its address. */
-		subject: z
-			.object({
-				id: z.string(),
-				recordedAs: z.string(),
-				evidence: z.string(),
-				since: z.number(),
-			})
-			.optional(),
-		/** Set when the subject's address no longer resolves: the answer stands, and nothing can heal it here. */
-		stranded: z
-			.object({
-				since: z.number().nullable(),
-				exempt: z.boolean(),
-				evidence: z.string(),
-				candidates: z.array(z.string()),
-			})
-			.optional(),
-		/** Cited facts that no longer resolve. */
-		stale: z.array(z.string()),
-		/** Cited answers that still resolve but are themselves stale underneath. */
-		inheritedStale: z.array(z.string()),
-		/** Cited answers that are doubted, directly or anywhere beneath them. */
-		doubtedUpstream: z.array(z.string()),
-	})
-	.meta({ id: "RecalledAnswer" });
-
-export type RecalledAnswer = z.infer<typeof RecalledAnswerSchema>;
-
-/** A recalled answer's state: its own citations and doubt, and what it inherits from answers it cites. */
-export interface AnswerHealth {
-	/** Its own cited facts moved. */
-	stale: boolean;
-	/** Doubted itself. */
-	doubted: boolean;
-	/** Cited answer stale. */
-	upstreamStale: boolean;
-	/** A cited answer is doubted beneath it. */
-	upstreamDoubted: boolean;
-	/** Either upstream state. */
-	shaky: boolean;
-}
-
-/** The one reading of a recalled answer's state. */
-export function answerHealth(recalled: RecalledAnswer): AnswerHealth {
-	const upstreamStale = recalled.inheritedStale.length > 0;
-	const upstreamDoubted = recalled.doubtedUpstream.length > 0;
-	return {
-		stale: recalled.stale.length > 0,
-		doubted: recalled.answer.doubt !== undefined,
-		upstreamStale,
-		upstreamDoubted,
-		shaky: upstreamStale || upstreamDoubted,
-	};
-}
-
-/** Healthy when nothing about it or beneath it moved or was doubted. */
-export function isSound(health: AnswerHealth): boolean {
-	return !health.stale && !health.doubted && !health.shaky;
-}
 
 /** Why an id names no declaration: a closed kind, the sentence, and what a reader might mean instead. */
 const diagnosed = { reason: z.string(), candidates: z.array(z.string()) };
@@ -417,78 +218,6 @@ export const SubjectDiagnosisSchema = z
 	.meta({ id: "SubjectDiagnosis" });
 
 export type SubjectDiagnosis = z.infer<typeof SubjectDiagnosisSchema>;
-
-/** One answer or null when a question is named; every answer about the symbol when it is not. */
-export const RecallAnswerResultSchema = z
-	.union([RecalledAnswerSchema.nullable(), z.array(RecalledAnswerSchema)])
-	.meta({ id: "RecallAnswerResult" });
-
-export type RecallAnswerResult = z.infer<typeof RecallAnswerResultSchema>;
-
-/** What declaring a doubt did, per question, including the questions that had nothing to doubt. */
-export const InvalidateOutcomeSchema = z
-	.object({
-		symbolId: z.string(),
-		doubted: z.array(z.object({ question: QuestionClassSchema, doubt: DoubtSchema })),
-		/** Questions with no recorded answer: counted as gap demand rather than doubted. */
-		noAnswer: z.array(QuestionClassSchema),
-		/** Set when nothing was done at all, with the reason. */
-		refused: z.string().optional(),
-	})
-	.meta({ id: "InvalidateOutcome" });
-
-export type InvalidateOutcome = z.infer<typeof InvalidateOutcomeSchema>;
-
-/** One place knowledge is missing or doubtful, with enough context to decide whether to write it. */
-export const GapRowSchema = z
-	.object({
-		symbolId: z.string(),
-		question: z.string(),
-		why: z.enum(["missing", "stale", "doubted"]),
-		/** Stale only through what it cites; demand rows only. */
-		shaky: z.boolean().optional(),
-		/** Asks that found nothing, the measured demand. */
-		askCount: z.number(),
-		/** The address first asked at, when the subject has since been rebound. */
-		recordedAs: z.string().optional(),
-		fanIn: z.number(),
-		name: z.string().optional(),
-		kind: z.string().optional(),
-		module: z.string().optional(),
-		/** The subject's address no longer resolves; the row is a window, not work, and `why` keeps its ordinary value. */
-		stranded: z.boolean().optional(),
-		strandedAt: z.number().optional(),
-		evidence: z.string().optional(),
-	})
-	.meta({ id: "GapRow" });
-
-export type GapRow = z.infer<typeof GapRowSchema>;
-
-export const KnowledgeGapsSchema = z
-	.object({
-		question: z.string(),
-		/** Leaves first in root mode, so answering in order lets each parent lean on its children. */
-		rows: z.array(GapRowSchema),
-		total: z.number(),
-		/** Dependencies outside the index, counted not listed. */
-		external: z.number(),
-		truncated: z.boolean(),
-		/** Set when the ledger was empty and the rows are hub-ranked candidates, not measured demand. */
-		seeded: z.boolean().optional(),
-		/** Seeded rows whose generated status or export status the index could not tell; eligible, and said so. */
-		seededUnknown: z.object({ generated: z.number(), exported: z.number() }).optional(),
-		/** Set when the knowledge base is too large to resolve every answer's citations here. */
-		staleScanSkipped: z.boolean().optional(),
-		/** Set when scoped to one file. Zero declarations means unindexed, which is not the same as clean. */
-		scope: z.object({ module: z.string(), declarations: z.number() }).optional(),
-		/** True when every row honours the asked question; the workspace demand sweep carries every question. Omitted reads as unfiltered. */
-		filtered: z.boolean().optional(),
-		/** Rows whose subject is orphaned, counted whole; `total` never includes them. */
-		stranded: z.number().optional(),
-	})
-	.meta({ id: "KnowledgeGaps" });
-
-export type KnowledgeGaps = z.infer<typeof KnowledgeGapsSchema>;
 
 ////////////////////////////////
 //  Reading
@@ -506,8 +235,8 @@ export const SymbolSummarySchema = z
 		docComment: z.string().optional(),
 		/** Absent at the top level. */
 		containerId: z.string().optional(),
-		/** Where the body lives, 0-based source lines. */
-		lines: z.object({ start: z.number(), end: z.number() }).optional(),
+		/** The declaration's 0-based lines, doc comment included; `name` is its name's line, when the source holds it. */
+		lines: z.object({ start: z.number(), end: z.number(), name: z.number().optional() }).optional(),
 		/** Uses bound to it, as `describe` counts; set on `outlineModule` rows. */
 		referenceCount: z.number().int().nonnegative().optional(),
 	})
@@ -569,8 +298,6 @@ export const DescribeResultSchema = z
 		referenceCount: z.number(),
 		graph: GraphSummarySchema,
 		hierarchy: TypeHierarchySchema,
-		/** Questions applicable to this symbol (`questionsFor`), in `QUESTION_CLASSES` order. */
-		questions: z.array(QuestionClassSchema).optional(),
 		/** Provider-reported file role. */
 		moduleRole: FileRoleSchema.optional(),
 		tier: AnswerTierSchema,
@@ -627,46 +354,26 @@ export const UsesFromResultSchema = z
 
 export type UsesFromResult = z.infer<typeof UsesFromResultSchema>;
 
-/** One question about one symbol in a scope. `createdAt` is absent when nothing is recorded. */
-export const ScopeQuestionSchema = z
-	.object({
-		question: QuestionClassSchema,
-		createdAt: z.number().optional(),
-		thin: z.boolean().optional(),
-		/** Its own citations moved. */
-		stale: z.boolean().optional(),
-		/** An answer it cites is stale or doubted beneath it. */
-		shaky: z.boolean().optional(),
-		/** Doubted itself. */
-		doubted: z.boolean().optional(),
-		askCount: z.number(),
-	})
-	.meta({ id: "ScopeQuestion" });
-
-export type ScopeQuestion = z.infer<typeof ScopeQuestionSchema>;
-
 export const ScopeSymbolSchema = z
 	.object({
 		symbol: SymbolSummarySchema,
 		/** Containment depth below the scope: 0 for the named symbol or a module's top level. */
 		depth: z.number(),
-		/** Only the kind's applicable questions (`questionsFor`), in `QUESTION_CLASSES` order. */
-		questions: z.array(ScopeQuestionSchema),
 	})
 	.meta({ id: "ScopeSymbol" });
 
 export type ScopeSymbol = z.infer<typeof ScopeSymbolSchema>;
 
-/** A scope's declarations with their knowledge, members before the declaration holding them. */
-export const KnowledgeScopeSchema = z
+/** A scope's declarations, members before the declaration holding them. */
+export const ScopeSymbolsSchema = z
 	.object({
 		symbols: z.array(ScopeSymbolSchema),
 		/** Parameters and locals left out. */
 		localsExcluded: z.number(),
 	})
-	.meta({ id: "KnowledgeScope" });
+	.meta({ id: "ScopeSymbols" });
 
-export type KnowledgeScope = z.infer<typeof KnowledgeScopeSchema>;
+export type ScopeSymbols = z.infer<typeof ScopeSymbolsSchema>;
 
 /** How a literal search was expressed. Carried back so an answer says what it answered. */
 export const LiteralQuerySchema = z
@@ -678,6 +385,7 @@ export const LiteralQuerySchema = z
 		max: z.number().optional(),
 		key: z.string().optional(),
 		within: z.string().optional(),
+		module: z.string().optional(),
 		/** The request's `exclude` was applied. */
 		excluded: z.literal(true).optional(),
 	})
@@ -1217,12 +925,6 @@ export const OverviewResultSchema = z
 		largestData: z.array(
 			z.object({ module: z.string(), symbols: z.number(), content: z.enum(["data", "document"]) }),
 		),
-		knowledge: z.object({
-			answers: z.number(),
-			/** Absent when the knowledge base is too large to resolve every citation here. */
-			stale: z.number().optional(),
-			doubted: z.number().optional(),
-		}),
 		/** Reported entry files; absent without role data. */
 		entryPoints: z.array(z.object({ module: z.string() }).and(EntryRoleSchema)).optional(),
 		/** Entry count beyond the cap. */
@@ -1848,15 +1550,12 @@ export const ReplaceSpanOutcomeSchema = ReplaceOutcomeSchema.extend({
 
 export type ReplaceSpanOutcome = z.infer<typeof ReplaceSpanOutcomeSchema>;
 
-const migrated = z.object({ answers: z.number(), gaps: z.number() });
-
 export const MoveOutcomeSchema = z
 	.object({
 		moved: z.boolean(),
 		/** Canonical target spelling, on success. */
 		toModule: z.string().optional(),
 		modules: z.array(z.string()).optional(),
-		migrated: migrated.optional(),
 		issues: z.array(RefactorIssueSchema),
 		reason: z.string().optional(),
 		/** With `together`: the names that moved, one step each, in order. */
@@ -1889,6 +1588,8 @@ export const ArrangePreviewSchema = z
 			issues: z.array(RefactorIssueSchema),
 			/** Every file went through `fixText` cleanly. */
 			formatted: z.boolean(),
+			/** Each top-level declaration's span in the target's final text; a placed one by its id before the move. */
+			placed: z.array(z.object({ symbolId: z.string(), range: RangeSchema })),
 		}),
 		z.object({
 			ok: z.literal(false),
@@ -1908,7 +1609,6 @@ export const RenameStepOutcomeSchema = z
 		modules: z.array(z.string()).optional(),
 		/** Export fact ids kept at the old name. */
 		stops: z.array(z.string()).optional(),
-		migrated: migrated.optional(),
 		issues: z.array(RefactorIssueSchema),
 		reason: z.string().optional(),
 	})
@@ -1957,7 +1657,6 @@ export const CommittedStepSchema = z
 			reverse: ReverseStepSchema,
 			/** A rename's export fact ids kept at the old name. */
 			stops: z.array(z.string()).optional(),
-			migrated: migrated.optional(),
 			issues: z.array(RefactorIssueSchema),
 		}),
 		z.object({

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { Python3Dispatch, python3Commands } from "../python3";
 
 ////////////////////////////////
@@ -14,7 +15,7 @@ describe("runJson", () => {
 	it("throws its own message once output crosses the cap", async () => {
 		const dispatch = new Python3Dispatch("sh");
 
-		await expect(dispatch.runJson<unknown>(["-c", "printf 'xxxxxxxxxx'"], { maxBuffer: 4 })).rejects.toThrow(
+		expect(await rethrown(dispatch.runJson<unknown>(["-c", "printf 'xxxxxxxxxx'"], { maxBuffer: 4 }))).toThrow(
 			"sh produced more output than the buffer allows",
 		);
 	});
@@ -22,7 +23,7 @@ describe("runJson", () => {
 	it("throws the child's stderr for a non-zero exit", async () => {
 		const dispatch = new Python3Dispatch("sh");
 
-		await expect(dispatch.runJson<unknown>(["-c", "echo custom-error 1>&2; exit 7"])).rejects.toThrow(
+		expect(await rethrown(dispatch.runJson<unknown>(["-c", "echo custom-error 1>&2; exit 7"]))).toThrow(
 			"custom-error",
 		);
 	});

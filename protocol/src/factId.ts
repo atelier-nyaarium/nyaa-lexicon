@@ -1,17 +1,15 @@
 // The SOLE owner of the fact id grammar: composer, parser, predicates, and the per-kind tuples.
 //
 // A symbol id names a SYMBOL and is built to survive edits, which is its whole job. A fact id names
-// one row of the index as it currently stands, which is a different thing. An answer in the
-// knowledge layer cites the facts it read, and that citation has to go stale when one of them
-// changes, so the two ids cannot be the same id.
+// one row of the index as it currently stands, which is a different thing: a caller holding one,
+// such as a literal to replace or a rename stop, must learn when that row changed.
 //
 // Shape: `lexfact <kind> <module> <digest>`, space-separated and module-encoded exactly like a
 // symbol id, so one module spells the same in both grammars.
 //
 // IDENTITY IS CONTENT RELATIVE TO THE OWNER. The digest covers every field that makes the fact what
 // it is, so resolving an id and checking whether it changed are ONE operation: an id that no longer
-// resolves is exactly a fact that changed or vanished. `docs/knowledge-layer.md` wants mechanical
-// invalidation to be a comparison rather than a judgement, and this is that comparison.
+// resolves is exactly a fact that changed or vanished.
 //
 // Position enters as an offset from the fact's OWNER, the declaration it belongs to: a declaration
 // owns itself, a reference its `fromId`, a literal its container, a comment or doc region its
@@ -24,14 +22,7 @@ import { createHash } from "node:crypto";
 import { err, ok, type ParseResult } from "./parseResult.js";
 import type { Certainty, CommentSpan, Conflict, DocRegion, Export, ImportEdge, Literal, Selector } from "./project.js";
 import { SourceCursor } from "./sourceCursor.js";
-import {
-	decodeModuleField,
-	encodeModuleField,
-	expectIdSpace,
-	isCanonicalModule,
-	moduleOf,
-	readIdField,
-} from "./symbolId.js";
+import { decodeModuleField, encodeModuleField, expectIdSpace, isCanonicalModule, readIdField } from "./symbolId.js";
 import type { Declaration, Position, Range, Reference, ReferenceOrigin } from "./symbols.js";
 
 ////////////////////////////////
@@ -55,25 +46,8 @@ type FactField = string | number | boolean | null | undefined;
 
 export const FACT_SCHEME = "lexfact";
 
-/**
- * Closed, like every other vocabulary here. A kind the core cannot render is worse than none.
- *
- * `answer` is the doc's "answers are facts one layer up" made literal: a recorded answer gets an id
- * in the same grammar, so an answer can cite another answer and staleness cascades through the same
- * resolution that catches an edited file. Its digest covers the prose and the citations, so
- * re-recording an answer retires the old id and everything built on it reports stale.
- */
-export const FACT_KINDS = [
-	"declaration",
-	"reference",
-	"import",
-	"export",
-	"literal",
-	"comment",
-	"doc",
-	"answer",
-	"doubt",
-] as const;
+/** Closed, like every other vocabulary here. A kind the core cannot render is worse than none. */
+export const FACT_KINDS = ["declaration", "reference", "import", "export", "literal", "comment", "doc"] as const;
 
 const KIND_SET = new Set<string>(FACT_KINDS);
 
@@ -314,45 +288,6 @@ export function docFactId(module: string, d: DocRegion, owners: OwnerStarts): st
 	]);
 }
 
-/**
- * The id of a recorded answer, whose module is its SUBJECT's module.
- *
- * Identity is prose plus citations plus what was asked about, and deliberately NOT the timestamp or
- * the model: re-affirming the same words over the same inputs is the same answer, while changing a
- * word or a citation retires the id and cascades staleness into everything that cited it.
- */
-export function answerFactId(
-	subjectId: string,
-	recordedAs: string,
-	question: string,
-	prose: string,
-	citations: string[],
-): string {
-	const module = moduleOf(recordedAs);
-	if (module === null) throw new Error(`an answer's address must be a well-formed symbol id: ${recordedAs}`);
-	return composeFactId("answer", module, [subjectId, recordedAs, question, prose, ...citations]);
-}
-
-/**
- * The id of a declared doubt on a recorded answer, whose module is the SUBJECT's module.
- *
- * A doubt id is a handshake token rather than a citable fact: clearing a doubt requires citing this
- * id back, and the only way to hold it is to have recalled the answer and read the reason. That is
- * what stops a parallel writer erasing a doubt it never saw. The timestamp is IN the identity, so a
- * doubt declared again after a clear mints a fresh id and a saved-up old token cannot clear it.
- */
-export function doubtFactId(
-	subjectId: string,
-	recordedAs: string,
-	question: string,
-	reason: string,
-	at: number,
-): string {
-	const module = moduleOf(recordedAs);
-	if (module === null) throw new Error(`a doubt's address must be a well-formed symbol id: ${recordedAs}`);
-	return composeFactId("doubt", module, [subjectId, recordedAs, question, reason, at]);
-}
-
 /** Canonical form, carrying a diagnosis. `parseFactId` is the null-returning shim over it. */
 export function parseFactIdResult(text: string): ParseResult<FactId> {
 	const c = new SourceCursor(text);
@@ -400,7 +335,7 @@ export function isFactId(text: string): boolean {
 	return parseFactIdResult(text).ok;
 }
 
-/** The file a citation depends on, which is what per-file invalidation keys on. */
+/** The file a fact belongs to, which is what per-file invalidation keys on. */
 export function factModuleOf(text: string): string | null {
 	return parseFactId(text)?.module ?? null;
 }

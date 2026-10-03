@@ -2,7 +2,7 @@
 
 import type { TextCoordinates } from "@nyaa-lexicon/protocol";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
-import { sourceBetween } from "./tokens.js";
+import { isContinuation, isLineBreak, sourceBetween } from "./tokens.js";
 
 //////// Types
 
@@ -17,6 +17,13 @@ export interface LogicalLine extends TokenSpan {
 	line: number;
 	lastLine: number;
 	indent: number;
+}
+
+/** A block lambda's body inside a bracket, ended by a dedent or by that bracket closing. */
+export interface BracketBody {
+	statements: LogicalLine[];
+	/** The line of the token ending it. */
+	endLine: number;
 }
 
 export type Expression =
@@ -98,8 +105,19 @@ const PREFIX = new Map<string, number>([
 
 //////// Statements
 
-function skippable(token: ReferenceToken | undefined): boolean {
-	return token?.kind === "newline" || token?.value === "\\";
+/** Tokens `start` through `last`, ending before `end`. */
+function logicalLine(
+	tokens: ReferenceToken[],
+	lines: readonly SourceLine[],
+	start: number,
+	last: number,
+	end: number,
+): LogicalLine | undefined {
+	const first = tokens[start];
+	const final = tokens[last];
+	if (first === undefined || final === undefined) return undefined;
+	const indent = lines[first.line]?.indent ?? 0;
+	return { start, end, line: first.line, lastLine: final.string?.end.line ?? final.line, indent };
 }
 
 export function logicalLines(tokens: ReferenceToken[], lines: readonly SourceLine[]): LogicalLine[] {
@@ -108,19 +126,15 @@ export function logicalLines(tokens: ReferenceToken[], lines: readonly SourceLin
 	let start = -1;
 	let last = -1;
 	const close = (end: number): void => {
-		const first = tokens[start];
-		const final = tokens[last];
-		if (first !== undefined && final !== undefined) {
-			const indent = lines[first.line]?.indent ?? 0;
-			logical.push({ start, end, line: first.line, lastLine: final.string?.end.line ?? final.line, indent });
-		}
+		const line = logicalLine(tokens, lines, start, last, end);
+		if (line !== undefined) logical.push(line);
 		start = -1;
 		depth = 0;
 	};
 	for (let index = 0; index < tokens.length; index++) {
 		const token = tokens[index] as ReferenceToken;
 		if (token.kind === "newline") {
-			if (start >= 0 && depth === 0 && tokens[index - 1]?.value !== "\\") close(index);
+			if (start >= 0 && depth === 0 && !isContinuation(tokens[index - 1])) close(index);
 			continue;
 		}
 		if (start < 0) start = index;
@@ -130,6 +144,84 @@ export function logicalLines(tokens: ReferenceToken[], lines: readonly SourceLin
 	}
 	if (start >= 0) close(tokens.length);
 	return logical;
+}
+
+/** The block colon of the lambda whose `func` is at `at`, when a line break follows it; else -1. */
+export function lambdaBlockColon(tokens: ReferenceToken[], at: number, end: number): number {
+	let depth = 0;
+	for (let index = at + 1; index < end; index++) {
+		const value = (tokens[index] as ReferenceToken).value;
+		if (OPENERS.has(value)) depth++;
+		else if (CLOSERS.has(value)) {
+			if (depth === 0) return -1;
+			depth--;
+		} else if (depth === 0 && value === ":") return tokens[index + 1]?.kind === "newline" ? index : -1;
+	}
+	return -1;
+}
+
+/** Statements from `from` until one starts left of the first, or the bracket around them closes. */
+function bracketBody(
+	tokens: ReferenceToken[],
+	lines: readonly SourceLine[],
+	from: number,
+	end: number,
+): { body: BracketBody; stop: number } {
+	const statements: LogicalLine[] = [];
+	let depth = 0;
+	let start = -1;
+	let last = -1;
+	let indent = -1;
+	const close = (stop: number): void => {
+		const line = logicalLine(tokens, lines, start, last, stop);
+		if (line !== undefined) statements.push(line);
+		start = -1;
+	};
+	let stop = from;
+	for (; stop < end; stop++) {
+		const token = tokens[stop] as ReferenceToken;
+		if (token.kind === "newline") {
+			if (start >= 0 && depth === 0 && !isContinuation(tokens[stop - 1])) close(stop);
+			continue;
+		}
+		if (depth === 0 && CLOSERS.has(token.value)) break;
+		if (start < 0) {
+			const lineIndent = lines[token.line]?.indent ?? 0;
+			if (indent < 0) indent = lineIndent;
+			else if (lineIndent < indent) break;
+			start = stop;
+		}
+		last = stop;
+		if (OPENERS.has(token.value)) depth++;
+		else if (CLOSERS.has(token.value)) depth--;
+	}
+	if (start >= 0) close(stop);
+	const ender = tokens[stop] ?? tokens[last];
+	return { body: { statements, endLine: ender?.line ?? 0 }, stop };
+}
+
+/** Block lambdas' bodies inside the brackets of `span`, each before the bodies inside it. */
+export function bracketBodies(
+	tokens: ReferenceToken[],
+	lines: readonly SourceLine[],
+	span: TokenSpan,
+	found: BracketBody[] = [],
+): BracketBody[] {
+	let depth = 0;
+	for (let index = span.start; index < span.end; index++) {
+		const token = tokens[index] as ReferenceToken;
+		if (OPENERS.has(token.value)) depth++;
+		else if (CLOSERS.has(token.value)) depth--;
+		else if (depth > 0 && token.kind === "identifier" && token.value === "func") {
+			const colon = lambdaBlockColon(tokens, index, span.end);
+			if (colon < 0) continue;
+			const { body, stop } = bracketBody(tokens, lines, colon + 1, span.end);
+			if (body.statements.length > 0) found.push(body);
+			for (const statement of body.statements) bracketBodies(tokens, lines, statement, found);
+			index = stop - 1;
+		}
+	}
+	return found;
 }
 
 /** First unbracketed `:` from `start`, or -1. */
@@ -167,7 +259,7 @@ export function expressionEnd(tokens: ReferenceToken[], start: number): number {
 	let depth = 0;
 	for (let index = start; index < tokens.length; index++) {
 		const token = tokens[index] as ReferenceToken;
-		if (depth === 0 && token.kind === "newline" && tokens[index - 1]?.value !== "\\") return index;
+		if (depth === 0 && token.kind === "newline" && !isContinuation(tokens[index - 1])) return index;
 		if (depth === 0 && (token.value === ";" || token.value === "," || token.value === ":")) return index;
 		if (OPENERS.has(token.value)) depth++;
 		else if (CLOSERS.has(token.value)) {
@@ -198,14 +290,14 @@ class ExpressionParser {
 	}
 
 	private skip(): void {
-		while (this.at < this.span.end && skippable(this.tokens[this.at])) this.at++;
+		while (this.at < this.span.end && isLineBreak(this.tokens[this.at])) this.at++;
 	}
 
 	private peek(offset = 0): ReferenceToken | undefined {
 		let at = this.at;
 		for (let step = 0; step < offset; step++) {
 			at++;
-			while (at < this.span.end && skippable(this.tokens[at])) at++;
+			while (at < this.span.end && isLineBreak(this.tokens[at])) at++;
 		}
 		return at < this.span.end ? this.tokens[at] : undefined;
 	}

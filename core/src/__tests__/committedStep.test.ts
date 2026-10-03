@@ -14,6 +14,7 @@ import {
 	type StepBase,
 	type StepPhase,
 } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch, daemonHandlers, gateOf } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { LexiconService } from "../service";
@@ -88,7 +89,7 @@ function read(module: string): string | null {
 }
 
 function prose(symbolId: string): string | undefined {
-	return store.answer(symbolId, "describe")?.prose;
+	return store.notes.byAddress(symbolId)?.text;
 }
 
 /** A gate that runs `between` after planning and before the step's hold. */
@@ -151,9 +152,8 @@ beforeEach(async () => {
 	dispatch = createDispatch(service, { transactions });
 	put("a.ref", ORIGINAL);
 	await service.indexFile("a.ref");
-	const cited = store.declaration(CART)?.factId as string;
-	const recorded = await service.recordAnswer(CART, "describe", "A shopping cart.", [cited]);
-	if (!recorded.recorded) throw new Error(recorded.reason);
+	const recorded = service.writeNote({ symbolId: CART, text: "A shopping cart.", expectedRevision: 0 });
+	if (recorded.outcome === "refused") throw new Error(recorded.reason);
 });
 
 afterEach(() => {
@@ -180,7 +180,6 @@ describe("a committed step with no refactor open", () => {
 			files: [{ module: "a.ref", before: hashContent(ORIGINAL) }],
 			forwarded: [{ from: CART, to: RENAMED }],
 			reverse: { kind: "rename", symbolId: RENAMED, newName: "Cart" },
-			migrated: { answers: 1, gaps: 0 },
 		});
 		expect(outcome.committed && outcome.files).toMatchObject(onDisk(outcome));
 		expect(read("a.ref")).toBe("export class Basket {}\n");
@@ -409,7 +408,7 @@ describe("a committed step the daemon died inside", () => {
 			gateOf(service.gate),
 			crashing,
 		);
-		await expect(died).rejects.toThrow();
+		expect(await rethrown(died)).toThrow();
 		expect(read("a.ref")).toBe("export class Basket {}\n");
 
 		// As the daemon starts: recover, then reindex what came back.

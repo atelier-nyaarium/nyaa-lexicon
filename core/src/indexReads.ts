@@ -13,6 +13,7 @@ import {
 	type DocQuery,
 	type DocsResult,
 	defined,
+	GROUPING_KINDS,
 	type GraphSummary,
 	type LiteralQuery,
 	type LiteralsResult,
@@ -23,6 +24,8 @@ import {
 	type Range,
 	type ReferencesResult,
 	type ReferenceUse,
+	type ScopeSymbol,
+	type ScopeSymbols,
 	type SearchSymbolsResult,
 	type SharedLiteralsResult,
 	type SymbolEdges,
@@ -196,6 +199,43 @@ export class IndexReadModel {
 		return matches.map(toSummary);
 	}
 
+	/** A scope's declarations, members before the declaration holding them. */
+	scopeSymbols(scope: {
+		symbolId?: string | undefined;
+		module?: string | undefined;
+		members?: boolean | undefined;
+		includeLocals?: boolean | undefined;
+	}): ScopeSymbols | null {
+		const context = new ReadContext(this.store);
+		const root = scope.symbolId === undefined ? null : context.declaration(scope.symbolId);
+		if (scope.symbolId !== undefined && root === null) return null;
+		const module = root?.module ?? scope.module;
+		if (module === undefined) return { symbols: [], localsExcluded: 0 };
+
+		const symbols: ScopeSymbol[] = [];
+		let localsExcluded = 0;
+		const visited = new Set<string>();
+		const visitMembers = (holder: string | undefined, depth: number) => {
+			for (const member of context.membersOf(module, holder)) {
+				if (scope.includeLocals !== true && context.isLocal(member)) {
+					localsExcluded += context.descendantIds(member.symbolId).size;
+					continue;
+				}
+				visit(member, depth, true);
+			}
+		};
+		const visit = (declaration: StoredDeclaration, depth: number, withMembers: boolean) => {
+			if (visited.has(declaration.symbolId)) return;
+			visited.add(declaration.symbolId);
+			if (withMembers) visitMembers(declaration.symbolId, depth + 1);
+			symbols.push({ symbol: toSummary(declaration), depth });
+		};
+		if (root === null) visitMembers(undefined, 0);
+		else if (!GROUPING_KINDS.has(root.kind)) visit(root, 0, scope.members === true);
+		else if (scope.members === true) visitMembers(root.symbolId, 0);
+		return { symbols, localsExcluded };
+	}
+
 	/**
 	 * What a symbol is, plus its surface and how used it is.
 	 *
@@ -242,7 +282,6 @@ export class IndexReadModel {
 			referenceCount: this.store.usesTo(symbolId).length,
 			graph: this.graphSummary(context, symbolId),
 			hierarchy: this.hierarchyOf(context, symbolId),
-			questions: [...context.questionsOf(declaration)],
 			...(comments.length === 0 ? {} : { comments }),
 			...(attached.length > comments.length ? { moreComments: attached.length - comments.length } : {}),
 			...(moduleRole === null ? {} : { moduleRole }),
@@ -312,8 +351,10 @@ export class IndexReadModel {
 			exclude?: ModuleExclusion | undefined;
 		} = {},
 	): SearchSymbolsResult {
-		if ((text === undefined) === (options.regex === undefined)) {
-			throw new Error(`Set exactly one of text or regex.`);
+		if (text !== undefined && options.regex !== undefined) throw new Error(`Set at most one of text or regex.`);
+		// No pattern lists what the other filters narrow to.
+		if ([text, options.regex, options.kind, options.module, options.within].every((each) => each === undefined)) {
+			throw new Error(`Set text, regex, kind, module or within.`);
 		}
 		const scope =
 			options.within === undefined ? undefined : resolveScope(new ReadContext(this.store), options.within);
@@ -344,15 +385,21 @@ export class IndexReadModel {
 	}
 
 	/** Who uses a symbol, import and export lines left out. Capped, and the caller is told when it was. */
-	findReferences(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT, within?: string): ReferencesResult {
+	findReferences(
+		symbolId: string,
+		limit = DEFAULT_REFERENCE_LIMIT,
+		within?: string,
+		module?: string,
+	): ReferencesResult {
 		const context = new ReadContext(this.store);
 		const scope = within === undefined ? undefined : resolveScope(context, within);
 		// A use at module level sits inside no symbol, so no scope holds it.
 		const all = this.store.usesTo(symbolId);
-		const filtered =
-			scope === undefined
-				? all
-				: all.filter((reference) => reference.fromId !== null && contains(scope, reference.fromId));
+		const filtered = all.filter(
+			(reference) =>
+				(scope === undefined || (reference.fromId !== null && contains(scope, reference.fromId))) &&
+				(module === undefined || reference.module === module || reference.module.startsWith(`${module}/`)),
+		);
 		return {
 			symbolId,
 			references: filtered.slice(0, limit).map((reference) => useOf(context, reference)),
@@ -401,8 +448,16 @@ export class IndexReadModel {
 		const context = new ReadContext(this.store);
 		const scope = query.within === undefined ? undefined : resolveScope(context, query.within);
 		const scoped = scope === undefined ? undefined : filterFor(scope);
-		const base = { kind: query.kind, key: query.key, scope: scoped, hidden: this.store.hiddenModules(exclude) };
+		const base = {
+			kind: query.kind,
+			key: query.key,
+			module: query.module,
+			scope: scoped,
+			hidden: this.store.hiddenModules(exclude),
+		};
 		const echo = asked(query, exclude);
+		const ways = [query.value, query.regex, query.min ?? query.max].filter((each) => each !== undefined);
+		if (ways.length > 1) throw new Error("give one of a value, a regex, or a numeric range, not several");
 		if (query.value !== undefined) {
 			const found = this.store.literalsWhere(
 				{ ...base, value: query.value },

@@ -14,8 +14,6 @@ import {
 	defined,
 	GROUPING_KINDS,
 	type Landing,
-	type QuestionClass,
-	questionsFor,
 	type Range,
 	type StoredExport,
 	type SymbolSummary,
@@ -41,6 +39,7 @@ export interface DeclarationReads {
 	declarationsIn(module: string): StoredDeclaration[];
 	declarationsNamed(name: string): StoredDeclaration[];
 	referencesTo(symbolId: string): StoredReference[];
+	usesTo(symbolId: string): StoredReference[];
 	referencesIn(module: string): StoredReference[];
 	referencesSpelled(name: string, excludingTarget: string): StoredReference[];
 	importsBinding(localName: string): StoredImport[];
@@ -122,7 +121,13 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 		}),
 		...(declaration.range === undefined
 			? {}
-			: { lines: { start: declaration.range.start.line, end: declaration.range.end.line } }),
+			: {
+					lines: {
+						start: declaration.range.start.line,
+						end: declaration.range.end.line,
+						...defined({ name: declaration.selectionRange?.start.line }),
+					},
+				}),
 	};
 }
 
@@ -172,6 +177,13 @@ export class ReadContext {
 	/** Bound edges into this id, each row's own module stamped. */
 	referencesTo(symbolId: string): StoredReference[] {
 		const rows = this.store.referencesTo(symbolId);
+		for (const row of rows) this.touch(row.module);
+		return rows;
+	}
+
+	/** Uses bound to this id, import and export rows left out, each row's own module stamped. */
+	usesTo(symbolId: string): StoredReference[] {
+		const rows = this.store.usesTo(symbolId);
 		for (const row of rows) this.touch(row.module);
 		return rows;
 	}
@@ -369,11 +381,6 @@ export class ReadContext {
 	/** Parameter or local-holding ancestor, read in the declaration's own module. */
 	isLocal(declaration: StoredDeclaration): boolean {
 		return this.topology(declaration.module).isLocal(declaration);
-	}
-
-	/** The knowledge questions its kind takes; none when local. */
-	questionsOf(declaration: StoredDeclaration): readonly QuestionClass[] {
-		return questionsFor({ kind: declaration.kind, local: this.isLocal(declaration) });
 	}
 
 	/** Resolve ownership in the use's module. */

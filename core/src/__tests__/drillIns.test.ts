@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Declaration, Reference } from "@nyaa-lexicon/protocol";
-import { QUESTION_CLASSES } from "@nyaa-lexicon/protocol";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -147,7 +146,7 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-function names(scope: ReturnType<LexiconService["knowledgeScope"]>): Array<[string, number]> | undefined {
+function names(scope: ReturnType<LexiconService["scopeSymbols"]>): Array<[string, number]> | undefined {
 	return scope?.symbols.map((entry) => [entry.symbol.name, entry.depth]);
 }
 
@@ -183,10 +182,6 @@ describe("a reference list", () => {
 		expect(hubs.find((row) => row.symbolId === IDS.line)?.count).toBe(3);
 		expect(hubs.find((row) => row.symbolId === IDS.helper)?.count).toBe(1);
 		expect(hubs.some((row) => row.symbolId === a)).toBe(false);
-		expect(service.knowledgeGaps(b).rows.map((row) => row.symbolId)).toEqual([b]);
-		expect(service.knowledgeGaps(undefined, "describe", 60, "shop.ref").rows).toContainEqual(
-			expect.objectContaining({ symbolId: IDS.line, fanIn: 3 }),
-		);
 	});
 
 	it("lists what a symbol uses from anywhere inside it, saying how each bound", () => {
@@ -285,15 +280,15 @@ describe("a grouping declaration", () => {
 			["x", 1],
 			["Other", 0],
 		];
-		expect(names(service.knowledgeScope({ module: "ns.ref" }))).toEqual(expected);
-		expect(names(service.knowledgeScope({ symbolId: ns, members: true }))).toEqual(expected);
+		expect(names(service.scopeSymbols({ module: "ns.ref" }))).toEqual(expected);
+		expect(names(service.scopeSymbols({ symbolId: ns, members: true }))).toEqual(expected);
 	});
 
 	it("answers empty for the namespace alone, its members with members: true", () => {
 		plantNamespace(over(0, 10));
 
-		expect(service.knowledgeScope({ symbolId: ns })).toEqual({ symbols: [], localsExcluded: 0 });
-		expect(names(service.knowledgeScope({ symbolId: ns, members: true }))?.map(([name]) => name)).toEqual([
+		expect(service.scopeSymbols({ symbolId: ns })).toEqual({ symbols: [], localsExcluded: 0 });
+		expect(names(service.scopeSymbols({ symbolId: ns, members: true }))?.map(([name]) => name)).toEqual([
 			"Line",
 			"add",
 			"Cart",
@@ -303,19 +298,19 @@ describe("a grouping declaration", () => {
 	});
 });
 
-describe("a knowledge scope", () => {
+describe("a scope's symbols", () => {
 	it("orders a module's members before the declaration holding them, leaving locals out", () => {
-		expect(names(service.knowledgeScope({ module: "shop.ref" }))).toEqual([
+		expect(names(service.scopeSymbols({ module: "shop.ref" }))).toEqual([
 			["open", 1],
 			["price", 2],
 			["Line", 1],
 			["Shop", 0],
 			["helper", 0],
 		]);
-		expect(service.knowledgeScope({ module: "shop.ref" })?.localsExcluded).toBe(2);
-		expect(
-			names(service.knowledgeScope({ module: "shop.ref", includeLocals: true }))?.map(([name]) => name),
-		).toEqual(["amount", "total", "open", "price", "Line", "Shop", "helper"]);
+		expect(service.scopeSymbols({ module: "shop.ref" })?.localsExcluded).toBe(2);
+		expect(names(service.scopeSymbols({ module: "shop.ref", includeLocals: true }))?.map(([name]) => name)).toEqual(
+			["amount", "total", "open", "price", "Line", "Shop", "helper"],
+		);
 	});
 
 	it("takes one symbol alone or with its members, siblings on one line in source order, and none unknown", () => {
@@ -330,96 +325,13 @@ describe("a knowledge scope", () => {
 			[],
 		);
 
-		expect(names(service.knowledgeScope({ symbolId: IDS.line }))).toEqual([["Line", 0]]);
-		expect(names(service.knowledgeScope({ symbolId: holder, members: true }))?.map(([name]) => name)).toEqual([
+		expect(names(service.scopeSymbols({ symbolId: IDS.line }))).toEqual([["Line", 0]]);
+		expect(names(service.scopeSymbols({ symbolId: holder, members: true }))?.map(([name]) => name)).toEqual([
 			"a",
 			"b",
 			"P",
 		]);
-		expect(service.knowledgeScope({ symbolId: `${IDS.line}Gone#` })).toBeNull();
-	});
-
-	it("carries each question's recorded time, grade and demand", async () => {
-		const declaration = store.declaration(IDS.line)?.factId as string;
-		const recorded = await service.recordAnswer(IDS.line, "describe", "A priced entry.", [declaration]);
-		if (!recorded.recorded) throw new Error(recorded.reason);
-		service.recordDemand({ symbolId: IDS.line, question: "why" });
-
-		const [line] = service.knowledgeScope({ symbolId: IDS.line })?.symbols ?? [];
-		const byQuestion = new Map(line?.questions.map((entry) => [entry.question, entry]));
-
-		expect(byQuestion.get("describe")).toMatchObject({ createdAt: recorded.answer.createdAt, thin: true });
-		expect(byQuestion.get("why")).toEqual({ question: "why", askCount: 1 });
-		// IDS.line is a class: no `effects`, per questionsFor.
-		expect(line?.questions.map((entry) => entry.question)).toEqual([
-			"describe",
-			"why",
-			"relate",
-			"contract",
-			"usage",
-		]);
-	});
-
-	it("gates each member's questions by kind, and excludes a local structurally", () => {
-		const scope = service.knowledgeScope({ module: "shop.ref", includeLocals: true });
-		const byName = new Map(
-			scope?.symbols.map((entry): [string, string[]] => [
-				entry.symbol.name,
-				entry.questions.map((q) => q.question),
-			]),
-		);
-
-		expect(byName.get("amount")).toEqual([]); // local variable: none
-		expect(byName.get("total")).toEqual([]); // fileLocal, but nested in a method: local structurally
-		expect(byName.get("open")).toEqual([...QUESTION_CLASSES]); // method
-		expect(byName.get("price")).toEqual(["describe", "contract"]); // property
-		expect(byName.get("Line")).toEqual(["describe", "why", "relate", "contract", "usage"]); // class
-		expect(byName.get("helper")).toEqual([...QUESTION_CLASSES]); // function
-	});
-
-	it("keeps an answer's own trouble apart from what it leans on, as gaps and recall do", async () => {
-		const record = async (symbolId: string, citations: string[]) => {
-			const outcome = await service.recordAnswer(symbolId, "describe", `About ${symbolId}.`, citations);
-			if (!outcome.recorded) throw new Error(outcome.reason);
-			return outcome.answer.factId;
-		};
-		const priceAnswer = await record(IDS.price, [store.declaration(IDS.price)?.factId as string]);
-		await record(IDS.line, [store.declaration(IDS.line)?.factId as string, priceAnswer]);
-		const doubt = service.invalidateAnswer(IDS.price, "Prices moved to cents.", "describe").doubted[0]?.doubt;
-
-		const describeOf = (name: string) =>
-			service
-				.knowledgeScope({ symbolId: IDS.line, members: true })
-				?.symbols.find((entry) => entry.symbol.name === name)
-				?.questions.find((entry) => entry.question === "describe");
-		expect(describeOf("price")).toMatchObject({ doubted: true });
-		expect(describeOf("price")?.shaky).toBeUndefined();
-		expect(describeOf("Line")).toMatchObject({ shaky: true });
-		expect(describeOf("Line")?.doubted).toBeUndefined();
-		expect(describeOf("Line")?.stale).toBeUndefined();
-
-		const gaps = service.knowledgeGaps(undefined, "describe", 10, "shop.ref");
-		expect(gaps.rows.filter((row) => row.why !== "missing").map((row) => [row.symbolId, row.why])).toEqual([
-			[IDS.price, "doubted"],
-		]);
-		const demand = service.demandOf(IDS.line, "describe", service.recallAnswer(IDS.line, "describe"));
-		expect(demand).not.toBeNull();
-
-		// Asked while shaky, then healed.
-		if (demand !== null) service.recordDemand(demand);
-		const workspaceWhy = () =>
-			new Map(service.knowledgeGaps().rows.map((row) => [row.symbolId, row.shaky === true ? "shaky" : row.why]));
-		expect(workspaceWhy()).toEqual(
-			new Map([
-				[IDS.line, "shaky"],
-				[IDS.price, "doubted"],
-			]),
-		);
-		expect(service.knowledgeGaps().rows.find((row) => row.symbolId === IDS.line)?.why).toBe("stale");
-
-		const healed = await service.reaffirmAnswer(IDS.price, "describe", { resolvesDoubt: doubt?.factId as string });
-		expect(healed.recorded).toBe(true);
-		expect(workspaceWhy().has(IDS.line)).toBe(false);
+		expect(service.scopeSymbols({ symbolId: `${IDS.line}Gone#` })).toBeNull();
 	});
 });
 
@@ -455,65 +367,17 @@ describe("reads over a malformed index", () => {
 			[uses("Line", IDS.line, at(2), A)],
 		);
 
-		expect(names(service.knowledgeScope({ symbolId: A, members: true }))?.map(([name]) => name)).toEqual([
-			"B",
-			"A",
-		]);
+		expect(names(service.scopeSymbols({ symbolId: A, members: true }))?.map(([name]) => name)).toEqual(["B", "A"]);
 		const fromLoop = service.findReferences(IDS.line, 50).references.find((row) => row.module === "loop.ref");
 		expect(fromLoop?.topLevel).toBeUndefined();
 	});
 });
 
 describe("the evidence about a declaration", () => {
-	it("accepts a citation of a local's comment past the listed page", async () => {
-		const run = "lexicon reference many.ref run().";
-		const locals = Array.from({ length: 45 }, (_, index) => `lexicon reference many.ref run().local${index}.`);
-		store.replaceFile({
-			module: "many.ref",
-			contentHash: "many",
-			declarations: [
-				declare(run, "function", "run", over(0, 100)),
-				...locals.map((symbolId, index) =>
-					declare(symbolId, "variable", `local${index}`, at(index + 1), {
-						containerId: run,
-						visibility: "fileLocal",
-					}),
-				),
-			],
-			references: [],
-			imports: [],
-			literals: [],
-			depth: "full",
-			comments: locals.map((symbolId, index) => ({
-				range: { start: { line: index + 1, character: 20 }, end: { line: index + 1, character: 30 } },
-				raw: `// note ${index}`,
-				normalized: `note ${index}`,
-				form: "trailing" as const,
-				placement: "after" as const,
-				anchorId: symbolId,
-			})),
-		});
-		const last = store.commentsAnchoredTo(locals[44] as string)[0]?.factId as string;
+	it("gives a local's notes to the nearest non-local declaration alone", () => {
+		const notes = (symbolId: string) => service.describe(symbolId)?.comments?.map((note) => note.line) ?? [];
 
-		const outcome = await service.recordAnswer(run, "why", "Keeps forty-five notes.", [last]);
-		expect(outcome.recorded).toBe(true);
-	});
-
-	it("gives a local's comments, literals and notes to the nearest non-local declaration alone", async () => {
-		const evidence = async (symbolId: string) => {
-			const facts = (await service.factsFor(symbolId))?.facts ?? [];
-			return {
-				comments: facts.filter((fact) => fact.kind === "comment").map((fact) => fact.factId),
-				literals: facts.filter((fact) => fact.kind === "literal").map((fact) => fact.factId),
-				notes: service.describe(symbolId)?.comments?.map((note) => note.line) ?? [],
-			};
-		};
-		const comment = store.commentsAnchoredTo(IDS.total).map((row) => row.factId);
-		const literal = store.literalsContainedBy(IDS.total, 5).map((row) => row.factId);
-
-		expect(comment).toHaveLength(1);
-		expect(literal).toHaveLength(1);
-		expect(await evidence(IDS.open)).toEqual({ comments: comment, literals: literal, notes: [7] });
-		expect(await evidence(IDS.shop)).toEqual({ comments: [], literals: [], notes: [] });
+		expect(notes(IDS.open)).toEqual([7]);
+		expect(notes(IDS.shop)).toEqual([]);
 	});
 });

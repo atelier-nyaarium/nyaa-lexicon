@@ -12,7 +12,7 @@
 // here rather than discovered later in a file full of emoji.
 
 import type { StoredDeclaration, SymbolKind } from "@nyaa-lexicon/core";
-import { answerHealth, defined, workspaceModule } from "@nyaa-lexicon/protocol";
+import { defined, workspaceModule } from "@nyaa-lexicon/protocol";
 import type { LexiconReads } from "./reads.js";
 
 ////////////////////////////////
@@ -210,21 +210,11 @@ export class LspServer {
 		// itself is worse than a shorter one.
 		if (type.status === "inferred") lines.push(`*inferred* \`${type.display}\` from ${type.basis}`);
 
-		// Recorded knowledge is exactly what a hover is for: what a previous reader concluded, next
-		// to what the code says. Marked when its ground has moved, so stale prose never reads as
-		// current. Served without counting a gap, since a hover is browsing rather than demand.
-		const recalled = (await this.service.recallAnswers(found.symbolId)).find(
-			(r) => r.answer.question === "describe",
-		);
-		if (recalled !== undefined) {
-			const health = answerHealth(recalled);
-			const mark =
-				health.doubted || health.upstreamDoubted
-					? " *(doubted)*"
-					: health.stale || health.upstreamStale
-						? " *(stale)*"
-						: "";
-			lines.push(`${recalled.answer.prose}${mark}`);
+		// A note's summary, marked when it may no longer hold.
+		const note = await this.service.readNote(found.symbolId);
+		if (note?.summary) {
+			const mark = note.doubt !== null ? " *(doubted)*" : note.sourceChanged ? " *(source changed)*" : "";
+			lines.push(`${note.summary}${mark}`);
 		}
 
 		if (described && described.referenceCount > 0) lines.push(`Used in ${described.referenceCount} places.`);

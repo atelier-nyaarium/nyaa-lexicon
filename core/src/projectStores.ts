@@ -15,8 +15,10 @@ import { DatabaseSync } from "node:sqlite";
 import {
 	canonicalRoot,
 	currentHost,
+	indexFiles,
 	type PlatformEnv,
 	stateRoot,
+	storedIndex,
 	storePaths,
 	workspaceKey,
 } from "@nyaa-lexicon/client";
@@ -43,9 +45,9 @@ export interface ProjectStore {
 	workspaceRoot: string | null;
 	/** Whether that path is still on disk, or that the index never said where it came from. */
 	workspace: WorkspaceState;
-	/** Bytes of index, excluding WAL companions, or 0 when there is no index file. */
+	/** Bytes of every schema's index file, excluding WAL companions, or 0 when there is none. */
 	bytes: number;
-	/** Last write to the index, epoch millis, or null when there is no index file. */
+	/** Last write to any index file, epoch millis, or null when there is none. */
 	modifiedAt: number | null;
 	/** Newest per-file indexing time, epoch millis, or null when no file has been indexed. */
 	lastIndexedAt: number | null;
@@ -131,8 +133,8 @@ function indexMetadata(indexFile: string): IndexMetadata {
 export function stampIndex(directory: string, isAlive: HolderAlive, now: number): number | null {
 	const lock = readLock(storePaths(directory).lockFile);
 	if (lock !== null && lock.role === "delete" && isAlive(lock)) return null;
-	const indexFile = storePaths(directory).index;
-	if (!existsSync(indexFile)) return null;
+	const indexFile = storedIndex(directory);
+	if (indexFile === null) return null;
 	let db: DatabaseSync | null = null;
 	try {
 		db = new DatabaseSync(indexFile);
@@ -144,13 +146,20 @@ export function stampIndex(directory: string, isAlive: HolderAlive, now: number)
 	}
 }
 
-function sizeOf(indexFile: string): { bytes: number; modifiedAt: number | null } {
-	try {
-		const stats = statSync(indexFile);
-		return { bytes: stats.size, modifiedAt: stats.mtimeMs };
-	} catch {
-		return { bytes: 0, modifiedAt: null };
+/** Every schema's index file together; the newest write among them. */
+function sizeOf(directory: string): { bytes: number; modifiedAt: number | null } {
+	let bytes = 0;
+	let modifiedAt: number | null = null;
+	for (const { file } of indexFiles(directory)) {
+		try {
+			const stats = statSync(file);
+			bytes += stats.size;
+			modifiedAt = Math.max(modifiedAt ?? 0, stats.mtimeMs);
+		} catch {
+			// Removed between the listing and the stat.
+		}
 	}
+	return { bytes, modifiedAt };
 }
 
 function describeStore(key: string, directory: string, custom: boolean, isAlive: HolderAlive): ProjectStore {
@@ -158,9 +167,10 @@ function describeStore(key: string, directory: string, custom: boolean, isAlive:
 	// so nothing here opens it, reads it or writes a stamp into it while one claims it.
 	const lock = readLock(storePaths(directory).lockFile);
 	const deleting = lock !== null && lock.role === "delete" && isAlive(lock);
-	const indexFile = storePaths(directory).index;
-	const { workspaceRoot, lastIndexedAt, lastSeenAt } = deleting ? NO_METADATA : indexMetadata(indexFile);
-	const { bytes, modifiedAt } = sizeOf(indexFile);
+	const indexFile = storedIndex(directory);
+	const { workspaceRoot, lastIndexedAt, lastSeenAt } =
+		deleting || indexFile === null ? NO_METADATA : indexMetadata(indexFile);
+	const { bytes, modifiedAt } = sizeOf(directory);
 	return {
 		key,
 		directory,
@@ -307,10 +317,8 @@ export function findProjectStore(reference: string, stores: ProjectStore[]): Pro
 function storeFiles(directory: string): string[] {
 	const paths = storePaths(directory);
 	return [
-		paths.index,
-		`${paths.index}-wal`,
-		`${paths.index}-shm`,
-		`${paths.index}-journal`,
+		...indexFiles(directory).flatMap(({ file }) => [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]),
+		`${paths.index}.seeding`,
 		paths.logFile,
 		`${paths.logFile}.old`,
 		paths.diagnosticsFile,

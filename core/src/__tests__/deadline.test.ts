@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { withinBudget, withTimeout } from "../deadline";
 import { fakeClock } from "./fakeClock";
 
@@ -16,7 +17,7 @@ describe("withTimeout", () => {
 		const clock = fakeClock();
 		const bounded = withTimeout(clock, new Promise<never>(() => {}), 100, "ask");
 		clock.advance(100);
-		await expect(bounded).rejects.toThrow("ask timed out after 100ms");
+		expect(await rethrown(bounded)).toThrow("ask timed out after 100ms");
 	});
 });
 

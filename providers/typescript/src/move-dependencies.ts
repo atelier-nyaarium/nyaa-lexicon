@@ -14,6 +14,7 @@ import { scriptKindOf } from "./file-types.js";
 import { importOf } from "./imports.js";
 import { append, blockedSite, type LandingKey, type PlannedImport } from "./move-imports.js";
 import type { SpecifierRenderer } from "./project.js";
+import { isDeclarationName, isQualifiedReference, meaningAt } from "./references.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -132,15 +133,23 @@ const BUILTIN_NAMES = new Set([
 ////////////////////////////////
 //  Dependency Imports
 
+/** How a module writes one dependency's import. */
+export interface ImportStyle {
+	render: SpecifierRenderer;
+	landingKey: LandingKey;
+	/** The module runs as an ECMAScript module. */
+	esm: boolean;
+	/** The module uses the dependency only as a type. */
+	typeOnly: boolean;
+}
+
 export function importForDependency(
 	request: Pick<MoveEditsRequest, "module" | "fromModule">,
 	dependency: MoveDependency,
 	source: ts.SourceFile,
 	checker: ts.TypeChecker | undefined,
 	bindings: Map<string, ModuleBinding[]>,
-	renderSpecifier: SpecifierRenderer,
-	landingKey: LandingKey,
-	esm: boolean,
+	{ render: renderSpecifier, landingKey, esm, typeOnly }: ImportStyle,
 ): { planned?: PlannedImport; blocked?: MoveBlockedSite } {
 	if (isBuiltinName(dependency.name, checker, source)) return {};
 
@@ -171,7 +180,7 @@ export function importForDependency(
 		specifier = origin.via.specifier;
 	}
 
-	const planned = plannedImport(dependency, specifier);
+	const planned = plannedImport(dependency, specifier, typeOnly);
 	if (planned === undefined) {
 		return {
 			blocked: blockedSite(dependency.range, "NotImplemented", "the import form cannot bind a moved dependency"),
@@ -210,12 +219,12 @@ export function bindsPlanned(binding: ModuleBinding, planned: PlannedImport, lan
 	return planned.clause !== "named" || binding.imported === planned.importedName;
 }
 
-function plannedImport(dependency: MoveDependency, specifier: string): PlannedImport | undefined {
+function plannedImport(dependency: MoveDependency, specifier: string, typed: boolean): PlannedImport | undefined {
 	const origin = dependency.origin;
 	const via = origin.kind === "workspaceModule" || origin.kind === "external" ? origin.via : undefined;
 	const importedName = via?.importedName ?? dependency.name;
 	const localName = dependency.name;
-	const typeOnly = via?.typeOnly === true;
+	const typeOnly = typed || via?.typeOnly === true;
 
 	if (via?.importKind === "wildcard" || via?.importKind === "sideEffect") return undefined;
 	if (via?.importKind === "require") return { clause: "require", typeOnly, specifier, localName };
@@ -224,6 +233,74 @@ function plannedImport(dependency: MoveDependency, specifier: string): PlannedIm
 		return { clause: via.importKind, typeOnly, specifier, localName };
 	}
 	return { clause: "named", typeOnly, specifier, importedName, localName };
+}
+
+/**
+ * The `names` written only in type positions, across the module's statements outside `removed` and
+ * the text landing in it. A name with no use, or one whose meaning is ambiguous, is not one.
+ */
+export function typeOnlyNames(
+	module: string,
+	source: ts.SourceFile,
+	removed: readonly OffsetRange[],
+	landings: readonly string[],
+	names: ReadonlySet<string>,
+): Set<string> {
+	if (names.size === 0) return new Set();
+	const typed = new Map<string, boolean>();
+	const visit = (node: ts.Node, skip: (node: ts.Node) => boolean): void => {
+		if (
+			ts.isImportDeclaration(node) ||
+			ts.isImportEqualsDeclaration(node) ||
+			(ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined)
+		) {
+			return;
+		}
+		if (ts.isIdentifier(node)) {
+			if (!names.has(node.text) || isDeclarationName(node) || isQualifiedReference(node) || skip(node)) return;
+			const type = useMeaning(node) === "type" && !inDecoratedClass(node);
+			typed.set(node.text, (typed.get(node.text) ?? true) && type);
+			return;
+		}
+		ts.forEachChild(node, (child) => visit(child, skip));
+	};
+	visit(source, (node) => {
+		const at = node.getStart(source);
+		return removed.some((span) => span.start <= at && at < span.end);
+	});
+	for (const text of landings) {
+		visit(ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, scriptKindOf(module)), () => false);
+	}
+	return new Set([...typed].flatMap(([name, type]) => (type ? [name] : [])));
+}
+
+/** A use's meaning, reading the head of a path through a type, such as `ns` in `ns.Shape`, as a type. */
+function useMeaning(node: ts.Identifier): "value" | "type" | undefined {
+	const meaning = meaningAt(node);
+	if (meaning !== undefined) return meaning;
+	let entity: ts.Node = node;
+	while (
+		(ts.isQualifiedName(entity.parent) && entity.parent.left === entity) ||
+		(ts.isPropertyAccessExpression(entity.parent) && entity.parent.expression === entity)
+	) {
+		entity = entity.parent;
+	}
+	return entity !== node && ts.isPartOfTypeNode(entity) ? "type" : undefined;
+}
+
+/** Inside a class something decorates, whose signatures `emitDecoratorMetadata` emits as values. */
+function inDecoratedClass(node: ts.Node): boolean {
+	const decorated = (each: ts.Node) => ts.canHaveDecorators(each) && (ts.getDecorators(each)?.length ?? 0) > 0;
+	for (let current = node.parent; current !== undefined; current = current.parent) {
+		if (!ts.isClassLike(current)) continue;
+		return (
+			decorated(current) ||
+			current.members.some(
+				(member) => decorated(member) || (ts.isFunctionLike(member) && member.parameters.some(decorated)),
+			)
+		);
+	}
+	return false;
 }
 
 /** Every name the module's scope binds, with the import binding it, save what the move removes. */

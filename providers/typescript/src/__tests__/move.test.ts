@@ -47,8 +47,8 @@ function move(root: string, request: MoveEditsRequest) {
 
 const BODY = "export function moved() { return 1; }\n";
 
-/** Moves BODY into `target`, which must reach `dependencies`. */
-function importInto(target: string, dependencies: MoveDependency[], files: Record<string, string> = {}) {
+/** Moves `body` into `target`, which must reach `dependencies`. */
+function importInto(target: string, dependencies: MoveDependency[], files: Record<string, string> = {}, body = BODY) {
 	const response = move(workspace({ "target.ts": target, "source.ts": "", ...files }), {
 		module: "target.ts",
 		text: target,
@@ -57,7 +57,7 @@ function importInto(target: string, dependencies: MoveDependency[], files: Recor
 		name: "moved",
 		fromModule: "source.ts",
 		toModule: "target.ts",
-		role: { insertion: { text: BODY } },
+		role: { insertion: { text: body } },
 		importSites: [],
 		dependencies,
 		sites: [],
@@ -376,7 +376,7 @@ describe("move edits", () => {
 		expect(response.blocked).toEqual([]);
 		expect(response.edits).toHaveLength(1);
 		expect(applyEdits("", response.edits)).toEqual({
-			text: `import { sibling } from "./source";\n${body}`,
+			text: `import { sibling } from "./source";\n\n${body}`,
 		});
 	});
 
@@ -449,20 +449,23 @@ describe("move edits", () => {
 	});
 
 	// Each origin is read from the source's own statement, the way core reads the stored import.
-	it("keeps default, namespace and type-only forms in their own statement", () => {
+	it("joins a value default and a named type to the module's import, keeping other forms in their own statement", () => {
 		const target = 'import { existing } from "pkg";\n';
 		const body = "export function moved() { return local; }\n";
-		const cases = [
-			'import local from "pkg";',
-			'import * as local from "pkg";',
-			'import type local from "pkg";',
-			'import type { Remote as local } from "pkg";',
-			'import type * as local from "pkg";',
-			'import local = require("pkg");',
-			'import type local = require("pkg");',
+		const cases: { statement: string; joined?: string }[] = [
+			{ statement: 'import local from "pkg";', joined: 'import local, { existing } from "pkg";' },
+			{ statement: 'import * as local from "pkg";' },
+			{ statement: 'import type local from "pkg";' },
+			{
+				statement: 'import type { Remote as local } from "pkg";',
+				joined: 'import { existing, type Remote as local } from "pkg";',
+			},
+			{ statement: 'import type * as local from "pkg";' },
+			{ statement: 'import local = require("pkg");' },
+			{ statement: 'import type local = require("pkg");' },
 		];
 
-		for (const statement of cases) {
+		for (const { statement, joined } of cases) {
 			const written = ts.createSourceFile("source.ts", statement, ts.ScriptTarget.ESNext, true).statements[0];
 			if (written === undefined || !(ts.isImportDeclaration(written) || ts.isImportEqualsDeclaration(written))) {
 				throw new Error("missing test import");
@@ -493,40 +496,255 @@ describe("move edits", () => {
 			});
 
 			if (response.status !== "ready") throw new Error("move was refused");
-			expect(response.blocked).toEqual([]);
-			expect(applyEdits(target, response.edits)).toEqual({ text: `${target}${statement}\n\n${body}` });
+			expect(response.blocked, statement).toEqual([]);
+			expect(applyEdits(target, response.edits), statement).toEqual({
+				text: joined === undefined ? `${target}${statement}\n\n${body}` : `${joined}\n\n${body}`,
+			});
 		}
 	});
 
-	it("keeps its own statement when the existing import is type-only", () => {
-		const target = 'import type { Shape } from "./source";\n';
-		const body = "export function moved() { return sibling; }\n";
-		const response = move(
-			workspace({ "source.ts": "export const sibling = 1;\nexport type Shape = string;\n", "target.ts": target }),
+	it("imports the types and values one module gives in one statement, marking each type beside a value", () => {
+		const from = (name: string, typeOnly?: boolean): MoveDependency => ({
+			name,
+			origin: {
+				kind: "external",
+				via: {
+					specifier: "node:child_process",
+					importKind: "named",
+					importedName: name,
+					localName: name,
+					...(typeOnly === true ? { typeOnly } : {}),
+				},
+			},
+		});
+		const mixed = [from("ChildProcess", true), from("spawn")];
+		const cases = [
 			{
-				module: "target.ts",
-				text: target,
+				target: "",
+				dependencies: mixed,
+				expected: 'import { type ChildProcess, spawn } from "node:child_process";',
+			},
+			{
+				target: "",
+				dependencies: [from("ChildProcess", true), from("Serializable", true)],
+				expected: 'import type { ChildProcess, Serializable } from "node:child_process";',
+			},
+			{
+				target: 'import { exec } from "node:child_process";',
+				dependencies: mixed,
+				expected: 'import { exec, type ChildProcess, spawn } from "node:child_process";',
+			},
+			{
+				target: 'import type { Readable } from "node:child_process";',
+				dependencies: [from("ChildProcess", true)],
+				expected: 'import type { Readable, ChildProcess } from "node:child_process";',
+			},
+			{
+				target: 'import type { Readable, Writable as W } from "node:child_process";',
+				dependencies: mixed,
+				expected:
+					'import { type Readable, type Writable as W, type ChildProcess, spawn } from "node:child_process";',
+			},
+		];
+
+		for (const { target, dependencies, expected } of cases) {
+			const result = importInto(target === "" ? "" : `${target}\n`, dependencies);
+			expect(result.blocked, target).toEqual([]);
+			expect(result.applied, target).toEqual({ text: `${expected}\n\n${BODY}` });
+		}
+	});
+
+	it("imports with `type` a name the moved body uses only as a type", () => {
+		const from = (name: string, importKind: "named" | "namespace" = "named"): MoveDependency => ({
+			name,
+			origin: {
+				kind: "external",
+				via: {
+					specifier: "pkg",
+					importKind,
+					localName: name,
+					...(importKind === "named" ? { importedName: name } : {}),
+				},
+			},
+		});
+		const cases = [
+			{
+				body: "export function run(): ChildProcess { return spawn(); }\n",
+				dependencies: [from("ChildProcess"), from("spawn")],
+				expected: 'import { type ChildProcess, spawn } from "pkg";',
+			},
+			{
+				body: "export class Runner implements Shape { size: ns.Size = 1; }\n",
+				dependencies: [from("Shape"), from("ns", "namespace")],
+				expected: 'import type { Shape } from "pkg";\nimport type * as ns from "pkg";',
+			},
+			// Any value use keeps the value import, a type query's included.
+			{
+				body: "export const made: Thing = new Thing();\n",
+				dependencies: [from("Thing")],
+				expected: 'import { Thing } from "pkg";',
+			},
+			{
+				body: "export let copy: typeof value;\n",
+				dependencies: [from("value")],
+				expected: 'import { value } from "pkg";',
+			},
+			{
+				body: "export class Child extends ns.Base {}\n",
+				dependencies: [from("ns", "namespace")],
+				expected: 'import * as ns from "pkg";',
+			},
+			// Decorator metadata emits a decorated class's signature types as values.
+			{
+				body: "@Injectable()\nexport class Service {\n\tconstructor(readonly repo: Repo) {}\n}\n",
+				dependencies: [from("Injectable"), from("Repo")],
+				expected: 'import { Injectable, Repo } from "pkg";',
+			},
+		];
+
+		for (const { body, dependencies, expected } of cases) {
+			const result = importInto("", dependencies, {}, body);
+			expect(result.blocked, body).toEqual([]);
+			expect(result.applied, body).toEqual({ text: `${expected}\n\n${body}` });
+		}
+	});
+
+	it("imports a moved name back into the source with `type` where what stays uses it only as a type", () => {
+		const cases = [
+			{
+				moved: "export interface Shape { size: number }\n",
+				kept: "export function area(shape: Shape) { return shape.size; }\n",
+				typeOnly: true,
+			},
+			{ moved: "export class Shape {}\n", kept: "export const made: Shape = new Shape();\n", typeOnly: false },
+		];
+		for (const { moved, kept, typeOnly } of cases) {
+			const text = `${moved}\n${kept}`;
+			const response = move(workspace({ "source.ts": text, "target.ts": "" }), {
+				module: "source.ts",
+				text,
 				exists: true,
-				symbolId: "lexicon typescript source.ts moved.",
-				name: "moved",
+				symbolId: "lexicon typescript source.ts Shape#",
+				name: "Shape",
 				fromModule: "source.ts",
 				toModule: "target.ts",
-				role: { insertion: { text: body } },
+				role: { removal: rangeForText(text, `${moved}\n`) },
 				importSites: [],
 				dependencies: [
 					{
-						name: "sibling",
-						origin: { kind: "sourceModule", symbolId: "source.sibling.", name: "sibling", exported: true },
+						name: "Shape",
+						origin: {
+							kind: "workspaceModule",
+							symbolId: "lexicon typescript target.ts Shape#",
+							module: "target.ts",
+						},
 					},
 				],
 				sites: [],
-			},
-		);
+			});
 
-		if (response.status !== "ready") throw new Error("move was refused");
-		expect(applyEdits(target, response.edits)).toEqual({
-			text: `import type { Shape } from "./source";\nimport { sibling } from "./source";\n\n${body}`,
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(response.blocked).toEqual([]);
+			expect(applyEdits(text, response.edits)).toEqual({
+				text: `import ${typeOnly ? "type " : ""}{ Shape } from "./target";\n\n${kept}`,
+			});
+		}
+	});
+
+	it("keeps one blank line between the import block and what lands or stays below it", () => {
+		const cases = [
+			{ target: "", expected: `import { sibling } from "./source";\n\n${BODY}` },
+			{
+				target: "// only a comment",
+				expected: `// only a comment\nimport { sibling } from "./source";\n\n${BODY}`,
+			},
+			{
+				target: 'import { a } from "./a";\n',
+				expected: `import { a } from "./a";\nimport { sibling } from "./source";\n\n${BODY}`,
+			},
+		];
+		for (const { target, expected } of cases) {
+			const result = importInto(target, [sibling("sibling")], { "a.ts": "export const a = 1;\n" });
+			expect(result.blocked, target).toEqual([]);
+			expect(result.applied, target).toEqual({ text: expected });
+		}
+
+		// The import the move takes out leaves no blank first line, and no doubled one under a header.
+		for (const header of ["", "// Header.\n\n"]) {
+			const text = `${header}import { moved } from "./source";\n\nexport const kept = moved();\n`;
+			const response = move(workspace({ "target.ts": text, "source.ts": BODY }), {
+				module: "target.ts",
+				text,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved().",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: BODY } },
+				importSites: [
+					{
+						range: rangeForText(text, "moved"),
+						specifier: "./source",
+						importKind: "named",
+						importedName: "moved",
+					},
+				],
+				dependencies: [],
+				sites: [],
+			});
+
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(applyEdits(text, response.edits), header).toEqual({
+				text: `${header}export const kept = moved();\n\n${BODY}`,
+			});
+		}
+	});
+
+	it("spells a new relative specifier as the module's relative imports do, else as the moved body's", () => {
+		const helper = (specifier: string): MoveDependency => ({
+			name: "helper",
+			origin: {
+				kind: "workspaceModule",
+				symbolId: "lexicon typescript lib.ts helper.",
+				module: "lib.ts",
+				via: { specifier, importKind: "named", importedName: "helper", localName: "helper" },
+			},
 		});
+		const files = { "a.ts": "export const a = 1;\n", "lib.ts": "export const helper = 1;\n" };
+		const cases = [
+			// A data file's extension says nothing about the style.
+			{
+				target: 'import data from "./data.json";\nimport { a } from "./a.js";\n',
+				dependencies: [sibling("sibling")],
+				expected:
+					'import data from "./data.json";\nimport { a } from "./a.js";\nimport { sibling } from "./source.js";',
+			},
+			{
+				target: 'import { a } from "./a";\n',
+				dependencies: [helper("./lib.js")],
+				expected: 'import { a } from "./a";\nimport { helper } from "./lib";',
+			},
+			{
+				target: "",
+				dependencies: [sibling("sibling"), helper("./lib.js")],
+				expected: 'import { sibling } from "./source.js";\nimport { helper } from "./lib.js";',
+			},
+		];
+		for (const { target, dependencies, expected } of cases) {
+			const result = importInto(target, dependencies, { ...files, "data.json": "{}" });
+			expect(result.blocked, target).toEqual([]);
+			expect(result.applied, target).toEqual({ text: `${expected}\n\n${BODY}` });
+		}
+
+		// With none to copy, the project's resolution decides.
+		for (const [module, expected] of [
+			["nodenext", "./source.js"],
+			["esnext", "./source"],
+		] as const) {
+			const tsconfig = JSON.stringify({ compilerOptions: { module } });
+			const result = importInto("", [sibling("sibling")], { "tsconfig.json": tsconfig });
+			expect(result.applied, module).toEqual({ text: `import { sibling } from "${expected}";\n\n${BODY}` });
+		}
 	});
 
 	it("gives every name from one module one statement, leaving an existing one as written", () => {
@@ -559,10 +777,10 @@ describe("move edits", () => {
 				target: "import lib from './source';\n",
 				expected: `import lib, { sibling, other } from './source';\n\n${BODY}`,
 			},
-			{ target: "", expected: `import { sibling, other } from "./source";\n${BODY}` },
+			{ target: "", expected: `import { sibling, other } from "./source";\n\n${BODY}` },
 			{
 				target: "import type { Shape } from './source';\n",
-				expected: `import type { Shape } from './source';\nimport { sibling, other } from './source';\n\n${BODY}`,
+				expected: `import { type Shape, sibling, other } from './source';\n\n${BODY}`,
 			},
 		];
 
@@ -583,7 +801,7 @@ describe("move edits", () => {
 		});
 
 		expect(importInto("", [named("a-b")]).applied).toEqual({
-			text: `import { "a-b" as local } from "pkg";\n${BODY}`,
+			text: `import { "a-b" as local } from "pkg";\n\n${BODY}`,
 		});
 		expect(importInto("import { existing } from 'pkg';\n", [named("it's")]).applied).toEqual({
 			text: `import { existing, 'it\\'s' as local } from 'pkg';\n\n${BODY}`,
@@ -759,7 +977,7 @@ describe("move edits", () => {
 				via: { specifier: "pkg", importKind: "require", localName: "lib" },
 			},
 		};
-		expect(importInto("", [lib]).applied).toEqual({ text: `import lib = require("pkg");\n${BODY}` });
+		expect(importInto("", [lib]).applied).toEqual({ text: `import lib = require("pkg");\n\n${BODY}` });
 		const existing = "import lib = require('pkg');\n";
 		expect(importInto(existing, [lib])).toEqual({ blocked: [], applied: { text: `${existing}\n${BODY}` } });
 
@@ -942,6 +1160,90 @@ describe("move edits", () => {
 		});
 	});
 
+	it("repoints the source's own exports of the moved name, or blocks where its new home may not export it", () => {
+		const foo = "export function foo() { return 1; }\n";
+		const cases: {
+			name?: string;
+			moved: string;
+			kept: string;
+			back?: boolean;
+			expected?: string;
+			site?: string;
+		}[] = [
+			{ moved: foo, kept: "export { foo as bar };\n", expected: 'export { foo as bar } from "./target";\n' },
+			{
+				moved: foo,
+				kept: "const a = 1;\nexport { a, foo as bar, foo as baz };\n",
+				expected: 'const a = 1;\nexport { a };\nexport { foo as bar, foo as baz } from "./target";\n',
+			},
+			{
+				name: "Shape",
+				moved: "export interface Shape { size: number }\n",
+				kept: "export function area(shape: Shape) { return shape.size; }\nexport { Shape as Form };\n",
+				back: true,
+				expected: [
+					'import type { Shape } from "./target";',
+					"",
+					"export function area(shape: Shape) { return shape.size; }",
+					'export type { Shape as Form } from "./target";',
+					"",
+				].join("\n"),
+			},
+			// The core imports what a default export names back.
+			{
+				moved: foo,
+				kept: "export default foo;\n",
+				back: true,
+				expected: 'import { foo } from "./target";\n\nexport default foo;\n',
+			},
+			// The target may land it unexported.
+			{ moved: "function foo() { return 1; }\n", kept: "export { foo };\n", site: "foo" },
+			{
+				moved: foo,
+				kept: "export namespace foo { export const x = 1; }\nexport { foo as bar };\n",
+				site: "foo as bar",
+			},
+		];
+
+		for (const { name = "foo", moved, kept, back = false, expected, site } of cases) {
+			const text = `${moved}\n${kept}`;
+			const response = move(workspace({ "source.ts": text, "target.ts": "" }), {
+				module: "source.ts",
+				text,
+				exists: true,
+				symbolId: `lexicon typescript source.ts ${name}.`,
+				name,
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { removal: rangeForText(text, `${moved}\n`) },
+				importSites: [],
+				dependencies: back
+					? [
+							{
+								name,
+								origin: {
+									kind: "workspaceModule",
+									symbolId: `lexicon typescript target.ts ${name}.`,
+									module: "target.ts",
+								},
+							},
+						]
+					: [],
+				sites: [],
+			});
+
+			if (response.status !== "ready") throw new Error("move was refused");
+			if (site !== undefined) {
+				expect(response.blocked, kept).toMatchObject([
+					{ reason: "NotImplemented", range: rangeForText(text, site, text.lastIndexOf("export {")) },
+				]);
+			} else {
+				expect(response.blocked, kept).toEqual([]);
+				expect(applyEdits(text, response.edits), kept).toEqual({ text: expected as string });
+			}
+		}
+	});
+
 	it("exports what it inserts when asked, after decorators and before other modifiers", () => {
 		const cases = [
 			{ text: "const moved = 1;\n", expected: "export const moved = 1;\n" },
@@ -1065,7 +1367,7 @@ describe("move edits", () => {
 
 		if (response.status !== "ready") throw new Error("move was refused");
 		expect(applyEdits("", response.edits)).toEqual({
-			text: `import { parse } from "@scope/parser/subpath";\n${body}`,
+			text: `import { parse } from "@scope/parser/subpath";\n\n${body}`,
 		});
 	});
 
@@ -1186,7 +1488,7 @@ describe("move edits", () => {
 
 		if (response.status !== "ready") throw new Error("move was refused");
 		expect(applyEdits("", response.edits)).toEqual({
-			text: `import { findRefs } from "@acme/proto/refs";\n${body}`,
+			text: `import { findRefs } from "@acme/proto/refs";\n\n${body}`,
 		});
 	});
 
@@ -1281,7 +1583,7 @@ describe("move edits", () => {
 		const cases = [
 			{
 				text: 'import { moved } from "./source";\n\nexport const kept = moved();\n',
-				expected: `\nexport const kept = moved();\n\n${BODY}`,
+				expected: `export const kept = moved();\n\n${BODY}`,
 			},
 			{
 				text: 'import { moved, other } from "./source";\n\nexport const kept = moved() + other;\n',

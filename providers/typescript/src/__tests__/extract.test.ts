@@ -375,6 +375,138 @@ export enum Color { Red }
 		]);
 	});
 
+	it("declares every first-level member of an object whose type is stated, as a class declares its members", () => {
+		const source = [
+			"export const probe: Probe = {",
+			"\t// Who owns it.",
+			"\towner: () => ({ owned: true }),",
+			"\tdeclares() { return true; },",
+			"\twords,",
+			"\tget size() { return 1; },",
+			"\tnested: { inner: 1 },",
+			"\t...rest,",
+			"\t[key]: 2,",
+			"};",
+			'export default { name: "x", run } satisfies Plugin;',
+			"const cast = { c: 1 } as unknown as Thing;",
+			"const untyped = { a: 1, b };",
+			"const frozen = { d: 1 } as const;",
+			"const s = { x: 1 } as { x: number };",
+			"const opaque = { o: 1 } as unknown;",
+			"const b = { bh: 1 } as Thing as unknown;",
+			"const v: unknown = { vh: 1 };",
+			"const w: any = { wh: 1 };",
+			"const pa: (unknown) = { pa1: 1 };",
+			"const pc = { pc1: 1 } as (any);",
+			"const ua: unknown = { ua1: 1 } as Thing;",
+			"const ta: Thing = { ta1: 1 } as unknown;",
+			"consume({ e: 1 } satisfies Thing);",
+			"export class Box { owner = () => 1; declares() {} get size() { return 1; } }",
+		].join("\n");
+		const found = extract(source).declarations;
+		const byId = new Map(found.map((declaration) => [declaration.symbolId, declaration]));
+
+		expect(
+			found.map((declaration) => [
+				descriptorsOf(declaration.symbolId).join("/"),
+				declaration.kind,
+				declaration.visibility,
+				textAt(source, declaration.selectionRange ?? declaration.range),
+				byId.get(declaration.containerId ?? "")?.name,
+			]),
+		).toEqual([
+			["term:probe", "constant", "public", "probe", undefined],
+			["term:probe/term:owner", "property", "public", "owner", "probe"],
+			["term:probe/method:declares", "method", "public", "declares", "probe"],
+			["term:probe/term:words", "property", "public", "words", "probe"],
+			["term:probe/term:size", "property", "public", "size", "probe"],
+			["term:probe/term:nested", "property", "public", "nested", "probe"],
+			["term:default", "variable", "public", "default", undefined],
+			["term:default/term:name", "property", "public", "name", "default"],
+			["term:default/term:run", "property", "public", "run", "default"],
+			["term:cast", "constant", "fileLocal", "cast", undefined],
+			["term:cast/term:c", "property", "fileLocal", "c", "cast"],
+			["term:untyped", "constant", "fileLocal", "untyped", undefined],
+			["term:frozen", "constant", "fileLocal", "frozen", undefined],
+			["term:s", "constant", "fileLocal", "s", undefined],
+			["term:s/term:x", "property", "fileLocal", "x", "s"],
+			["term:opaque", "constant", "fileLocal", "opaque", undefined],
+			["term:b", "constant", "fileLocal", "b", undefined],
+			["term:v", "constant", "fileLocal", "v", undefined],
+			["term:w", "constant", "fileLocal", "w", undefined],
+			["term:pa", "constant", "fileLocal", "pa", undefined],
+			["term:pc", "constant", "fileLocal", "pc", undefined],
+			["term:ua", "constant", "fileLocal", "ua", undefined],
+			["term:ta", "constant", "fileLocal", "ta", undefined],
+			["term:ta/term:ta1", "property", "fileLocal", "ta1", "ta"],
+			["type:Box", "class", "public", "Box", undefined],
+			["type:Box/term:owner", "property", "public", "owner", "Box"],
+			["type:Box/method:declares", "method", "public", "declares", "Box"],
+			["type:Box/term:size", "property", "public", "size", "Box"],
+		]);
+		const rangeOf = (name: string) =>
+			textAt(source, found.find((declaration) => declaration.name === name)?.range ?? rangeForText(source, name));
+		expect(["owner", "words", "nested", "name"].map(rangeOf)).toEqual([
+			"// Who owns it.\n\towner: () => ({ owned: true })",
+			"words",
+			"nested: { inner: 1 }",
+			'name: "x"',
+		]);
+	});
+
+	it("declares no member named by an empty string, which no id can name", () => {
+		const found = extract(
+			['const spellings: Record<string, number> = { "": 0, a: 1 };', 'class Box { ""() {} b() {} }'].join("\n"),
+		);
+		expect(found.declarations.map((declaration) => descriptorsOf(declaration.symbolId).join("/"))).toEqual([
+			"term:spellings",
+			"term:spellings/term:a",
+			"type:Box",
+			"type:Box/method:b",
+		]);
+	});
+
+	it("declares an object's or class expression's members only under a declaration holding it", () => {
+		const source = [
+			"register({",
+			"\tn() { return helper(); },",
+			"\tget size() { return 2; },",
+			"\tset size(value) {},",
+			"\tnested: { deep() {} },",
+			"});",
+			"register(() => helper());",
+			"export function outer() {",
+			"\tuse({ m() { helper(); } });",
+			"\treturn { r() {} };",
+			"}",
+			"const list = [{ e() {} }];",
+			"define(class { k() {} x = 1; });",
+			"export const typed: Probe = { t() {} };",
+			"const untyped = { u() { helper(); }, get v() { return 1; } };",
+		].join("\n");
+		const found = extract(source);
+		const byId = new Map(found.declarations.map((declaration) => [declaration.symbolId, declaration]));
+		const nameOf = (symbolId: string | undefined) => byId.get(symbolId ?? "")?.name;
+
+		expect(
+			found.declarations.map((declaration) => [
+				descriptorsOf(declaration.symbolId).join("/"),
+				nameOf(declaration.containerId),
+			]),
+		).toEqual([
+			["method:outer", undefined],
+			["term:list", undefined],
+			["term:typed", undefined],
+			["term:typed/method:t", "typed"],
+			["term:untyped", undefined],
+			["term:untyped/method:u", "untyped"],
+			["term:untyped/term:v", "untyped"],
+		]);
+		// Credited like an arrow argument's body.
+		const helpers = found.references.filter((reference) => reference.name === "helper");
+		expect(helpers.map((reference) => nameOf(reference.fromId))).toEqual([undefined, undefined, "outer", "u"]);
+	});
+
 	it("gives a static block its own declaration, holding its locals", () => {
 		const source = "export class Box {\n\tstatic {\n\t\tconst init = 1;\n\t}\n\tinit = 2;\n}\n";
 		const found = extract(source).declarations;

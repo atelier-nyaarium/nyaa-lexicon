@@ -3,6 +3,7 @@
 // The decision this file owns: given what is on disk, connect, replace, spawn, or wait out a delete.
 
 import { type DaemonLock, parseDaemonLock, servesClient } from "@nyaa-lexicon/protocol";
+import { mismatchText } from "./errors.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -125,7 +126,11 @@ export function decideFromLock(context: LockContext): LockDecision {
 			return {
 				action: "outdated",
 				lock,
-				reason: `the daemon speaks ${lock.protocolVersion} and no longer serves protocol ${context.ourProtocolVersion}`,
+				reason: mismatchText(
+					context.ourProtocolVersion,
+					{ label: "Version of the running daemon", version: lock.protocolVersion },
+					"Reload this window to use the daemon's version",
+				),
 			};
 		}
 		return {

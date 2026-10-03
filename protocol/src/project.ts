@@ -342,6 +342,8 @@ export const LiteralSchema = z
 		range: RangeSchema,
 		/** The declaration this literal sits inside, when one does. */
 		containerId: z.string().min(1).optional(),
+		/** The language strips this multiline literal's common indentation, so an insert may re-indent its lines. */
+		dedented: z.literal(true).optional(),
 	})
 	.meta({ id: "Literal" });
 

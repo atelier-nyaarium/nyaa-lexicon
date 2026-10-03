@@ -168,14 +168,19 @@ test("an enum names its closing brace's line only when the brace starts it", () 
 		"\tenum Nested {",
 		"\t\tG,",
 		"\t}",
+		"enum Joined \\",
+		"\t{",
+		"\tH,",
+		"}",
 	);
 
 	expect(insertLines(text)).toEqual({
-		layout: 12,
+		layout: 16,
 		Open: 3,
 		Line: null,
 		Shut: null,
 		Holder: 12,
 		Nested: 11,
+		Joined: 15,
 	});
 });

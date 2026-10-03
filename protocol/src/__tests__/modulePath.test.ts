@@ -13,8 +13,11 @@ const PATH_FIELDS: Array<[keyof typeof DAEMON_METHODS, string, Record<string, un
 	["refactorInsert", "module", { text: "a" }],
 	["coChangedWith", "module", {}],
 	["findByName", "module", { name: "a" }],
-	["knowledgeGaps", "module", {}],
+	["scopeSymbols", "module", {}],
 	["findImports", "module", {}],
+	["searchSymbols", "module", {}],
+	["findLiterals", "module", { value: "a" }],
+	["findReferences", "module", { symbolId: "x" }],
 ];
 
 /** Absolute, escaping, and a control character, built at runtime so the file itself stays clean. */
@@ -43,7 +46,6 @@ describe("a module on the wire is the one key the index files under", () => {
 		expect(DAEMON_METHODS.findByName.request.parse({ name: "a" })).toEqual({ name: "a" });
 		expect(DAEMON_METHODS.findComments.request.parse({ text: "a" })).toEqual({ text: "a" });
 		expect(DAEMON_METHODS.findDocs.request.parse({ text: "a" })).toEqual({ text: "a" });
-		expect(DAEMON_METHODS.knowledgeGaps.request.parse({})).toEqual({});
 		expect(DAEMON_METHODS.findImports.request.parse({})).toEqual({});
 		expect(DAEMON_METHODS.refactorInsert.request.parse({ after: "x", text: "a" })).toEqual({
 			after: "x",

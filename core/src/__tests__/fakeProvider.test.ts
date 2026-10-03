@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import type { MethodRequest } from "../providerPort";
 import { FAKE_CLAIMS, fakeSupervisor, parseFake, resolveFake } from "./fakeProvider";
 import { landed } from "./importEdges";
@@ -66,9 +67,9 @@ describe("the fake provider set", () => {
 			],
 		});
 
-		await expect(fakeSupervisor().ask("a.other", "parseFile", {})).rejects.toThrow("no provider owns a.other");
-		await expect(contested.ask("a.x", "parseFile", {})).rejects.toThrow("claimed by one, two");
-		await expect(fakeSupervisor().askProvider("ghost", "discoverProject", {})).rejects.toThrow("is not running");
+		expect(await rethrown(fakeSupervisor().ask("a.other", "parseFile", {}))).toThrow("no provider owns a.other");
+		expect(await rethrown(contested.ask("a.x", "parseFile", {}))).toThrow("claimed by one, two");
+		expect(await rethrown(fakeSupervisor().askProvider("ghost", "discoverProject", {}))).toThrow("is not running");
 	});
 
 	it("keeps a parse answer's comments only where the tiers declare them", async () => {
@@ -91,7 +92,9 @@ describe("the fake provider set", () => {
 	it("refuses an answer the wire would refuse", async () => {
 		const set = fakeSupervisor({ answers: { resolveImport: () => ({ status: "resolved" }) as never } });
 
-		await expect(set.ask("a.fake", "resolveImport", { fromModule: "a.fake", specifier: "./b" })).rejects.toThrow();
+		expect(
+			await rethrown(set.ask("a.fake", "resolveImport", { fromModule: "a.fake", specifier: "./b" })),
+		).toThrow();
 	});
 
 	it("lets an answer override a default and throws for a method nothing answers", async () => {
@@ -102,6 +105,6 @@ describe("the fake provider set", () => {
 		expect(await set.ask("a.fake", "resolveImport", { fromModule: "a.fake", specifier: "x" })).toEqual(
 			landed("x.fake"),
 		);
-		await expect(set.ask("a.fake", "bind", {})).rejects.toThrow("unexpected method bind");
+		expect(await rethrown(set.ask("a.fake", "bind", {}))).toThrow("unexpected method bind");
 	});
 });

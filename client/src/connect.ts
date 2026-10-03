@@ -22,7 +22,7 @@ import { daemonChannel } from "./channel.js";
 import type { DaemonRef } from "./daemonRef.js";
 import { bundleStamp, bundleWrittenAt, type DaemonSource, findDaemon } from "./discover.js";
 import { ensureDaemon, ensureFailure } from "./ensure.js";
-import { DaemonError, Incompatible, NotInstalled } from "./errors.js";
+import { DaemonError, Incompatible, mismatchText, NotInstalled } from "./errors.js";
 import { INSTALL_SETTLE_MS, newestInstallBeside, readInstallRecord, readInstallVersion } from "./install.js";
 import { currentHost, type PlatformEnv, workspacePaths } from "./paths.js";
 import type { BundledBun } from "./runtime.js";
@@ -113,7 +113,11 @@ function locateInstall(
 function refuseIncompatible(root: string, installed: InstallVersion): void {
 	if (servesClient(installed.protocolVersion, installed.oldestClientMajor)) return;
 	throw new Incompatible(
-		`this client speaks protocol ${PROTOCOL_VERSION}, the install at ${root} speaks ${installed.protocolVersion}`,
+		mismatchText(
+			PROTOCOL_VERSION,
+			{ label: `Version installed at ${root}`, version: installed.protocolVersion },
+			"Reload this window to use the installed version",
+		),
 		PROTOCOL_VERSION,
 		installed.protocolVersion,
 	);

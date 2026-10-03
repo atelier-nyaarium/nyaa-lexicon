@@ -52,10 +52,13 @@ function read(module: string): string | null {
 	return existsSync(full) ? readFileSync(full, "utf8") : null;
 }
 
-async function record(symbolId: string, prose: string): Promise<void> {
-	const cited = store.declaration(symbolId)?.factId as string;
-	const outcome = await service.recordAnswer(symbolId, "describe", prose, [cited]);
-	if (!outcome.recorded) throw new Error(outcome.reason);
+function record(symbolId: string, text: string): void {
+	const outcome = service.writeNote({ symbolId, text, expectedRevision: 0 });
+	if (outcome.outcome === "refused") throw new Error(outcome.reason);
+}
+
+function noteAt(symbolId: string): string | undefined {
+	return store.notes.byAddress(symbolId)?.text;
 }
 
 function journaledRebinds(): number {
@@ -82,21 +85,26 @@ async function eventually(done: () => boolean): Promise<boolean> {
 	return done();
 }
 
-beforeEach(async () => {
-	root = mkdtempSync(path.join(tmpdir(), "lexicon-fixture-refactor-"));
-	store = IndexStore.open(path.join(root, "index.sqlite")).store;
+/** Starts the fixture provider and everything over it; `flags` go to the provider. */
+async function open(flags: string[] = []): Promise<void> {
 	supervisor = new ProviderSupervisor();
 	const launch = bunCommand(
 		{ kind: "bun", executable: process.execPath, version: Bun.version },
 		{ platform: process.platform, env: { XDG_STATE_HOME: root }, home: root },
 	);
-	await supervisor.start({ command: [...launch, "run", FIXTURE], timeoutMs: 30_000 }, root);
+	await supervisor.start({ command: [...launch, "run", FIXTURE, ...flags], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
 	transactions = new TransactionManager(store, root);
 	dispatch = createDispatch(service, { transactions });
+}
+
+beforeEach(async () => {
+	root = mkdtempSync(path.join(tmpdir(), "lexicon-fixture-refactor-"));
+	store = IndexStore.open(path.join(root, "index.sqlite")).store;
+	await open();
 	put("a.ref", "export class Cart {}\n");
 	await service.indexFile("a.ref");
-	await record(CART, "A shopping cart.");
+	record(CART, "A shopping cart.");
 	await dispatch("refactorStart", {});
 });
 
@@ -155,14 +163,14 @@ describe("a move through the daemon's handlers", () => {
 		expect(read("b.ref")).toBe("export class Cart {}\n");
 	}, 60_000);
 
-	it("rebinds the subject with the move as evidence, and its answer recalls at the new address", async () => {
+	it("rebinds the subject with the move as evidence, and its note reads at the new address", async () => {
 		const outcome = await dispatch("refactorMove", { symbolId: CART, toModule: "b.ref" });
 
-		expect(outcome).toMatchObject({ moved: true, toModule: "b.ref", migrated: { answers: 1, gaps: 0 } });
+		expect(outcome).toMatchObject({ moved: true, toModule: "b.ref" });
 		expect(read("b.ref")).toBe("export class Cart\n");
 		expect(read("a.ref")).toBe(" {}\n");
 		expect(store.declaration(CART)).toBeNull();
-		expect(store.answer(MOVED, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(MOVED)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toMatchObject({ fromSymbolId: CART });
 		expect(await dispatch("diagnoseSubject", { symbolId: CART })).toMatchObject({
 			kind: "moved",
@@ -198,7 +206,7 @@ describe("a move through the daemon's handlers", () => {
 		expect("unreversed" in undone).toBe(false);
 		expect(read("a.ref")).toBe("export class Cart {}\n");
 		expect(read("b.ref")).toBeNull();
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(statusOf(MOVED)).toMatchObject({ state: "none", forwardedTo: null });
 		expect(journaledRebinds()).toBe(0);
 	});
@@ -211,7 +219,7 @@ describe("a move through the daemon's handlers", () => {
 		expect(reverted).toMatchObject({ reverted: true });
 		expect(read("a.ref")).toBe("export class Cart {}\n");
 		expect(read("b.ref")).toBeNull();
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(CART)).toMatchObject({
 			state: "bound",
 			evidence: "sameLocator",
@@ -254,13 +262,13 @@ describe("a move through the daemon's handlers", () => {
 	it("is refused by the provider when the destination already declares the name, and both subjects stand", async () => {
 		put("b.ref", "export class Cart {}\n");
 		await service.indexFile("b.ref");
-		await record(MOVED, "The other cart.");
+		record(MOVED, "The other cart.");
 
 		const outcome = await dispatch("refactorMove", { symbolId: CART, toModule: "b.ref" });
 
 		expect(outcome).toMatchObject({ moved: false, reason: expect.stringContaining("b.ref: TargetCollision") });
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
-		expect(store.answer(MOVED, "describe")?.prose).toBe("The other cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
+		expect(noteAt(MOVED)).toBe("The other cart.");
 		expect(journaledRebinds()).toBe(0);
 	});
 });
@@ -319,7 +327,7 @@ describe("moving several declarations together", () => {
 		await service.indexFile("a.ref");
 	});
 
-	it("moves each in a step of its own and names them in order", async () => {
+	it("moves the set as one step where the provider arranges, naming them in order", async () => {
 		const outcome = (await dispatch("refactorMove", {
 			symbolId: CART,
 			toModule: "b.ref",
@@ -330,8 +338,52 @@ describe("moving several declarations together", () => {
 			moved: outcome.moved,
 			order: [...(outcome.order ?? [])].sort(),
 			steps: transactions.status().steps.length,
-		}).toEqual({ moved: true, order: ["Bag", "Cart"], steps: 2 });
+		}).toEqual({ moved: true, order: ["Bag", "Cart"], steps: 1 });
 	}, 60_000);
+
+	describe("where the provider does not arrange", () => {
+		beforeEach(async () => {
+			supervisor.stopAll();
+			await open(["--no-arrange"]);
+			await service.indexFile("a.ref");
+		});
+
+		it("moves each in a step of its own and names them in order", async () => {
+			const outcome = (await dispatch("refactorMove", {
+				symbolId: CART,
+				toModule: "b.ref",
+				together: [BAG],
+			})) as ResponseOf<"refactorMove">;
+
+			expect({
+				moved: outcome.moved,
+				order: [...(outcome.order ?? [])].sort(),
+				steps: transactions.status().steps.length,
+			}).toEqual({ moved: true, order: ["Bag", "Cart"], steps: 2 });
+		}, 60_000);
+
+		it("still names what moved when a later member throws", async () => {
+			const handlers = daemonHandlers(service, { transactions });
+			let gated = 0;
+			const outcome = await handlers.refactorMove.run(
+				{ symbolId: CART, toModule: "b.ref", together: [BAG] },
+				gateAfter(() => {
+					gated += 1;
+					if (gated === 2) throw new Error("the gate closed");
+				}),
+			);
+
+			expect({
+				moved: outcome.moved,
+				order: outcome.order?.length,
+				steps: transactions.status().steps.length,
+			}).toEqual({
+				moved: false,
+				order: 1,
+				steps: 1,
+			});
+		}, 60_000);
+	});
 
 	it("refuses declarations from two modules before writing anything", async () => {
 		put("c.ref", "export class Box {}\n");
@@ -346,28 +398,6 @@ describe("moving several declarations together", () => {
 			moved: false,
 			source: BOTH,
 			target: null,
-		});
-	}, 60_000);
-
-	it("still names what moved when a later member throws", async () => {
-		const handlers = daemonHandlers(service, { transactions });
-		let gated = 0;
-		const outcome = await handlers.refactorMove.run(
-			{ symbolId: CART, toModule: "b.ref", together: [BAG] },
-			gateAfter(() => {
-				gated += 1;
-				if (gated === 2) throw new Error("the gate closed");
-			}),
-		);
-
-		expect({
-			moved: outcome.moved,
-			order: outcome.order?.length,
-			steps: transactions.status().steps.length,
-		}).toEqual({
-			moved: false,
-			order: 1,
-			steps: 1,
 		});
 	}, 60_000);
 });
@@ -560,9 +590,9 @@ describe("a rename through the daemon's handlers", () => {
 	it("rebinds the subject to the re-minted id with the rename as evidence", async () => {
 		const outcome = await dispatch("refactorRename", { symbolId: CART, newName: "Basket" });
 
-		expect(outcome).toMatchObject({ renamed: true, migrated: { answers: 1, gaps: 0 } });
+		expect(outcome).toMatchObject({ renamed: true });
 		expect(read("a.ref")).toBe("export class Basket {}\n");
-		expect(store.answer(RENAMED, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(RENAMED)).toBe("A shopping cart.");
 		expect(statusOf(RENAMED)).toMatchObject({ state: "bound", evidence: "journalRename", resolves: true });
 		expect(statusOf(CART)).toMatchObject({ state: "none", forwardedTo: RENAMED });
 		expect(store.subjects.forAddress(RENAMED)).toMatchObject({ fromSymbolId: CART });
@@ -580,7 +610,7 @@ describe("a rename through the daemon's handlers", () => {
 
 		expect(undone).toMatchObject({ undone: true, modules: ["a.ref"] });
 		expect(read("a.ref")).toBe("export class Cart {}\n");
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(statusOf(RENAMED)).toMatchObject({ state: "none", forwardedTo: null });
 		expect(store.subjects.forAddress(CART)).toMatchObject({
 			state: "bound",
@@ -597,7 +627,7 @@ describe("a rename through the daemon's handlers", () => {
 
 		expect(reverted).toMatchObject({ reverted: true, modules: ["a.ref"] });
 		expect(read("a.ref")).toBe("export class Cart {}\n");
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(CART)).toMatchObject({
 			state: "bound",
 			evidence: "sameLocator",
@@ -660,13 +690,13 @@ describe("an anchored move", () => {
 			after,
 			back,
 			restored: read("a.ref"),
-			recalled: store.answer(CART, "describe")?.prose,
+			note: noteAt(CART),
 		}).toMatchObject({
 			moved: { moved: true },
 			after: "export class Apple\n\nexport class Cart\n",
 			back: { moved: true },
 			restored: "export class Cart\n\nexport class Apple\n",
-			recalled: "A shopping cart.",
+			note: "A shopping cart.",
 		});
 	}, 60_000);
 
@@ -754,7 +784,7 @@ describe("an arrangement through the daemon's handlers", () => {
 		const unchanged = { a: read("a.ref"), b: read("b.ref") };
 		const outcome = await dispatch("refactorArrange", { ...ARRANGED, expect: expectOf(shown) });
 		const written = Object.fromEntries(shown.files.map((file) => [file.module, read(file.module)]));
-		const recalled = store.answer(MOVED, "describe")?.prose;
+		const note = noteAt(MOVED);
 		await dispatch("refactorUndo", {});
 
 		expect({
@@ -763,7 +793,7 @@ describe("an arrangement through the daemon's handlers", () => {
 			unchanged,
 			outcome,
 			written,
-			recalled,
+			note,
 			undone: { a: read("a.ref"), b: read("b.ref") },
 		}).toMatchObject({
 			texts: {
@@ -777,7 +807,7 @@ describe("an arrangement through the daemon's handlers", () => {
 				"b.ref": "export class Cart\n\nexport class Apple\n\nexport class Zebra\n",
 				"a.ref": "export class Pear\n",
 			},
-			recalled: "A shopping cart.",
+			note: "A shopping cart.",
 			undone: before,
 		});
 	}, 60_000);

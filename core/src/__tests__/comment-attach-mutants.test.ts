@@ -24,9 +24,9 @@ interface Mutant {
 const MUTANTS: Mutant[] = [
 	{
 		name: "a run's membership is read from the group grown so far, so three break into two and one",
-		find: "\t\t\tlast.joinable &&\n\t\t\titem.joinable &&",
+		find: "\t\t\tlast?.joinable === true &&\n\t\t\titem.joinable &&",
 		replace:
-			"\t\t\tlast.joinable &&\n\t\t\titem.joinable &&\n\t\t\t(current?.[0] as Placed).comment.range.start.line === last.comment.range.end.line &&",
+			"\t\t\tlast?.joinable === true &&\n\t\t\titem.joinable &&\n\t\t\t(current?.[0] as Placed).comment.range.start.line === last.comment.range.end.line &&",
 	},
 	{
 		name: "a comment inside a body leads the sibling declared below it",

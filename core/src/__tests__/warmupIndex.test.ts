@@ -11,6 +11,7 @@ import {
 	requestRule,
 	WARMUP_FAILED_PREFIX,
 } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import type { Clock } from "../clock";
 import { earlyAnswer, refusalFor, warmRefusal } from "../daemonCli";
 import * as realFileScope from "../fileScope";
@@ -325,7 +326,7 @@ describe("warmup pass", () => {
 		}));
 		try {
 			service = serviceOver(depthSupervisor(["a.fake"], true, []));
-			await expect(service.currentScope()).rejects.toThrow("git unreachable");
+			expect(await rethrown(service.currentScope())).toThrow("git unreachable");
 			expect(calls).toBe(1);
 
 			const refusal = warmRefusal(service);
@@ -371,9 +372,9 @@ describe("warmup pass", () => {
 		}));
 		try {
 			put("b.fake", "export class B {}\n");
-			await expect(
-				service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b-1" }]),
-			).rejects.toThrow("git unreachable");
+			expect(
+				await rethrown(service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b-1" }])),
+			).toThrow("git unreachable");
 
 			// The scope held from the first computation still serves; nothing here demands a restart.
 			expect(warmRefusal(service)).toBeNull();
@@ -440,8 +441,7 @@ describe("warmup pass", () => {
 		});
 	});
 
-	// Demand does not advance generation.
-	it("moves the generation when an answer is written, not when demand is counted", async () => {
+	it("moves the generation when a note is written, not when one is read", async () => {
 		await initGit();
 		put("a.fake", "export class A {}\n");
 		service = serviceOver(depthSupervisor(["a.fake"], true, []));
@@ -449,13 +449,13 @@ describe("warmup pass", () => {
 		const [declaration] = service.declarationsIn("a.fake");
 		if (declaration === undefined) throw new Error("no declaration indexed");
 		const settled = service.indexStatus().generation;
-		service.recordDemand({ symbolId: declaration.symbolId, question: "why" });
-		const asked = service.indexStatus().generation;
-		await service.recordAnswer(declaration.symbolId, "describe", "A.", [declaration.factId]);
+		service.readNote(declaration.symbolId);
+		const read = service.indexStatus().generation;
+		service.writeNote({ symbolId: declaration.symbolId, text: "A.", expectedRevision: 0 });
 
-		expect({ asked: asked === settled, answered: service.indexStatus().generation === settled }).toEqual({
-			asked: true,
-			answered: false,
+		expect({ read: read === settled, written: service.indexStatus().generation === settled }).toEqual({
+			read: true,
+			written: false,
 		});
 	});
 

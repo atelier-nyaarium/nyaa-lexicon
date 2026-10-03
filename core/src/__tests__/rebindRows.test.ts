@@ -42,11 +42,15 @@ function plant(module = "a.ref", symbolId = CART, name = "Cart"): void {
 	});
 }
 
-async function record(symbolId: string, prose = "A shopping cart.") {
-	const cited = store.declaration(symbolId)?.factId as string;
-	const outcome = await service.recordAnswer(symbolId, "describe", prose, [cited]);
-	if (!outcome.recorded) throw new Error(outcome.reason);
-	return outcome.answer;
+/** Writes, or rewrites, the note at an address. */
+function record(symbolId: string, text = "A shopping cart."): void {
+	const expectedRevision = store.notes.byAddress(symbolId)?.revision ?? 0;
+	const outcome = service.writeNote({ symbolId, text, expectedRevision });
+	if (outcome.outcome === "refused") throw new Error(outcome.reason);
+}
+
+function noteAt(symbolId: string): string | null {
+	return store.notes.byAddress(symbolId)?.text ?? null;
 }
 
 function reopen(): ReturnType<typeof IndexStore.open> {
@@ -84,7 +88,7 @@ function rows(): Array<Record<string, unknown>> {
 /** Another subject claimed at the move's `from`, so the reversal has nowhere to put the moved one. */
 async function holdOldAddress(): Promise<void> {
 	plant();
-	await record(CART, "A newer cart.");
+	record(CART, "A newer cart.");
 }
 
 beforeEach(() => {
@@ -109,8 +113,8 @@ describe("what a step moved is rows, not JSON", () => {
 			declarations: [declaration(CART, "Cart"), declaration(TOTAL, "Total", 1)],
 			references: [],
 		});
-		await record(CART);
-		await record(TOTAL, "The total.");
+		record(CART);
+		record(TOTAL, "The total.");
 		const movedTotal = "lexicon reference b.ref Total#";
 
 		journalMove([
@@ -158,7 +162,7 @@ describe("what a step moved is rows, not JSON", () => {
 
 	it("goes with the step on undo and with the transaction on commit", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		expect(rows()).toHaveLength(1);
 
@@ -173,25 +177,25 @@ describe("what a step moved is rows, not JSON", () => {
 
 	it("retraces a subject moved twice in one step all the way back", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const onward = "lexicon reference c.ref Cart#";
 		const transactions = journalMove([
 			{ from: CART, to: MOVED },
 			{ from: MOVED, to: onward },
 		]);
-		expect(store.answer(onward, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(onward)).toBe("A shopping cart.");
 
 		const outcome = transactions.undo();
 
 		expect("unreversed" in outcome).toBe(false);
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(CART)).toMatchObject({ evidence: "sameLocator", fromSymbolId: null });
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
 	});
 
 	it("continues the ordinals when a step rebinds twice, and undo retraces both", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const onward = "lexicon reference c.ref Cart#";
 		const transactions = new TransactionManager(store, dir);
 		transactions.start();
@@ -206,7 +210,7 @@ describe("what a step moved is rows, not JSON", () => {
 		]);
 
 		expect(transactions.undo()).toEqual({ undone: true, stepNo: begun.stepNo, modules: [] });
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(onward)).toBeNull();
 	});
 });
@@ -214,7 +218,7 @@ describe("what a step moved is rows, not JSON", () => {
 describe("a reversal that could not put a move back says so", () => {
 	it("on undo, when another subject holds the old address, and the moved one stays", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		const moved = store.subjects.forAddress(MOVED)?.subjectId as string;
 		await holdOldAddress();
@@ -225,13 +229,13 @@ describe("a reversal that could not put a move back says so", () => {
 			undone: true,
 			unreversed: [{ subjectId: moved, from: CART, to: MOVED, reason: "fromHeld" }],
 		});
-		expect(store.answer(MOVED, "describe")?.prose).toBe("A shopping cart.");
-		expect(store.answer(CART, "describe")?.prose).toBe("A newer cart.");
+		expect(noteAt(MOVED)).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A newer cart.");
 	});
 
 	it("on revert, the same", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		await holdOldAddress();
 
@@ -239,12 +243,12 @@ describe("a reversal that could not put a move back says so", () => {
 
 		expect(outcome.reverted).toBe(true);
 		expect(outcome.unreversed).toMatchObject([{ from: CART, to: MOVED, reason: "fromHeld" }]);
-		expect(store.answer(MOVED, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(MOVED)).toBe("A shopping cart.");
 	});
 
 	it("on recovery, beside the conflicts", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		await holdOldAddress();
 
@@ -257,7 +261,7 @@ describe("a reversal that could not put a move back says so", () => {
 
 	it("names a subject that moved on since the step, even when another took its old address, and leaves it where it went", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		const onward = "lexicon reference c.ref Cart#";
 		store.subjects.rebind([{ from: MOVED, to: onward }], "batchExactMatch", 11);
@@ -266,32 +270,32 @@ describe("a reversal that could not put a move back says so", () => {
 		const outcome = transactions.undo();
 
 		expect(outcome.unreversed).toMatchObject([{ from: CART, to: MOVED, reason: "movedOn" }]);
-		expect(store.answer(onward, "describe")?.prose).toBe("A shopping cart.");
-		expect(store.answer(CART, "describe")?.prose).toBe("A newer cart.");
+		expect(noteAt(onward)).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A newer cart.");
 	});
 
 	it("names a subject deleted since the step", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		store.subjects.delete(store.subjects.forAddress(MOVED)?.subjectId as string);
 
 		const outcome = transactions.undo();
 
 		expect(outcome.unreversed).toMatchObject([{ from: CART, to: MOVED, reason: "gone" }]);
-		expect(store.answer(CART, "describe")).toBeNull();
+		expect(noteAt(CART)).toBeNull();
 	});
 
 	it("says nothing when every move went back", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 
 		const outcome = transactions.undo();
 
 		expect(outcome.undone).toBe(true);
 		expect("unreversed" in outcome).toBe(false);
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 });
 
@@ -311,7 +315,7 @@ describe("a reversal commits with its journal, or not at all", () => {
 
 	it("moves nothing when the rows cannot be written", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = new TransactionManager(store, dir);
 		transactions.start();
 		const begun = transactions.beginStep("move", [], {});
@@ -320,7 +324,7 @@ describe("a reversal commits with its journal, or not at all", () => {
 
 		expect(() => transactions.rebind(begun.stepNo, [{ from: CART, to: MOVED }], "journalMove")).toThrow();
 
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
 		unblock();
 		expect(transactions.rebind(begun.stepNo, [{ from: CART, to: MOVED }], "journalMove").subjects).toBe(1);
@@ -328,40 +332,40 @@ describe("a reversal commits with its journal, or not at all", () => {
 
 	it("keeps the move and its rows when undo cannot delete the step", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		block("refactor_steps", "DELETE");
 
 		expect(() => transactions.undo()).toThrow();
 
-		expect(store.answer(MOVED, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(MOVED)).toBe("A shopping cart.");
 		expect(rows()).toHaveLength(1);
 		unblock();
 		expect(transactions.undo().undone).toBe(true);
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 
 	it("keeps the move and its rows when recovery cannot delete the step", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		block("refactor_steps", "DELETE");
 
 		expect(() => transactions.recover()).toThrow();
 
-		expect(store.answer(MOVED, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(MOVED)).toBe("A shopping cart.");
 		expect(rows()).toHaveLength(1);
 	});
 
 	it("keeps the move, its rows and the open transaction when revert cannot close", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		block("refactor_transactions", "UPDATE");
 
 		expect(() => transactions.revert(transactions.status().drifted)).toThrow();
 
-		expect(store.answer(MOVED, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(MOVED)).toBe("A shopping cart.");
 		expect(rows()).toHaveLength(1);
 		expect(transactions.openTransaction()).not.toBeNull();
 	});
@@ -370,8 +374,8 @@ describe("a reversal commits with its journal, or not at all", () => {
 describe("a recovery intent survives the filesystem gap", () => {
 	it("lets recover finish an undo after restore throws", async () => {
 		plant();
-		await record(CART);
-		const transactions = journalMove([{ from: CART, to: MOVED }]);
+		record(CART);
+		journalMove([{ from: CART, to: MOVED }]);
 		const failing = new TransactionManager(store, dir, undefined, () => {
 			throw new Error("injected after restore");
 		});
@@ -380,14 +384,14 @@ describe("a recovery intent survives the filesystem gap", () => {
 		const recovered = new TransactionManager(store, dir).recover();
 
 		expect(recovered.unreversed).toEqual([]);
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
 		expect(rows()).toHaveLength(0);
 	});
 
 	it("lets revert finish after restore throws", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		journalMove([{ from: CART, to: MOVED }]);
 		const failing = new TransactionManager(store, dir, undefined, () => {
 			throw new Error("injected after restore");
@@ -396,7 +400,7 @@ describe("a recovery intent survives the filesystem gap", () => {
 		expect(() => failing.revert(failing.status().drifted)).toThrow("injected after restore");
 		const recovered = new TransactionManager(store, dir);
 		expect(recovered.revert(recovered.status().drifted).reverted).toBe(true);
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
 	});
 });
@@ -405,7 +409,7 @@ describe("a store from before the table", () => {
 	/** An open step journaled the way the JSON shape did, its subject already at the destination. */
 	async function journalAsJson(applied: (subjectId: string) => unknown[]): Promise<void> {
 		plant();
-		await record(CART);
+		record(CART);
 		const subjectId = store.subjects.forAddress(CART)?.subjectId as string;
 		const transactions = new TransactionManager(store, dir);
 		transactions.start();
@@ -494,7 +498,7 @@ describe("a store from before the table", () => {
 		expect(rows()).toHaveLength(1);
 
 		new TransactionManager(store, dir).recover();
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
 	});
 
@@ -520,7 +524,7 @@ describe("a store from before the table", () => {
 		expect(opened.rebuilt).toBe(true);
 		expect(rows()).toHaveLength(1);
 		new TransactionManager(store, dir).recover();
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 
 	it("lifts nothing from a closed transaction", async () => {
@@ -543,7 +547,7 @@ describe("a store from before the table", () => {
 describe("across a rebuild", () => {
 	it("carries the rows and recovers from them", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		journalMove([{ from: CART, to: MOVED }]);
 		store.close();
 		const raw = new DatabaseSync(file);
@@ -556,6 +560,6 @@ describe("across a rebuild", () => {
 		expect(rows()).toHaveLength(1);
 		const outcome = new TransactionManager(store, dir).recover();
 		expect(outcome.unreversed).toEqual([]);
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 });

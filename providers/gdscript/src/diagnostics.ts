@@ -2,7 +2,7 @@
 
 import { comparePositions, type Diagnostic, type Position, type Range } from "@nyaa-lexicon/protocol";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
-import { firstLineToken, isIgnorable, type LexedSource, lastLineToken } from "./tokens.js";
+import { firstLineToken, isContinuation, isIgnorable, type LexedSource, lastLineToken } from "./tokens.js";
 
 //////// Diagnostics
 
@@ -39,8 +39,7 @@ function syntaxMeaningful(lexed: LexedSource, line: SourceLine): boolean {
 }
 
 function lineContinues(lexed: LexedSource, line: number): boolean {
-	const last = lastLineToken(lexed, line);
-	return last?.kind === "symbol" && last.value === "\\";
+	return isContinuation(lastLineToken(lexed, line));
 }
 
 function closingDelimiter(value: string): OpenDelimiter["value"] | null {

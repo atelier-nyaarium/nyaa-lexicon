@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defined, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { rejection, rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { connect, type Session } from "../connect";
 import { bundleStamp } from "../discover";
 import { DaemonError, Incompatible, NotInstalled } from "../errors";
@@ -165,11 +166,11 @@ describe("reaching a daemon", () => {
 		const ahead = "99.0.0";
 		installAt(install, ahead);
 		writeInstallRecord(install, host);
-		await expect(open({ workspaceRoot: workspace })).rejects.toThrow(Incompatible);
+		expect(await rethrown(open({ workspaceRoot: workspace }))).toThrow(Incompatible);
 
 		installAt(install, ahead, OUR_MAJOR);
 		const daemon = await daemonAnswering(serving, ahead, BUILD, OUR_MAJOR + 1);
-		await expect(open({ workspaceRoot: workspace })).rejects.toThrow(Incompatible);
+		expect(await rethrown(open({ workspaceRoot: workspace }))).toThrow(Incompatible);
 		// Its own clients still need it, so it is neither asked nor stopped.
 		expect(daemon.asked).toEqual([]);
 	});
@@ -193,7 +194,7 @@ describe("reaching a daemon", () => {
 			writeInstallRecord(older, host);
 
 			// The fake bundle exits at once, so the spawn itself fails after running.
-			await expect(connect({ workspaceRoot: workspace })).rejects.toThrow(DaemonError);
+			expect(await rethrown(connect({ workspaceRoot: workspace }))).toThrow(DaemonError);
 
 			expect(await eventually(() => existsSync(path.join(newer, "dist", "daemon.js.ran")))).toBe(true);
 			expect(existsSync(path.join(older, "dist", "daemon.js.ran"))).toBe(false);
@@ -260,8 +261,8 @@ describe("reaching a daemon with no install", () => {
 
 		const refused = connect({ workspaceRoot: workspace });
 
-		await expect(refused).rejects.toThrow(NotInstalled);
-		await expect(refused).rejects.toThrow(`the daemon runs 0.0.1, we run ${CLIENT_BUILD_VERSION}`);
+		expect(await rethrown(refused)).toThrow(NotInstalled);
+		expect(await rethrown(refused)).toThrow(`the daemon runs 0.0.1, we run ${CLIENT_BUILD_VERSION}`);
 		expect(fake.asked).toEqual([]);
 		expect(existsSync(workspacePaths(host, workspace).lockFile)).toBe(true);
 	});
@@ -284,8 +285,8 @@ describe("refusing before any daemon is asked", () => {
 	it("says nothing is installed when there is no record", async () => {
 		const refused = connect({ workspaceRoot: workspace });
 
-		await expect(refused).rejects.toThrow(NotInstalled);
-		await expect(refused).rejects.toMatchObject({ root: undefined });
+		expect(await rethrown(refused)).toThrow(NotInstalled);
+		expect(await rejection(refused)).toMatchObject({ root: undefined });
 	});
 
 	it("names the root a record points at once nothing built is there", async () => {
@@ -294,14 +295,14 @@ describe("refusing before any daemon is asked", () => {
 
 		const refused = connect({ workspaceRoot: workspace });
 
-		await expect(refused).rejects.toThrow(NotInstalled);
-		await expect(refused).rejects.toMatchObject({ root: gone, message: expect.stringContaining(gone) });
+		expect(await rethrown(refused)).toThrow(NotInstalled);
+		expect(await rejection(refused)).toMatchObject({ root: gone, message: expect.stringContaining(gone) });
 	});
 
 	it("names the root given explicitly once nothing built is there", async () => {
 		const empty = mkdtempSync(path.join(tmpdir(), "lexicon-connect-empty-"));
 		try {
-			await expect(connect({ workspaceRoot: workspace, lexiconRoot: empty })).rejects.toMatchObject({
+			expect(await rejection(connect({ workspaceRoot: workspace, lexiconRoot: empty }))).toMatchObject({
 				name: "NotInstalled",
 				root: empty,
 			});
@@ -318,8 +319,8 @@ describe("refusing before any daemon is asked", () => {
 
 		const refused = connect({ workspaceRoot: workspace });
 
-		await expect(refused).rejects.toThrow(Incompatible);
-		await expect(refused).rejects.toMatchObject({ client: PROTOCOL_VERSION, installed: "1.0.0" });
+		expect(await rethrown(refused)).toThrow(Incompatible);
+		expect(await rejection(refused)).toMatchObject({ client: PROTOCOL_VERSION, installed: "1.0.0" });
 	});
 });
 
@@ -331,8 +332,8 @@ describe("what the daemon says back", () => {
 
 		const refused = session.cacheStats({});
 
-		await expect(refused).rejects.toThrow(DaemonError);
-		await expect(refused).rejects.toThrow(/unknown method: cacheStats/);
+		expect(await rethrown(refused)).toThrow(DaemonError);
+		expect(await rethrown(refused)).toThrow(/unknown method: cacheStats/);
 	});
 
 	it("gives up at once on a starting daemon with no patience, naming what it waited on", async () => {
@@ -348,8 +349,8 @@ describe("what the daemon says back", () => {
 
 		const failed = session.cacheStats({});
 
-		await expect(failed).rejects.toThrow(DaemonError);
-		await expect(failed).rejects.toMatchObject({ waitingFor: "the warmup pass" });
+		expect(await rethrown(failed)).toThrow(DaemonError);
+		expect(await rejection(failed)).toMatchObject({ waitingFor: "the warmup pass" });
 		expect(fake.asked).toEqual(["cacheStats"]);
 	});
 });

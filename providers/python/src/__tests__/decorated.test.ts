@@ -153,3 +153,65 @@ describe("Python decorated declarations", () => {
 		expect(moved).toBe('def load(path):\n    return path\n\n\n@trace("existing")\ndef existing():\n    return 1\n');
 	});
 });
+
+const COMMENTED = [
+	"#!/usr/bin/env python3",
+	"def first():",
+	"    return 1",
+	"",
+	"",
+	"# Loads a path.",
+	"# Twice.",
+	'@trace("load")',
+	"def load(path):",
+	"    return path",
+	"    # At the body's indent.",
+	"def store(path):",
+	"    return path",
+	"",
+	"# Fenced off.",
+	"",
+	"def fenced():",
+	"    return 1",
+	"",
+	"",
+	"class Box:",
+	"    # Its size.",
+	"    def size(self):",
+	"        return 1",
+	"",
+	"",
+	"x = 1  # trailing",
+	"y = 2",
+	"",
+].join("\n");
+
+describe("Python leading comments", () => {
+	it("start a declaration at the comment lines directly above it at its own indentation", async () => {
+		const { by } = await parsed("src/app.py", COMMENTED);
+		const source = coordinatesOf(COMMENTED);
+		const texts = ["first", "load", "store", "fenced", "size", "y"].map((name) => [
+			name,
+			source.sliceRange(named(by, name).range),
+		]);
+
+		expect(texts).toEqual([
+			["first", "def first():\n    return 1"],
+			["load", '# Loads a path.\n# Twice.\n@trace("load")\ndef load(path):\n    return path'],
+			["store", "def store(path):\n    return path"],
+			["fenced", "def fenced():\n    return 1"],
+			["size", "# Its size.\n    def size(self):\n        return 1"],
+			["y", "y = 2"],
+		]);
+		expect(named(by, "load").metrics?.lines).toBe(3);
+	});
+
+	it("leaves no comment behind when a move removes the declaration's range", async () => {
+		const text =
+			'import os\n\n\n# Loads a path.\n@trace("load")\ndef load(path):\n    return path\n\n\ndef keep():\n    return 1\n';
+		const { provider, by } = await parsed("src/app.py", text);
+		const moved = await apply(provider, request("src/app.py", text, { removal: named(by, "load").range }));
+
+		expect(moved).toBe("import os\n\n\n\n\n\ndef keep():\n    return 1\n");
+	});
+});

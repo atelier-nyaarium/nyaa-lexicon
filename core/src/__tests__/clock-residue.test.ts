@@ -65,7 +65,7 @@ describe("one clock for core", () => {
 	it("has no module reaching past the clock", () => {
 		const modules = swept();
 		expect(modules.length).toBeGreaterThan(20);
-		expect(modules).toContain("knowledge.ts");
+		expect(modules).toContain("notes.ts");
 		expect(modules).toContain("daemonCli.ts");
 
 		const offenders = modules.flatMap((name) => reachesFor(name).map((spelling) => `${name}: ${spelling}`));

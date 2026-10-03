@@ -255,6 +255,41 @@ describe("literals", () => {
 		expect(facts.literals.every((item) => item.containerId !== undefined)).toBe(true);
 	});
 
+	test("only a raw string opening on a blank line and receiving trimIndent directly is dedented", () => {
+		const facts = parseKotlin(
+			"Dedent.kt",
+			[
+				'val indented = """',
+				"    a",
+				'    """.trimIndent()',
+				'val safe = """',
+				"    b",
+				'    """?.trimIndent()',
+				'val margin = """',
+				"    |c",
+				'    """.trimMargin()',
+				'val bare = """',
+				"    d",
+				'    """',
+				'val texted = """e',
+				'    f""".trimIndent()',
+				'val argued = """',
+				"    g",
+				'    """.trimIndent(tab)',
+			].join("\n"),
+		);
+
+		expect(facts.diagnostics).toEqual([]);
+		expect(facts.literals.map((item) => [item.value, item.dedented ?? false])).toEqual([
+			["\n    a\n    ", true],
+			["\n    b\n    ", true],
+			["\n    |c\n    ", false],
+			["\n    d\n    ", false],
+			["e\n    f", false],
+			["\n    g\n    ", false],
+		]);
+	});
+
 	test("an interpolated string is one literal, its value carrying the interpolation's raw source", () => {
 		const text = ['val name = "world"', `val greeting = "hello ${D}{name}!"`, `val short = "hi ${D}name"`].join(
 			"\n",

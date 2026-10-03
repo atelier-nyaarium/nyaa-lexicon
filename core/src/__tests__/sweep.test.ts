@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { GapRowSchema } from "@nyaa-lexicon/protocol";
 import { KNOWLEDGE_SWEEP_EVERY_MS, startLiveIndex } from "../liveIndex";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
@@ -48,10 +47,9 @@ async function scan(): Promise<void> {
 	await service.indexWorkspace();
 }
 
-async function record(symbolId: string, prose = "Holds items until checkout."): Promise<void> {
-	const cited = store.declaration(symbolId)?.factId as string;
-	const outcome = await service.recordAnswer(symbolId, "describe", prose, [cited]);
-	if (!outcome.recorded) throw new Error(outcome.reason);
+function record(symbolId: string, text = "Holds items until checkout."): void {
+	const outcome = service.writeNote({ symbolId, text, expectedRevision: 0 });
+	if (outcome.outcome === "refused") throw new Error(outcome.reason);
 }
 
 const subject = (symbolId: string) => store.subjects.forAddress(symbolId);
@@ -74,31 +72,24 @@ afterEach(() => {
 //  Tests
 
 describe("the sweep after a scan", () => {
-	it("orphans a subject whose file was deleted, dated and with no evidence, and the queue never leads with it", async () => {
+	it("orphans a subject whose file was deleted, dated and with no evidence, keeping its note", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 		clock.advance(DAY);
 
 		remove("cart.fake");
 		await scan();
 
 		expect(subject(CART)).toMatchObject({ state: "orphaned", evidence: "none", orphanedAt: clock.now() });
-		const gaps = service.knowledgeGaps();
-		expect(gaps.total).toBe(0);
-		expect(gaps.rows.filter((row) => row.stranded !== true)).toEqual([]);
-		expect(service.knowledge.staleAnswerCount()).toBe(0);
-		const recalled = service.recallAnswer(CART, "describe");
-		expect(recalled?.stranded).toBeDefined();
-		const demand = service.demandOf(CART, "describe", recalled);
-		if (demand !== null) service.recordDemand(demand);
-		expect(store.subjects.stateOf(CART, () => null).gaps).toBe(0);
+		expect(service.readNote(CART)?.text).toBe("Holds items until checkout.");
+		expect(service.diagnoseSubject(CART).kind).toBe("stranded");
 	});
 
 	it("leaves a subject alone while its file is present and failing to parse", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 
 		put("cart.fake", `${CART_TEXT}SYNTAX\n`);
 		await scan();
@@ -110,7 +101,7 @@ describe("the sweep after a scan", () => {
 	it("orphans a subject whose file was recreated without the symbol, and binds it again when the symbol returns", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 
 		remove("cart.fake");
 		put("cart.fake", "export class Other {}\n");
@@ -125,7 +116,7 @@ describe("the sweep after a scan", () => {
 	it("rebinds on an exact digest match when the file moves, undated, and diagnoses the old address as moved", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 
 		remove("cart.fake");
 		put("shop/cart.fake", CART_TEXT);
@@ -139,7 +130,7 @@ describe("the sweep after a scan", () => {
 			orphanedAt: null,
 			fromSymbolId: CART,
 		});
-		expect(service.recallAnswer(moved, "describe")?.answer.prose).toBe("Holds items until checkout.");
+		expect(service.readNote(moved)?.text).toBe("Holds items until checkout.");
 		expect(service.diagnoseSubject(CART).kind).toBe("moved");
 		expect(store.readScanSummary()?.knowledgeSweep).toMatchObject({ rebound: 1, orphaned: 0 });
 	});
@@ -147,7 +138,7 @@ describe("the sweep after a scan", () => {
 	it("orphans with no evidence when the move edits the body in the same save", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 
 		remove("cart.fake");
 		put("shop/cart.fake", "export class Cart {\n  total() { return 2; }\n}\n");
@@ -159,7 +150,7 @@ describe("the sweep after a scan", () => {
 	it("never rebinds to a different name or kind, whatever the body digests to", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 
 		remove("cart.fake");
 		put("other.fake", CART_TEXT.replace("class Cart", "class Other"));
@@ -171,7 +162,7 @@ describe("the sweep after a scan", () => {
 	it("forgets a subject's digest when its module is written without one, so an unknown body never matches", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 		expect(subject(CART)?.lastDigest).not.toBeNull();
 
 		await service.indexFile("cart.fake", "outline");
@@ -188,7 +179,7 @@ describe("the sweep after a scan", () => {
 		put("b.fake", CART_TEXT);
 		await scan();
 		const twin = "lexicon fake a.fake Cart#";
-		await record(twin);
+		record(twin);
 
 		remove("a.fake");
 		await scan();
@@ -202,7 +193,7 @@ describe("the sweep after a scan", () => {
 		put("a.fake", CART_TEXT);
 		await scan();
 		const original = "lexicon fake a.fake Cart#";
-		await record(original);
+		record(original);
 
 		remove("a.fake");
 		put("b.fake", CART_TEXT);
@@ -222,8 +213,8 @@ describe("the sweep after a scan", () => {
 		await scan();
 		const first = "lexicon fake a.fake Cart#";
 		const second = "lexicon fake b.fake Cart#";
-		await record(first);
-		await record(second, "The other cart.");
+		record(first);
+		record(second, "The other cart.");
 
 		// Forgetting b strands its subject; recreating b in the same batch that deletes a makes b new to
 		// the pass, restored at index time, so a's match lands on an address b's subject holds.
@@ -240,29 +231,6 @@ describe("the sweep after a scan", () => {
 		expect(subject(second)).toMatchObject({ state: "bound", evidence: "sameLocator" });
 		expect(subject(first)).toMatchObject({ state: "orphaned", evidence: "ambiguous" });
 		expect(service.diagnoseSubject(first).candidates).toEqual([second]);
-	});
-
-	it("still runs the seeded fallback on a workspace whose only knowledge is stranded, and carries the window", async () => {
-		put("cart.fake", CART_TEXT);
-		put("hub.fake", "export class Hub {}\n");
-		await scan();
-		await record(CART);
-		remove("cart.fake");
-		await scan();
-
-		const gaps = service.knowledgeGaps();
-
-		// Nothing references Hub, so the fallback seeds no candidate; it still ran, and the window follows it.
-		expect(gaps).toMatchObject({ seeded: true, filtered: true, total: 0, stranded: 1 });
-		expect(gaps.rows.map((row) => [row.symbolId, row.stranded === true])).toEqual([[CART, true]]);
-		service.invalidateAnswer(CART, "checkout was rewritten", "describe", "sweep");
-		expect(service.knowledgeGaps().rows[0]).toMatchObject({ stranded: true, why: "doubted" });
-		expect(gaps.rows[0]).toMatchObject({
-			why: "stale",
-			strandedAt: clock.now(),
-			evidence: "none",
-			module: "cart.fake",
-		});
 	});
 
 	it("reports what it did on the scan summary, which overview carries", async () => {
@@ -284,7 +252,7 @@ describe("aging", () => {
 	it("deletes an orphan thirty days on from the timer, so an idle workspace ages", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 		remove("cart.fake");
 		await scan();
 		const orphaned = subject(CART)?.subjectId as string;
@@ -310,7 +278,7 @@ describe("aging", () => {
 
 		expect(reports).toEqual([0, 1]);
 		expect(store.subjects.byId(orphaned)).toBeNull();
-		expect(service.recallAnswer(CART, "describe")).toBeNull();
+		expect(service.readNote(CART)).toBeNull();
 		expect(service.diagnoseSubject(CART).kind).toBe("unknown");
 
 		// Stopped means stopped: no timer stands and an hour later nothing sweeps.
@@ -357,7 +325,7 @@ describe("aging", () => {
 	it("does not delete when the clock reads behind the date", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 		remove("cart.fake");
 		await scan();
 		const at = subject(CART)?.orphanedAt as number;
@@ -371,7 +339,7 @@ describe("aging", () => {
 	it("keeps an orphan and its date through a compat rebuild", async () => {
 		put("cart.fake", CART_TEXT);
 		await scan();
-		await record(CART);
+		record(CART);
 		remove("cart.fake");
 		await scan();
 		const before = subject(CART);
@@ -440,23 +408,5 @@ describe("the cursor", () => {
 		expect(store.subjects.byId(dead.subjectId)).toMatchObject({ state: "bound", orphanedAt: null });
 		expect(store.subjects.byId(malformed.subjectId)).toMatchObject({ state: "orphaned", evidence: "none" });
 		expect(store.subjects.byId(local.subjectId)).toMatchObject({ state: "orphaned", evidence: "none" });
-	});
-});
-
-describe("the wire", () => {
-	it("lets an older client strip the stranded fields and read the row as it always did", () => {
-		const older = GapRowSchema.omit({ stranded: true, strandedAt: true, evidence: true });
-		const row = {
-			symbolId: CART,
-			question: "describe",
-			why: "stale",
-			askCount: 0,
-			fanIn: 0,
-			stranded: true,
-			strandedAt: 1,
-			evidence: "none",
-		};
-
-		expect(older.parse(row)).toEqual({ symbolId: CART, question: "describe", why: "stale", askCount: 0, fanIn: 0 });
 	});
 });

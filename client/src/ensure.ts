@@ -45,7 +45,7 @@ export interface EnsureDaemonOptions {
 	/** How long to wait for a spawned daemon to publish its lock. */
 	timeoutMs?: number;
 	/** Injected so a test never starts a real process. */
-	start?: (command: string[]) => SpawnWatch | undefined | void;
+	start?: (command: string[]) => SpawnWatch | undefined;
 	look?: () => LockDecision;
 	/** Injected so a test never waits on the wall. */
 	clock?: Sleeper;

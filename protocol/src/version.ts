@@ -127,10 +127,21 @@ export type Compatibility =
 // `RenameSite.keep`. Rename requests take `stops`; the plan answers `routes` and `mentions`. The
 // `export` fact kind, and the issues `RouteUnknown`, `RouteChanged`, `StopNotReExport`,
 // `StopUnsupported` and `ProofUnavailable`. `MoveImportSite` drops `reExport`. No 4.x client is served.
-export const PROTOCOL_VERSION = "5.0.0" as const;
+// 6.0.0: answers are retired. `factsFor`, `resolveFacts`, `recordAnswer`, `invalidateAnswer`,
+// `reaffirmAnswer`, `recallAnswer` and `knowledgeGaps` are gone, with the `answer` and `doubt` fact
+// kinds, `describe.questions`, `overview.knowledge` and every `migrated` count. `knowledgeScope` is
+// `scopeSymbols`, without `questions`. `searchSymbols`, `findLiterals` and `findReferences` take
+// `module`, a file or a folder; `searchSymbols` takes `kind`, `module` or `within` alone, and a
+// literal search takes at most one of `value`, `regex` or a range. `previewArrange` answers `placed`,
+// every top-level declaration's span in the target. `SymbolSummary.lines.name`. `Literal.dedented`.
+// No 5.x client is served.
+export const PROTOCOL_VERSION = "6.0.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
-export const OLDEST_CLIENT_MAJOR = 5;
+export const OLDEST_CLIENT_MAJOR = 6;
+
+/** Store layout version; each names its own index file. */
+export const SCHEMA_VERSION = 27;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

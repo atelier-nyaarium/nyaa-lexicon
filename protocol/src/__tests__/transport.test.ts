@@ -6,6 +6,7 @@ import {
 	StreamMessageReader,
 	StreamMessageWriter,
 } from "vscode-jsonrpc/node";
+import { rethrown } from "../conformance/rejection";
 
 ////////////////////////////////
 //  Helpers
@@ -61,7 +62,7 @@ describe("vscode-jsonrpc as the provider transport", () => {
 			throw new Error("provider exploded");
 		});
 
-		await expect(a.sendRequest("boom", {})).rejects.toThrow(/provider exploded/);
+		expect(await rethrown(a.sendRequest("boom", {}))).toThrow(/provider exploded/);
 		dispose();
 	});
 

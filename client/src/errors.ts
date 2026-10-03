@@ -32,6 +32,11 @@ export class Incompatible extends Error {
 	}
 }
 
+/** Two Lexicon versions that cannot talk, worded for the person who reloads one of them. */
+export function mismatchText(ours: string, theirs: { label: string; version: string }, fix: string): string {
+	return `Current version in this window: protocol ${ours}\n${theirs.label}: protocol ${theirs.version}\n${fix}`;
+}
+
 /** A daemon answered a request's `exclude` without applying it. */
 export function unfiltered(method: string, client: string, daemon: string): Incompatible {
 	return new Incompatible(

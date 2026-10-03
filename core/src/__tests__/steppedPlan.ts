@@ -42,7 +42,7 @@ const journal = {
 	beginStep: () => ({ ok: true, stepNo: 1 }),
 	completeStep: () => {},
 	recordIssues: () => {},
-	rebind: () => ({ subjects: 0, answers: 0, gaps: 0, applied: [], blocked: [] }),
+	rebind: () => ({ subjects: 0, applied: [], blocked: [] }),
 	stepFiles: () => [],
 	tracks: () => true,
 } as unknown as TransactionManager;

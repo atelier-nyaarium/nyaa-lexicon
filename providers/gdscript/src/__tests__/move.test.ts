@@ -171,6 +171,72 @@ describe("move edits", () => {
 		expect(targetResult.text).toBe(moved);
 	});
 
+	it("moves a declaration sharing its line and leaves its neighbour", () => {
+		const source = "extends Node\n\nvar f = 1; @export var g = 2\n";
+		const declaration = extractDeclarationsCore("source.gd", source, composeSymbolId).find(
+			(candidate) => candidate.name === "f",
+		);
+		if (declaration === undefined) throw new Error("property declaration missing");
+		const root = workspace({ "source.gd": source, "target.gd": "" });
+		const result = apply(root, source, {
+			module: "source.gd",
+			text: source,
+			exists: true,
+			symbolId: declaration.symbolId,
+			name: "f",
+			fromModule: "source.gd",
+			toModule: "target.gd",
+			role: { removal: declaration.range },
+			importSites: [],
+			dependencies: [],
+			sites: [],
+		});
+		const kept = extractDeclarationsCore("source.gd", result.text, composeSymbolId).find(
+			(candidate) => candidate.name === "g",
+		);
+
+		expect(textAtRange(source, declaration.range)).toBe("var f = 1");
+		expect(result.response.blocked).toEqual([]);
+		expect(kept === undefined ? undefined : textAtRange(result.text, kept.range)).toBe("@export var g = 2");
+	});
+
+	it("moves a multi-line const whole and leaves none of it behind", () => {
+		const source = 'extends Node\n\nconst X = {\n\t"a": 1,\n}\nvar keep = 2\n';
+		const declaration = extractDeclarationsCore("source.gd", source, composeSymbolId).find(
+			(candidate) => candidate.name === "X",
+		);
+		if (declaration === undefined) throw new Error("constant declaration missing");
+		const moved = textAtRange(source, declaration.range);
+		const root = workspace({ "source.gd": source, "target.gd": "" });
+		const request = {
+			symbolId: declaration.symbolId,
+			name: "X",
+			fromModule: "source.gd",
+			toModule: "target.gd",
+			importSites: [],
+			dependencies: [],
+			sites: [],
+		};
+		const sourceResult = apply(root, source, {
+			...request,
+			module: "source.gd",
+			text: source,
+			exists: true,
+			role: { removal: declaration.range },
+		});
+		const targetResult = apply(root, "", {
+			...request,
+			module: "target.gd",
+			text: "",
+			exists: false,
+			role: { insertion: { text: moved } },
+		});
+
+		expect(sourceResult.response.blocked).toEqual([]);
+		expect(sourceResult.text).toBe("extends Node\n\n\nvar keep = 2\n");
+		expect(targetResult.text).toBe('const X = {\n\t"a": 1,\n}');
+	});
+
 	it("inserts the complete declaration into a new file", () => {
 		const moved = "func moved() -> void:\n\tpass\n";
 		const root = workspace({ "source.gd": moved });

@@ -6,6 +6,7 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import { processesMatching } from "@nyaa-lexicon/client";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { type NotificationMessage, StreamMessageWriter } from "vscode-jsonrpc/node";
 import {
 	absorbingWrites,
@@ -82,9 +83,9 @@ describe("starting a provider", () => {
 
 	it("fails a provider that cannot spawn, rather than crashing the daemon", async () => {
 		supervisor = new ProviderSupervisor();
-		await expect(
-			supervisor.start({ command: ["lexicon-no-such-binary"], timeoutMs: 5_000 }, tmpdir()),
-		).rejects.toThrow();
+		expect(
+			await rethrown(supervisor.start({ command: ["lexicon-no-such-binary"], timeoutMs: 5_000 }, tmpdir())),
+		).toThrow();
 	}, 30_000);
 
 	// A provider from another protocol answers a SHAPE this one rejects. Reaching the wrong shape
@@ -106,9 +107,9 @@ describe("starting a provider", () => {
 		);
 
 		supervisor = new ProviderSupervisor();
-		await expect(
-			supervisor.start({ command: [process.execPath, "run", script], timeoutMs: 15_000 }, root),
-		).rejects.toThrow();
+		expect(
+			await rethrown(supervisor.start({ command: [process.execPath, "run", script], timeoutMs: 15_000 }, root)),
+		).toThrow();
 		expect(supervisor.running()).toHaveLength(0);
 
 		// The process itself, not the registry: a child of a FAILED start was never registered, so
@@ -146,7 +147,7 @@ describe("starting a provider", () => {
 		expect(processesMatching(script)).not.toEqual([]);
 
 		supervisor.stopAll();
-		await expect(pending).rejects.toThrow();
+		expect(await rethrown(pending)).toThrow();
 		expect(supervisor.running()).toHaveLength(0);
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		expect(processesMatching(script)).toEqual([]);
@@ -202,14 +203,16 @@ describe("asking through the supervisor", () => {
 
 	it("refuses a module nobody claims rather than guessing a provider", async () => {
 		await start();
-		await expect(
-			supervisor.ask("README.md", "parseFile", { module: "README.md", contentHash: "h", text: "" }),
-		).rejects.toThrow(/no provider owns/);
+		expect(
+			await rethrown(
+				supervisor.ask("README.md", "parseFile", { module: "README.md", contentHash: "h", text: "" }),
+			),
+		).toThrow(/no provider owns/);
 	}, 30_000);
 
 	it("refuses a named provider that is not running", async () => {
 		await start();
-		await expect(supervisor.askProvider("ghost", "shutdown", {})).rejects.toThrow(/not running/);
+		expect(await rethrown(supervisor.askProvider("ghost", "shutdown", {}))).toThrow(/not running/);
 	}, 30_000);
 
 	it("serializes concurrent asks and still returns each its own answer", async () => {
@@ -253,9 +256,15 @@ describe("when a provider dies", () => {
 		await start();
 		supervisor.stop("reference-provider");
 
-		await expect(
-			supervisor.askProvider("reference-provider", "parseFile", { module: "a.ref", contentHash: "h", text: "" }),
-		).rejects.toThrow(/not running/);
+		expect(
+			await rethrown(
+				supervisor.askProvider("reference-provider", "parseFile", {
+					module: "a.ref",
+					contentHash: "h",
+					text: "",
+				}),
+			),
+		).toThrow(/not running/);
 		expect(supervisor.running()).toEqual([]);
 	}, 30_000);
 
@@ -508,9 +517,9 @@ describe("a request racing a death", () => {
 		const pid = supervisor.pidOf("reference-provider") as number;
 		process.kill(pid, "SIGKILL");
 
-		await expect(
-			supervisor.ask("a.ref", "parseFile", { module: "a.ref", contentHash: "h", text: "" }),
-		).rejects.toThrow(ProviderUnavailableError);
+		expect(
+			await rethrown(supervisor.ask("a.ref", "parseFile", { module: "a.ref", contentHash: "h", text: "" })),
+		).toThrow(ProviderUnavailableError);
 	}, 30_000);
 });
 

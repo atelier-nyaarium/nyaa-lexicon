@@ -6,6 +6,5 @@ export const TREE_FIRST = [
 	"symbolEdges",
 	"findReferences",
 	"usesFrom",
-	"factsFor",
 	"typeOf",
 ] as const;

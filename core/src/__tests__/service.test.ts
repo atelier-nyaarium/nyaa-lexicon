@@ -169,7 +169,7 @@ describe("applying a watcher batch", () => {
  * reference rows, so driving them through it would test nothing. What is under test here is the
  * core's aggregation, and the store is where a provider's output lands anyway.
  */
-describe("type hierarchy and citable facts", () => {
+describe("type hierarchy", () => {
 	const at = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 8 } });
 
 	function type(name: string, module = "a.ref") {
@@ -350,122 +350,6 @@ describe("type hierarchy and citable facts", () => {
 		);
 
 		expect(built.callHierarchy(callee.symbolId).incoming).toEqual([]);
-	});
-
-	it("gathers the declaration, its uses and the text inside it, each with an id", async () => {
-		const base = type("Base");
-		store.replaceFile({
-			module: "a.ref",
-			contentHash: "h1",
-			declarations: [base],
-			references: [heritage("Base", base.symbolId, base.symbolId, "extends")],
-			imports: [],
-			literals: [{ kind: "string", value: "hello", range: at(1), containerId: base.symbolId }],
-		});
-		const built = new LexiconService(
-			store,
-			new ProviderSupervisor(),
-			fromText(() => null),
-			dir,
-		);
-
-		const facts = await built.factsFor(base.symbolId);
-
-		expect(facts?.facts.map((f) => f.kind)).toEqual(["declaration", "reference", "literal"]);
-		expect(facts?.facts.every((f) => f.factId.startsWith("lexfact "))).toBe(true);
-	});
-
-	it("includes comments attached to the subject", async () => {
-		const base = type("Base");
-		store.replaceFile({
-			module: "a.ref",
-			contentHash: "h1",
-			declarations: [base],
-			references: [],
-			imports: [],
-			literals: [],
-			depth: "full",
-			comments: [
-				{
-					range: at(1),
-					raw: "// Retains checkout state.",
-					normalized: "Retains checkout state.",
-					form: "leading",
-					placement: "above",
-					anchorId: base.symbolId,
-				},
-			],
-		});
-		const built = new LexiconService(
-			store,
-			new ProviderSupervisor(),
-			fromText(() => null),
-			dir,
-		);
-
-		expect((await built.factsFor(base.symbolId))?.facts).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ kind: "comment", summary: "leading Retains checkout state." }),
-			]),
-		);
-	});
-
-	it("names the kinds a limit cut off, so a thin answer is not read as a complete one", async () => {
-		const base = type("Base");
-		const uses = Array.from({ length: 5 }, () => heritage("Base", base.symbolId, base.symbolId, "extends"));
-		store.replaceFile({
-			module: "a.ref",
-			contentHash: "h1",
-			declarations: [base],
-			references: uses,
-		});
-		const built = new LexiconService(
-			store,
-			new ProviderSupervisor(),
-			fromText(() => null),
-			dir,
-		);
-
-		expect((await built.factsFor(base.symbolId, 2))?.truncated).toEqual(["reference"]);
-	});
-
-	it("answers null for a symbol the index does not hold", async () => {
-		const built = new LexiconService(
-			store,
-			new ProviderSupervisor(),
-			fromText(() => null),
-			dir,
-		);
-		expect(await built.factsFor("lexicon reference a.ref Ghost#")).toBeNull();
-	});
-
-	// The staleness path the knowledge layer runs on: cite, edit, and the citation stops resolving.
-	it("stops resolving a cited fact once the code behind it changed", async () => {
-		const base = type("Base");
-		store.replaceFile({
-			module: "a.ref",
-			contentHash: "h1",
-			declarations: [base],
-			references: [],
-		});
-		const built = new LexiconService(
-			store,
-			new ProviderSupervisor(),
-			fromText(() => null),
-			dir,
-		);
-		const cited = (await built.factsFor(base.symbolId))?.facts.map((f) => f.factId) as string[];
-
-		expect(built.resolveFacts(cited).missing).toEqual([]);
-
-		store.replaceFile({
-			module: "a.ref",
-			contentHash: "h2",
-			declarations: [{ ...base, signature: "class Base extends Other" }],
-			references: [],
-		});
-
-		expect(built.resolveFacts(cited).missing).toEqual(cited);
 	});
 });
 
@@ -881,18 +765,14 @@ describe("carrying knowledge across a rename", () => {
 		}
 	});
 
-	it("rebinds the subject to the new id, and the answer recalls there with its recorded address", async () => {
+	it("rebinds the subject to the new id, and the note reads there with its recorded address", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\n");
 		await service.indexFile("a.ref");
 		const cart = service.findByName("Cart")[0]?.symbolId;
 		if (!cart) throw new Error("expected Cart");
-
-		const facts = await service.factsFor(cart);
-		const citation = facts?.facts[0]?.factId;
-		if (!citation) throw new Error("expected a citable fact");
-		const wrote = await service.recordAnswer(cart, "describe", "A shopping cart.", [citation]);
-		if (!wrote.recorded) throw new Error(`answer not recorded: ${wrote.reason}`);
+		const wrote = service.writeNote({ symbolId: cart, text: "A shopping cart.", expectedRevision: 0 });
+		if (wrote.outcome === "refused") throw new Error(`note not written: ${wrote.reason}`);
 
 		const map = service.renameIdMap(cart, "Basket", ctx());
 		const rebound = store.subjects.rebind(
@@ -902,33 +782,28 @@ describe("carrying knowledge across a rename", () => {
 		);
 		const newId = map.get(cart) as string;
 
-		expect(rebound).toMatchObject({ subjects: 1, answers: 1 });
-		const recalled = service.recallAnswer(newId, "describe");
-		expect(recalled?.answer.prose).toBe("A shopping cart.");
-		expect(recalled?.answer.symbolId).toBe(newId);
-		expect(recalled?.answer.recordedAs).toBe(cart);
-		expect(recalled?.subject?.evidence).toBe("journalRename");
-		expect(service.recallAnswer(cart, "describe")).toBeNull();
+		expect(rebound).toMatchObject({ subjects: 1 });
+		expect(service.readNote(newId)).toMatchObject({ text: "A shopping cart.", symbolId: newId, recordedAs: cart });
+		expect(store.subjects.forAddress(newId)?.evidence).toBe("journalRename");
+		expect(service.readNote(cart)).toBeNull();
 	});
 
 	// Two subjects never merge: an address that already holds a subject is not a rebind target, so
-	// each keeps its own answer and the source stays where it was.
+	// each keeps its own note and the source stays where it was.
 	it("leaves both subjects alone when the new id already has one", async () => {
 		await boot();
 		files.set("a.ref", "export class Cart {}\nexport class Basket {}\n");
 		await service.indexFile("a.ref");
 		const cart = service.findByName("Cart")[0]?.symbolId as string;
 		const basket = service.findByName("Basket")[0]?.symbolId as string;
-
-		const cite = async (id: string) => (await service.factsFor(id))?.facts[0]?.factId as string;
-		await service.recordAnswer(cart, "describe", "The old one.", [await cite(cart)]);
-		await service.recordAnswer(basket, "describe", "The one that stays.", [await cite(basket)]);
+		service.writeNote({ symbolId: cart, text: "The old one.", expectedRevision: 0 });
+		service.writeNote({ symbolId: basket, text: "The one that stays.", expectedRevision: 0 });
 
 		const rebound = store.subjects.rebind([{ from: cart, to: basket }], "journalRename", Date.now());
 
 		expect(rebound.subjects).toBe(0);
-		expect(service.recallAnswer(basket, "describe")?.answer.prose).toBe("The one that stays.");
-		expect(service.recallAnswer(cart, "describe")?.answer.prose).toBe("The old one.");
+		expect(service.readNote(basket)?.text).toBe("The one that stays.");
+		expect(service.readNote(cart)?.text).toBe("The old one.");
 	});
 });
 

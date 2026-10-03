@@ -14,7 +14,6 @@ const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
 
 /** Reads under the gate, writes under it, or steps the work itself. */
 const STAGED = [
-	"recallAnswer",
 	"refactorReplace",
 	"refactorReplaceSpan",
 	"refactorInsert",
@@ -69,8 +68,8 @@ describe("one place mints a daemon handler", () => {
 	it("fires on the spellings it counts", () => {
 		expect(casts(parsed("function f() { return { effect, run } as Handler<M>; }"))).toHaveLength(1);
 		expect(callsTo(parsed('const h = () => mint("read", run);'), "mint")).toHaveLength(1);
-		expect(entries(parsed("const t = { recallAnswer: staged(async (params, gate) => {}) };"), "staged")).toEqual([
-			"recallAnswer",
+		expect(entries(parsed("const t = { refactorMove: staged(async (params, gate) => {}) };"), "staged")).toEqual([
+			"refactorMove",
 		]);
 		expect(entries(parsed("const t = { describe: treeFirst(run) };"), "treeFirst")).toEqual(["describe"]);
 		expect(entries(parsed("const t = { planMove: upgradedRead((params) => 1) };"), "upgradedRead")).toEqual([

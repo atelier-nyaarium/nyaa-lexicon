@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RenamePlan, ResponseOf } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch, daemonHandlers } from "../dispatch";
 import { recoverSteps } from "../refactorStep";
 import { LexiconService } from "../service";
@@ -213,6 +214,22 @@ describe("a TypeScript rename through the daemon's handlers", () => {
 			});
 		});
 
+		it("renames a namespace member read through the namespace import, past a type of the namespace's name", async () => {
+			await workspace("typescript", {
+				"tsconfig.json": TSCONFIG,
+				"src/values.ts":
+					"export namespace Total {\n\texport const n = 1;\n}\n\nexport interface Total {\n\tm: number;\n}\n",
+				"src/use.ts": 'import * as values from "./values";\n\nexport const k = values.Total.n + 1;\n',
+			});
+
+			expect(await rename(idOf("n", "src/values.ts"), "count")).toMatchObject({ renamed: true });
+			expect(changed()).toEqual({
+				"src/values.ts":
+					"export namespace Total {\n\texport const count = 1;\n}\n\nexport interface Total {\n\tm: number;\n}\n",
+				"src/use.ts": 'import * as values from "./values";\n\nexport const k = values.Total.count + 1;\n',
+			});
+		});
+
 		it("refuses where one re-export carries both", async () => {
 			await workspace("typescript", {
 				"tsconfig.json": TSCONFIG,
@@ -383,12 +400,7 @@ describe("settling a TypeScript rename", () => {
 			throw new Error("died before finalizing");
 		};
 
-		// Awaited plainly: a pending `expect().rejects` stalls the loop, so each provider reply lands late.
-		const failure = await rename(idOf("Cart", "src/cart.ts"), "Basket").then(
-			() => null,
-			(error: Error) => error.message,
-		);
-		expect(failure).toBe("died before finalizing");
+		expect(await rethrown(rename(idOf("Cart", "src/cart.ts"), "Basket"))).toThrow("died before finalizing");
 		expect(distinct(targetsIn("src/use.ts", "add"))).not.toEqual([add]);
 
 		const recovered = await recoverSteps(service, new TransactionManager(store, root));

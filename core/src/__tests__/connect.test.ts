@@ -10,6 +10,7 @@ import {
 	workspacePaths,
 	writeInstallRecord,
 } from "@nyaa-lexicon/client";
+import { rejection, rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { lexiconRoot } from "../providers";
 
@@ -86,8 +87,8 @@ describe("a session over a daemon this process started", () => {
 
 		const failed = session.cacheStats({});
 
-		await expect(failed).rejects.toThrow(DaemonError);
-		await expect(failed).rejects.toMatchObject({ waitingFor: "the language providers to start" });
+		expect(await rethrown(failed)).toThrow(DaemonError);
+		expect(await rejection(failed)).toMatchObject({ waitingFor: "the language providers to start" });
 	});
 
 	whenBuilt("stops it on request and returns once the lock is gone", async () => {

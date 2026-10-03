@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createDispatch } from "../dispatch";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -50,32 +49,20 @@ afterEach(() => {
 //  Tests
 
 describe("one clock through the daemon's composition", () => {
-	it("stamps the answer, its subject, its doubt and its demand from the one clock", async () => {
-		const cited = store.declaration(CART)?.factId as string;
-		const recorded = clock.now();
-		await service.recordAnswer(CART, "describe", "Holds items.", [cited]);
-		expect(service.recallAnswer(CART, "describe")?.answer.createdAt).toBe(recorded);
-		expect(store.subjects.forAddress(CART)?.boundAt).toBe(recorded);
+	it("stamps the note, its subject, its doubt and its confirmation from the one clock", () => {
+		const written = clock.now();
+		service.writeNote({ symbolId: CART, text: "Holds items.", expectedRevision: 0 });
+		expect(service.readNote(CART)?.authoredAt).toBe(written);
+		expect(store.subjects.forAddress(CART)?.boundAt).toBe(written);
 
 		clock.advance(60_000);
 		const doubted = clock.now();
-		service.invalidateAnswer(CART, "checkout was rewritten", "describe", "test");
-		const doubt = service.recallAnswer(CART, "describe")?.answer.doubt;
-		expect(doubt?.at).toBe(doubted);
-		// The doubt itself asked for a fresh describe, stamped when it was raised.
-		expect(store.liveGaps(10).map((gap) => [gap.question, gap.lastAsked])).toEqual([["describe", doubted]]);
+		service.doubtNote(CART, "checkout was rewritten", 1);
+		expect(service.readNote(CART)?.doubt?.at).toBe(doubted);
 
 		clock.advance(60_000);
-		const reaffirmed = clock.now();
-		const outcome = await service.reaffirmAnswer(CART, "describe", { resolvesDoubt: doubt?.factId as string });
-		expect(outcome.recorded).toBe(true);
-		expect(service.recallAnswer(CART, "describe")?.answer).toMatchObject({ createdAt: reaffirmed });
-		expect(service.recallAnswer(CART, "describe")?.answer.doubt).toBeUndefined();
-
-		clock.advance(60_000);
-		const asked = clock.now();
-		const dispatch = createDispatch(service);
-		await dispatch("recallAnswer", { symbolId: CART, question: "why" });
-		expect(store.liveGaps(10).map((gap) => [gap.question, gap.lastAsked])).toEqual([["why", asked]]);
+		const confirmed = clock.now();
+		service.confirmNote(CART, 1);
+		expect(service.readNote(CART)).toMatchObject({ confirmedAt: confirmed, doubt: null });
 	});
 });

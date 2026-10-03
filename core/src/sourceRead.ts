@@ -39,6 +39,9 @@ export { MAX_SOURCE_BYTES };
 /** Refusal reason for a module outside the workspace. */
 export const OUTSIDE_WORKSPACE_REASON = "its real path leaves the workspace";
 
+/** Refusal reason for a module the workspace scope denies. */
+export const DENIED_BY_SCOPE_REASON = "denied by scope";
+
 ////////////////////////////////
 //  Functions & Helpers
 

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type BunExecutable, bunCommand, currentHost } from "@nyaa-lexicon/client";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import type { ProviderStarter } from "../providerPort";
 import { describeStart, discoverProviders, lexiconRoot, startProviders } from "../providers";
 import type { ProviderSpec } from "../supervisor";
@@ -70,14 +71,14 @@ describe("finding providers", () => {
 	it("refuses to discover providers without a usable bun", async () => {
 		const root = tree(["alpha"]);
 		const runtime: BunExecutable = { kind: "belowFloor", executable: "/x/bun", version: "1.3.9", floor: "1.4.0" };
-		await expect(discoverProviders(root, runtime)).rejects.toThrow(
+		expect(await rethrown(discoverProviders(root, runtime))).toThrow(
 			"providers cannot start: belowFloor /x/bun 1.3.9",
 		);
 	});
 
 	it("refuses to start providers without a usable bun", async () => {
 		const runtime: BunExecutable = { kind: "missing", executable: "/x/bun" };
-		await expect(startProviders(supervisor(), "/w", { commands: [], runtime })).rejects.toThrow(
+		expect(await rethrown(startProviders(supervisor(), "/w", { commands: [], runtime }))).toThrow(
 			"providers cannot start: missing /x/bun unknown",
 		);
 	});

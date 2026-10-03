@@ -75,10 +75,17 @@ describe("removals", () => {
 		expect(arranged(text, { Z: span(text, 2, 2) }, [])).toBe("a\n");
 	});
 
-	it("leave a declaration sharing its line to its own range", () => {
-		const text = "a; Z;\n";
-		const own = { start: { line: 0, character: 3 }, end: { line: 0, character: 5 } };
-		expect(arranged(text, { Z: own }, [])).toBe("a; \n");
+	it("leave a declaration sharing its line to its own range and the `;` joining it, never one `;` twice", () => {
+		const on = (from: number, to: number) => ({
+			start: { line: 0, character: from },
+			end: { line: 0, character: to },
+		});
+		expect({
+			ended: arranged("a; Z;\n", { Z: on(3, 5) }, []),
+			first: arranged("Z = 1; a = 2\n", { Z: on(0, 5) }, []),
+			last: arranged("a = 1; Z = 2\n", { Z: on(7, 12) }, []),
+			both: arranged("Y = 1; Z = 2\n", { Y: on(0, 5), Z: on(7, 12) }, []),
+		}).toEqual({ ended: "a; \n", first: "a = 2\n", last: "a = 1\n", both: "\n" });
 	});
 });
 

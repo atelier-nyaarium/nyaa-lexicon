@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { PassThrough } from "node:stream";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
+import { rethrown } from "../conformance/rejection";
 import { moduleStore, type StoreProvider } from "../moduleStore";
 import { handlersFor, type ProviderMethods } from "../providerKit";
 import {
@@ -32,13 +33,13 @@ describe("the shared server, before any handler", () => {
 		provider.listen();
 		daemon.listen();
 
-		await expect(
-			daemon.sendRequest("parseFile", { module: "../x.ts", contentHash: "h", text: "" }),
-		).rejects.toThrow(/escape the workspace/);
-		await expect(daemon.sendRequest("parseFile", { module: "/x.ts", contentHash: "h", text: "" })).rejects.toThrow(
-			/absolute/,
-		);
-		await expect(daemon.sendRequest("moveEdits", { module: "src/a.ts", toModule: "../out.ts" })).rejects.toThrow(
+		expect(
+			await rethrown(daemon.sendRequest("parseFile", { module: "../x.ts", contentHash: "h", text: "" })),
+		).toThrow(/escape the workspace/);
+		expect(
+			await rethrown(daemon.sendRequest("parseFile", { module: "/x.ts", contentHash: "h", text: "" })),
+		).toThrow(/absolute/);
+		expect(await rethrown(daemon.sendRequest("moveEdits", { module: "src/a.ts", toModule: "../out.ts" }))).toThrow(
 			/escape the workspace/,
 		);
 		await expect(

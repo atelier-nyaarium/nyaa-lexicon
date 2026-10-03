@@ -638,7 +638,7 @@ export class WordReader {
 		if (part.parameter !== "" && this.scanner.peek() === "[") this.index(part);
 		if (part.parameter !== "") this.parameterOperator(part);
 		// Bash checks an expansion only when it runs, so one it cannot read still ends at its brace.
-		if (!this.scanner.codeText("}") && !this.skipToBrace()) this.scanner.error("the ${ has no closing }", pos);
+		if (!this.scanner.codeText("}") && !this.skipToBrace()) this.scanner.error(`the \${ has no closing }`, pos);
 		part.end = this.scanner.offset;
 		part.text = this.scanner.textOf(pos, part.end);
 		return part;

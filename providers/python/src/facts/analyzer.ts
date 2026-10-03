@@ -280,7 +280,8 @@ export class Analyzer {
 		item?: A.WithItem,
 	): void {
 		const exported = this.isExported(name, moduleScope, parentExported);
-		const range = this.source.range(this.source.declarationStart(node), node.end);
+		const start = this.source.declarationStart(node);
+		const range = this.source.range(this.source.commentedStart(start), node.end);
 		const raw: RawDeclaration = {
 			name,
 			kind,
@@ -299,7 +300,8 @@ export class Analyzer {
 		) {
 			const header = headerOf(this.source, node, selection, whole, item);
 			if (header !== undefined) raw.header = header;
-			raw.metrics = metricsOf(node, range);
+			// Code only, without the comments above.
+			raw.metrics = metricsOf(node, this.source.range(start, node.end));
 		}
 		if (node.type === "ClassDef") {
 			const line = this.source.memberInsertLine(node);

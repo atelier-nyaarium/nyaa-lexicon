@@ -58,8 +58,10 @@ export {
 export {
 	canonicalRoot,
 	currentHost,
+	indexFiles,
 	type PlatformEnv,
 	stateRoot,
+	storedIndex,
 	storePaths,
 	workspaceKey,
 	workspacePaths,

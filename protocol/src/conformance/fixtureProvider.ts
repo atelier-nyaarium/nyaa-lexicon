@@ -205,4 +205,11 @@ export const fixtureHandlers: ProviderHandlers = {
 	arrangeEdits: makeFixtureArrangeEdits,
 };
 
-if (import.meta.main) runProviderOnStdio(fixtureHandlers);
+// `--no-arrange` declines arranging, as most languages do.
+if (import.meta.main) {
+	runProviderOnStdio(
+		process.argv.includes("--no-arrange")
+			? { ...fixtureHandlers, arrangeEdits: () => notImplementedMove("this fixture run does not arrange") }
+			: fixtureHandlers,
+	);
+}

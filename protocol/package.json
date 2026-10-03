@@ -9,6 +9,8 @@
 		"./ast": "./src/astResidue.ts",
 		"./mermaid": "./src/mermaid.ts",
 		"./noteRefs": "./src/noteRefs.ts",
+		"./rejection": "./src/conformance/rejection.ts",
+		"./symbolId": "./src/symbolId.ts",
 		"./toy": "./src/conformance/toyLexer.ts"
 	},
 	"dependencies": {

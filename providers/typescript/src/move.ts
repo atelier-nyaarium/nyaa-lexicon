@@ -25,33 +25,41 @@ import {
 	type ModuleBinding,
 	moduleBindings,
 	sameModulePath,
+	typeOnlyNames,
 } from "./move-dependencies.js";
 import {
 	append,
 	blockedSite,
 	contentLineBefore,
 	importInsertion,
+	joinTarget,
 	type LandingKey,
 	lineOf,
 	mergedImport,
 	mergeIndex,
-	mergeKey,
 	type PlannedImport,
-	type PlannedNamed,
 	type Quote,
 	renderImport,
 	standaloneImports,
 	type WorkMeter,
 } from "./move-imports.js";
+import { settleBlankLines } from "./move-layout.js";
 import {
 	type ImportSiteNode,
 	importSiteNode,
 	locateImportSite,
 	orphanedImports,
+	repointLeavingExports,
 	rewriteImportSites,
 	type SiteMove,
 } from "./move-sites.js";
-import type { ModuleResolver, SpecifierRenderer, SpecifierRenderResult } from "./project.js";
+import {
+	type ExtensionStyle,
+	type ModuleResolver,
+	relativeStyle,
+	type SpecifierRenderer,
+	type SpecifierRenderResult,
+} from "./project.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -65,6 +73,8 @@ export interface ModuleScope {
 	esm: boolean;
 	statements: ImportSiteNode[];
 	quote: Quote;
+	/** How its relative specifiers end, when it writes any. */
+	style: ExtensionStyle | undefined;
 	landingKey: LandingKey;
 	render: SpecifierRenderer;
 	meter: WorkMeter | undefined;
@@ -78,6 +88,8 @@ export interface ImportWork<S extends MoveImportSite> extends SiteMove<S> {
 	sites: readonly Range[];
 	/** Spans leaving the module, whose names no longer bind. */
 	removed: readonly OffsetRange[];
+	/** Text landing in the module, one edit per point. */
+	landings: readonly TextEdit[];
 	dependencies: readonly MoveDependency[];
 }
 
@@ -120,33 +132,30 @@ export function makeMoveEdits(
 		};
 	}
 
+	let repointed: OffsetRange[] = [];
 	if (request.role.removal !== undefined) {
 		const removal = removalOf(scope, request.role.removal, request.name);
 		if ("blocked" in removal) blocked.push(removal.blocked);
+		else if (reorder) edits.push({ range: request.role.removal, newText: "" });
 		else {
+			const exports = repointLeavingExports(
+				source,
+				coordinates,
+				[{ name: request.name, removed: removal.removed }],
+				() => scope.render(request.module, request.toModule, undefined, scope.style),
+				scope.quote,
+			);
 			edits.push(
 				{ range: request.role.removal, newText: "" },
-				...(reorder ? [] : orphanedImports(source, coordinates, [removal.removed])),
+				...orphanedImports(source, coordinates, [removal.removed]),
+				...exports.edits,
 			);
+			blocked.push(...exports.blocked);
+			repointed = exports.spans;
 		}
 	}
 
-	planImports(
-		scope,
-		{
-			module: request.module,
-			fromModule: request.fromModule,
-			toModule: request.toModule,
-			nameOf: () => request.name,
-			importSites: request.importSites,
-			sites: request.sites,
-			removed: removed === undefined ? [] : [removed],
-			dependencies: request.dependencies,
-		},
-		edits,
-		blocked,
-	);
-
+	let landing: TextEdit | undefined;
 	if (request.role.insertion !== undefined) {
 		const { position, exported } = request.role.insertion;
 		const text =
@@ -163,11 +172,30 @@ export function makeMoveEdits(
 			);
 		} else {
 			const separate = position === undefined && needsBlankLine(source);
-			edits.push({ range: { start: point, end: point }, newText: separate ? `\n${text}` : text });
+			landing = { range: { start: point, end: point }, newText: separate ? `\n${text}` : text };
 		}
 	}
 
-	return validateEdits(coordinates, edits, blocked);
+	planImports(
+		scope,
+		{
+			module: request.module,
+			fromModule: request.fromModule,
+			toModule: request.toModule,
+			nameOf: () => request.name,
+			importSites: request.importSites,
+			sites: request.sites,
+			removed: removed === undefined ? [] : [removed, ...repointed],
+			landings: landing === undefined ? [] : [landing],
+			dependencies: request.dependencies,
+		},
+		edits,
+		blocked,
+	);
+	// After the imports, which may share its point.
+	if (landing !== undefined) edits.push(landing);
+
+	return validateEdits(coordinates, settleBlankLines(source.text, coordinates, edits), blocked);
 }
 
 ////////////////////////////////
@@ -197,11 +225,11 @@ export function moduleScope(
 		return key;
 	};
 	const renders = new Map<string, SpecifierRenderResult>();
-	const render: SpecifierRenderer = (fromModule, targetModule, preferred) => {
-		const key = `${fromModule}\0${targetModule}\0${preferred ?? ""}`;
+	const render: SpecifierRenderer = (fromModule, targetModule, preferred, style) => {
+		const key = `${fromModule}\0${targetModule}\0${preferred ?? ""}\0${style ?? ""}`;
 		let rendered = renders.get(key);
 		if (rendered === undefined) {
-			rendered = renderSpecifier(fromModule, targetModule, preferred);
+			rendered = renderSpecifier(fromModule, targetModule, preferred, style);
 			renders.set(key, rendered);
 		}
 		return rendered;
@@ -213,6 +241,7 @@ export function moduleScope(
 		esm,
 		statements,
 		quote,
+		style: relativeStyle(statements.map((statement) => statement.literal.text)),
 		landingKey,
 		render,
 		meter,
@@ -267,6 +296,21 @@ export function planImports<S extends MoveImportSite>(
 ): void {
 	const { source, coordinates, quote, landingKey, render, meter } = scope;
 	const bindings = moduleBindings(source, work.removed);
+	const typeOnly = typeOnlyNames(
+		work.module,
+		source,
+		work.removed,
+		work.landings.map((landing) => landing.newText),
+		new Set(work.dependencies.map((dependency) => dependency.name)),
+	);
+	// The moved body's own relative imports, where the module writes none.
+	const style =
+		scope.style ??
+		relativeStyle(
+			work.dependencies.flatMap(({ origin }) =>
+				origin.kind === "workspaceModule" && origin.via !== undefined ? [origin.via.specifier] : [],
+			),
+		);
 	const siteStatements = new Map<ImportSiteNode, S[]>();
 	for (const site of work.importSites) {
 		const located = locateImportSite(source, coordinates, site, scope.statements);
@@ -284,16 +328,12 @@ export function planImports<S extends MoveImportSite>(
 	const pendingImports = new Map<string, PlannedImport>();
 	const pend = (planned: PlannedImport) => pendingImports.set(renderImport([planned], quote), planned);
 	for (const dependency of work.dependencies) {
-		const plan = importForDependency(
-			work,
-			dependency,
-			source,
-			scope.checker,
-			bindings,
-			render,
+		const plan = importForDependency(work, dependency, source, scope.checker, bindings, {
+			render: (fromModule, targetModule, preferred) => render(fromModule, targetModule, preferred, style),
 			landingKey,
-			scope.esm,
-		);
+			esm: scope.esm,
+			typeOnly: typeOnly.has(dependency.name),
+		});
 		if (plan.blocked !== undefined) blocked.push(plan.blocked);
 		if (plan.planned !== undefined) pend(plan.planned);
 	}
@@ -301,9 +341,8 @@ export function planImports<S extends MoveImportSite>(
 	const excluded = new Set<ts.Node>([...siteStatements.keys()].map((statement) => statement.node));
 	const index = mergeIndex(source, coordinates, edits, landingKey, excluded, meter);
 	const joins = (planned: PlannedImport) => {
-		if (planned.clause !== "named") return undefined;
 		if (meter !== undefined) meter.steps++;
-		return index.get(mergeKey(planned.typeOnly, landingKey(planned.specifier)));
+		return joinTarget(index, planned, landingKey(planned.specifier));
 	};
 	for (const rewrite of rewrites) {
 		blocked.push(...rewrite.blocked);
@@ -324,29 +363,37 @@ export function planImports<S extends MoveImportSite>(
 		}
 	}
 
-	const merges = new Map<ts.ImportDeclaration, PlannedNamed[]>();
+	const merges = new Map<ts.ImportDeclaration, PlannedImport[]>();
 	const unmerged: PlannedImport[] = [];
 	for (const planned of pendingImports.values()) {
 		const into = joins(planned);
-		if (into === undefined || planned.clause !== "named") unmerged.push(planned);
+		// A statement takes one default.
+		const taken =
+			into !== undefined &&
+			planned.clause === "default" &&
+			(merges.get(into) ?? []).some((other) => other.clause === "default");
+		if (into === undefined || taken) unmerged.push(planned);
 		else append(merges, into, planned);
 	}
 	for (const [statement, group] of merges) {
 		const merged = mergedImport(source, coordinates, statement, group, quote);
 		if (merged === undefined) unmerged.push(...group);
-		else edits.push(merged);
+		else edits.push(...merged);
 	}
 
 	const standalone = standaloneImports(unmerged, quote);
 	if (standalone.length > 0) {
 		const { offset, lineBreak, blankAfter } = importInsertion(source);
 		const insertion = coordinates.positionAt(offset);
+		// Text landing here follows the imports, a blank line apart.
+		const landing = work.landings.find((edit) => coordinates.offsetAt(edit.range.start) === offset);
+		const blank = landing === undefined ? blankAfter : !/^\r?\n/.test(landing.newText);
 		if (insertion === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });
 		} else {
 			edits.push({
 				range: { start: insertion, end: insertion },
-				newText: `${lineBreak ? "\n" : ""}${standalone.join("\n")}\n${blankAfter ? "\n" : ""}`,
+				newText: `${lineBreak ? "\n" : ""}${standalone.join("\n")}\n${blank ? "\n" : ""}`,
 			});
 		}
 	}

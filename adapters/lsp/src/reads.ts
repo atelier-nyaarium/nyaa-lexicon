@@ -7,7 +7,6 @@ import type {
 	CallHierarchy,
 	DescribeResult,
 	LexiconService,
-	RecalledAnswer,
 	ReferencesResult,
 	RenameEditPlan,
 	RenamePlan,
@@ -15,7 +14,7 @@ import type {
 	TypeHierarchy,
 	TypeInfo,
 } from "@nyaa-lexicon/core";
-import type { ReadMethod, RequestOf, ResponseOf } from "@nyaa-lexicon/protocol";
+import type { Note, ReadMethod, RequestOf, ResponseOf } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -34,7 +33,7 @@ export interface LexiconReads {
 	typeOf(symbolId: string): Promise<TypeInfo>;
 	typeHierarchy(symbolId: string): Promise<TypeHierarchy>;
 	callHierarchy(symbolId: string): Promise<CallHierarchy>;
-	recallAnswers(symbolId: string): Promise<RecalledAnswer[]>;
+	readNote(symbolId: string): Promise<Note | null>;
 	prepareRename(symbolId: string, newName: string): Promise<RenamePlan>;
 	renameEdits(symbolId: string, newName: string): Promise<RenameEditPlan>;
 	transactionOpen(): Promise<boolean>;
@@ -60,11 +59,7 @@ export function daemonReads(channel: DaemonChannel): LexiconReads {
 		typeOf: (symbolId) => read("typeOf", { symbolId }),
 		typeHierarchy: (symbolId) => read("typeHierarchy", { symbolId }),
 		callHierarchy: (symbolId) => read("callHierarchy", { symbolId }),
-		// One method, both arities. No question means all.
-		recallAnswers: async (symbolId) => {
-			const answer = await read("recallAnswer", { symbolId });
-			return Array.isArray(answer) ? answer : answer === null ? [] : [answer];
-		},
+		readNote: (symbolId) => read("readNote", { symbolId }),
 		prepareRename: (symbolId, newName) => read("prepareRename", { symbolId, newName }),
 		renameEdits: (symbolId, newName) => read("renameEdits", { symbolId, newName }),
 		transactionOpen: async () => (await read("refactorStatus", {})).open,
@@ -88,7 +83,7 @@ export function deferredReads(resolve: () => Promise<LexiconReads>): LexiconRead
 		typeOf: async (symbolId) => (await reads()).typeOf(symbolId),
 		typeHierarchy: async (symbolId) => (await reads()).typeHierarchy(symbolId),
 		callHierarchy: async (symbolId) => (await reads()).callHierarchy(symbolId),
-		recallAnswers: async (symbolId) => (await reads()).recallAnswers(symbolId),
+		readNote: async (symbolId) => (await reads()).readNote(symbolId),
 		prepareRename: async (symbolId, newName) => (await reads()).prepareRename(symbolId, newName),
 		renameEdits: async (symbolId, newName) => (await reads()).renameEdits(symbolId, newName),
 		transactionOpen: async () => (await reads()).transactionOpen(),
@@ -105,7 +100,7 @@ export function localReads(service: LexiconService): LexiconReads {
 		typeOf: (symbolId) => service.typeOf(symbolId),
 		typeHierarchy: async (symbolId) => service.typeHierarchy(symbolId),
 		callHierarchy: async (symbolId) => service.callHierarchy(symbolId),
-		recallAnswers: async (symbolId) => service.recallAnswers(symbolId),
+		readNote: async (symbolId) => service.readNote(symbolId),
 		prepareRename: (symbolId, newName) => service.prepareRename(symbolId, newName, service.newReadContext()),
 		renameEdits: (symbolId, newName) => service.renameEdits(symbolId, newName),
 		// No daemon, no journal to conflict with.

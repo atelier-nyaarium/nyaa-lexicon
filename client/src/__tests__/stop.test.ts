@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { DaemonRef } from "../daemonRef";
 import { DaemonError } from "../errors";
 import { requestShutdown, shutdownDaemon, shutdownRef } from "../stop";
@@ -95,7 +96,7 @@ describe("asking a daemon to stop", () => {
 	it("still throws a DaemonError on anything but stopped", async () => {
 		const { lock } = await daemon(() => ({ ok: false, error: "unknown method: shutdown" }));
 
-		await expect(shutdownDaemon(lock, lockFile, { timeoutMs: 150, clock: realSleeper })).rejects.toThrow(
+		expect(await rethrown(shutdownDaemon(lock, lockFile, { timeoutMs: 150, clock: realSleeper }))).toThrow(
 			DaemonError,
 		);
 	});

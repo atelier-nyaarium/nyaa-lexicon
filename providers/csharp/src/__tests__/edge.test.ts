@@ -161,6 +161,36 @@ describe("C# lexical facts", () => {
 		]);
 	});
 
+	it("marks only a multi-line raw string dedented, interpolated or not", () => {
+		const text = [
+			"public class C {",
+			'\tstring Raw = """',
+			"\t\tline",
+			'\t\t""";',
+			'\tstring Longer = """"',
+			'\t\tholds """',
+			'\t\t"""";',
+			'\tstring Hole = $$"""',
+			"\t\t{{Id}}",
+			'\t\t""";',
+			'\tstring Verbatim = @"',
+			'\t\tline";',
+			'\tstring Single = """line""";',
+			'\tstring Plain = "line";',
+			"}",
+		].join("\n");
+		const { facts } = parse(text);
+		expect(facts.diagnostics).toEqual([]);
+		expect(facts.literals.map((item) => [item.value, item.dedented ?? false])).toEqual([
+			["line", true],
+			['holds """', true],
+			["{{Id}}", true],
+			["\n\t\tline", false],
+			["line", false],
+			["line", false],
+		]);
+	});
+
 	it("reads an interpolation hole as code: its names are uses and its commas its own", () => {
 		const text = [
 			"class C {",

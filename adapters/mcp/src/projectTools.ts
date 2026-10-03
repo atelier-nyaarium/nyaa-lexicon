@@ -393,8 +393,12 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		description: SEARCH_SYMBOLS_DESCRIPTION,
 		scope: "query",
 		queryValidation: {
-			check: (query) => (query.text === undefined) !== (query.regex === undefined),
-			message: `Set exactly one of \`text\` or \`regex\`.`,
+			check: (query) =>
+				!(query.text !== undefined && query.regex !== undefined) &&
+				[query.text, query.regex, query["kind"], query["module"], query["within"]].some(
+					(each) => each !== undefined,
+				),
+			message: `Set at most one of \`text\` or \`regex\`, or \`kind\`, \`module\` or \`within\` alone.`,
 		},
 		input: SearchSymbolsInput,
 		handler: searchSymbols,

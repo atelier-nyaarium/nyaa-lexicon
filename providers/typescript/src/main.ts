@@ -484,8 +484,8 @@ export class TypeScriptProvider {
 		const setup = this.store.project.loaded;
 		const surface = (module: string) => this.runtimeSurface(module);
 		return work(
-			(fromModule, targetModule, preferredSpecifier) =>
-				renderSpecifier(this.store.root, fromModule, targetModule, setup, preferredSpecifier, surface),
+			(fromModule, targetModule, preferredSpecifier, style) =>
+				renderSpecifier(this.store.root, fromModule, targetModule, setup, preferredSpecifier, surface, style),
 			(fromModule, specifier) =>
 				landingOf(resolveSpecifier(this.store.root, fromModule, specifier, setup, [], surface)),
 		);

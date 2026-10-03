@@ -153,20 +153,6 @@ const MIXED_FILES: Record<string, string> = {
 let cart: string;
 let heading: string;
 
-function fact(kind: "declaration" | "comment"): string {
-	const found = answers.factsFor?.facts.find((entry) => entry.kind === kind);
-	if (found === undefined) throw new Error(`factsFor produced no ${kind} fact`);
-	return found.factId;
-}
-
-function recordedAnswerId(): string {
-	const outcome = answers.recordAnswer;
-	if (outcome?.recorded !== true) throw new Error("no answer was recorded");
-	return outcome.answer.factId;
-}
-
-let doubtToken = "";
-
 const AGENT = { kind: "agent", model: "gpt-6-luna", via: "test", run: null } as const;
 
 /** One per method. Each asks its own method at least once and asserts what the fixture makes true. */
@@ -190,13 +176,8 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		const diagnosis = await ask("diagnoseSubject", { symbolId: ghost });
 		expect(diagnosis.kind).toBe("unminted");
 		expect(diagnosis.candidates).toContain(cart);
-		const refused = await ask("recordAnswer", {
-			symbolId: ghost,
-			question: "describe",
-			prose: "Nothing.",
-			citations: [],
-		});
-		expect(refused.recorded ? "recorded" : refused.reason).toBe(diagnosis.reason);
+		const refused = await ask("writeNote", { symbolId: ghost, text: "Nothing.", expectedRevision: 0 });
+		expect(refused.outcome === "refused" ? refused.reason : refused.outcome).toBe(diagnosis.reason);
 	},
 	declarationsIn: async () => {
 		expect(await ask("declarationsIn", { module: "cart.ref" })).toHaveLength(2);
@@ -366,20 +347,12 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	commitsMentioning: async () => {
 		expect((await ask("commitsMentioning", { name: "Cart", limit: 5 })).mentions).toHaveLength(1);
 	},
-	knowledgeGaps: async () => {
-		const workspace = await ask("knowledgeGaps", {});
-		expect(workspace.filtered).toBe(workspace.seeded === true);
-		const scoped = await ask("knowledgeGaps", { module: "cart.ref", question: "why", limit: 5 });
-		expect(scoped).toMatchObject({ filtered: true, scope: { module: "cart.ref" } });
-	},
-	knowledgeScope: async () => {
-		const file = await ask("knowledgeScope", { module: "cart.ref" });
+	scopeSymbols: async () => {
+		const file = await ask("scopeSymbols", { module: "cart.ref" });
 		expect(file?.symbols.map((entry) => entry.symbol.name)).toEqual(["Cart", "add"]);
-		// Cart is a class (no `effects`); add is a function (all six).
-		expect(file?.symbols.map((entry) => entry.questions.length)).toEqual([5, 6]);
-		const one = await ask("knowledgeScope", { symbolId: cart, members: true });
+		const one = await ask("scopeSymbols", { symbolId: cart, members: true });
 		expect(one?.symbols.map((entry) => entry.symbol.name)).toEqual(["Cart"]);
-		expect(await ask("knowledgeScope", { symbolId: `${cart}Gone#` })).toBeNull();
+		expect(await ask("scopeSymbols", { symbolId: `${cart}Gone#` })).toBeNull();
 	},
 	typeOf: async () => {
 		expect((await ask("typeOf", { symbolId: cart })).status).toBe("unknown");
@@ -409,58 +382,19 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		);
 	},
 	indexFile: async () => {
-		expect((await ask("indexFile", { module: "cart.ref" })).action).toBe("indexed");
+		const before = (await ask("indexStatus", {})).generation;
+		const answer = await ask("indexFile", { module: "cart.ref" });
+		// An unchanged file keeps every client's cached facts.
+		expect({ cause: answer.cause, generation: (await ask("indexStatus", {})).generation }).toEqual({
+			cause: "current",
+			generation: before,
+		});
 	},
 	symbolSource: async () => {
 		expect((await ask("symbolSource", { symbolId: cart })).found).toBe(true);
 		expect((await ask("symbolSource", { symbolId: cart.replace("Cart", "Ghost") })).found).toBe(false);
 	},
 
-	// Knowledge, in the order the plan runs it.
-	factsFor: async () => {
-		const facts = await ask("factsFor", { symbolId: cart, limit: 10 });
-		expect(facts?.facts.map((entry) => entry.kind)).toEqual(expect.arrayContaining(["declaration", "comment"]));
-	},
-	recordAnswer: async () => {
-		const outcome = await ask("recordAnswer", {
-			symbolId: cart,
-			question: "describe",
-			prose: "Holds the items of one checkout.",
-			citations: [fact("declaration"), fact("comment")],
-			model: "test",
-		});
-		expect(outcome.recorded).toBe(true);
-	},
-	invalidateAnswer: async () => {
-		const outcome = await ask("invalidateAnswer", {
-			symbolId: cart,
-			reason: "checkout was rewritten",
-			question: "describe",
-			by: "test",
-		});
-		expect(outcome.doubted).toHaveLength(1);
-	},
-	recallAnswer: async () => {
-		const one = await ask("recallAnswer", { symbolId: cart, question: "describe" });
-		if (one === null || Array.isArray(one)) throw new Error("recalling one question answered the other shape");
-		doubtToken = one.answer.doubt?.factId ?? "";
-		expect(doubtToken).not.toBe("");
-		expect(await ask("recallAnswer", { symbolId: cart })).toHaveLength(1);
-	},
-	reaffirmAnswer: async () => {
-		const outcome = await ask("reaffirmAnswer", {
-			symbolId: cart,
-			question: "describe",
-			resolvesDoubt: doubtToken,
-			model: "test",
-		});
-		expect(outcome.recorded).toBe(true);
-	},
-	resolveFacts: async () => {
-		const outcome = await ask("resolveFacts", { factIds: [fact("declaration"), recordedAnswerId(), "ghost"] });
-		expect(outcome.resolved.map((entry) => entry.fact)).toEqual(["declaration", "answer"]);
-		expect(outcome.missing).toEqual(["ghost"]);
-	},
 	writeNote: async () => {
 		const note = {
 			symbolId: harness.symbol("add", "cart.ref"),
@@ -671,12 +605,6 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 
 /** Each later answer depends on an earlier one, so these never run as independent cases. */
 const KNOWLEDGE = [
-	"factsFor",
-	"recordAnswer",
-	"invalidateAnswer",
-	"recallAnswer",
-	"reaffirmAnswer",
-	"resolveFacts",
 	"writeNote",
 	"readNote",
 	"doubtNote",
@@ -774,12 +702,12 @@ describe("every daemon answer parses back to itself", () => {
 	});
 });
 
-describe("the knowledgeScope request schema", () => {
+describe("the scopeSymbols request schema", () => {
 	it("refuses both symbolId and module together, and refuses neither", () => {
-		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({ symbolId: "a", module: "a.ts" }).success).toBe(false);
-		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({}).success).toBe(false);
-		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({ symbolId: "a" }).success).toBe(true);
-		expect(DAEMON_METHODS.knowledgeScope.request.safeParse({ module: "a.ts" }).success).toBe(true);
+		expect(DAEMON_METHODS.scopeSymbols.request.safeParse({ symbolId: "a", module: "a.ts" }).success).toBe(false);
+		expect(DAEMON_METHODS.scopeSymbols.request.safeParse({}).success).toBe(false);
+		expect(DAEMON_METHODS.scopeSymbols.request.safeParse({ symbolId: "a" }).success).toBe(true);
+		expect(DAEMON_METHODS.scopeSymbols.request.safeParse({ module: "a.ts" }).success).toBe(true);
 	});
 });
 
@@ -886,16 +814,6 @@ describe("populated answers parse back to themselves", () => {
 		expect(cycles.some((cycle) => cycle.members.includes(ping) && cycle.members.includes(pong))).toBe(true);
 
 		expect(await ask("findByName", { name: "label" })).toHaveLength(3);
-	}, 60_000);
-
-	it("resolves reference and import facts", async () => {
-		const reference = answers.findReferences?.references[0]?.factId;
-		const statement = answers.findImports?.imports[0]?.factId;
-		if (reference === undefined || statement === undefined) throw new Error("the binding case left no facts");
-
-		const outcome = await ask("resolveFacts", { factIds: [reference, statement] });
-		expect(outcome.resolved.map((entry) => entry.fact)).toEqual(["reference", "import"]);
-		expect(outcome.missing).toEqual([]);
 	}, 60_000);
 
 	it("renames and moves across modules", async () => {

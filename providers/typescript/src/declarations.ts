@@ -168,7 +168,7 @@ export function nameOf(node: ts.Node): string | null {
 	if (ts.isClassStaticBlockDeclaration(node)) return "static";
 	const name = (node as { name?: ts.Node }).name;
 	if (name === undefined) return ts.isConstructorDeclaration(node) ? "constructor" : null;
-	if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+	if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name)) return name.text || null;
 	return null;
 }
 

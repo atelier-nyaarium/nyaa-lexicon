@@ -38,7 +38,6 @@ const ROW_READERS: Record<string, string> = {
 	"stepRunners.ts": "diffs an insert's ids across a reindex no memo may span",
 	"moduleDeclarations.ts": "snapshots the rows beside the module's hashes",
 	"refusals.ts": "names an unminted id's neighbours",
-	"knowledge.ts": "walks a file's declarations for gaps",
 	"paintFacts.ts": "renders a module's rows as paint spans, no nesting asked",
 	"renameValidation.ts": "compares an edited module's ids before and after a candidate, no nesting asked",
 };
@@ -162,9 +161,7 @@ describe("one owner derives a read's declaration topology", () => {
 	});
 
 	it("reads no container field in the readers", () => {
-		const offenders = ["scope.ts", "knowledge.ts", "indexReads.ts"].filter((name) =>
-			mentionedIn(name, "containerId"),
-		);
+		const offenders = ["scope.ts", "indexReads.ts"].filter((name) => mentionedIn(name, "containerId"));
 
 		expect(offenders, "a nesting question answered by hand belongs on the context").toEqual([]);
 	});
@@ -210,7 +207,7 @@ describe("a rename or move plan reads its import rows through the context, never
 		);
 		expect(
 			offenders,
-			"importSitesFor, importSitesForMove and importOriginFor must ask `reads`, so a plan can stamp what they answer",
+			"importSitesResolvingTo and importOriginFor must ask `reads`, so a plan can stamp what they answer",
 		).toEqual([]);
 	});
 

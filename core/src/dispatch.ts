@@ -6,7 +6,6 @@
 import {
 	DAEMON_METHODS,
 	type DaemonMethod,
-	defined,
 	hashContent,
 	isDaemonMethod,
 	type MoveAnchor,
@@ -187,6 +186,7 @@ async function previewArrange(
 		})),
 		issues: arranged.issues,
 		formatted: arranged.formatted,
+		placed: arranged.placed,
 	};
 }
 
@@ -273,7 +273,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		findReferences: treeFirst(
 			(params) => params.symbolId,
-			(params) => service.findReferences(params.symbolId, params.limit, params.within),
+			(params) => service.findReferences(params.symbolId, params.limit, params.within, params.module),
 		),
 		usesFrom: treeFirst(
 			(params) => params.symbolId,
@@ -307,40 +307,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		coChangedWith: read((params) => service.coChangedWith(params.module, params.limit)),
 		fileHistory: read((params) => service.fileHistory(params.module)),
 		commitsMentioning: read((params) => service.commitsMentioning(params.name, params.limit)),
-		// Tier 1 too: its answer carries the declaring module's references and literals, which
-		// outline facts genuinely lack.
-		factsFor: treeFirst(
-			(params) => params.symbolId,
-			(params) => service.factsFor(params.symbolId, params.limit),
-		),
-		resolveFacts: read((params) => service.resolveFacts(params.factIds)),
-		recordAnswer: write((params) =>
-			service.recordAnswer(params.symbolId, params.question, params.prose, params.citations, {
-				...defined({ model: params.model, resolvesDoubt: params.resolvesDoubt }),
-			}),
-		),
-		invalidateAnswer: write((params) =>
-			service.invalidateAnswer(params.symbolId, params.reason, params.question, params.by),
-		),
-		reaffirmAnswer: write((params) =>
-			service.reaffirmAnswer(params.symbolId, params.question, {
-				...defined({ citations: params.citations, model: params.model, resolvesDoubt: params.resolvesDoubt }),
-			}),
-		),
-		// The survey counts nothing. One question's recall is a read, and the demand it found is
-		// counted afterwards as its own write, so the count never rides inside a shared hold.
-		recallAnswer: staged(async (params, gate) => {
-			const { symbolId, question } = params;
-			if (question === undefined) return gate.read(() => service.recallAnswers(symbolId));
-			const recalled = await gate.read(() => service.recallAnswer(symbolId, question));
-			const demand = service.demandOf(symbolId, question, recalled);
-			if (demand !== null) await gate.write(() => service.recordDemand(demand));
-			return recalled;
-		}),
-		knowledgeGaps: read((params) =>
-			service.knowledgeGaps(params.root, params.question, params.limit, params.module),
-		),
-		knowledgeScope: read((params) => service.knowledgeScope(params)),
+		scopeSymbols: read((params) => service.scopeSymbols(params)),
 		readNote: read((params) => service.readNote(params.symbolId)),
 		writeNote: write((params) => service.writeNote(params)),
 		confirmNote: write((params) => service.confirmNote(params.symbolId, params.expectedRevision, params.author)),
@@ -378,7 +345,8 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		previewMove: upgradedRead((params) => previewMove(service, params)),
 		previewArrange: upgradedRead((params) => previewArrange(service, params)),
 		previewInsert: upgradedRead((params) => previewInsert(service, params)),
-		indexFile: write((params) => service.indexFile(params.module)),
+		// A current file answers `current`, so the facts cache and status generation stay.
+		indexFile: write((params) => service.indexFile(params.module, "full", true)),
 		symbolSource: read((params) => service.symbolSource(params)),
 		refactorStart: write(() => transactions().start()),
 		// A step mid-write can read as drift here; revert and commit check again under the gate.

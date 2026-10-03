@@ -147,7 +147,7 @@ class UseWalker {
 						value: shape.value,
 						...defined({ number: shape.number }),
 						range: this.lines.range(node.start, node.end),
-						...defined({ containerId: this.binders.at(-1) }),
+						...defined({ containerId: this.binders.at(-1), dedented: shape.dedented }),
 					});
 				return;
 			}

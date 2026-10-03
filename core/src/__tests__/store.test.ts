@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { composeSymbolId, type Declaration, doubtFactId, type Reference } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, type Declaration, type Reference } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach";
 import { ImportResolver } from "../imports";
 import { HiddenModules, IndexStore, SCHEMA_VERSION } from "../store";
@@ -790,12 +790,6 @@ describe("citable facts", () => {
 		expect(store.factById(declarationId)).toMatchObject({ fact: "declaration", name: "add" });
 		expect(store.factById(literalId)).toMatchObject({ fact: "literal", value: "hello" });
 		expect(store.factById(commentId)).toMatchObject({ fact: "comment", normalized: "why this exists" });
-	});
-
-	it("does not resolve a doubt id", () => {
-		const doubt = doubtFactId("subject", idOf("add"), "describe", "needs review", 1);
-
-		expect(store.factById(doubt)).toBeNull();
 	});
 
 	// Null IS the staleness signal, which is why the id is a digest of the fact rather than a rowid.

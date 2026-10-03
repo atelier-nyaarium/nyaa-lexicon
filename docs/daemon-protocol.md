@@ -15,8 +15,10 @@ directory. `stateRoot` is `$XDG_STATE_HOME/nyaa-lexicon`, falling back to
 the directory under it as the root's basename plus sixteen hex digits of a SHA-256 over the
 canonical root path, so two checkouts sharing a name cannot collide and the directory is still
 recognizable by eye. `canonicalRoot` follows symlinks first, so a workspace reached through a link
-is the same workspace. `storePaths` derives every sibling from the same key, `index.sqlite`,
-`daemon.log`, `diagnostics.json` and `reports/`, and nothing else builds a state path.
+is the same workspace. `storePaths` derives every sibling from the same key, `index-<schema>.sqlite`,
+`daemon.log`, `diagnostics.json` and `reports/`, and nothing else builds a state path. Each
+`SCHEMA_VERSION` has its own index file, so no install opens a store another laid out; a daemon's
+first open under a new schema copies the newest older file forward (`seedIndex`) and leaves it.
 
 The lock is `DaemonLockSchema`:
 
@@ -184,7 +186,7 @@ line survives the homomorphic mapped type, so it is what an editor shows on hove
 one schema entry: core's handler map `satisfies` the mapped type over `DaemonMethod`, so an entry
 without a handler, or a handler without an entry, fails to compile.
 
-The shapes the schemas name, `StoredDeclaration`, `SymbolSummary`, `Answer`, `RenamePlan`,
+The shapes the schemas name, `StoredDeclaration`, `SymbolSummary`, `RenamePlan`,
 `TransactionStatus` and every `...Result`, live in `daemonShapes` beside the table, and core's
 modules take their types from there, so a store row that crosses the wire cannot drift from what
 the wire says it is. `ImportResolution` and `TypeInfo` are the provider protocol's types and are
@@ -197,6 +199,13 @@ a newer daemon added, which it could not have typed anyway. No `strict`, no `pas
 One method is not in the table. `shutdown` is answered by the daemon process itself, before
 dispatch, with `{ stopping: true }` sent before it stops so the caller reads success rather than a
 dropped connection.
+
+## Narrowing a search to a path
+
+`searchSymbols`, `findReferences`, `findLiterals`, `findComments` and `findDocs` take `module`, a
+workspace-relative file or folder: the file itself, or every module under the folder, never a path
+that only contains it. `searchSymbols` with no `text` or `regex` lists what `kind`, `module` or
+`within` narrows to. `findLiterals` takes at most one of `value`, `regex` or a range.
 
 ## Excluding modules from a search
 
@@ -243,7 +252,9 @@ input returns `ok: false` with no files.
 `contentHash`, candidate `text`, `created` flag and edits. Applying the edits to the text with
 that hash, or to empty text when the file is new, produces the candidate. Insertion after a
 declaration refuses when its indexed file hash differs from the current text. Insertion by module
-uses the current text as its base. An identical block returns `present`.
+uses the current text as its base. An identical block returns `present`. The block takes the
+anchor's indentation, except the later lines of a multiline literal, which stay as written unless
+the provider marks the literal `dedented` (its language strips that indentation).
 
 None opens a transaction or writes workspace files. Their handlers may upgrade outline facts before
 answering and use the planners shared with their corresponding write methods.
@@ -378,7 +389,9 @@ attempt fails. The method is not exposed over MCP.
 ### Moving several declarations
 
 `refactorMove` takes `together`: more declarations from the same module moving to the same target.
-Each moves as its own step in the open refactor, after the unexported declarations of the set it
+Where the provider answers `arrangeEdits`, the set moves as one arrangement step: exports are
+planned for the set, so a helper only the set uses stays unexported, and the fix command runs once.
+Otherwise each moves as its own step in the open refactor, after the unexported declarations of the set it
 uses, since a move refuses to leave one of those behind. A declaration inside another moves with it.
 Two that use each other, or a member from another module, refuse the whole call before anything
 moves. A refused or failed step stops the rest and keeps the steps already taken. `MoveOutcome.order`
@@ -418,6 +431,9 @@ declared in the source, refuses.
 null when created; `text`; and `result`, the text's hash. With `lexicon.json`'s `fixText` set, each
 text is the formatter's output and `formatted` is true. A formatter that fails leaves its file as
 planned, with a `FixFailed` issue and `formatted: false`. Without `fixText`, `formatted` is false.
+Files format at once. `placed` gives each top-level declaration's span in the target's final text,
+read from a parse of that text: a placement by its own `symbolId`, the rest by theirs. An unchanged
+target answers its stored spans.
 
 `refactorArrange` takes the same request plus `expect`: every previewed file's `module`, `base` and
 `result`. It plans again and refuses unless the files and hashes match, then writes those bytes as
@@ -464,7 +480,8 @@ on the workspace gate.
 `moduleDeclarations` answers one module's status (`exists`, `claimed`, `indexed`, `depth`, the
 recorded `failure`), what one read of the file found (`read.kind`: `text`, `missing`, `binary` or
 `tooLarge`, with `detail` for the last two and for a link whose real path leaves the workspace, which
-reads as `missing` and unclaimed), `contentHash` (the hash the index holds, null with no
+reads as `missing` and unclaimed; a module the scope denies is never read and answers `missing` with
+`detail` `denied by scope` and `exists` false), `contentHash` (the hash the index holds, null with no
 row), `diskHash` (the hash of the bytes that same read loaded, null unless text) and the
 declaration rows, from ONE synchronous snapshot: `core/src/moduleDeclarations.ts` runs to
 completion, a residue forbids `await` and `async` in it, so no field describes a different
@@ -488,14 +505,13 @@ file is not failed by it; only a provider outage is the daemon's own trouble.
 
 These reads let a client draw what surrounds one symbol without walking the store itself.
 
-- **Uses, not mentions:** `findReferences`, `usesFrom`, `mostReferenced`, the knowledge gap
-  `fanIn`, and `describe`'s `referenceCount`, `graph.fanIn`, `graph.fanOut`, `graph.dependents`
-  and `graph.cycle` leave out `import` and `export` rows. One closed role table in
-  `core/src/store.ts` decides it, and every such read goes through the store's use surfaces
-  (`usesTo`, `usesFrom`, `usesIn`, `useEdges`). `factsFor` keeps those rows, and rename planning
-  reads the store's rows whole; a residue names every raw reader.
+- **Uses, not mentions:** `findReferences`, `usesFrom`, `mostReferenced`, and `describe`'s
+  `referenceCount`, `graph.fanIn`, `graph.fanOut`, `graph.dependents` and `graph.cycle` leave out
+  `import` and `export` rows. One closed role table in `core/src/store.ts` decides it, and every
+  such read goes through the store's use surfaces (`usesTo`, `usesFrom`, `usesIn`, `useEdges`).
+  Rename planning reads the store's rows whole; a residue names every raw reader.
 - **`findReferences` rows** carry `topLevel` and `language`, both computed at read time, so neither
-  is part of a reference's fact id and no citation moves. `topLevel` is the outermost declaration
+  is part of a reference's fact id. `topLevel` is the outermost declaration
   on the `fromId` chain whose kind is not a grouping (`file`, `module`, `namespace`, `package`, the
   protocol's `GROUPING_KINDS`), so a class inside a namespace is top level. `language` is the id
   head of the use's own file, read from the `fromId` head, or from the target's for a module-level
@@ -521,13 +537,13 @@ These reads let a client draw what surrounds one symbol without walking the stor
   `contains` and otherwise its kind.
 - **`describe`'s `graph.dependents`** counts the distinct top-level declarations holding a use; a
   use at module level counts its file.
-- **`knowledgeScope`** is the knowledge layer's containment read; `knowledge-layer.md` holds it.
+- **`scopeSymbols`** is the containment read Ask uses; `knowledge-layer.md` holds it.
 - **Notes:** `readNote`, `writeNote`, `confirmNote`, `doubtNote`, `resolveNoteProposal`,
   `noteBacklinks` and `searchRefs`; `knowledge-layer.md` holds them.
 
 Protocol 3.3.0 changed two answers an older client may count on. `describe.members` no longer lists
 parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `graph.fanIn`,
-`graph.fanOut`, `graph.cycle` and a gap row's `fanIn` no longer count import and export lines.
+`graph.fanOut` and `graph.cycle` no longer count import and export lines.
 
 ### Painting
 
@@ -582,7 +598,7 @@ A found answer is `{ found: true, symbolId, via, contentHash }`, `via` being `re
 `unowned` carry none.
 
 `indexStatus.generation` changes on stored fact or knowledge writes and daemon restarts. Equal
-values mean the indexed facts and knowledge have not changed. Counting demand does not advance it.
+values mean the indexed facts and knowledge have not changed.
 
 `indexStatus.providers` lists each running provider as `{ id, language, phase, label?, pending }`.
 `phase` is `starting` (spawned, initialize unanswered), `initializing` (the provider said it is

@@ -5,6 +5,9 @@
 // a table. No wording assertion anywhere notices either.
 
 import { describe, expect, it } from "bun:test";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmTableFromMarkdown } from "mdast-util-gfm-table";
+import { gfmTable } from "micromark-extension-gfm-table";
 import * as render from "../render";
 import { CASES, textOf } from "./renderCases";
 
@@ -16,10 +19,16 @@ function rendered(name: string): string[] {
 	return (CASES[name] ?? []).map((args) => textOf(fn(...args)));
 }
 
-/** A delimiter row that no row follows, whether a blank line split them or none were written. */
+/** A table with no row under its header, whether a blank line split them or none were written. */
 function brokenTable(text: string): boolean {
-	const lines = text.split("\n");
-	return lines.some((line, index) => /^\|[\s|:-]+\|$/.test(line) && !/^\|.*\|$/.test(lines[index + 1] ?? ""));
+	type Node = { type: string; children?: Node[] };
+	const rows: number[] = [];
+	const walk = (node: Node): void => {
+		if (node.type === "table") rows.push(node.children?.length ?? 0);
+		for (const child of node.children ?? []) walk(child);
+	};
+	walk(fromMarkdown(text, { extensions: [gfmTable()], mdastExtensions: [gfmTableFromMarkdown()] }) as Node);
+	return rows.some((count) => count < 2);
 }
 
 ////////////////////////////////
@@ -29,6 +38,14 @@ describe("what every renderer's markdown must hold", () => {
 	const names = Object.keys(render).filter(
 		(key) => key.startsWith("render") && typeof (render as Record<string, unknown>)[key] === "function",
 	);
+
+	it("calls a table broken when a blank line or nothing follows its delimiter row", () => {
+		expect([
+			brokenTable("| a |\n| --- |\n| 1 |"),
+			brokenTable("| a |\n| --- |\n\n| 1 |"),
+			brokenTable("| a |\n| --- |"),
+		]).toEqual([false, true, true]);
+	});
 
 	// Without this, a renderer added tomorrow is untested and nothing says so.
 	it("exercises every exported renderer", () => {

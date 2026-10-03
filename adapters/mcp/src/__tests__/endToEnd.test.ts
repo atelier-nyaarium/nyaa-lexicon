@@ -13,6 +13,7 @@ import {
 	type RunningDaemon,
 	startDaemon,
 } from "@nyaa-lexicon/core";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import {
 	describeSymbol,
 	doubtNote,
@@ -267,6 +268,6 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 
 	it("refuses a caller that cannot find the daemon, rather than answering from nothing", async () => {
 		await daemon.stop();
-		await expect(describeSymbol(backendOverDaemon(dir), { name: "Cart" })).rejects.toThrow();
+		expect(await rethrown(describeSymbol(backendOverDaemon(dir), { name: "Cart" }))).toThrow();
 	}, 30_000);
 });

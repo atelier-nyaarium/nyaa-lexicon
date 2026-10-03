@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
-import { KNOWLEDGE_SCHEMA, KNOWLEDGE_VIEWS, normalizeSalvaged, restoreSubjects } from "../subjects";
+import { KNOWLEDGE_SCHEMA, normalizeSalvaged, restoreSubjects } from "../subjects";
 import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
 
@@ -32,52 +32,27 @@ function declaration(symbolId: string, name: string, line = 0) {
 	};
 }
 
-function plant(module = "a.ref", symbolId = CART, name = "Cart"): string {
+function plant(module = "a.ref", symbolId = CART, name = "Cart"): void {
 	store.replaceFile({
 		module: module,
 		contentHash: "h1",
 		declarations: [declaration(symbolId, name)],
 		references: [],
 	});
-	return store.declarationsIn(module)[0]?.factId as string;
 }
 
-async function record(symbolId: string, prose = "A shopping cart.", question: "describe" | "why" = "describe") {
-	const cited = store.declaration(symbolId)?.factId as string;
-	const outcome = await service.recordAnswer(symbolId, question, prose, [cited]);
-	if (!outcome.recorded) throw new Error(outcome.reason);
-	return outcome.answer;
+/** Writes, or rewrites, the note at an address. */
+function record(symbolId: string, text = "A shopping cart."): void {
+	const expectedRevision = store.notes.byAddress(symbolId)?.revision ?? 0;
+	const outcome = service.writeNote({ symbolId, text, expectedRevision });
+	if (outcome.outcome === "refused") throw new Error(outcome.reason);
 }
 
-/** Address-keyed tables, for the upgrade path. */
-const OLD_KNOWLEDGE = `
-CREATE TABLE answers (
-  symbolId TEXT NOT NULL, question TEXT NOT NULL, factId TEXT NOT NULL, prose TEXT NOT NULL,
-  citations TEXT NOT NULL, thin INTEGER NOT NULL DEFAULT 0, model TEXT, createdAt INTEGER NOT NULL,
-  doubtId TEXT, doubtReason TEXT, doubtAt INTEGER, doubtBy TEXT, PRIMARY KEY (symbolId, question));
-CREATE TABLE gaps (
-  symbolId TEXT NOT NULL, question TEXT NOT NULL, askCount INTEGER NOT NULL, lastAsked INTEGER NOT NULL,
-  PRIMARY KEY (symbolId, question));`;
-
-/** Rewinds an open store's knowledge tables to the address-keyed shape, at the version given. */
-function rewindToAddresses(version: number): void {
-	store.close();
-	const db = new DatabaseSync(file);
-	for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS ${view}`);
-	for (const table of ["answers", "gaps", "knowledge_subjects"]) db.exec(`DROP TABLE IF EXISTS ${table}`);
-	db.exec(OLD_KNOWLEDGE);
-	db.prepare(
-		"INSERT INTO answers (symbolId, question, factId, prose, citations, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
-	).run(CART, "describe", "lexfact answer a.ref 0000000000000001", "A shopping cart.", "[]", 5);
-	db.prepare(
-		"INSERT INTO answers (symbolId, question, factId, prose, citations, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
-	).run("lexicon reference gone.ref Old#", "describe", "lexfact answer gone.ref 0000000000000002", "Gone.", "[]", 5);
-	db.prepare("INSERT INTO gaps (symbolId, question, askCount, lastAsked) VALUES (?, ?, ?, ?)").run(CART, "why", 3, 7);
-	db.exec(`PRAGMA user_version = ${version}`);
-	db.close();
+function noteAt(symbolId: string): string | null {
+	return store.notes.byAddress(symbolId)?.text ?? null;
 }
 
-/** Opens the store file and binds a service to it, so recall goes through the ledger. */
+/** Opens the store file and binds a service to it. */
 function reopen(): ReturnType<typeof IndexStore.open> {
 	const opened = IndexStore.open(file);
 	store = opened.store;
@@ -107,25 +82,20 @@ afterEach(() => {
 describe("a subject and its address", () => {
 	it("mints one subject on the first write and reuses it after", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const first = store.subjects.forAddress(CART);
-		await record(CART, "Retains checkout state.", "why");
+		record(CART, "Retains checkout state.");
 
 		expect(first).toMatchObject({ symbolId: CART, state: "bound", evidence: "sameLocator" });
 		expect(store.subjects.forAddress(CART)?.subjectId).toBe(first?.subjectId as string);
-		expect(
-			store
-				.answersFor(CART)
-				.map((answer) => answer.question)
-				.sort(),
-		).toEqual(["describe", "why"]);
+		expect(noteAt(CART)).toBe("Retains checkout state.");
 	});
 
 	it("refuses to merge: an address that holds a subject is not a rebind target", async () => {
 		plant();
 		plant("b.ref", "lexicon reference b.ref Basket#", "Basket");
-		await record(CART);
-		await record("lexicon reference b.ref Basket#", "A basket.");
+		record(CART);
+		record("lexicon reference b.ref Basket#", "A basket.");
 
 		const rebound = store.subjects.rebind(
 			[{ from: CART, to: "lexicon reference b.ref Basket#" }],
@@ -134,40 +104,38 @@ describe("a subject and its address", () => {
 		);
 
 		expect(rebound.subjects).toBe(0);
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 
 	it("rebinds idempotently, forwards the vacated address, and keeps the recorded address on the row", async () => {
 		plant();
-		const recorded = await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
 
 		const first = store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9);
 		const again = store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 10);
 
-		expect(first).toMatchObject({ subjects: 1, answers: 1, gaps: 0 });
+		expect(first).toMatchObject({ subjects: 1 });
 		expect(first.applied).toMatchObject([{ from: CART, to: moved, priorFrom: null, priorEvidence: "sameLocator" }]);
 		expect(again).toMatchObject({ subjects: 0, applied: [] });
 		expect(store.subjects.forwardedFrom(CART)?.symbolId).toBe(moved);
-		const answer = store.answer(moved, "describe");
-		expect(answer?.factId).toBe(recorded.factId);
-		expect(answer?.recordedAs).toBe(CART);
-		expect(store.answer(CART, "describe")).toBeNull();
+		expect(store.notes.byAddress(moved)).toMatchObject({ text: "A shopping cart.", recordedAs: CART });
+		expect(noteAt(CART)).toBeNull();
 	});
 
-	it("gives two subjects at one address, in turn, two distinct answer ids for the same prose", async () => {
+	it("gives a reused address a subject of its own, and each keeps its note", async () => {
 		plant();
-		const before = await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
 		store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9);
 		plant("a.ref", CART);
 
-		const after = await record(CART);
+		record(CART, "A newer cart.");
 
-		expect(after.factId).not.toBe(before.factId);
 		expect(store.subjects.forAddress(CART)?.subjectId).not.toBe(store.subjects.forAddress(moved)?.subjectId);
+		expect([noteAt(CART), noteAt(moved)]).toEqual(["A newer cart.", "A shopping cart."]);
 	});
 
 	it("mints a distinct subject at a reused address in the same millisecond as the first", () => {
@@ -183,44 +151,31 @@ describe("a subject and its address", () => {
 		expect(store.subjects.forAddress(moved)?.subjectId).toBe(first.subjectId);
 	});
 
-	it("refuses a second subject's answer under an existing fact id rather than deleting the first", async () => {
-		const basket = "lexicon reference b.ref Basket#";
-		plant();
-		plant("b.ref", basket, "Basket");
-		const first = await record(CART);
-		const other = store.subjects.claim(basket, 5);
-
-		expect(() =>
-			store.saveAnswer(other?.subjectId as string, { ...first, symbolId: basket, recordedAs: basket }),
-		).toThrow();
-		expect(store.answer(CART, "describe")?.factId).toBe(first.factId);
-	});
-
 	it("orphans without erasing the address, restores on a write there, and deletes with its rows", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const subject = store.subjects.forAddress(CART) as NonNullable<ReturnType<typeof store.subjects.forAddress>>;
 
 		store.subjects.orphan(subject.subjectId, 20, "none");
 		expect(store.subjects.forAddress(CART)).toMatchObject({ state: "orphaned", orphanedAt: 20 });
 		expect(store.subjects.orphanedCount()).toBe(1);
 
-		await record(CART, "Retains checkout state.", "why");
+		record(CART, "Retains checkout state.");
 		expect(store.subjects.forAddress(CART)).toMatchObject({
 			subjectId: subject.subjectId,
 			state: "bound",
 			orphanedAt: null,
 		});
-		expect(store.answersFor(CART)).toHaveLength(2);
+		expect(noteAt(CART)).toBe("Retains checkout state.");
 
 		store.subjects.delete(subject.subjectId);
 		expect(store.subjects.forAddress(CART)).toBeNull();
-		expect(store.answer(CART, "describe")).toBeNull();
+		expect(noteAt(CART)).toBeNull();
 	});
 
 	it("is bound again when a re-index puts the declaration back at its kept address", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const subject = store.subjects.forAddress(CART);
 		store.subjects.orphan(subject?.subjectId as string, 20, "none");
 
@@ -232,12 +187,12 @@ describe("a subject and its address", () => {
 			orphanedAt: null,
 			evidence: "sameLocator",
 		});
-		expect(store.liveAnswers().map((answer) => answer.symbolId)).toEqual([CART]);
+		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 
 	it("lists bound subjects whose address no longer resolves", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		store.replaceFile({
 			module: "a.ref",
 			contentHash: "h2",
@@ -246,17 +201,6 @@ describe("a subject and its address", () => {
 		});
 
 		expect(store.subjects.unresolved(10).map((subject) => subject.symbolId)).toEqual([CART]);
-	});
-
-	it("counts a gap only under an address the index holds", () => {
-		store.recordGap("lexicon reference typo.ref Nope#", "describe", 5);
-		plant();
-		store.recordGap(CART, "describe", 5);
-
-		expect(store.subjects.forAddress("lexicon reference typo.ref Nope#")).toBeNull();
-		expect(store.gaps(10)).toEqual([
-			{ symbolId: CART, question: "describe", recordedAs: CART, askCount: 1, lastAsked: 5 },
-		]);
 	});
 
 	it("keeps twenty twins apart: one name, one digest, twenty subjects, and a rebind moves one", async () => {
@@ -276,7 +220,7 @@ describe("a subject and its address", () => {
 				content: "code",
 				digests: [{ symbolId, patternDigest: "same", patternCoverage: "commentsStripped" }],
 			});
-			await record(symbolId, `Cart ${i}.`);
+			record(symbolId, `Cart ${i}.`);
 		}
 		const moved = "lexicon reference moved.ref Cart#";
 		plant("moved.ref", moved);
@@ -288,9 +232,11 @@ describe("a subject and its address", () => {
 			(id) => store.subjects.forAddress(id)?.subjectId ?? store.subjects.forwardedFrom(id)?.subjectId,
 		);
 		expect(new Set(ids).size).toBe(20);
-		expect(service.recallAnswers(moved).map((recalled) => recalled.answer.prose)).toEqual(["Cart 0."]);
-		expect(service.recallAnswers(twins[1] as string).map((recalled) => recalled.answer.prose)).toEqual(["Cart 1."]);
-		expect(service.recallAnswers(twins[0] as string)).toEqual([]);
+		expect([noteAt(moved), noteAt(twins[1] as string), noteAt(twins[0] as string)]).toEqual([
+			"Cart 0.",
+			"Cart 1.",
+			null,
+		]);
 	});
 });
 
@@ -326,7 +272,7 @@ describe("the pattern digest", () => {
 
 	it("follows the bound subject when the declaration is re-indexed", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		store.replaceFile({
 			module: "a.ref",
 			contentHash: "h2",
@@ -349,8 +295,8 @@ describe("the pattern digest", () => {
 		const basket = "lexicon reference b.ref Basket#";
 		plant();
 		plant("b.ref", basket, "Basket");
-		await record(CART);
-		await record(basket, "A basket.");
+		record(CART);
+		record(basket, "A basket.");
 		for (const [module, symbolId, name] of [
 			["a.ref", CART, "Cart"],
 			["b.ref", basket, "Basket"],
@@ -376,52 +322,14 @@ describe("the pattern digest", () => {
 		expect([a?.lastDigest, b?.lastDigest]).toEqual(["same", "same"]);
 		expect([a?.state, b?.state]).toEqual(["bound", "bound"]);
 		expect(a?.subjectId).not.toBe(b?.subjectId as string);
-		expect(service.recallAnswers(CART).map((recalled) => recalled.answer.prose)).toEqual(["A shopping cart."]);
-		expect(service.recallAnswers(basket).map((recalled) => recalled.answer.prose)).toEqual(["A basket."]);
+		expect([noteAt(CART), noteAt(basket)]).toEqual(["A shopping cart.", "A basket."]);
 	});
 });
 
-describe("a store written before subjects", () => {
-	it("is re-keyed in place on first open, bound where the symbol still exists", () => {
-		plant();
-		rewindToAddresses(SCHEMA_VERSION);
-
-		const opened = reopen();
-
-		expect(opened.rebuilt).toBe(false);
-		expect(store.subjects.forAddress(CART)).toMatchObject({ state: "bound" });
-		expect(store.subjects.forAddress("lexicon reference gone.ref Old#")).toMatchObject({ state: "orphaned" });
-		expect(store.askCount(CART, "why")).toBe(3);
-		const recalled = service.recallAnswers(CART);
-		expect(recalled.map((entry) => entry.answer.factId)).toEqual(["lexfact answer a.ref 0000000000000001"]);
-		expect(recalled[0]?.subject).toMatchObject({ recordedAs: CART, evidence: "none" });
-	});
-
-	it("carries its knowledge across a rebuild, minting subjects for every address", () => {
-		plant();
-		rewindToAddresses(SCHEMA_VERSION - 1);
-
-		const opened = reopen();
-
-		expect(opened.rebuilt).toBe(true);
-		expect(service.recallAnswers(CART).map((recalled) => recalled.answer.prose)).toEqual(["A shopping cart."]);
-		expect(
-			service.recallAnswers("lexicon reference gone.ref Old#").map((recalled) => recalled.answer.prose),
-		).toEqual(["Gone."]);
-		expect(store.askCount(CART, "why")).toBe(3);
-		expect(store.subjects.forAddress(CART)).toMatchObject({ state: "bound" });
-		// Minted bound for the sweep to judge: nothing resolves until the scan re-mints the facts.
-		expect(
-			store.subjects
-				.unresolved(10)
-				.map((subject) => subject.symbolId)
-				.sort(),
-		).toEqual([CART, "lexicon reference gone.ref Old#"].sort());
-	});
-
+describe("a rebuild", () => {
 	it("carries subjects themselves across a rebuild, orphans included", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const subject = store.subjects.forAddress(CART);
 		store.subjects.orphan(subject?.subjectId as string, 20, "none");
 		store.close();
@@ -436,12 +344,12 @@ describe("a store written before subjects", () => {
 			state: "orphaned",
 			orphanedAt: 20,
 		});
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 
-	it("revives a subject row a rebuild lost, at the recorded address, so its answer stays readable", async () => {
+	it("revives a subject row a rebuild lost, at the recorded address, so its note stays readable", async () => {
 		plant();
-		const recorded = await record(CART);
+		record(CART);
 		store.close();
 		const db = new DatabaseSync(file);
 		db.exec("DELETE FROM knowledge_subjects");
@@ -450,19 +358,16 @@ describe("a store written before subjects", () => {
 
 		reopen();
 
-		expect(store.answer(CART, "describe")?.factId).toBe(recorded.factId);
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(CART)).toMatchObject({ state: "bound", evidence: "none" });
 	});
 });
 
 describe("a rebind a step journaled", () => {
-	it("revises knowledge on rebind and undo, but not for demand counting", async () => {
+	it("revises knowledge on rebind and undo", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const generation = store.knowledgeGeneration();
-		store.recordGap(CART, "why", 8);
-		expect(store.askCount(CART, "why")).toBe(1);
-		expect(store.knowledgeGeneration()).toBe(generation);
 
 		const moved = "lexicon reference b.ref Cart#";
 		const transactions = journalMove([{ from: CART, to: moved }]);
@@ -475,7 +380,7 @@ describe("a rebind a step journaled", () => {
 	// Recovery puts the files back to their before-images, so the addresses go back with them.
 	it("is reversed when recovery undoes the unfinished step", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		const entries = [{ from: CART, to: moved }];
 		const transactions = new TransactionManager(store, dir);
@@ -484,11 +389,11 @@ describe("a rebind a step journaled", () => {
 		if (!begun.ok) throw new Error(begun.reason);
 		transactions.rebind(begun.stepNo, entries, "journalMove");
 		transactions.completeStep(begun.stepNo, "reindexed");
-		expect(store.answer(moved, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(moved)).toBe("A shopping cart.");
 
 		transactions.recover();
 
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(moved)).toBeNull();
 	});
 
@@ -522,7 +427,7 @@ describe("a rebind a step journaled", () => {
 		plant();
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
-		await record(moved, "The other cart.");
+		record(moved, "The other cart.");
 		const transactions = new TransactionManager(store, dir);
 		transactions.start();
 		const begun = transactions.beginStep("move", [], {
@@ -532,13 +437,13 @@ describe("a rebind a step journaled", () => {
 
 		transactions.recover();
 
-		expect(store.answer(moved, "describe")?.prose).toBe("The other cart.");
+		expect(noteAt(moved)).toBe("The other cart.");
 		expect(store.subjects.forAddress(CART)).toBeNull();
 	});
 
 	it("is reversed for an entry whose source recovery restored, though its destination conflicts", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		const transactions = journalMove([{ from: CART, to: moved }]);
 		writeFileSync(path.join(dir, "b.ref"), "edited by someone else\n");
@@ -546,13 +451,13 @@ describe("a rebind a step journaled", () => {
 		const outcome = transactions.recover();
 
 		expect(outcome).toMatchObject({ restored: ["a.ref"], conflicts: ["b.ref"] });
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(moved)).toBeNull();
 	});
 
 	it("stays where the step put it when both of an entry's files conflict, since nothing restored them", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		const transactions = journalMove([{ from: CART, to: moved }]);
 		writeFileSync(path.join(dir, "a.ref"), "edited by someone else\n");
@@ -561,37 +466,37 @@ describe("a rebind a step journaled", () => {
 		const outcome = transactions.recover();
 
 		expect([...outcome.conflicts].sort()).toEqual(["a.ref", "b.ref"]);
-		expect(store.answer(moved, "describe")?.prose).toBe("A shopping cart.");
-		expect(store.answer(CART, "describe")).toBeNull();
+		expect(noteAt(moved)).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBeNull();
 	});
 
 	it("is reversed by undo, since the files go back", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		const transactions = journalMove([{ from: CART, to: moved }]);
 
 		expect(transactions.undo().undone).toBe(true);
 
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(moved)).toBeNull();
 	});
 
 	it("is retraced by revert along with every tracked file", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		const transactions = journalMove([{ from: CART, to: moved }]);
 
 		expect(transactions.revert(transactions.status().drifted).reverted).toBe(true);
 
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(moved)).toBeNull();
 	});
 
 	it("reverses only what the step applied, so a journaled no-op leaves an earlier move alone", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		const transactions = new TransactionManager(store, dir);
 		transactions.start();
@@ -604,25 +509,25 @@ describe("a rebind a step journaled", () => {
 
 		expect(transactions.undo().undone).toBe(true);
 
-		expect(store.answer(moved, "describe")?.prose).toBe("A shopping cart.");
-		expect(store.answer(CART, "describe")).toBeNull();
+		expect(noteAt(moved)).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBeNull();
 	});
 
 	it("retraces a subject two steps moved all the way back on revert, to the state it started in", async () => {
 		plant();
-		await record(CART);
+		record(CART);
 		const b = "lexicon reference b.ref Cart#";
 		const c = "lexicon reference c.ref Cart#";
 		const transactions = new TransactionManager(store, dir);
 		transactions.start();
 		movedStep(transactions, CART, b);
 		movedStep(transactions, b, c);
-		expect(store.answer(c, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(c)).toBe("A shopping cart.");
 
 		expect(transactions.revert(transactions.status().drifted).reverted).toBe(true);
 
 		expect(store.subjects.forAddress(CART)).toMatchObject({ evidence: "sameLocator", fromSymbolId: null });
-		expect(store.answer(CART, "describe")?.prose).toBe("A shopping cart.");
+		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(b)).toBeNull();
 	});
 });
@@ -635,13 +540,10 @@ describe("a knowledge row's key", () => {
 			"INSERT INTO knowledge_subjects (subjectId, currentSymbolId, state, boundAt, evidence) VALUES ('s1', ?, 'bound', 1, 'none')",
 		).run(CART);
 		db.prepare(
-			"INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, createdAt) VALUES ('s1', 'describe', ?, 'f1', 'p', '[]', 1)",
-		).run(CART);
-		db.prepare(
-			"INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked) VALUES ('s1', 'why', ?, 1, 1)",
+			"INSERT INTO symbol_notes (subjectId, recordedAs, revision, text, authoredAt, editedAt) VALUES ('s1', ?, 1, 'p', 1, 1)",
 		).run(CART);
 
-		for (const table of ["knowledge_subjects", "answers", "gaps"]) {
+		for (const table of ["knowledge_subjects", "symbol_notes"]) {
 			expect(() => db.prepare(`UPDATE ${table} SET subjectId = 's2'`).run()).toThrow(/never changes/);
 		}
 		db.close();

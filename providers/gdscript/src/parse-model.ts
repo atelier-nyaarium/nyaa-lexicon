@@ -77,7 +77,10 @@ export interface ReferenceBlock {
 	endLine: number;
 	indent: number;
 	containerId: string;
+	/** Keys its parameters and locals; not always a symbol id. */
 	functionId?: string;
+	/** Its tokens, when narrower than its lines. */
+	span?: Range;
 }
 
 export interface Token {

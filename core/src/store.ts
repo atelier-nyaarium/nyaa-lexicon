@@ -8,14 +8,12 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
 	type AllList,
-	type Answer,
 	type ContentCounts,
 	type ContentTotals,
 	commentFactId,
 	compileExclusion,
 	type Declaration,
 	type DocRegion,
-	type Doubt,
 	declarationFactId,
 	defined,
 	docFactId,
@@ -35,7 +33,6 @@ import {
 	importFactId,
 	type Landing,
 	type Literal,
-	languageOf,
 	literalFactId,
 	type Metrics,
 	type ModuleExclusion,
@@ -47,6 +44,7 @@ import {
 	type ReferenceOrigin,
 	type ReferenceRole,
 	referenceFactId,
+	SCHEMA_VERSION,
 	type ScanCounts,
 	type ScopeContribution,
 	type StoredComment,
@@ -88,14 +86,9 @@ import {
 	joinNoteFields,
 	KNOWLEDGE_SCHEMA,
 	KNOWLEDGE_TABLES,
-	KNOWLEDGE_VIEWS,
 	KnowledgeSubjects,
 	normalizeSalvaged,
-	rekeyKnowledge,
 	restoreSubjects,
-	type SalvagedAnswer,
-	type SalvagedGap,
-	type StrandedRow,
 	SWEEP_START,
 	type SweepCursor,
 	type SweepPass,
@@ -136,6 +129,8 @@ export interface LiteralFilter {
 	low?: number | undefined;
 	high?: number | undefined;
 	key?: string | undefined;
+	/** A file, or every module in a folder. */
+	module?: string | undefined;
 	scope?: ScopeFilter | undefined;
 	hidden: HiddenModules;
 }
@@ -217,8 +212,7 @@ interface SurfaceEntry {
 ////////////////////////////////
 //  Constants
 
-/** Store layout version; mismatches rebuild the index. */
-export const SCHEMA_VERSION = 26;
+export { SCHEMA_VERSION };
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -561,8 +555,7 @@ CREATE INDEX docs_module ON docs(module);
 CREATE INDEX docs_anchor ON docs(anchorId);
 CREATE INDEX docs_fact ON docs(factId);
 
--- The knowledge layer's tables, keyed by subject and owned by subjects.ts. One answer per subject
--- per question class, replaced rather than versioned; citations are JSON, read whole.
+-- The knowledge layer's tables, keyed by subject and owned by subjects.ts.
 ${KNOWLEDGE_SCHEMA}
 
 ${JOURNAL_DDL}
@@ -690,10 +683,8 @@ type SalvagedKnowledge = Record<string, Array<Record<string, unknown>>>;
 /**
  * Read by column NAME, so rows written under an older schema carry what they have.
  *
- * A knowledge table that cannot be read salvages empty, since an answer nobody can parse is not
- * worth failing an open over. A JOURNAL table that cannot be read throws: it describes files
- * already written to disk, and opening as though the transaction never existed would strand a
- * half-applied refactor with nothing left that knows how to undo it.
+ * An unreadable knowledge table salvages empty. An unreadable JOURNAL table throws: its rows describe
+ * files already on disk, and dropping them strands a half-applied refactor.
  */
 function salvageKnowledge(db: DatabaseSync): SalvagedKnowledge {
 	const exists = new Set(
@@ -742,78 +733,9 @@ function restoreKnowledge(
 	const subjects = new KnowledgeSubjects(db);
 	let unplaced = 0;
 
-	// Rows that name a subject are placed before rows that only name an address, newest first, so a
-	// lost subject is revived where it was last written about and nothing mints under it meanwhile.
-	// A subject refused there is refused whole: an older row never resurrects it at a stale address.
-	const placed = new Map<SalvagedAnswer | SalvagedGap, string>();
-	const refused = new Set<string>();
-	const recency = (row: SalvagedAnswer | SalvagedGap) => ("createdAt" in row ? row.createdAt : row.lastAsked);
-	const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-	const ordered = [...rows.answers, ...rows.gaps].sort(
-		(a, b) =>
-			Number(a.subjectId === null) - Number(b.subjectId === null) ||
-			recency(b) - recency(a) ||
-			order(a.recordedAs, b.recordedAs) ||
-			order(a.question, b.question),
-	);
-	for (const row of ordered) {
-		if (row.subjectId !== null && refused.has(row.subjectId)) {
-			unplaced++;
-			continue;
-		}
-		const placement = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
-		if (placement.placed) placed.set(row, placement.subjectId);
-		else {
-			unplaced++;
-			if (row.subjectId !== null) refused.add(row.subjectId);
-		}
-	}
-
-	// Plain inserts: two rows placed on one subject and question is corruption, and a rebuild that
-	// fails loudly beats one that keeps whichever row came second.
-	const answer = db.prepare(
-		`INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, thin, model,
-		 createdAt, doubtId, doubtReason, doubtAt, doubtBy)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	);
-	for (const row of rows.answers) {
-		const subjectId = placed.get(row);
-		if (subjectId === undefined) continue;
-		// Doubt survives a rebuild for the same reason the answer does: someone's declared distrust
-		// is not derivable from source, and a schema bump erasing it is a silent clear.
-		answer.run(
-			subjectId,
-			row.question,
-			row.recordedAs,
-			row.factId,
-			row.prose,
-			row.citations,
-			row.thin,
-			row.model,
-			row.createdAt,
-			row.doubtId,
-			row.doubtReason,
-			row.doubtAt,
-			row.doubtBy,
-		);
-	}
-
-	const gap = db.prepare(
-		"INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked) VALUES (?, ?, ?, ?, ?)",
-	);
-	for (const row of rows.gaps) {
-		const subjectId = placed.get(row);
-		if (subjectId === undefined) continue;
-		gap.run(subjectId, row.question, row.recordedAs, row.askCount, row.lastAsked);
-	}
-
 	// A note's links and proposal follow the note to wherever it was placed.
 	const notePlaced = new Map<string, string>();
 	for (const row of rows.notes) {
-		if (row.subjectId !== null && refused.has(row.subjectId)) {
-			unplaced++;
-			continue;
-		}
 		const placement = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
 		if (!placement.placed || notePlaced.has(placement.subjectId)) {
 			unplaced++;
@@ -1108,7 +1030,7 @@ export class IndexStore {
 
 	/** The newest stamp written or held, so no two commits share one. */
 	private newestStamp: number;
-	/** In-process recall changes. */
+	/** In-process knowledge-changing writes. */
 	private knowledgeTurns = 0;
 	private transactionDepth = 0;
 	private speculating = false;
@@ -1239,10 +1161,7 @@ export class IndexStore {
 		}
 
 		if (version !== SCHEMA_VERSION) {
-			// The knowledge base is carried across the rebuild. FACTS are derivable from source, so
-			// dropping them is a re-index; ANSWERS are written by people and models and are the one
-			// thing here that cannot be regenerated. Their citations keep working too, because a fact
-			// id is a digest of content: re-indexing unchanged code mints the identical ids.
+			// Knowledge crosses the rebuild: facts reindex from source; notes cannot be regenerated.
 			const salvaged = salvageKnowledge(db);
 
 			// Asked of the database rather than listed here. A hand-maintained drop list silently
@@ -1251,12 +1170,16 @@ export class IndexStore {
 			const tables = db
 				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
 				.all() as Array<{ name: string }>;
+			// Every view, so one over a retired table never outlives it.
+			const views = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view'").all() as Array<{
+				name: string;
+			}>;
 
 			// One transaction over drop, create and restore. Crashing between them would otherwise
 			// leave a store with no journal and a workspace with a half-applied refactor in it.
 			db.exec("BEGIN");
 			try {
-				for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
+				for (const view of views) db.exec(`DROP VIEW IF EXISTS "${view.name}"`);
 				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
 				db.exec(SCHEMA);
 				({ unplaced, dropped } = restoreKnowledge(db, salvaged, clock.now(), seededAt));
@@ -1307,17 +1230,6 @@ export class IndexStore {
 		}
 		if (!columnExists(db, "symbols", "contains")) {
 			db.exec("ALTER TABLE symbols ADD COLUMN contains TEXT CHECK (contains IN ('members', 'locals'))");
-		}
-		// Once, in place, preserving every row.
-		if (!columnExists(db, "answers", "subjectId")) {
-			db.exec("BEGIN");
-			try {
-				rekeyKnowledge(db, clock.now());
-				db.exec("COMMIT");
-			} catch (error) {
-				db.exec("ROLLBACK");
-				throw error;
-			}
 		}
 		// Once, in place, keeping every note someone wrote.
 		if (columnExists(db, "symbol_notes", "summary")) {
@@ -2447,14 +2359,6 @@ export class IndexStore {
 		return report;
 	}
 
-	strandedRows(limit: number): StrandedRow[] {
-		return this.subjects.strandedRows(limit);
-	}
-
-	strandedCount(): number {
-		return this.subjects.strandedCount();
-	}
-
 	readScanSummary(): (ScanCounts & { at: number }) | null {
 		const raw = readMeta(this.db, SCAN_SUMMARY_KEY);
 		if (raw === null) return null;
@@ -2563,14 +2467,6 @@ export class IndexStore {
 				const row = this.db.prepare("SELECT * FROM comments WHERE factId = ?").get(factId);
 				return row ? { fact: "comment", ...rowToComment(row) } : null;
 			}
-			case "answer": {
-				const row = this.db.prepare("SELECT * FROM answers_addressed WHERE factId = ?").get(factId);
-				return row ? { fact: "answer", ...rowToAnswer(row as unknown as AnswerRow) } : null;
-			}
-			// A doubt id is a clear-handshake token, not a citable fact. Refusing to resolve it here is
-			// what keeps an answer from being grounded on someone's transient distrust.
-			case "doubt":
-				return null;
 			case "doc": {
 				const row = this.db.prepare("SELECT * FROM docs WHERE factId = ?").get(factId);
 				return row ? { fact: "doc", ...rowToDoc(row) } : null;
@@ -2583,135 +2479,11 @@ export class IndexStore {
 	}
 
 	////////////////////////////////
-	//  Answers
+	//  Knowledge
 
-	/** Writes or replaces one answer under its subject. Validation happens above this: the store records, it does not judge. */
-	saveAnswer(subjectId: string, answer: Answer): void {
-		this.inTransaction(() => this.writeAnswer(subjectId, answer));
-	}
-
-	private writeAnswer(subjectId: string, answer: Answer): void {
-		this.db
-			.prepare(
-				`INSERT INTO answers (subjectId, question, recordedAs, factId, prose, citations, thin, model,
-				 createdAt, doubtId, doubtReason, doubtAt, doubtBy)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(subjectId, question) DO UPDATE SET recordedAs = excluded.recordedAs, factId = excluded.factId,
-				 prose = excluded.prose, citations = excluded.citations, thin = excluded.thin, model = excluded.model,
-				 createdAt = excluded.createdAt, doubtId = excluded.doubtId, doubtReason = excluded.doubtReason,
-				 doubtAt = excluded.doubtAt, doubtBy = excluded.doubtBy`,
-			)
-			.run(
-				subjectId,
-				answer.question,
-				answer.recordedAs ?? answer.symbolId,
-				answer.factId,
-				answer.prose,
-				JSON.stringify(answer.citations),
-				answer.thin ? 1 : 0,
-				answer.model ?? null,
-				answer.createdAt,
-				answer.doubt?.factId ?? null,
-				answer.doubt?.reason ?? null,
-				answer.doubt?.at ?? null,
-				answer.doubt?.by ?? null,
-			);
-		// Answering closes the gap. The ask count served its purpose; keeping the row would make
-		// every later gap query filter it out forever.
-		this.db.prepare("DELETE FROM gaps WHERE subjectId = ? AND question = ?").run(subjectId, answer.question);
-		this.recordKnowledgeWrite(true);
-	}
-
-	/** Recall-changing write count. */
+	/** Knowledge-changing write count. */
 	knowledgeGeneration(): number {
 		return this.knowledgeTurns;
-	}
-
-	/**
-	 * Attach or replace a doubt on an existing answer without touching anything else.
-	 *
-	 * Deliberately NOT `saveAnswer`: that path closes the gap row, and a doubt is the opposite of an
-	 * answer arriving. Returns false when no answer exists to doubt.
-	 */
-	setDoubt(symbolId: string, question: string, doubt: Doubt): boolean {
-		const result = this.db
-			.prepare(
-				`UPDATE answers SET doubtId = ?, doubtReason = ?, doubtAt = ?, doubtBy = ?
-				 WHERE subjectId = (SELECT subjectId FROM subjects_addressed WHERE symbolId = ?) AND question = ?`,
-			)
-			.run(doubt.factId, doubt.reason, doubt.at, doubt.by ?? null, symbolId, question);
-		this.recordKnowledgeWrite(result.changes > 0);
-		return result.changes > 0;
-	}
-
-	/** How many answers currently carry a declared doubt. A count, so it stays cheap at any size. */
-	doubtedCount(): number {
-		return (this.db.prepare("SELECT COUNT(*) AS n FROM answers WHERE doubtId IS NOT NULL").get() as { n: number })
-			.n;
-	}
-
-	/** Every answer carrying a declared doubt. One indexed read, cheap at any knowledge-base size. */
-	doubtedAnswers(): Answer[] {
-		const rows = this.db
-			.prepare("SELECT * FROM answers_addressed WHERE doubtId IS NOT NULL ORDER BY symbolId, question")
-			.all();
-		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
-	}
-
-	/** Doubted answers whose address the index holds: the ones a reader can go and address. */
-	liveDoubtedAnswers(): Answer[] {
-		const rows = this.db
-			.prepare("SELECT * FROM answers_live WHERE doubtId IS NOT NULL ORDER BY symbolId, question")
-			.all();
-		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
-	}
-
-	/** Counts one ask that found nothing, or found something stale, under the subject the address
-	 * claims. The insert is guarded on the address being held, in the statement itself: a typo would
-	 * sit in the ledger forever, and a stranded subject's demand could never be answered where asked. */
-	recordGap(symbolId: string, question: string, at: number): void {
-		const subject = this.subjects.claim(symbolId, at);
-		if (subject === null) return;
-		this.db
-			.prepare(
-				`INSERT INTO gaps (subjectId, question, recordedAs, askCount, lastAsked)
-				 SELECT ?, ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM symbols WHERE symbolId = ?)
-				 ON CONFLICT(subjectId, question) DO UPDATE SET askCount = askCount + 1, lastAsked = excluded.lastAsked`,
-			)
-			.run(subject.subjectId, question, symbolId, at, symbolId);
-	}
-
-	/** Open gaps, most asked-for first. Fan-in joins in above this, since it lives in refs. */
-	gaps(limit: number): GapRow[] {
-		return this.db
-			.prepare(
-				"SELECT symbolId, question, recordedAs, askCount, lastAsked FROM gaps_addressed ORDER BY askCount DESC, lastAsked DESC LIMIT ?",
-			)
-			.all(limit) as unknown as GapRow[];
-	}
-
-	/** Open gaps whose address the index holds, most asked-for first: the demand somebody can meet. */
-	liveGaps(limit: number): GapRow[] {
-		return this.db
-			.prepare(
-				"SELECT symbolId, question, recordedAs, askCount, lastAsked FROM gaps_live ORDER BY askCount DESC, lastAsked DESC LIMIT ?",
-			)
-			.all(limit) as unknown as GapRow[];
-	}
-
-	/** One gap's ask count, zero when nobody has asked. */
-	askCount(symbolId: string, question: string): number {
-		const row = this.db
-			.prepare("SELECT askCount FROM gaps_addressed WHERE symbolId = ? AND question = ?")
-			.get(symbolId, question) as { askCount: number } | undefined;
-		return row?.askCount ?? 0;
-	}
-
-	answer(symbolId: string, question: string): Answer | null {
-		const row = this.db
-			.prepare("SELECT * FROM answers_addressed WHERE symbolId = ? AND question = ?")
-			.get(symbolId, question) as AnswerRow | undefined;
-		return row === undefined ? null : rowToAnswer(row);
 	}
 
 	/** A declaration's pattern digest and what it covers, or null before a full parse minted one. */
@@ -2729,49 +2501,6 @@ export class IndexStore {
 			symbolId: string;
 		}>;
 		return rows.map((row) => row.symbolId);
-	}
-
-	/** Every answer about one symbol, whatever was asked. */
-	answersFor(symbolId: string): Answer[] {
-		const rows = this.db
-			.prepare("SELECT * FROM answers_addressed WHERE symbolId = ? ORDER BY question")
-			.all(symbolId);
-		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
-	}
-
-	/** The whole knowledge base, for coverage reporting. Small by nature: prose, not facts. */
-	allAnswers(): Answer[] {
-		const rows = this.db.prepare("SELECT * FROM answers_addressed ORDER BY symbolId, question").all();
-		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
-	}
-
-	/** Answers whose address the index holds: the ones staleness can invite work on. */
-	liveAnswers(): Answer[] {
-		const rows = this.db.prepare("SELECT * FROM answers_live ORDER BY symbolId, question").all();
-		return rows.map((row) => rowToAnswer(row as unknown as AnswerRow));
-	}
-
-	/** How many answers are live, which is what a scan cap over them must count. */
-	liveAnswerCount(): number {
-		return (this.db.prepare("SELECT COUNT(*) AS n FROM answers_live").get() as { n: number }).n;
-	}
-
-	/** How many answers exist, and how many under one author tag. The count nobody has to keep. */
-	answerCounts(model?: string): { total: number; byModel?: number } {
-		const total = (this.db.prepare("SELECT COUNT(*) AS n FROM answers").get() as { n: number }).n;
-		if (model === undefined) return { total };
-		const byModel = (
-			this.db.prepare("SELECT COUNT(*) AS n FROM answers WHERE model = ?").get(model) as { n: number }
-		).n;
-		return { total, byModel };
-	}
-
-	/** Literals written inside one declaration. The text a symbol carries, as opposed to near it. */
-	literalsContainedBy(containerId: string, limit: number): StoredLiteral[] {
-		const rows = this.db
-			.prepare("SELECT * FROM literals WHERE containerId = ? ORDER BY startLine, startChar LIMIT ?")
-			.all(containerId, limit);
-		return rows.map(rowToLiteral);
 	}
 
 	////////////////////////////////
@@ -2964,10 +2693,7 @@ export class IndexStore {
 			clauses.push("kind = ?");
 			values.push(options.kind);
 		}
-		if (options.module !== undefined) {
-			clauses.push("module LIKE ? ESCAPE '\\'");
-			values.push(`%${likePattern(options.module)}%`);
-		}
+		if (options.module !== undefined) under("module", options.module, clauses, values);
 		if (options.scope?.module !== undefined) {
 			clauses.push("symbolId >= ? AND symbolId < ?");
 			values.push(options.scope.low as string, options.scope.high as string);
@@ -3300,33 +3026,6 @@ export class IndexStore {
 		return verdictFromRow(row.generated, row.generatedReason);
 	}
 
-	/** Seedable: exported or unknown, file not generated, with a comment, prose, an outside reference, or in code a literal; fan-in then id. */
-	// A data field's value literal is the field itself, so it is substance in a code file only.
-	// Reads a verdict exactly as `verdictFromRow` does: only a clean yes excludes, only a clean no is known.
-	seedCandidates(): SeedCandidate[] {
-		const rows = this.db
-			.prepare(
-				`SELECT s.symbolId AS symbolId,
-				        (SELECT COUNT(*) FROM refs r WHERE r.targetId = s.symbolId AND ${useSql("r")}) AS fanIn,
-				        (s.exported IS NULL) AS exportedUnknown,
-				        (NOT (f.generated IS 'no' AND f.generatedReason IS NULL)) AS generatedUnknown
-				 FROM symbols s JOIN files f ON f.module = s.module
-				 WHERE (s.exported IS NULL OR s.exported = 1)
-				   AND NOT (f.generated IS 'yes' AND f.generatedReason IS NULL)
-				   AND (EXISTS (SELECT 1 FROM comments c WHERE c.anchorId = s.symbolId) OR EXISTS (SELECT 1 FROM docs d WHERE d.anchorId = s.symbolId)
-				     OR EXISTS (SELECT 1 FROM refs r WHERE r.targetId = s.symbolId AND ${useSql("r")} AND (r.fromId IS NULL OR r.fromId <> s.symbolId))
-				     OR ((f.content IS NULL OR f.content = 'code') AND EXISTS (SELECT 1 FROM literals l WHERE l.containerId = s.symbolId)))
-				 ORDER BY fanIn DESC, s.symbolId`,
-			)
-			.all() as Array<{ symbolId: string; fanIn: number; exportedUnknown: number; generatedUnknown: number }>;
-		return rows.map((row) => ({
-			symbolId: row.symbolId,
-			fanIn: row.fanIn,
-			exportedUnknown: row.exportedUnknown === 1,
-			generatedUnknown: row.generatedUnknown === 1,
-		}));
-	}
-
 	/** Every row takes the verdict admission just reached, so a file left unread keeps no stale one. */
 	syncGenerated(verdicts: ReadonlyMap<string, GeneratedVerdict>): number {
 		const rows = this.db.prepare("SELECT module, generated, generatedReason FROM files").all() as Array<{
@@ -3350,19 +3049,6 @@ export class IndexStore {
 		return stale.length;
 	}
 
-	/** Declarations per language, read from one id per module since a module has one provider. */
-	declarationsByLanguage(): Map<string, number> {
-		const counts = new Map<string, number>();
-		const rows = this.db
-			.prepare("SELECT MIN(symbolId) AS sample, COUNT(*) AS declarations FROM symbols GROUP BY module")
-			.all() as Array<{ sample: string; declarations: number }>;
-		for (const row of rows) {
-			const language = languageOf(row.sample);
-			if (language !== null) counts.set(language, (counts.get(language) ?? 0) + row.declarations);
-		}
-		return counts;
-	}
-
 	/** Symbols nothing references. Honest only as far as binding reaches, which the caller states. */
 	unreferencedSymbols(): StoredDeclaration[] {
 		const rows = this.db
@@ -3380,14 +3066,6 @@ export class IndexStore {
 
 ////////////////////////////////
 //  Functions & Helpers
-
-/** One seedable declaration, with what the index could not tell about it. */
-export interface SeedCandidate {
-	symbolId: string;
-	fanIn: number;
-	exportedUnknown: boolean;
-	generatedUnknown: boolean;
-}
 
 /** A stored verdict read back; a pair the store never writes reads as none. */
 function verdictFromRow(status: string, reason: string | null): GeneratedVerdict | null {
@@ -3566,6 +3244,7 @@ function literalWhere(filter: LiteralFilter) {
 		where.push("s.name = ?");
 		values.push(filter.key);
 	}
+	if (filter.module !== undefined) under("l.module", filter.module, where, values);
 	if (filter.scope?.module !== undefined) {
 		where.push("l.containerId >= ? AND l.containerId < ?");
 		values.push(filter.scope.low as string, filter.scope.high as string);
@@ -3580,6 +3259,12 @@ function literalWhere(filter: LiteralFilter) {
 /** Escapes what LIKE treats as wildcards, so a search for `100%` is a search for `100%`. */
 function likePattern(text: string): string {
 	return searchTerm(text).replace(/[%_\\]/g, "\\$&");
+}
+
+/** A module path names that file, or every module in that folder. Case-sensitive, as LIKE is not. */
+function under(column: string, path: string, where: string[], values: Array<string | number>): void {
+	where.push(`(${column} = ? OR substr(${column}, 1, length(?)) = ?)`);
+	values.push(path, `${path}/`, `${path}/`);
 }
 
 /** Source order, and by column too: two comments can share a line. */
@@ -3598,10 +3283,7 @@ function commentWhere(filter: CommentFilter, text?: string): { clause: string; v
 		where.push("form = ?");
 		values.push(filter.form);
 	}
-	if (filter.module !== undefined) {
-		where.push("module = ?");
-		values.push(filter.module);
-	}
+	if (filter.module !== undefined) under("module", filter.module, where, values);
 	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
 }
 
@@ -3621,10 +3303,7 @@ function docWhere(filter: DocFilter, text?: string): { clause: string; values: A
 		where.push("fenced = ?");
 		values.push(filter.fenced ? 1 : 0);
 	}
-	if (filter.module !== undefined) {
-		where.push("module = ?");
-		values.push(filter.module);
-	}
+	if (filter.module !== undefined) under("module", filter.module, where, values);
 	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
 }
 
@@ -3764,59 +3443,6 @@ interface ExportRow {
 function rowToExport(raw: unknown): StoredExport {
 	const row = raw as ExportRow;
 	return { ...(JSON.parse(row.edge) as Export), factId: row.factId, module: row.module };
-}
-
-/** One open gap, at the subject's current address and at the address it was first asked at. */
-export interface GapRow {
-	symbolId: string;
-	question: string;
-	recordedAs: string;
-	askCount: number;
-	lastAsked: number;
-}
-
-interface AnswerRow {
-	subjectId: string;
-	symbolId: string;
-	recordedAs: string;
-	question: string;
-	factId: string;
-	prose: string;
-	citations: string;
-	thin: number;
-	model: string | null;
-	createdAt: number;
-	doubtId: string | null;
-	doubtReason: string | null;
-	doubtAt: number | null;
-	doubtBy: string | null;
-}
-
-function rowToAnswer(row: AnswerRow): Answer {
-	// Written by this store and never by hand, so a parse failure means corruption rather than input
-	// to validate. An empty citation list would be refused before it could be stored.
-	const citations = JSON.parse(row.citations) as string[];
-	const doubt: Doubt | undefined =
-		row.doubtId === null || row.doubtReason === null || row.doubtAt === null
-			? undefined
-			: {
-					factId: row.doubtId,
-					reason: row.doubtReason,
-					at: row.doubtAt,
-					...(row.doubtBy === null ? {} : { by: row.doubtBy }),
-				};
-	return {
-		symbolId: row.symbolId,
-		recordedAs: row.recordedAs,
-		question: row.question as Answer["question"],
-		factId: row.factId,
-		prose: row.prose,
-		citations,
-		thin: row.thin === 1,
-		createdAt: row.createdAt,
-		...(row.model === null ? {} : { model: row.model }),
-		...defined({ doubt }),
-	};
 }
 
 function rowToReference(raw: unknown): StoredReference {

@@ -228,6 +228,68 @@ describe("choosing the splice point", () => {
 	});
 });
 
+describe("indenting a member's multiline literal", () => {
+	/** A class with one member, and a parse that reports the inserted template literal over its lines. */
+	function world(dedented: boolean): World {
+		return {
+			text: ["class C {", "\tonly() {}", "}", ""].join("\n"),
+			declarations: [
+				declarationOf({ name: "C", range: range(0, 0, 2, 1), memberInsertLine: 2 }),
+				member({ name: "only", container: "C", range: range(1, 1, 1, 10), selection: range(1, 1, 1, 5) }),
+			],
+			parse: (candidate) => {
+				const rows = candidate.split("\n");
+				const start = rows.findIndex((row) => row.includes("return `a"));
+				const end = rows.findIndex((row) => row.includes("b`"));
+				const literal = { kind: "string" as const, value: "a\nb", range: range(start, 9, end, 2) };
+				return {
+					parsed: true,
+					facts: {
+						...facts([]),
+						literals:
+							start === -1 ? [] : [{ ...literal, ...(dedented ? { dedented: true as const } : {}) }],
+					},
+				};
+			},
+		};
+	}
+	// A whitespace-only line inside the literal, then an empty one.
+	const TEXT = "render() {\n\treturn `a\n\t\n\nb`;\n}";
+
+	it("keeps the literal's later lines as written, and re-indents them where the language strips them, blank lines included", async () => {
+		const kept = await plan(world(false), { after: id("only", "C"), text: TEXT });
+		const stripped = await plan(world(true), { after: id("only", "C"), text: TEXT });
+
+		expect({
+			kept: kept.state === "planned" ? kept.block : kept.state,
+			stripped: stripped.state === "planned" ? stripped.block : stripped.state,
+		}).toEqual({
+			kept: "\trender() {\n\t\treturn `a\n\t\n\nb`;\n\t}",
+			stripped: "\trender() {\n\t\treturn `a\n\t\t\n\n\tb`;\n\t}",
+		});
+	});
+
+	it("measures literal lines from where the block lands, not from an earlier copy of it", async () => {
+		const copy = "\trender() {\n\t\treturn 1;\n\t}";
+		const outcome = await plan(
+			{
+				text: ["const DOC = `", copy, "`;", "class C {", "\tonly() {}", "}", ""].join("\n"),
+				declarations: [
+					declarationOf({ name: "C", range: range(5, 0, 7, 1), memberInsertLine: 7 }),
+					member({ name: "only", container: "C", range: range(6, 1, 6, 10), selection: range(6, 1, 6, 5) }),
+				],
+				parse: () => ({
+					parsed: true,
+					facts: { ...facts([]), literals: [{ kind: "string", value: copy, range: range(0, 12, 4, 1) }] },
+				}),
+			},
+			{ after: id("only", "C"), text: "render() {\n\treturn 1;\n}" },
+		);
+
+		expect(outcome.state === "planned" ? outcome.block : outcome.state).toBe(copy);
+	});
+});
+
 // Rust impl methods and C++ out-of-line definitions hang off a type whose body does not hold them.
 describe("members written outside their container's body", () => {
 	const text = ["struct S {", "\ta: i32,", "}", "impl S {", "\tfn m(&self) {}", "}", ""].join("\n");

@@ -9,6 +9,7 @@ import type {
 	MoveAnchor,
 	MoveDependency,
 	MoveEditsRequest,
+	MoveImportSite,
 	Position,
 	Range,
 	RenameConcern,
@@ -32,6 +33,7 @@ import {
 	sameRange,
 } from "@nyaa-lexicon/protocol";
 import type { FileEdits } from "./applyEdits.js";
+import { separatedRemoval } from "./arrangeLayout.js";
 import { landingKey, narrowed } from "./exportProjection.js";
 import type { ImportResolver } from "./imports.js";
 import type { ProviderProbe } from "./providerProbe.js";
@@ -169,7 +171,7 @@ function wholeLines<T extends Pick<MoveEditsRequest, "role">>(request: T, before
 	const last = coords.lineText(removal.end.line);
 	if (first === undefined || last === undefined) return request;
 	if (first.slice(0, removal.start.character).trim() !== "" || last.slice(removal.end.character).trim() !== "") {
-		return request;
+		return { ...request, role: { ...request.role, removal: separatedRemoval(before, removal) } };
 	}
 	const blank = (line: number) => coords.lineText(line)?.trim() === "";
 	let start = removal.start.line;
@@ -310,6 +312,12 @@ export type InsertPlan =
 	| { state: "present"; module: string }
 	| { state: "refused"; reason: Refusal };
 
+/** Block lines inside a multiline literal: kept as written, or re-indented with the literal. */
+interface LiteralLines {
+	kept: Set<number>;
+	dedented: Set<number>;
+}
+
 /** Where an insert lands. `line` null means append at end of file. */
 interface SplicePoint {
 	module: string;
@@ -410,10 +418,22 @@ export class RefactorPlanner {
 		const unwritable = writableText(point.module, args.text);
 		if (unwritable !== null) return { state: "refused", reason: unwritable };
 
-		const block = flush
-			.split("\n")
-			.map((line) => (line.trim().length === 0 ? "" : point.indent + line))
-			.join("\n");
+		const lines = flush.split("\n");
+		const indented = ({ kept, dedented }: LiteralLines) =>
+			lines
+				.map((line, at) => {
+					if (kept.has(at)) return line;
+					// Whitespace a dedented literal holds beyond its indent is part of its value.
+					if (line.trim().length === 0 && !(dedented.has(at) && line.length > 0)) return "";
+					return point.indent + line;
+				})
+				.join("\n");
+		let block = indented({ kept: new Set(), dedented: new Set() });
+		// A multiline literal keeps its own lines, unless its language strips their indentation.
+		if (point.indent !== "") {
+			const literal = await this.literalLines(point, block, lines.length);
+			if (literal.kept.size > 0 || literal.dedented.size > 0) block = indented(literal);
+		}
 
 		if (this.blockPresent(point, block)) return { state: "present", module: point.module };
 
@@ -443,6 +463,24 @@ export class RefactorPlanner {
 			facts: context.seen(),
 			issues,
 		};
+	}
+
+	/** The block's lines inside a multiline literal, by index, split by whether its language strips their indentation. */
+	private async literalLines(point: SplicePoint, block: string, count: number): Promise<LiteralLines> {
+		const lines: LiteralLines = { kept: new Set(), dedented: new Set() };
+		if (!this.probe.owner(point.module).owned) return lines;
+		const spliced = this.spliceBlock(point, block);
+		if ("problem" in spliced) return lines;
+		const first = spliced.line;
+		const parsed = await this.probe.parseCandidate(point.module, spliced.text);
+		if (!parsed.parsed) return lines;
+		for (const literal of parsed.facts.literals) {
+			const into = literal.dedented === true ? lines.dedented : lines.kept;
+			for (let line = literal.range.start.line + 1; line <= literal.range.end.line; line++) {
+				if (line - first >= 0 && line - first < count) into.add(line - first);
+			}
+		}
+		return lines;
 	}
 
 	/** The splice for a sibling anchor, or an honest refusal where no sound point exists. */
@@ -539,33 +577,46 @@ export class RefactorPlanner {
 		return trimmed.length === block.length || trimmed[trimmed.length - block.length - 1] === "\n";
 	}
 
-	/** Whole-line splice, framed by blank lines where the neighbors are not already blank. */
-	private spliceBlock(point: SplicePoint, block: string): { text: string; edits: TextEdit[] } | { problem: string } {
-		const edit = this.spliceEdit(point, block);
-		if ("problem" in edit) return edit;
+	/** Whole-line splice, framed by blank lines where the neighbors are not already blank. `line` is the block's first. */
+	private spliceBlock(
+		point: SplicePoint,
+		block: string,
+	): { text: string; edits: TextEdit[]; line: number } | { problem: string } {
+		const splice = this.spliceEdit(point, block);
+		if ("problem" in splice) return splice;
+		const { edit, lead } = splice;
 		const applied = applyEdits(point.before, [edit]);
-		return "problem" in applied ? applied : { text: applied.text, edits: [edit] };
+		return "problem" in applied
+			? applied
+			: { text: applied.text, edits: [edit], line: edit.range.start.line + lead };
 	}
 
-	private spliceEdit(point: SplicePoint, block: string): TextEdit | { problem: string } {
+	/** The edit, and how many newlines it writes before the block. */
+	private spliceEdit(point: SplicePoint, block: string): { edit: TextEdit; lead: number } | { problem: string } {
 		const coords = coordinatesOf(point.before);
 		if (point.line !== null) {
 			const above = point.line === 0 ? undefined : coords.lineText(point.line - 1);
 			const leadingBlank = above !== undefined && above.trim().length > 0 ? "\n" : "";
 			const at = { line: point.line, character: 0 };
 			return {
-				range: { start: at, end: at },
-				newText: `${leadingBlank}${block}\n${point.trailingBlank ? "\n" : ""}`,
+				edit: {
+					range: { start: at, end: at },
+					newText: `${leadingBlank}${block}\n${point.trailingBlank ? "\n" : ""}`,
+				},
+				lead: leadingBlank.length,
 			};
 		}
 
 		const end = coords.positionAt(point.before.length);
 		if (end === undefined) return { problem: `the end of ${point.module} has no position` };
 		const range = { start: end, end };
-		if (point.before.length === 0) return { range, newText: `${block}\n` };
+		if (point.before.length === 0) return { edit: { range, newText: `${block}\n` }, lead: 0 };
 		const newline = point.before.endsWith("\n") ? "" : "\n";
 		const separator = `${point.before}${newline}`.endsWith("\n\n") ? "" : "\n";
-		return { range, newText: `${newline}${separator}${block}\n` };
+		return {
+			edit: { range, newText: `${newline}${separator}${block}\n` },
+			lead: newline.length + separator.length,
+		};
 	}
 
 	/** Silence from a provider that never claimed syntax reporting is not approval. Said out loud,
@@ -740,7 +791,7 @@ export class RefactorPlanner {
 
 	/** Collects provider edits for `previewMove`. See `docs/daemon-protocol.md`. */
 	async moveEdits(plan: Extract<PlannedMove, { ok: true }>, context: ReadContext): Promise<MoveEditsOutcome> {
-		const requests = this.moveRequests(plan, context);
+		const requests = await this.moveRequests(plan, context);
 		const files: Array<{ module: string; text: string; edits: TextEdit[] }> = [];
 		const bases: Array<{ module: string; hash: string | null }> = [];
 		const blocked: RefactorIssue[] = [];
@@ -786,10 +837,10 @@ export class RefactorPlanner {
 	}
 
 	/** One request per involved module, each describing only that module's part; the read fills its text. */
-	private moveRequests(
+	private async moveRequests(
 		plan: Extract<PlannedMove, { ok: true }>,
 		context: ReadContext,
-	): Array<Omit<MoveEditsRequest, "text" | "exists">> {
+	): Promise<Array<Omit<MoveEditsRequest, "text" | "exists">>> {
 		const shared = {
 			symbolId: plan.symbolId,
 			name: plan.name,
@@ -845,8 +896,14 @@ export class RefactorPlanner {
 			},
 		];
 
-		for (const module of plan.referencing) {
-			const importSites = this.imports.importSitesForMove(module, plan.name, context);
+		// By what each specifier resolves to: a barrel's re-export follows, a same-named import from elsewhere stays.
+		const sitesIn = new Map<string, MoveImportSite[]>();
+		const sites = await this.imports.importSitesResolvingTo(plan.symbolId, plan.fromModule, plan.name, context);
+		for (const { module, site } of sites) {
+			sitesIn.set(module, [...(sitesIn.get(module) ?? []), site]);
+		}
+		for (const module of new Set([...plan.referencing, ...sitesIn.keys()])) {
+			const importSites = sitesIn.get(module) ?? [];
 			// A module already asked, the target importing what moves home, takes its sites in that one
 			// request, so its edits share one base and land as one write.
 			const asked = requests.find((request) => request.module === module);

@@ -820,6 +820,7 @@ export class CsharpParser extends CsharpStatementParser {
 				range: positionRange(item),
 				...(item.number === undefined ? {} : { number: item.number }),
 				...(container === undefined ? {} : { containerId: container.declaration.symbolId }),
+				...(item.dedented === undefined ? {} : { dedented: item.dedented }),
 			};
 			literals.push(literal);
 		}

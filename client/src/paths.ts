@@ -5,8 +5,9 @@
 // reports that nothing persists.
 
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { SCHEMA_VERSION } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -23,6 +24,9 @@ export interface PlatformEnv {
 //  Constants
 
 const APP_DIR = "nyaa-lexicon";
+
+/** An index file: `index-<schema>.sqlite`, or the unnumbered `index.sqlite`. */
+const INDEX_FILE = /^index(?:-(\d+))?\.sqlite$/;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -79,7 +83,8 @@ export function storePaths(directory: string) {
 		dir: directory,
 		/** Where a client finds a running daemon, or learns there is none. */
 		lockFile: path.join(directory, "daemon.json"),
-		index: path.join(directory, "index.sqlite"),
+		/** This build's schema; an older install keeps its own file. */
+		index: path.join(directory, `index-${SCHEMA_VERSION}.sqlite`),
 		/** The daemon's own words. It runs detached, so this is the only place they land. */
 		logFile: path.join(directory, "daemon.log"),
 		/** The bounded memory collection. Rewritten whole, never appended. */
@@ -87,6 +92,27 @@ export function storePaths(directory: string) {
 		/** Crash reports and the daemon's high-water report, pruned to a few. */
 		reportsDir: path.join(directory, "reports"),
 	};
+}
+
+/** Every index file in a store directory, newest schema first; the unnumbered one counts as 0. */
+export function indexFiles(directory: string): Array<{ file: string; schema: number }> {
+	let names: string[];
+	try {
+		names = readdirSync(directory);
+	} catch {
+		return [];
+	}
+	return names
+		.flatMap((name) => {
+			const matched = INDEX_FILE.exec(name);
+			return matched === null ? [] : [{ file: path.join(directory, name), schema: Number(matched[1] ?? 0) }];
+		})
+		.sort((left, right) => right.schema - left.schema);
+}
+
+/** The index a reader looks at: the newest any install left, or null when the directory holds none. */
+export function storedIndex(directory: string): string | null {
+	return indexFiles(directory)[0]?.file ?? null;
 }
 
 /** The live host, for production call sites. */

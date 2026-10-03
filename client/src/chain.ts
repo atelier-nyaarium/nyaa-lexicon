@@ -51,9 +51,10 @@ export async function resolveChain(
 		...hashes,
 	});
 
+	// First: a module no provider reads, a scope-denied one included, answers alike whether or not it exists.
+	if (!held.claimed) return nothing("unclaimed", held.unclaimedReason);
 	if (held.read.kind === "missing") return nothing("missing");
 	if (held.read.kind === "binary" || held.read.kind === "tooLarge") return nothing(held.read.kind, held.read.detail);
-	if (!held.claimed) return nothing("unclaimed", held.unclaimedReason);
 	if (held.failure !== undefined && held.declarations.length === 0) return nothing("parseFailed", held.failure);
 	if (!held.indexed) return nothing("unread");
 

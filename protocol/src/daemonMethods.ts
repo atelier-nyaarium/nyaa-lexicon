@@ -19,7 +19,6 @@ import {
 	DocsResultSchema,
 	DriftedModuleSchema,
 	ExportFactIdSchema,
-	FactSetSchema,
 	FileHistorySchema,
 	FileNotesSchema,
 	FindImportsResultSchema,
@@ -27,9 +26,6 @@ import {
 	IndexStatusSchema,
 	InsertOutcomeSchema,
 	InsertPreviewSchema,
-	InvalidateOutcomeSchema,
-	KnowledgeGapsSchema,
-	KnowledgeScopeSchema,
 	LiteralsResultSchema,
 	ModuleDeclarationsSchema,
 	ModuleFactsResultSchema,
@@ -40,9 +36,6 @@ import {
 	MovePreviewSchema,
 	OverviewResultSchema,
 	ParseFactsResultSchema,
-	QuestionClassSchema,
-	RecallAnswerResultSchema,
-	RecordOutcomeSchema,
 	RefactorBeforeImageSchema,
 	RefactorCommitResultSchema,
 	RefactorNoteWriteResultSchema,
@@ -59,7 +52,7 @@ import {
 	RenameStepOutcomeSchema,
 	ReplaceOutcomeSchema,
 	ReplaceSpanOutcomeSchema,
-	ResolveFactsResultSchema,
+	ScopeSymbolsSchema,
 	SearchSymbolsResultSchema,
 	SharedLiteralsResultSchema,
 	StepBaseSchema,
@@ -110,6 +103,8 @@ const References = z
 		symbolId: z.string().min(1),
 		limit: z.number().int().positive().optional(),
 		within: z.string().min(1).optional(),
+		/** A file, or every module in a folder. */
+		module: ModulePath.optional(),
 	})
 	.meta({ id: "ReferencesRequest" });
 const UsesFrom = z
@@ -122,7 +117,7 @@ const SymbolEdgesRequest = z
 		limit: z.number().int().positive().optional(),
 	})
 	.meta({ id: "SymbolEdgesRequest" });
-const KnowledgeScopeRequest = z
+const ScopeSymbolsRequest = z
 	.object({
 		symbolId: z.string().min(1).optional(),
 		module: ModulePath.optional(),
@@ -134,7 +129,7 @@ const KnowledgeScopeRequest = z
 		(args) => (args.symbolId === undefined) !== (args.module === undefined),
 		"Set exactly one of symbolId or module.",
 	)
-	.meta({ id: "KnowledgeScopeRequest" });
+	.meta({ id: "ScopeSymbolsRequest" });
 const Resolve = z.object({ fromModule: ModulePath, specifier: z.string().min(1) }).meta({ id: "ResolveRequest" });
 const Rename = z
 	.object({
@@ -199,8 +194,19 @@ const Literals = z
 		limit: z.number().int().positive().optional(),
 		within: z.string().min(1).optional(),
 		key: z.string().min(1).optional(),
+		/** A file, or every module in a folder. */
+		module: ModulePath.optional(),
 		exclude: ModuleExclusionSchema.optional(),
 	})
+	.refine(
+		(args) =>
+			[
+				args.value !== undefined,
+				args.regex !== undefined,
+				args.min !== undefined || args.max !== undefined,
+			].filter(Boolean).length <= 1,
+		"Set at most one of value, regex, or a range.",
+	)
 	.meta({ id: "LiteralsRequest" });
 const Comments = z
 	.object({
@@ -238,55 +244,21 @@ const Search = z
 		text: z.string().min(1).optional(),
 		regex: z.string().min(1).optional(),
 		kind: z.string().min(1).optional(),
-		module: z.string().min(1).optional(),
+		/** A file, or every module in a folder. */
+		module: ModulePath.optional(),
 		limit: z.number().int().positive().optional(),
 		within: z.string().min(1).optional(),
 		exclude: ModuleExclusionSchema.optional(),
 	})
-	.refine((args) => (args.text === undefined) !== (args.regex === undefined), "Set exactly one of text or regex.")
+	.refine((args) => args.text === undefined || args.regex === undefined, "Set at most one of text or regex.")
+	.refine(
+		(args) => [args.text, args.regex, args.kind, args.module, args.within].some((each) => each !== undefined),
+		"Set text, regex, kind, module or within.",
+	)
 	.meta({ id: "SearchRequest" });
-const ResolveFacts = z.object({ factIds: z.array(z.string().min(1)).min(1) }).meta({ id: "ResolveFactsRequest" });
 const Mentions = z
 	.object({ name: z.string().min(1), limit: z.number().int().positive().optional() })
 	.meta({ id: "MentionsRequest" });
-const RecordAnswer = z
-	.object({
-		symbolId: z.string().min(1),
-		question: QuestionClassSchema,
-		prose: z.string().min(1),
-		citations: z.array(z.string().min(1)),
-		model: z.string().min(1).optional(),
-		resolvesDoubt: z.string().min(1).optional(),
-	})
-	.meta({ id: "RecordAnswerRequest" });
-const RecallAnswer = z
-	.object({ symbolId: z.string().min(1), question: QuestionClassSchema.optional() })
-	.meta({ id: "RecallAnswerRequest" });
-const InvalidateAnswer = z
-	.object({
-		symbolId: z.string().min(1),
-		reason: z.string().min(1),
-		question: QuestionClassSchema.optional(),
-		by: z.string().min(1).optional(),
-	})
-	.meta({ id: "InvalidateAnswerRequest" });
-const ReaffirmAnswer = z
-	.object({
-		symbolId: z.string().min(1),
-		question: QuestionClassSchema,
-		citations: z.array(z.string().min(1)).optional(),
-		model: z.string().min(1).optional(),
-		resolvesDoubt: z.string().min(1).optional(),
-	})
-	.meta({ id: "ReaffirmAnswerRequest" });
-const Gaps = z
-	.object({
-		root: z.string().min(1).optional(),
-		question: QuestionClassSchema.optional(),
-		limit: z.number().int().positive().optional(),
-		module: ModulePath.optional(),
-	})
-	.meta({ id: "GapsRequest" });
 const Status = z.object({ concerning: z.string().min(1).optional() }).meta({ id: "StatusRequest" });
 const FindImports = z
 	.object({
@@ -659,66 +631,10 @@ export const DAEMON_METHODS = {
 		mutates: false,
 		budget: "history",
 	},
-	/** Citable facts for one symbol. */
-	factsFor: {
-		request: References,
-		response: FactSetSchema.nullable(),
-		lifecycle: "query",
-		mutates: false,
-		budget: "read",
-	},
-	/** Fact rows and unresolved ids. */
-	resolveFacts: {
-		request: ResolveFacts,
-		response: ResolveFactsResultSchema,
-		lifecycle: "query",
-		mutates: false,
-		budget: "read",
-	},
-	/** Save an answer with citations. */
-	recordAnswer: {
-		request: RecordAnswer,
-		response: RecordOutcomeSchema,
-		lifecycle: "query",
-		mutates: true,
-		budget: "read",
-	},
-	/** Mark answers doubtful. */
-	invalidateAnswer: {
-		request: InvalidateAnswer,
-		response: InvalidateOutcomeSchema,
-		lifecycle: "query",
-		mutates: true,
-		budget: "read",
-	},
-	/** Refresh evidence or clear doubt. */
-	reaffirmAnswer: {
-		request: ReaffirmAnswer,
-		response: RecordOutcomeSchema,
-		lifecycle: "query",
-		mutates: true,
-		budget: "read",
-	},
-	/** Recorded answers and health. */
-	recallAnswer: {
-		request: RecallAnswer,
-		response: RecallAnswerResultSchema,
-		lifecycle: "query",
-		mutates: false,
-		budget: "read",
-	},
-	/** Rank answer gaps and doubts. */
-	knowledgeGaps: {
-		request: Gaps,
-		response: KnowledgeGapsSchema,
-		lifecycle: "query",
-		mutates: false,
-		budget: "read",
-	},
-	/** Question state across a declaration scope. */
-	knowledgeScope: {
-		request: KnowledgeScopeRequest,
-		response: KnowledgeScopeSchema.nullable(),
+	/** A scope's declarations, nested by containment. */
+	scopeSymbols: {
+		request: ScopeSymbolsRequest,
+		response: ScopeSymbolsSchema.nullable(),
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",

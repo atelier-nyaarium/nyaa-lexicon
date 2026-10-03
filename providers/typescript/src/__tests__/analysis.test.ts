@@ -945,7 +945,11 @@ describe("checker-backed analysis", () => {
 		const facts = provider.parseFile({ module: "properties.ts", contentHash: "properties", text });
 		const propertyIds = new Map(
 			facts.declarations
-				.filter((declaration) => declaration.kind === "property")
+				.filter(
+					(declaration) =>
+						declaration.kind === "property" &&
+						parseSymbolId(declaration.symbolId)?.descriptors[0]?.name === "Options",
+				)
 				.map((declaration) => [declaration.name, declaration.symbolId]),
 		);
 		const references = facts.references.filter(
@@ -969,6 +973,46 @@ describe("checker-backed analysis", () => {
 				provenance: "bound",
 			});
 		}
+		provider.shutdown();
+	});
+
+	it("binds a use of a typed object's member to the member its declared type reads", () => {
+		const text = [
+			"interface Probe { owner(): boolean; words: string[] }",
+			"interface Tool { name: string; words: string[] }",
+			"const words: string[] = [];",
+			"export const probe: Probe = { owner: () => true, words };",
+			'export const tool = { name: "x", words } satisfies Tool;',
+			"probe.owner();",
+			"tool.name;",
+			"tool.words;",
+		].join("\n");
+		const root = workspace({ "typed.ts": text });
+		const provider = harness();
+		provider.initialize(root);
+		const facts = provider.parseFile({ module: "typed.ts", contentHash: "typed", text });
+		const dotted = (symbolId: string) =>
+			(parseSymbolId(symbolId)?.descriptors ?? []).map((descriptor) => descriptor.name).join(".");
+		const uses = facts.references
+			.filter((reference) => reference.range.start.line >= 3 && reference.role !== "typeUse")
+			.map((reference) => [
+				reference.range.start.line,
+				reference.name,
+				reference.binding.status === "bound" ? dotted(reference.binding.symbolId) : reference.binding.status,
+			]);
+
+		expect(uses).toEqual([
+			[3, "owner", "Probe.owner"],
+			[3, "words", "words"],
+			[4, "name", "Tool.name"],
+			[4, "words", "words"],
+			[5, "probe", "probe"],
+			[5, "owner", "Probe.owner"],
+			[6, "tool", "tool"],
+			[6, "name", "tool.name"],
+			[7, "tool", "tool"],
+			[7, "words", "tool.words"],
+		]);
 		provider.shutdown();
 	});
 

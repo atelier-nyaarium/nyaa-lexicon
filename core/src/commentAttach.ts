@@ -110,8 +110,7 @@ function partitionRuns(placed: Placed[]): Placed[][] {
 		const current = runs.at(-1);
 		const last = current?.at(-1);
 		const continues =
-			last !== undefined &&
-			last.joinable &&
+			last?.joinable === true &&
 			item.joinable &&
 			last.comment.range.start.character === item.comment.range.start.character &&
 			last.comment.range.end.line + 1 === item.comment.range.start.line;

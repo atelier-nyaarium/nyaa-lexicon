@@ -10,6 +10,7 @@ import {
 	type StoredDeclaration,
 	type SymbolKind,
 } from "@nyaa-lexicon/protocol";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { awaitIndexed } from "../awaitIndexed";
 import { resolveChain } from "../chain";
 import type { Session } from "../connect";
@@ -371,8 +372,8 @@ describe("awaitIndexed reads the daemon's outcome", () => {
 			reason: "provider unavailable",
 			failure: "ts died",
 		});
-		await expect(down).rejects.toThrow(DaemonError);
-		await expect(down).rejects.toThrow("ts died");
+		expect(await rethrown(down)).toThrow(DaemonError);
+		expect(await rethrown(down)).toThrow("ts died");
 
 		const fault = after({
 			action: "skipped",
@@ -380,11 +381,11 @@ describe("awaitIndexed reads the daemon's outcome", () => {
 			reason: "the indexer failed on this file",
 			failure: "store broke",
 		});
-		await expect(fault).rejects.toThrow(DaemonError);
-		await expect(fault).rejects.toThrow("store broke");
+		expect(await rethrown(fault)).toThrow(DaemonError);
+		expect(await rethrown(fault)).toThrow("store broke");
 
 		const unknown = after({ action: "skipped", reason: "outside roots and reachability" });
-		await expect(unknown).rejects.toThrow(DaemonError);
-		await expect(unknown).rejects.toThrow("outside roots and reachability");
+		expect(await rethrown(unknown)).toThrow(DaemonError);
+		expect(await rethrown(unknown)).toThrow("outside roots and reachability");
 	});
 });

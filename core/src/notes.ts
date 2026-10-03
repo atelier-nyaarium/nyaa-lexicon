@@ -136,7 +136,7 @@ export class NoteLedger {
 
 		const declaration = this.store.declaration(request.symbolId);
 		if (declaration === null) return refused(refusal.subjectRefused(request.symbolId, this.store));
-		if (new ReadContext(this.store).questionsOf(declaration).length === 0) {
+		if (new ReadContext(this.store).isLocal(declaration)) {
 			return refused(refusal.noteNotApplicable(declaration.kind));
 		}
 

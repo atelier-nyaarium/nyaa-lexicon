@@ -218,6 +218,11 @@ function holds(current: PathState, existed: boolean, hash: string | null): boole
 	return !("foreign" in current) && current.existed === existed && current.hash === hash;
 }
 
+/** A step image of a module the step left as found: nothing of the step to restore there. */
+function unwritten(image: { existedBefore: boolean; beforeHash: string | null; afterHash?: string | null }): boolean {
+	return image.existedBefore && image.afterHash !== null && image.afterHash === image.beforeHash;
+}
+
 function sameDrift(left: Array<{ module: string; contentHash: string | null }>, right: typeof left): boolean {
 	const expected = new Map(left.map(({ module, contentHash }) => [module, contentHash]));
 	const actual = new Map(right.map(({ module, contentHash }) => [module, contentHash]));
@@ -714,13 +719,16 @@ export class TransactionManager {
 			// Give every step-touched module a baseline for Revert.
 			if (!this.imageFor(open.id, "baseline", 0, image.module)) this.claimBaseline(open.id, image);
 			const known = this.knownState(open.id, image.module);
-			const beforeEdited = known !== null && known.edited && holds(image, known.existed, known.hash);
+			const beforeEdited = known?.edited === true && holds(image, known.existed, known.hash);
 			// Store a known output hash before a write so recovery can identify its result.
 			const planned = plannedText?.find((entry) => entry.module === image.module);
 			const bytes = planned === undefined ? null : Buffer.from(planned.text, "utf8");
-			const after = bytes === null ? undefined : { module: image.module, existed: true, hash: hashBytes(bytes) };
+			const written =
+				bytes === null ? undefined : { module: image.module, existed: true, hash: hashBytes(bytes) };
 			// Settlement images read these bytes.
-			if (bytes !== null && after !== undefined) this.store.putBlob(after.hash, bytes);
+			if (bytes !== null && written !== undefined) this.store.putBlob(written.hash, bytes);
+			// A module the step only reindexes stands as found, so a save racing the step stays drift.
+			const after = written ?? (plannedText !== undefined && image.existed ? image : undefined);
 			this.writeImage(open.id, "step", stepNo, image, after, beforeEdited);
 		}
 
@@ -882,7 +890,7 @@ export class TransactionManager {
 			if (intent.operation !== "undo" || intent.stepNo === null)
 				return { undone: false, reason: recoveryPending(intent.operation) };
 			const pending = this.imagesOf(open.id, "step", intent.stepNo);
-			const blocked = this.directoriesAt(pending);
+			const blocked = this.directoriesAt(pending.filter((image) => !unwritten(image)));
 			if (blocked.length > 0) return { undone: false, reason: directoryInTheWay(blocked, "undo") };
 			this.owe(pending);
 			const restored = this.restoreAll(open.id, pending);
@@ -900,10 +908,10 @@ export class TransactionManager {
 		if (!top) return { undone: false, reason: nothingToUndo() };
 
 		const images = this.imagesOf(open.id, "step", top.stepNo);
-		const blocked = this.directoriesAt(images);
+		const blocked = this.directoriesAt(images.filter((image) => !unwritten(image)));
 		if (blocked.length > 0) return { undone: false, reason: directoryInTheWay(blocked, "undo") };
 		for (const image of images) {
-			if (image.afterHash === null) continue;
+			if (image.afterHash === null || unwritten(image)) continue;
 			const current = this.snapshot(image.module);
 			// A file at its before-image needs no restore.
 			if (holds(current, image.existedBefore, image.beforeHash)) continue;
@@ -1073,6 +1081,7 @@ export class TransactionManager {
 			const conflictsBefore = conflicts.length;
 			let failed = false;
 			for (const image of this.imagesOf(open.id, "step", step.stepNo)) {
+				if (unwritten(image)) continue;
 				let current: PathState;
 				try {
 					current = this.snapshot(image.module);
@@ -1394,6 +1403,7 @@ export class TransactionManager {
 			module: string;
 			existedBefore: boolean;
 			beforeHash: string | null;
+			afterHash?: string | null;
 			beforeEdited: boolean;
 		}>,
 		expectedStates?: DiskState[] | null,
@@ -1407,6 +1417,7 @@ export class TransactionManager {
 		const conflicts: string[] = [];
 		const failed: string[] = [];
 		for (const image of images) {
+			if (unwritten(image)) continue;
 			if (expectedStates !== undefined) {
 				const current = this.diskState(image.module);
 				const expected = expectedStates?.find((state) => state.module === image.module);

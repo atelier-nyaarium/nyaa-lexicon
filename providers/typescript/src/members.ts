@@ -5,19 +5,42 @@ import ts from "typescript";
 ////////////////////////////////
 //  Functions & Helpers
 
+type Wrapper =
+	| ts.ParenthesizedExpression
+	| ts.AsExpression
+	| ts.TypeAssertion
+	| ts.SatisfiesExpression
+	| ts.NonNullExpression;
+
+export function isWrapper(node: ts.Node): node is Wrapper {
+	return (
+		ts.isParenthesizedExpression(node) ||
+		ts.isAsExpression(node) ||
+		ts.isTypeAssertionExpression(node) ||
+		ts.isSatisfiesExpression(node) ||
+		ts.isNonNullExpression(node)
+	);
+}
+
 /** Through parentheses and type-only wrappers. */
 export function unwrapped(expression: ts.Expression): ts.Expression {
 	let current = expression;
-	while (
-		ts.isParenthesizedExpression(current) ||
-		ts.isAsExpression(current) ||
-		ts.isTypeAssertionExpression(current) ||
-		ts.isSatisfiesExpression(current) ||
-		ts.isNonNullExpression(current)
-	) {
-		current = current.expression;
-	}
+	while (isWrapper(current)) current = current.expression;
 	return current;
+}
+
+/** Any type but `unknown` and `any`. */
+function isStatedType(type: ts.TypeNode): boolean {
+	let inner = type;
+	while (ts.isParenthesizedTypeNode(inner)) inner = inner.type;
+	return inner.kind !== ts.SyntaxKind.UnknownKeyword && inner.kind !== ts.SyntaxKind.AnyKeyword;
+}
+
+/** Whether `satisfies T`, `as T` or `<T>` states a type; undefined for `as const` and the other wrappers. */
+function statesType(wrapper: Wrapper): boolean | undefined {
+	if (ts.isSatisfiesExpression(wrapper)) return true;
+	if (!ts.isAsExpression(wrapper) && !ts.isTypeAssertionExpression(wrapper)) return undefined;
+	return ts.isConstTypeReference(wrapper.type) ? undefined : isStatedType(wrapper.type);
 }
 
 /** The type an alias, property, variable or named parameter declares, if any. */
@@ -83,6 +106,19 @@ export function memberBodyOf(node: ts.Node): ts.Node | undefined {
 		: undefined;
 }
 
+/** The node's object literal value, when its annotation, else its outermost type-stating wrapper, states a type. */
+export function statedObjectOf(node: ts.Node): ts.ObjectLiteralExpression | undefined {
+	const body = memberBodyOf(node);
+	if (body === undefined || !ts.isObjectLiteralExpression(body)) return undefined;
+	let stated = false;
+	for (let current = body.parent; isWrapper(current); current = current.parent) {
+		stated = statesType(current) ?? stated;
+	}
+	const annotation = ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node) ? node.type : undefined;
+	if (annotation !== undefined) stated = isStatedType(annotation);
+	return stated ? body : undefined;
+}
+
 /** The closing brace's line when only indentation precedes it; otherwise undefined. */
 export function memberInsertLineOf(node: ts.Node, source: ts.SourceFile): number | undefined {
 	const closer = memberBodyOf(node)?.getChildren(source).at(-1);
@@ -100,7 +136,12 @@ export function memberInsertLineOf(node: ts.Node, source: ts.SourceFile): number
 	return lineOf(before - 1) < line ? line : undefined;
 }
 
-/** The type nodes between a declaration and the object types it owns. */
+/** The nodes between a declaration and the members it owns: object types, an object value and its wrappers. */
 export function passesReach(node: ts.Node): boolean {
-	return ts.isTypeLiteralNode(node) || partsOf(node) !== undefined;
+	return (
+		ts.isTypeLiteralNode(node) ||
+		partsOf(node) !== undefined ||
+		ts.isObjectLiteralExpression(node) ||
+		isWrapper(node)
+	);
 }

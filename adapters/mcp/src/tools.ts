@@ -30,6 +30,7 @@ import type {
 	ImportResolution,
 	InsertOutcome,
 	MostReferencedResult,
+	MoveAnchor,
 	MoveOutcome,
 	Note,
 	NoteAuthor,
@@ -92,7 +93,7 @@ import {
 export interface ToolBackend {
 	findByName: (name: string, module?: string) => Promise<SymbolSummary[]>;
 	describe: (symbolId: string) => Promise<DescribeResult | null>;
-	findReferences: (symbolId: string, limit?: number, within?: string) => Promise<ReferencesResult>;
+	findReferences: (symbolId: string, limit?: number, within?: string, module?: string) => Promise<ReferencesResult>;
 	resolveImport: (fromModule: string, specifier: string) => Promise<ImportResolution>;
 	typeOf: (symbolId: string) => Promise<TypeInfo>;
 	symbolSource: (address: { symbolId?: string | undefined; factId?: string | undefined }) => Promise<SymbolSource>;
@@ -122,7 +123,7 @@ export interface ToolBackend {
 		module?: string | undefined;
 		text: string;
 	}) => Promise<InsertOutcome>;
-	refactorMove: (symbolId: string, toModule: string, together: string[]) => Promise<MoveOutcome>;
+	refactorMove: (symbolId: string, toModule: string, together: string[], anchor?: MoveAnchor) => Promise<MoveOutcome>;
 	refactorRename: (symbolId: string, newName: string, stops?: string[]) => Promise<RenameStepOutcome>;
 	indexStatus: (concerning?: string) => Promise<IndexStatus>;
 	findLiterals: (query: RequestOf<"findLiterals">) => Promise<LiteralsResult>;
@@ -201,6 +202,7 @@ export const FindReferencesInput = {
 	module: z.string().min(1).optional().describe(`Workspace-relative \`module\` path.`),
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
 	within: z.string().min(1).optional().describe(WITHIN_NOTE),
+	usedIn: z.string().min(1).optional().describe(`Workspace-relative file or folder the uses must be in.`),
 };
 
 export const ResolveImportInput = {
@@ -291,6 +293,7 @@ export const FindLiteralsInput = {
 	limit: z.number().int().positive().max(500).optional().describe(`Maximum results. Default: \`50\`.`),
 	key: z.string().min(1).optional().describe(`Exact immediate container name.`),
 	within: z.string().min(1).optional().describe(WITHIN_NOTE),
+	module: z.string().min(1).optional().describe(`Workspace-relative file or folder.`),
 };
 
 export const FindCommentsInput = {
@@ -300,7 +303,7 @@ export const FindCommentsInput = {
 		.enum(["leading", "trailing", "inline", "standalone"])
 		.optional()
 		.describe(`Where the comment sits relative to its symbol.`),
-	module: z.string().min(1).optional().describe(`Exact workspace-relative file path.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative file or folder.`),
 	limit: z.number().int().positive().max(200).optional().describe(`Maximum results. Default: \`50\`.`),
 	within: z.string().min(1).optional().describe(WITHIN_NOTE),
 };
@@ -309,7 +312,7 @@ export const SearchDocsInput = {
 	text: z.string().min(1).optional().describe(`Substring of the prose. Use instead of \`regex\`.`),
 	regex: z.string().min(1).optional().describe(`Regex literal, for example \`/TODO|FIXME/\`. ${RE2_NOTE}`),
 	fenced: z.boolean().optional().describe(`\`true\` for code blocks only, \`false\` for prose only.`),
-	module: z.string().min(1).optional().describe(`Exact workspace-relative file path.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative file or folder.`),
 	limit: z.number().int().positive().max(200).optional().describe(`Maximum results. Default: \`50\`.`),
 };
 
@@ -317,7 +320,7 @@ export const SearchSymbolsInput = {
 	text: z.string().min(1).optional().describe(`Case-sensitive name substring. Use instead of \`regex\`.`),
 	regex: z.string().min(1).optional().describe(`Regex literal. Use instead of \`text\`. ${RE2_NOTE}`),
 	kind: z.string().min(1).optional().describe(`Declaration kind filter.`),
-	module: z.string().min(1).optional().describe(`Module path substring.`),
+	module: z.string().min(1).optional().describe(`Workspace-relative file or folder.`),
 	limit: z.number().int().positive().max(300).optional().describe(`Maximum results. Default: \`50\`.`),
 	within: z.string().min(1).optional().describe(WITHIN_NOTE),
 };
@@ -400,6 +403,8 @@ export const RefactorMoveInput = {
 		.max(100)
 		.optional()
 		.describe(`More names to move with it, from the same \`module\`. Each moves after the ones it uses.`),
+	before: z.string().min(1).optional().describe(`A declaration in \`toModule\` to land before.`),
+	after: z.string().min(1).optional().describe(`A declaration in \`toModule\` to land after.`),
 };
 
 export const RefactorRenameInput = {
@@ -431,7 +436,7 @@ List every bound use, grouped by file. Follows aliases and re-exports.
 
 Excludes import and export statements. Call \`prepare_rename\` before a rewrite.
 
-Use \`within\` to restrict references to declarations inside a scope.
+Use \`within\` to restrict references to declarations inside a scope, and \`usedIn\` to a file or folder.
 `.trim();
 
 export const RESOLVE_IMPORT_DESCRIPTION = `
@@ -451,7 +456,11 @@ Creates the target if it does not exist. Imports in every referencing file are r
 moved body's own dependencies are imported into its new home. A site that cannot be rewritten
 safely stops the whole move rather than relocating the declaration and stranding its importers.
 
-Name more declarations in \`together\` to move them too, one step each, each after the ones it uses.
+Name more declarations in \`together\` to move them too: one step where the language arranges moves,
+else one step each, each after the ones it uses.
+
+\`before\` or \`after\` lands it beside a declaration in \`toModule\`; with one, \`toModule\` may be its own module,
+which reorders.
 `.trim();
 
 export const REFACTOR_RENAME_DESCRIPTION = `
@@ -570,7 +579,8 @@ Find exact values, regex matches, or numeric ranges in decoded literal values.
 
 Use for values rather than textual spelling. Each hit includes its declaration.
 
-Use \`key\` for an exact immediate container name and \`within\` for a scope.
+Set one of \`value\`, \`regex\`, or a range. Use \`key\` for an exact immediate container name,
+\`within\` for a scope and \`module\` for a file or folder.
 `.trim();
 
 export const FIND_COMMENTS_DESCRIPTION = `
@@ -616,7 +626,8 @@ Use first in an unfamiliar codebase.
 export const SEARCH_SYMBOLS_DESCRIPTION = `
 # \`search_symbols\`
 
-Find declared names by substring or regular expression. Set exactly one of \`text\` or \`regex\`.
+Find declared names by substring or regular expression. Set at most one of \`text\` or \`regex\`;
+with neither, \`kind\`, \`module\` or \`within\` lists what they narrow to.
 
 Does not search comments, strings, or aliases.
 
@@ -727,6 +738,9 @@ Distinguishes declared, inferred, and unknown results.
 ////////////////////////////////
 //  Functions & Helpers
 
+/** Projects already told their index holds outline facts. */
+const toldOutline = new WeakSet<ToolBackend>();
+
 function text(body: string, isError = false): ToolResult {
 	return {
 		content: [{ type: "text", text: body }],
@@ -771,12 +785,15 @@ async function withIndexState(backend: ToolBackend, body: string, concerning?: s
 		);
 	}
 
-	// Outline facts make reference and literal counts lower bounds.
+	// Outline facts make reference and literal counts lower bounds; said once per project per session.
 	const outline = status.outlineFiles ?? 0;
 	if (outline > 0) {
-		notes.push(
-			`${outline} of ${outline + (status.fullFiles ?? 0)} files hold outline facts only (names and imports), so reference and literal counts are lower bounds until the upgrade finishes.`,
-		);
+		if (!toldOutline.has(backend)) {
+			toldOutline.add(backend);
+			notes.push(
+				`${outline} of ${outline + (status.fullFiles ?? 0)} files hold outline facts only (names and imports), so reference and literal counts are lower bounds until the upgrade finishes.`,
+			);
+		}
 	} else if (status.state !== "ready") {
 		// A stored index remains usable during a rescan, but edited files may be missing.
 		if (status.stored > 0) {
@@ -866,12 +883,12 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 
 export async function findReferences(
 	backend: ToolBackend,
-	args: SymbolArgs & { limit?: number | undefined; within?: string | undefined },
+	args: SymbolArgs & { limit?: number | undefined; within?: string | undefined; usedIn?: string | undefined },
 ): Promise<ToolResult> {
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
 
-	const found = await backend.findReferences(resolved.symbolId, args.limit, args.within);
+	const found = await backend.findReferences(resolved.symbolId, args.limit, args.within, args.usedIn);
 	return text(await withIndexState(backend, renderReferences(found), moduleOf(resolved.symbolId)));
 }
 
@@ -887,10 +904,25 @@ export async function typeOfSymbol(backend: ToolBackend, args: SymbolArgs): Prom
 
 export async function refactorMove(
 	backend: ToolBackend,
-	args: SymbolArgs & { toModule: string; together?: string[] | undefined },
+	args: SymbolArgs & {
+		toModule: string;
+		together?: string[] | undefined;
+		before?: string | undefined;
+		after?: string | undefined;
+	},
 ): Promise<ToolResult> {
+	if (args.before !== undefined && args.after !== undefined) {
+		return text(`Set \`before\` or \`after\`, not both.`, true);
+	}
 	const resolved = await resolveOne(backend, args);
 	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
+	const beside = args.before ?? args.after;
+	let anchor: MoveAnchor | undefined;
+	if (beside !== undefined) {
+		const found = await resolveOne(backend, { name: beside, module: args.toModule });
+		if ("problem" in found) return text(await withIndexState(backend, found.problem, args.toModule), true);
+		anchor = { symbolId: found.symbolId, side: args.before === undefined ? "after" : "before" };
+	}
 	const together: string[] = [];
 	const from = moduleOf(resolved.symbolId) ?? args.module;
 	for (const name of args.together ?? []) {
@@ -899,7 +931,7 @@ export async function refactorMove(
 		together.push(each.symbolId);
 	}
 
-	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule, together).catch(
+	const outcome = await backend.refactorMove(resolved.symbolId, args.toModule, together, anchor).catch(
 		(error: unknown): Awaited<ReturnType<ToolBackend["refactorMove"]>> => ({
 			moved: false,
 			issues: [],
@@ -1151,11 +1183,15 @@ export async function searchSymbols(
 		regex?: string | undefined;
 		kind?: string | undefined;
 		module?: string | undefined;
+		within?: string | undefined;
 		limit?: number | undefined;
 	},
 ): Promise<ToolResult> {
-	if ((args.text === undefined) === (args.regex === undefined)) {
-		return text(`Set exactly one of \`text\` or \`regex\`.`, true);
+	if (args.text !== undefined && args.regex !== undefined) {
+		return text(`Set \`text\` or \`regex\`, not both.`, true);
+	}
+	if ([args.text, args.regex, args.kind, args.module, args.within].every((each) => each === undefined)) {
+		return text(`Set \`text\`, \`regex\`, \`kind\`, \`module\` or \`within\`.`, true);
 	}
 	if (args.regex !== undefined) {
 		try {

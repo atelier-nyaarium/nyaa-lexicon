@@ -1021,7 +1021,6 @@ class BashParser implements Nested {
 		for (const heredoc of pending) {
 			const cursor = this.scanner.cursor;
 			const start = cursor.mark();
-			const pos = cursor.offset;
 			let end = cursor.offset;
 			let delimiter: { pos: number; end: number; line: boolean } | undefined;
 			let guard = -1;
