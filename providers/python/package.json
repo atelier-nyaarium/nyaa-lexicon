@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-python",
-	"version": "12.1.0",
+	"version": "13.0.0",
 	"private": true,
 	"type": "module",
 	"description": "Python provider over an in-house parser",
