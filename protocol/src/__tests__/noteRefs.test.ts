@@ -45,9 +45,9 @@ describe("finding refs in a note", () => {
 			}
 			return best;
 		};
-		// Headroom for slow machines.
+		// About 40 ms alone; headroom for a loaded parallel gate.
 		for (const [shape, text] of Object.entries(shapes)) {
-			expect(timed(text(NOTE_MAX)), shape).toBeLessThan(250);
+			expect(timed(text(NOTE_MAX)), shape).toBeLessThan(1000);
 		}
 	});
 
@@ -66,6 +66,13 @@ describe("finding refs in a note", () => {
 				["ref://a.ref:Cart"],
 			);
 		}
+	});
+
+	it("reads a fence info holding a backtick as text, and no destination across a blank line", () => {
+		expect({
+			fence: findRefs("```a`b\n[a](ref://src/a.ts)\n").map((found) => found.ref),
+			blank: findRefs("[b](\n\nref://src/b.ts)\n").map((found) => found.ref),
+		}).toEqual({ fence: ["ref://src/a.ts"], blank: [] });
 	});
 
 	it("spans each written link whole, bracketed and escaped labels included, and no mermaid click", () => {

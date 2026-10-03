@@ -277,7 +277,12 @@ function usesMoved(store: IndexStore, candidate: RenameCandidate, held: Held): S
 			),
 		);
 		const now = store.referencesIn(module);
-		const atStart = new Map(now.map((each) => [positionKey(each.startLine, each.startCharacter), each] as const));
+		// A compound assignment reads and writes at one position.
+		const atStart = new Map<string, StoredReference[]>();
+		for (const each of now) {
+			const key = positionKey(each.startLine, each.startCharacter);
+			atStart.set(key, [...(atStart.get(key) ?? []), each]);
+		}
 		const matched = new Set<StoredReference>();
 		for (const before of was) {
 			const start = { line: before.startLine, character: before.startCharacter };
@@ -285,13 +290,13 @@ function usesMoved(store: IndexStore, candidate: RenameCandidate, held: Held): S
 			// An expanded site moves its use, as `{ parse }` to `{ parse: load }`.
 			const within = site ? (edited?.writtenFrom(start) ?? null) : null;
 			const at = edited === null ? start : edited.shift(start);
-			const exact = at === null ? undefined : atStart.get(positionKey(at.line, at.character));
-			const candidates =
+			const exact = at === null ? [] : (atStart.get(positionKey(at.line, at.character)) ?? []);
+			// Same role only: a write cannot vouch for a captured read.
+			const candidates = (
 				within === null
-					? exact === undefined
-						? []
-						: [exact]
-					: now.filter((each) => within({ line: each.startLine, character: each.startCharacter }));
+					? exact
+					: now.filter((each) => within({ line: each.startLine, character: each.startCharacter }))
+			).filter((each) => each.role === before.role);
 			const [first] = candidates;
 			if (first === undefined) {
 				moved.push({ module, line: before.startLine + 1 });

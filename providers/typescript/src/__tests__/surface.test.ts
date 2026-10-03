@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FOLD_MARK, parseSymbolId, withOccurrences } from "@nyaa-lexicon/protocol";
@@ -323,6 +323,24 @@ describe("registered declaration surfaces", () => {
 			status: "external",
 			packageName: "runtime",
 			surface: { module: "node_modules/runtime/index.js" },
+		});
+		provider.shutdown();
+	});
+
+	it("resolves a workspace package linked into node_modules to its source", () => {
+		const root = workspace({
+			"src/app.ts": 'import { shared } from "shared";\n\nexport const app = shared;\n',
+			"packages/shared/package.json": JSON.stringify({ name: "shared", types: "src/index.ts" }),
+			"packages/shared/src/index.ts": "export const shared = 1;\n",
+		});
+		mkdirSync(path.join(root, "node_modules"));
+		symlinkSync(path.join(root, "packages/shared"), path.join(root, "node_modules/shared"), "dir");
+		const provider = harness();
+		provider.initialize(root);
+
+		expect(provider.resolveImport({ fromModule: "src/app.ts", specifier: "shared" })).toEqual({
+			status: "resolved",
+			landing: { kind: "module", module: "packages/shared/src/index.ts" },
 		});
 		provider.shutdown();
 	});

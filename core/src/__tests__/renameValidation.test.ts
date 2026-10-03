@@ -192,6 +192,23 @@ describe("proving a rename before it writes", () => {
 		expect(store.declarationsIn("d.ts").map((row) => row.name)).toEqual(["N"]);
 	});
 
+	it("matches a compound assignment's read and write by role, refusing a captured read", async () => {
+		const both = (read: string): Reference[] => [
+			use("Mm", at(2, 0, 2), null, at(0, 9)),
+			use("Q", at(3, 0), read, at(0, 9)),
+			{ ...use("Q", at(3, 0), Q, at(0, 9)), role: "write" },
+		];
+		write(facts("N", both(Q)));
+
+		expect({
+			kept: await sitesOf(ready(facts("Mm", both(Q)))),
+			captured: await sitesOf(ready(facts("Mm", both(M)))),
+		}).toEqual({
+			kept: [],
+			captured: [{ kind: "ProofUnavailable", sites: [{ module: "use.ts", line: 4 }] }],
+		});
+	});
+
 	it("refuses a capture, a lost exposure, an old declaration left standing, an export off the plan, or a provider that cannot prove its share", async () => {
 		const [declaring, using] = facts("Mm", [use("Mm", at(2, 0, 2), null, at(0, 9))]) as [FileFacts, FileFacts];
 		const old = declared("d.ts", "N");

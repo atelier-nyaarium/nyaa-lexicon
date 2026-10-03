@@ -430,7 +430,8 @@ export function resolveSpecifier(
 
 	const module = toModule(workspaceRoot, resolved.resolvedFileName);
 	if (module === null) return { status: "external", packageName: packageNameOf(specifier) };
-	if (resolved.isExternalLibraryImport === true) {
+	// The compiler marks a linked workspace package external too; a dependency lives under node_modules.
+	if (resolved.isExternalLibraryImport === true && module.split("/").includes("node_modules")) {
 		return {
 			status: "external",
 			packageName: resolved.packageId?.name ?? packageNameOf(specifier),
