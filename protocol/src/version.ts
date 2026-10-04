@@ -140,7 +140,9 @@ export type Compatibility =
 // `gateWaitMs` bounds a read's wait for the workspace gate; past it the read never runs and answers
 // `code: "busy"`. An older daemon strips the field and queues; an older client reads `busy` as an
 // ordinary refusal.
-export const PROTOCOL_VERSION = "6.1.0" as const;
+// 6.2.0: an unbound paint reference carries `reason`, why it did not bind, so a client tells an
+// external name from one that resolves to nothing; an older daemon omits it.
+export const PROTOCOL_VERSION = "6.2.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 6;

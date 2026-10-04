@@ -8,6 +8,7 @@ import {
 	type PaintFacts,
 	type ParseFactsResult,
 	type Position,
+	ProvenanceSchema,
 	type ProviderWords,
 	type Range,
 	type Reference,
@@ -16,6 +17,8 @@ import {
 	type StoredReference,
 	type SymbolAtReply,
 	type SymbolAtResult,
+	type UnknownReason,
+	UnknownReasonSchema,
 } from "@nyaa-lexicon/protocol";
 import type { CandidateParse, ProviderProbe } from "./providerProbe.js";
 import { candidateDoesNotParse, noProviderOwnsForPaint } from "./refusals.js";
@@ -49,20 +52,42 @@ function paintDeclarations(
 	return declarations.map((declaration) => ({ kind: declaration.kind, range: declarationRange(declaration) }));
 }
 
+/** An unbound row keeps its reason in `provenance`; an ambiguous one keeps a provenance there instead. */
+function storedReason(reference: StoredReference): UnknownReason | undefined {
+	if (reference.targetId !== null) return undefined;
+	const reason = UnknownReasonSchema.safeParse(reference.provenance);
+	if (reason.success) return reason.data;
+	return ProvenanceSchema.safeParse(reference.provenance).success ? "Ambiguous" : undefined;
+}
+
 function paintStoredReferences(references: readonly StoredReference[]): PaintFacts["references"] {
-	return references.map((reference) => ({
-		role: reference.role,
-		range: storedReferenceRange(reference),
-		bound: reference.targetId !== null,
-		name: reference.name,
-		target: reference.targetId,
-	}));
+	return references.map((reference) => {
+		const reason = storedReason(reference);
+		return {
+			role: reference.role,
+			range: storedReferenceRange(reference),
+			bound: reference.targetId !== null,
+			name: reference.name,
+			target: reference.targetId,
+			...(reason === undefined ? {} : { reason }),
+		};
+	});
 }
 
 function paintCandidateReferences(references: readonly Reference[]): PaintFacts["references"] {
 	return references.map((reference) => {
-		const target = reference.binding.status === "bound" ? reference.binding.symbolId : null;
-		return { role: reference.role, range: reference.range, bound: target !== null, name: reference.name, target };
+		const { binding } = reference;
+		const target = binding.status === "bound" ? binding.symbolId : null;
+		const reason =
+			binding.status === "unbound" ? binding.reason : binding.status === "ambiguous" ? "Ambiguous" : undefined;
+		return {
+			role: reference.role,
+			range: reference.range,
+			bound: target !== null,
+			name: reference.name,
+			target,
+			...(reason === undefined ? {} : { reason }),
+		};
 	});
 }
 

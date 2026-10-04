@@ -561,7 +561,9 @@ comments, shaped for a client that colors code itself rather than running a seco
 declaration's range is its `selectionRange`, the name, never its body. A reference carries `bound`,
 `true` when it resolved to a target, and (protocol 6.1.0) `name`, the identifier as written, and
 `target`, the bound symbol id or null, so a client compares two parses of a module by name and says
-which name stopped binding. `words` is the owning provider's own vocabulary (keywords, builtins,
+which name stopped binding. An unbound reference carries (protocol 6.2.0) `reason`, its binding's
+`UnknownReason`, `Ambiguous` for several candidates, so an `ExternalDependency` name reads apart from
+one that resolves to nothing. `words` is the owning provider's own vocabulary (keywords, builtins,
 literal words), which facts alone cannot give.
 
 - **`moduleFacts`** (`{ module }`) answers the STORE's rows: `{ module, known: true, depth,

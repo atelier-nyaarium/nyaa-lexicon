@@ -118,10 +118,33 @@ describe("moduleFacts", () => {
 				name: "Widget",
 				target: WIDGET,
 			},
-			{ role: "call", range: span("create"), bound: false, name: "create", target: null },
+			{ role: "call", range: span("create"), bound: false, name: "create", target: null, reason: "NotIndexed" },
 		]);
 		expect(facts.literals).toEqual([]);
 		expect(facts.comments).toEqual([]);
+	});
+
+	it("reads an ambiguous row's reason as Ambiguous, since the row keeps its provenance instead", () => {
+		store.replaceFile({
+			module: "c.fake",
+			contentHash: hashContent(TEXT),
+			declarations: [],
+			references: [
+				{
+					name: "Widget",
+					range: span("Widget", TEXT.indexOf("return")),
+					role: "read",
+					binding: { status: "ambiguous", candidates: [WIDGET, BUILD], provenance: "bound" },
+				},
+			],
+		});
+		const reads = new PaintReads(store, liveProbe(fakeSupervisor({ claims: [CLAIMS], words: WORDS })), () => 0);
+
+		const facts = reads.moduleFacts("c.fake");
+		if (!facts.known) throw new Error("c.fake should be known");
+		expect(facts.references.map(({ bound, reason }) => ({ bound, reason }))).toEqual([
+			{ bound: false, reason: "Ambiguous" },
+		]);
 	});
 
 	it("refuses an unindexed module the way fileNotes refuses one", () => {
@@ -217,9 +240,9 @@ describe("parseFacts", () => {
 		]);
 	});
 
-	it("names each candidate reference and its target, so a name that stopped binding reads as that name", async () => {
+	it("names each candidate reference, its target and why it did not bind, so a name that stopped binding reads as that name", async () => {
 		plantModule(store);
-		const candidate = "export class Widget {}\nexport function build() {\n  return Widgt.create();\n}\n";
+		const candidate = "export class Widget {}\nexport function build() {\n  return Widgt.create(Widget);\n}\n";
 		const candidateCoords = coordinatesOf(candidate);
 		const at = (needle: string) => {
 			const start = candidate.indexOf(needle);
@@ -247,6 +270,12 @@ describe("parseFacts", () => {
 								role: "read",
 								binding: { status: "bound", symbolId: BUILD, provenance: "bound" },
 							},
+							{
+								name: "Widget",
+								range: at("Widget)"),
+								role: "read",
+								binding: { status: "ambiguous", candidates: [WIDGET, BUILD], provenance: "bound" },
+							},
 						],
 					}),
 				},
@@ -257,9 +286,10 @@ describe("parseFacts", () => {
 		const parsed = await reads.parseFacts("a.fake", candidate);
 		if (!parsed.ok) throw new Error(parsed.reason);
 
-		expect(parsed.references.map(({ name, target, bound }) => ({ name, target, bound }))).toEqual([
-			{ name: "Widgt", target: null, bound: false },
-			{ name: "build", target: BUILD, bound: true },
+		expect(parsed.references.map(({ name, target, bound, reason }) => ({ name, target, bound, reason }))).toEqual([
+			{ name: "Widgt", target: null, bound: false, reason: "NotIndexed" },
+			{ name: "build", target: BUILD, bound: true, reason: undefined },
+			{ name: "Widget", target: null, bound: false, reason: "Ambiguous" },
 		]);
 	});
 

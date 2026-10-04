@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ProviderWordsSchema } from "./methods.js";
 import { IndexDepthSchema, LiteralSchema } from "./project.js";
 import { RangeSchema, ReferenceRoleSchema, SymbolKindSchema } from "./symbols.js";
+import { UnknownReasonSchema } from "./values.js";
 
 ////////////////////////////////
 //  Schemas
@@ -18,7 +19,7 @@ import { RangeSchema, ReferenceRoleSchema, SymbolKindSchema } from "./symbols.js
  * cannot give. `depth` says whether an empty `references`, `literals` or `comments` means none or
  * means not parsed that deep yet: a module can sit at `outline` after warmup, whose rows hold
  * neither, and `parseFacts` always answers `full`. Names identify references across parses;
- * older daemons omit reference names and targets.
+ * older daemons omit reference names, targets and reasons.
  */
 export const PaintFactsSchema = z
 	.object({
@@ -35,6 +36,8 @@ export const PaintFactsSchema = z
 				name: z.string().optional(),
 				/** The bound target's symbol id; null when unbound. */
 				target: z.string().nullable().optional(),
+				/** Why an unbound reference did not bind; `Ambiguous` for several candidates. */
+				reason: UnknownReasonSchema.optional(),
 			}),
 		),
 		literals: z.array(z.object({ kind: LiteralSchema.shape.kind, range: RangeSchema })),
