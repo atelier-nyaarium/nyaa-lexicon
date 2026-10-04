@@ -27,6 +27,7 @@ import {
 	killLiveGroups,
 	type LifecycleRule,
 	type LockRole,
+	type RequestOptions,
 	requestRule,
 	WARMUP_FAILED_PREFIX,
 } from "@nyaa-lexicon/protocol";
@@ -551,7 +552,7 @@ async function main(argv: string[]): Promise<void> {
 		}
 
 		// Use the same rule before and after handler setup.
-		async function handle(method: string, params: unknown): Promise<unknown> {
+		async function handle(method: string, params: unknown, options: RequestOptions): Promise<unknown> {
 			if (stopping) throw new DaemonStoppingError(DAEMON_STOPPING_MESSAGE);
 			const rule = requestRule(method);
 			if (rule === null) throw unknownMethod(method);
@@ -562,7 +563,7 @@ async function main(argv: string[]): Promise<void> {
 			// Counted so shutdown waits for the answer and the linger cannot fire under it.
 			inFlight += 1;
 			try {
-				return await dispatch(method, params);
+				return await dispatch(method, params, options);
 			} finally {
 				inFlight -= 1;
 				if (inFlight === 0) {

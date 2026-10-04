@@ -135,7 +135,12 @@ export type Compatibility =
 // literal search takes at most one of `value`, `regex` or a range. `previewArrange` answers `placed`,
 // every top-level declaration's span in the target. `SymbolSummary.lines.name`. `Literal.dedented`.
 // No 5.x client is served.
-export const PROTOCOL_VERSION = "6.0.0" as const;
+// 6.1.0: a paint reference carries `name` and `target`, its identifier and its bound target or null,
+// so two parses of one module compare by name; an older daemon omits both. A request frame's
+// `gateWaitMs` bounds a read's wait for the workspace gate; past it the read never runs and answers
+// `code: "busy"`. An older daemon strips the field and queues; an older client reads `busy` as an
+// ordinary refusal.
+export const PROTOCOL_VERSION = "6.1.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 6;

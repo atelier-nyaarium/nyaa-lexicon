@@ -99,6 +99,7 @@ export class LexiconService {
 		private readonly workspaceRoot = ".",
 		private readonly clock: Clock = systemClock,
 	) {
+		this.gate = new WorkspaceGate(clock);
 		this.reads = new IndexReadModel(store);
 		// Caching and surface globs are workspace decisions, so they are answered here.
 		this.imports = new ImportResolver(store, async (fromModule, specifier, fresh) => {
@@ -145,7 +146,7 @@ export class LexiconService {
 	 * The indexer's own roads take it per file; the dispatcher and the live index read it from
 	 * here rather than being given one, since two gates order nothing.
 	 */
-	readonly gate = new WorkspaceGate();
+	readonly gate: WorkspaceGate;
 
 	/** The only writer of the index. */
 	readonly indexer: WorkspaceIndexer;

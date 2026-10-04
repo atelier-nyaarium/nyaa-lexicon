@@ -17,7 +17,8 @@ import { RangeSchema, ReferenceRoleSchema, SymbolKindSchema } from "./symbols.js
  * text for a candidate parse. `words` is the owning provider's own vocabulary, which facts alone
  * cannot give. `depth` says whether an empty `references`, `literals` or `comments` means none or
  * means not parsed that deep yet: a module can sit at `outline` after warmup, whose rows hold
- * neither, and `parseFacts` always answers `full`.
+ * neither, and `parseFacts` always answers `full`. Names identify references across parses;
+ * older daemons omit reference names and targets.
  */
 export const PaintFactsSchema = z
 	.object({
@@ -25,7 +26,17 @@ export const PaintFactsSchema = z
 		words: ProviderWordsSchema,
 		depth: IndexDepthSchema,
 		declarations: z.array(z.object({ kind: SymbolKindSchema, range: RangeSchema })),
-		references: z.array(z.object({ role: ReferenceRoleSchema, range: RangeSchema, bound: z.boolean() })),
+		references: z.array(
+			z.object({
+				role: ReferenceRoleSchema,
+				range: RangeSchema,
+				bound: z.boolean(),
+				/** The identifier as written. */
+				name: z.string().optional(),
+				/** The bound target's symbol id; null when unbound. */
+				target: z.string().nullable().optional(),
+			}),
+		),
 		literals: z.array(z.object({ kind: LiteralSchema.shape.kind, range: RangeSchema })),
 		comments: z.array(z.object({ range: RangeSchema })),
 	})

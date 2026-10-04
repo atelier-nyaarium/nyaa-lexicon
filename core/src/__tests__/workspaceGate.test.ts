@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
-import { WorkspaceGate } from "../workspaceGate";
+import { GateBusy, WorkspaceGate } from "../workspaceGate";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -164,5 +165,86 @@ describe("serializing workspace mutations", () => {
 		held.resolve();
 		await Promise.all([writer, waiting]);
 		expect(gate.stats()).toEqual({ readers: 0, writing: false, waiting: 0 });
+	});
+});
+
+describe("bounded reads", () => {
+	/** A gate with a write held until `release`, and a log of what ran. */
+	function heldGate() {
+		const clock = fakeClock();
+		const gate = new WorkspaceGate(clock);
+		const held = deferred();
+		const log: string[] = [];
+		const writer = gate.exclusive(async () => {
+			log.push("write");
+			await held.promise;
+		});
+		return { clock, gate, log, writer, release: held.resolve };
+	}
+
+	// Background reads yield to reindexing.
+	it("refuses a read the gate cannot take now at zero wait, or past its wait, and never runs it later", async () => {
+		const { clock, gate, log, writer, release } = heldGate();
+		await tick();
+
+		const now = gate.sharedWithin(0, async () => log.push("read:now"));
+		const later = gate.sharedWithin(100, async () => log.push("read:later"));
+		const refusedNow = await rethrown(now);
+		clock.advance(100);
+		const refusedLater = await rethrown(later);
+		release();
+		await writer;
+		await tick();
+
+		expect(refusedNow).toThrow(GateBusy);
+		expect(refusedLater).toThrow(GateBusy);
+		expect({ log, stats: gate.stats(), timers: clock.pending() }).toEqual({
+			log: ["write"],
+			stats: { readers: 0, writing: false, waiting: 0 },
+			timers: 0,
+		});
+	});
+
+	it("runs a read admitted within its wait, and leaves no timer behind", async () => {
+		const { clock, gate, log, writer, release } = heldGate();
+		await tick();
+
+		const read = gate.sharedWithin(100, async () => log.push("read"));
+		clock.advance(50);
+		release();
+		await Promise.all([writer, read]);
+		clock.advance(100);
+
+		expect({ log, timers: clock.pending() }).toEqual({ log: ["write", "read"], timers: 0 });
+		expect(await gate.sharedWithin(0, async () => "free")).toBe("free");
+	});
+
+	// Expiration preserves writer priority.
+	it("keeps a waiting writer ahead of later readers when a read behind it expires", async () => {
+		const clock = fakeClock();
+		const gate = new WorkspaceGate(clock);
+		const log: string[] = [];
+		const firstRead = deferred();
+
+		const early = gate.shared(async () => {
+			log.push("read:early");
+			await firstRead.promise;
+		});
+		await tick();
+		const writer = gate.exclusive(async () => {
+			log.push("write");
+		});
+		const bounded = gate.sharedWithin(10, async () => log.push("read:bounded"));
+		const late = gate.shared(async () => {
+			log.push("read:late");
+		});
+		clock.advance(10);
+		const refused = await rethrown(bounded);
+
+		firstRead.resolve();
+		await Promise.all([early, writer, late]);
+
+		expect(refused).toThrow(GateBusy);
+		expect(log).toEqual(["read:early", "write", "read:late"]);
 	});
 });

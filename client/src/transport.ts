@@ -11,10 +11,13 @@ import {
 	answerBudgetMs,
 	CLIENT_LINE_CAP,
 	CONNECT_TIMEOUT_MS,
+	GATE_WAIT_CAP_MS,
 	isDaemonMethod,
 	methodMutates,
 	PROTOCOL_VERSION,
 	parseVersion,
+	RequestFrameSchema,
+	type RequestOptions,
 	type ResponseFrame,
 	type ServerFrame,
 	ServerFrameSchema,
@@ -27,7 +30,7 @@ import { DaemonError, Incompatible, mismatchText } from "./errors.js";
 //  Interfaces & Types
 
 export interface FrameClient {
-	request(method: string, params?: unknown): Promise<unknown>;
+	request(method: string, params?: unknown, options?: RequestOptions): Promise<unknown>;
 	close(): void;
 	readonly closed: boolean;
 }
@@ -306,10 +309,20 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 
 		socket.on("connect", () => writeFrame(socket, { kind: "hello", token }));
 
-		function sendRequest(method: string, params: unknown): Promise<ResponseFrame> {
+		function sendRequest(method: string, params: unknown, frameOptions: RequestOptions): Promise<ResponseFrame> {
 			return new Promise((resolve, reject) => {
 				if (closed) {
 					reject(new ConnectionLostError("the daemon connection is closed", false));
+					return;
+				}
+				// Invalid frames close the socket and discard its requests.
+				const wait = frameOptions.gateWaitMs;
+				if (wait !== undefined && !RequestFrameSchema.shape.gateWaitMs.safeParse(wait).success) {
+					reject(
+						new RangeError(
+							`gateWaitMs must be whole milliseconds from 0 to ${GATE_WAIT_CAP_MS}, not ${wait}; nothing was sent`,
+						),
+					);
 					return;
 				}
 				const id = nextId++;
@@ -331,7 +344,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 				budget.unref?.();
 				const waiter = { resolve, reject, sent: false, budget };
 				pending.set(id, waiter);
-				waiter.sent = writeFrame(socket, { kind: "request", id, method, params });
+				waiter.sent = writeFrame(socket, { kind: "request", id, method, params, ...frameOptions });
 			});
 		}
 
@@ -341,10 +354,10 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 			},
 			// Retried until the EARLIER of the daemon's own countdown and our patience runs out; the
 			// daemon's countdown is the normal bound, patience the caller's.
-			async request(method: string, params?: unknown): Promise<unknown> {
+			async request(method: string, params?: unknown, frameOptions: RequestOptions = {}): Promise<unknown> {
 				const ceiling = Date.now() + patience;
 				for (;;) {
-					const frame = await sendRequest(method, params);
+					const frame = await sendRequest(method, params, frameOptions);
 					if (frame.ok) return frame.result;
 					if (!frame.starting)
 						throw new DaemonError(frame.error, daemonCause(frame.error), { code: frame.code, from });

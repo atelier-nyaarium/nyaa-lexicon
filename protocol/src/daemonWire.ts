@@ -7,6 +7,12 @@
 
 import { z } from "zod";
 
+/** Maximum useful gate wait. */
+export const GATE_WAIT_CAP_MS = 60_000;
+
+/** Wire code for gate refusal. */
+export const GATE_BUSY_CODE = "busy";
+
 ////////////////////////////////
 //  Schemas
 
@@ -41,6 +47,8 @@ export const RequestFrameSchema = z
 		id: z.number().int().nonnegative(),
 		method: z.string().min(1),
 		params: z.unknown().optional(),
+		/** Bounds a read's gate entry; past it the read never runs. Mutations ignore it. */
+		gateWaitMs: z.number().int().nonnegative().max(GATE_WAIT_CAP_MS).optional(),
 	})
 	.meta({ id: "RequestFrame" });
 
@@ -97,6 +105,8 @@ export type HelloFrame = z.infer<typeof HelloFrameSchema>;
 export type WelcomeFrame = z.infer<typeof WelcomeFrameSchema>;
 export type RejectFrame = z.infer<typeof RejectFrameSchema>;
 export type RequestFrame = z.infer<typeof RequestFrameSchema>;
+/** Optional gate wait setting. */
+export type RequestOptions = Pick<RequestFrame, "gateWaitMs">;
 export type ResponseFrame = z.infer<typeof ResponseFrameSchema>;
 export type PingFrame = z.infer<typeof PingFrameSchema>;
 export type PongFrame = z.infer<typeof PongFrameSchema>;

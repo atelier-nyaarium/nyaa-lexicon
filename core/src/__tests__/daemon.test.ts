@@ -13,13 +13,14 @@ import {
 	storePaths,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
-import { DAEMON_STOPPING_MESSAGE } from "@nyaa-lexicon/protocol";
+import { DAEMON_STOPPING_MESSAGE, type RequestOptions } from "@nyaa-lexicon/protocol";
 import { nodesIn, parseSource, stringsIn, usesName } from "@nyaa-lexicon/protocol/ast";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import ts from "typescript";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
 import { resumeAbandonedDelete } from "../daemonCli";
 import { ownSource } from "../ownSource";
+import { GateBusy } from "../workspaceGate";
 import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
@@ -540,6 +541,37 @@ describe("staying up", () => {
 		].filter((text) => /linger|idle/i.test(text));
 
 		expect({ timers, lifetime }).toEqual({ timers: [], lifetime: [] });
+	});
+});
+
+describe("a busy refusal", () => {
+	it("hands the frame's gate wait to the handler and carries code: busy back to the client", async () => {
+		const seen: RequestOptions[] = [];
+		daemon = await launch({
+			handle: async (_method, _params, options) => {
+				seen.push(options);
+				throw new GateBusy(options.gateWaitMs ?? 0);
+			},
+		});
+		const client = await connectFrames(daemon.lock.port, daemon.lock.token);
+		const failed = await client.request("moduleFacts", { module: "a.ts" }, { gateWaitMs: 25 }).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		client.close();
+
+		expect({ seen, failed }).toMatchObject({ seen: [{ gateWaitMs: 25 }], failed: { code: "busy" } });
+	});
+
+	it("refuses an out-of-range gate wait in the client, keeping the connection for the next request", async () => {
+		daemon = await launch();
+		const client = await connectFrames(daemon.lock.port, daemon.lock.token);
+		const refused = await rethrown(client.request("moduleFacts", { module: "a.ts" }, { gateWaitMs: 120_000 }));
+		const next = await client.request("moduleFacts", { module: "a.ts" });
+		client.close();
+
+		expect(refused).toThrow(RangeError);
+		expect(next).toEqual({ method: "moduleFacts", params: { module: "a.ts" } });
 	});
 });
 

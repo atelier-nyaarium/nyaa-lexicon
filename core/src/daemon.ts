@@ -22,6 +22,7 @@ import {
 	type LockRole,
 	OLDEST_CLIENT_MAJOR,
 	PROTOCOL_VERSION,
+	type RequestOptions,
 } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "./clock.js";
 import { claimLock, holderIdentity, mintToken, readLock, releaseLock } from "./daemonLock.js";
@@ -31,7 +32,7 @@ import { type FrameServer, serveFrames } from "./socketTransport.js";
 ////////////////////////////////
 //  Interfaces & Types
 
-export type Handle = (method: string, params: unknown) => Promise<unknown>;
+export type Handle = (method: string, params: unknown, options: RequestOptions) => Promise<unknown>;
 
 export interface DaemonOptions {
 	workspaceRoot: string;
@@ -109,7 +110,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 
 	const server: FrameServer = await serveFrames({
 		token,
-		handle: async (method, params) => {
+		handle: async (method, params, frameOptions) => {
 			if (handle === null) {
 				const answer: EarlyAnswer = options.early?.(method) ?? {
 					kind: "starting",
@@ -134,7 +135,7 @@ export async function startDaemon(options: DaemonOptions): Promise<StartOutcome>
 				// same wait a retiring daemon's refusal gets, only an exact match may.
 				throw new Error(`${lockLost}; ${DAEMON_STOPPING_MESSAGE}`);
 			}
-			return handle(method, params);
+			return handle(method, params, frameOptions);
 		},
 		...defined({
 			onConnections: options.onConnections,

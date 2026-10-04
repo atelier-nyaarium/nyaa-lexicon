@@ -43,8 +43,10 @@ export interface RefactorDeps {
 	transactions: TransactionManager;
 }
 
-/** The workspace gate as a handler sees it, in the two halves a handler may take. */
+/** The workspace gate as a handler sees it. */
 export interface Gate {
+	/** Pre-work a read awaits before its entry; a bounded read awaits it only within its budget. */
+	ahead(work: Promise<unknown>): Promise<void>;
 	read<T>(work: () => Promise<T> | T): Promise<T>;
 	write<T>(work: () => Promise<T> | T): Promise<T>;
 }

@@ -433,6 +433,16 @@ in parts, since a handler handed the gate may ignore it.
 Nothing acquires the gate twice. Whatever a held operation calls runs already held, which is why
 the service methods do not take it defensively.
 
+A read may bound its wait for the shared half (`sharedWithin`, the request frame's `gateWaitMs`),
+so background work yields to a batch or a step rather than queueing behind it. A waiter goes from
+queued to admitted or withdrawn, once: the pump counts an admission before the waiter resumes, and
+an expired waiter leaves the queue and never runs, so a late admission cannot slip in after its
+caller was told `busy`. Withdrawal removes only that waiter, so a reader behind a waiting writer
+still waits its turn. The timer is the service's clock. One budget (`within`) spans a staged read's
+pre-work and its entry, so a tree upgrade queued behind a batch cannot hold a bounded read past it;
+the upgrade runs on and the read answers from the depth it finds. A method that mutates ignores the
+wait, since its read half refused would have planned for nothing; the bound never covers the work.
+
 Every indexing road takes it, one of two ways. A caller-held road, `indexFile` and `applyBatch`,
 runs inside a hold its caller took around a unit larger than one file: a watcher batch, a refactor
 step's reindex, a restore. A self-driven road, the warm scan, the full scan and the upgrade walk,

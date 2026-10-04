@@ -8,11 +8,22 @@
 // writes inside one exclusive hold, so two callers racing to mutate the same file cannot both
 // decide their preconditions hold.
 
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
+import { withinBudget } from "./deadline.js";
+
 ////////////////////////////////
 //  Interfaces & Types
 
+/** A read sharing one gate-wait budget between its pre-work and its entry. */
+export interface BoundedRead {
+	ahead(work: Promise<unknown>): Promise<void>;
+	shared<T>(work: () => Promise<T>): Promise<T>;
+}
+
 interface Waiter {
 	exclusive: boolean;
+	/** Set before the waiter resumes. */
+	admitted: boolean;
 	admit: () => void;
 }
 
@@ -21,6 +32,16 @@ export interface GateStats {
 	readers: number;
 	writing: boolean;
 	waiting: number;
+}
+
+/** A bounded read that expired before admission; it left the queue and never runs. */
+export class GateBusy extends Error {
+	constructor(readonly waitMs: number) {
+		super(
+			`the workspace is busy with an index write; this read waited ${waitMs}ms and did not run. Ask again later`,
+		);
+		this.name = "GateBusy";
+	}
 }
 
 ////////////////////////////////
@@ -39,6 +60,8 @@ export class WorkspaceGate {
 	private writing = false;
 	private readonly waiting: Waiter[] = [];
 
+	constructor(private readonly clock: Clock = systemClock) {}
+
 	/** Runs alone. Nothing else reads or writes until it settles. */
 	exclusive<T>(work: () => Promise<T>): Promise<T> {
 		return this.acquire(true, work);
@@ -49,14 +72,52 @@ export class WorkspaceGate {
 		return this.acquire(false, work);
 	}
 
+	/** `shared`, unless not admitted within `waitMs`: then it never runs and rejects with `GateBusy`. */
+	sharedWithin<T>(waitMs: number, work: () => Promise<T>): Promise<T> {
+		return this.acquire(false, work, waitMs);
+	}
+
+	/**
+	 * One budget across a read's pre-work and its entry. `ahead` waits on pre-work only while the
+	 * budget lasts and lets it run on; `shared` gets what is left.
+	 */
+	within(waitMs: number): BoundedRead {
+		const deadline = this.clock.now() + waitMs;
+		const left = () => Math.max(0, deadline - this.clock.now());
+		return {
+			ahead: (work) => withinBudget(this.clock, work, left()),
+			shared: (work) => this.sharedWithin(left(), work),
+		};
+	}
+
 	stats(): GateStats {
 		return { readers: this.readers, writing: this.writing, waiting: this.waiting.length };
 	}
 
-	private async acquire<T>(exclusive: boolean, work: () => Promise<T>): Promise<T> {
-		await new Promise<void>((admit) => {
-			this.waiting.push({ exclusive, admit });
+	private async acquire<T>(exclusive: boolean, work: () => Promise<T>, waitMs?: number): Promise<T> {
+		await new Promise<void>((admit, refuse) => {
+			let timer: TimerHandle | null = null;
+			const waiter: Waiter = {
+				exclusive,
+				admitted: false,
+				admit: () => {
+					if (timer !== null) this.clock.clearTimer(timer);
+					admit();
+				},
+			};
+			this.waiting.push(waiter);
 			this.pump();
+			if (waiter.admitted || waitMs === undefined) return;
+			// Admission removes the waiter before resuming it.
+			const withdraw = () => {
+				const at = this.waiting.indexOf(waiter);
+				if (at === -1) return;
+				this.waiting.splice(at, 1);
+				refuse(new GateBusy(waitMs));
+				this.pump();
+			};
+			if (waitMs === 0) withdraw();
+			else timer = this.clock.setTimer(withdraw, waitMs);
 		});
 
 		try {
@@ -86,6 +147,7 @@ export class WorkspaceGate {
 				if (this.writing || this.readers > 0) return;
 				this.waiting.shift();
 				this.writing = true;
+				next.admitted = true;
 				next.admit();
 				return;
 			}
@@ -93,6 +155,7 @@ export class WorkspaceGate {
 			if (this.writing) return;
 			this.waiting.shift();
 			this.readers++;
+			next.admitted = true;
 			next.admit();
 		}
 	}

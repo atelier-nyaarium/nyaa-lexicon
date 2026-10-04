@@ -10,6 +10,7 @@ import {
 	methodMutates,
 	PROTOCOL_VERSION,
 	type RequestOf,
+	type RequestOptions,
 	type ResponseOf,
 	requestRule,
 } from "@nyaa-lexicon/protocol";
@@ -42,8 +43,8 @@ export interface DaemonChannelOptions {
 }
 
 export interface DaemonChannel {
-	/** Reconnects once if the connection died. */
-	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>;
+	/** Reconnects once if the connection died. Older daemons ignore `gateWaitMs`. */
+	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>, options?: RequestOptions): Promise<ResponseOf<M>>;
 	/** Cancels acquisition and closes the channel; later asks fail closed. */
 	close(): void;
 }
@@ -153,11 +154,12 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 		current: Open,
 		method: M,
 		params: RequestOf<M>,
+		options: RequestOptions,
 	): Promise<ResponseOf<M>> {
 		const { from } = current;
 		let answer: unknown;
 		try {
-			answer = await current.client.request(method, params);
+			answer = await current.client.request(method, params, options);
 		} catch (error) {
 			// Reads retry; sent writes report unknown outcomes instead.
 			if (error instanceof ConnectionLostError && error.sent && methodMutates(method))
@@ -187,13 +189,17 @@ export function daemonChannel(options: DaemonChannelOptions): DaemonChannel {
 	}
 
 	return {
-		async ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>> {
+		async ask<M extends DaemonMethod>(
+			method: M,
+			params: RequestOf<M>,
+			options: RequestOptions = {},
+		): Promise<ResponseOf<M>> {
 			const mode = modeFor(method);
 			for (let attempt = 0; attempt < 2; attempt++) {
 				let current: Open | null = null;
 				try {
 					current = await acquire(mode);
-					return await request(current, method, params);
+					return await request(current, method, params, options);
 				} catch (error) {
 					if (!(error instanceof ConnectionLostError)) throw error;
 					if (state.kind === "closed") throw closedError();

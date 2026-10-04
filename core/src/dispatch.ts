@@ -9,7 +9,9 @@ import {
 	hashContent,
 	isDaemonMethod,
 	type MoveAnchor,
+	methodMutates,
 	type RequestOf,
+	type RequestOptions,
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
 import type { ArrangePlacement } from "./arrangePlanner.js";
@@ -78,10 +80,19 @@ const staged = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("staged
  */
 const status = <M extends DaemonMethod>(run: Run<M>): Handler<M> => mint("status", run);
 
-/** The service's gate in the two halves a handler takes, so no caller can supply a second one. */
-export function gateOf(gate: WorkspaceGate): Gate {
+/**
+ * The service's gate as a handler takes it, so no caller can supply a second one. `gateWaitMs` is one
+ * budget for a read's pre-work and shared entry; the exclusive half ignores it.
+ */
+export function gateOf(gate: WorkspaceGate, gateWaitMs?: number): Gate {
+	const bounded = gateWaitMs === undefined ? null : gate.within(gateWaitMs);
 	return {
-		read: <T>(work: () => Promise<T> | T): Promise<T> => gate.shared(async () => work()),
+		ahead: async (work) => {
+			if (bounded === null) await work;
+			else await bounded.ahead(work);
+		},
+		read: <T>(work: () => Promise<T> | T): Promise<T> =>
+			bounded === null ? gate.shared(async () => work()) : bounded.shared(async () => work()),
 		write: <T>(work: () => Promise<T> | T): Promise<T> => gate.exclusive(async () => work()),
 	};
 }
@@ -235,7 +246,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
 	): Handler<M> =>
 		staged(async (params, gate) => {
-			await service.ensureTreeFor(symbolOf(params));
+			await gate.ahead(service.ensureTreeFor(symbolOf(params)));
 			return gate.read(() => answer(params));
 		});
 
@@ -245,7 +256,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
 	): Handler<M> =>
 		staged(async (params, gate) => {
-			await service.upgradeRemaining();
+			await gate.ahead(service.upgradeRemaining());
 			return gate.read(() => answer(params));
 		});
 
@@ -441,9 +452,14 @@ export function unknownMethod(method: string): Error {
  */
 export function createDispatch(service: LexiconService, refactor?: RefactorDeps) {
 	const handlers = daemonHandlers(service, refactor);
-	const gate = gateOf(service.gate);
-	return async (method: string, params: unknown): Promise<unknown> => {
+	const unbounded = gateOf(service.gate);
+	return async (method: string, params: unknown, options: RequestOptions = {}): Promise<unknown> => {
 		if (!isDaemonMethod(method)) throw unknownMethod(method);
+		// A mutation refused at its read half would have planned for nothing.
+		const gate =
+			options.gateWaitMs === undefined || methodMutates(method)
+				? unbounded
+				: gateOf(service.gate, options.gateWaitMs);
 		let args: unknown;
 		try {
 			args = DAEMON_METHODS[method].request.parse(params ?? {});

@@ -111,8 +111,14 @@ describe("moduleFacts", () => {
 			{ kind: "function", name: "build" },
 		]);
 		expect(facts.references).toEqual([
-			{ role: "read", range: span("Widget", TEXT.indexOf("return")), bound: true },
-			{ role: "call", range: span("create"), bound: false },
+			{
+				role: "read",
+				range: span("Widget", TEXT.indexOf("return")),
+				bound: true,
+				name: "Widget",
+				target: WIDGET,
+			},
+			{ role: "call", range: span("create"), bound: false, name: "create", target: null },
 		]);
 		expect(facts.literals).toEqual([]);
 		expect(facts.comments).toEqual([]);
@@ -208,6 +214,52 @@ describe("parseFacts", () => {
 		expect(stillOld.declarations.map((declaration) => coords.sliceRange(declaration.range))).toEqual([
 			"Widget",
 			"build",
+		]);
+	});
+
+	it("names each candidate reference and its target, so a name that stopped binding reads as that name", async () => {
+		plantModule(store);
+		const candidate = "export class Widget {}\nexport function build() {\n  return Widgt.create();\n}\n";
+		const candidateCoords = coordinatesOf(candidate);
+		const at = (needle: string) => {
+			const start = candidate.indexOf(needle);
+			const range = candidateCoords.rangeAt(start, start + needle.length);
+			if (range === undefined) throw new Error(`${needle} is unaddressable`);
+			return range;
+		};
+		const probe = liveProbe(
+			fakeSupervisor({
+				claims: [CLAIMS],
+				words: WORDS,
+				answers: {
+					probeFile: (params) => ({
+						...parseFake(params),
+						references: [
+							{
+								name: "Widgt",
+								range: at("Widgt"),
+								role: "read",
+								binding: { status: "unbound", reason: "NotIndexed" },
+							},
+							{
+								name: "build",
+								range: at("build"),
+								role: "read",
+								binding: { status: "bound", symbolId: BUILD, provenance: "bound" },
+							},
+						],
+					}),
+				},
+			}),
+		);
+		const reads = new PaintReads(store, probe, () => 0);
+
+		const parsed = await reads.parseFacts("a.fake", candidate);
+		if (!parsed.ok) throw new Error(parsed.reason);
+
+		expect(parsed.references.map(({ name, target, bound }) => ({ name, target, bound }))).toEqual([
+			{ name: "Widgt", target: null, bound: false },
+			{ name: "build", target: BUILD, bound: true },
 		]);
 	});
 

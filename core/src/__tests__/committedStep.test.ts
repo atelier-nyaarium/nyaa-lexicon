@@ -95,6 +95,9 @@ function prose(symbolId: string): string | undefined {
 /** A gate that runs `between` after planning and before the step's hold. */
 function gateAfter(between: () => void): Gate {
 	return {
+		ahead: async (work) => {
+			await work;
+		},
 		read: async (work) => work(),
 		write: async (work) => {
 			between();

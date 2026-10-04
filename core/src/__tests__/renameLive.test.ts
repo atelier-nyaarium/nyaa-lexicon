@@ -362,6 +362,9 @@ describe("settling a TypeScript rename", () => {
 		const late = 'import { total } from "./cart";\n\nexport const m = total();\n';
 		let holds = 0;
 		const gate: Gate = {
+			ahead: async (work) => {
+				await work;
+			},
 			read: async (work) => work(),
 			write: async (work) => {
 				holds += 1;

@@ -93,6 +93,15 @@ which the daemon reads as `{}`. The answer is `{ kind: "response", id, ok: true,
 `{ kind: "response", id, ok: false, error }`, where `error` is the message of whatever the handler
 threw. An error frame may also carry `starting`, `retryInMs` and `waitingFor`, covered below.
 
+A request may carry `gateWaitMs` (protocol 6.1.0, at most 60 seconds): how long a read may wait to
+enter the workspace gate behind a batch or a step. Past it the read leaves the queue, never runs, and
+answers `code: "busy"`; zero admits only a read admissible now. One budget covers a read's
+pre-work and its entry: a symbol read stops waiting on its tree upgrade when the budget runs out and
+answers from the depth it finds, while the upgrade runs on. It does not bound the answer: a read
+admitted in time still waits on its provider, and a starting daemon still answers `starting`. A
+method that mutates ignores it, and a status read takes no gate to wait for. An older daemon strips
+the field and queues as before, so a client relying on the bound checks the daemon's version first.
+
 **Ping and pong:** every thirty seconds the daemon sends `{ kind: "ping", n }` and the client
 answers `{ kind: "pong", n }`. Any frame from the client resets its silence counter, and a client
 silent through two ticks is destroyed. That is the case TCP cannot see: a peer alive but hung.
@@ -550,8 +559,10 @@ parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `gr
 Two reads answer `PaintFacts` (protocol 3.5.0): a module's declarations, references, literals and
 comments, shaped for a client that colors code itself rather than running a second parser. A
 declaration's range is its `selectionRange`, the name, never its body. A reference carries `bound`,
-`true` when it resolved to a target. `words` is the owning provider's own vocabulary (keywords,
-builtins, literal words), which facts alone cannot give.
+`true` when it resolved to a target, and (protocol 6.1.0) `name`, the identifier as written, and
+`target`, the bound symbol id or null, so a client compares two parses of a module by name and says
+which name stopped binding. `words` is the owning provider's own vocabulary (keywords, builtins,
+literal words), which facts alone cannot give.
 
 - **`moduleFacts`** (`{ module }`) answers the STORE's rows: `{ module, known: true, depth,
   contentHash, words, declarations, references, literals, comments }`, or `{ module, known: false,

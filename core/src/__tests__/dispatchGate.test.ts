@@ -5,8 +5,9 @@ import { createDispatch } from "../dispatch";
 import type { CommentQuery, LiteralQuery } from "../indexReads";
 import type { LexiconService } from "../service";
 import type { TransactionManager } from "../transactions";
-import { WorkspaceGate } from "../workspaceGate";
+import { GateBusy, WorkspaceGate } from "../workspaceGate";
 import { TREE_FIRST } from "./dispatchTiers";
+import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
 //  Helpers
@@ -93,6 +94,64 @@ describe("gating daemon mutations", () => {
 	it("refuses a malformed answer instead of shipping it", async () => {
 		const dispatch = createDispatch(asService({ cacheStats: () => ({ hits: "many", misses: 0, entries: 0 }) }));
 		expect(await rethrown(dispatch("cacheStats", {}))).toThrow(/hits/);
+	});
+});
+
+describe("gate waits", () => {
+	it("answers a read busy past its gate wait without running it; a mutation ignores the wait and queues", async () => {
+		const log: string[] = [];
+		const service = asService({
+			moduleFacts: (module: string) => {
+				log.push("moduleFacts");
+				return { module, known: false, reason: "notIndexed" };
+			},
+			indexFile: async () => {
+				log.push("indexFile");
+				return { module: "a.ts", action: "indexed" };
+			},
+		});
+		const dispatch = createDispatch(service);
+		let release = () => {};
+		const held = service.gate.exclusive(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+
+		const refused = await rethrown(dispatch("moduleFacts", { module: "a.ts" }, { gateWaitMs: 0 }));
+		const queued = dispatch("indexFile", { module: "a.ts", contentHash: "h" }, { gateWaitMs: 0 });
+		await tick();
+		release();
+		await Promise.all([held, queued]);
+
+		expect(refused).toThrow(GateBusy);
+		expect(log).toEqual(["indexFile"]);
+	});
+
+	// A tree upgrade behind a batch would otherwise hold a bounded read for its whole length.
+	it("spends one budget on a staged read's pre-work and entry, answering from what it finds", async () => {
+		const clock = fakeClock();
+		const log: string[] = [];
+		const tree = Promise.withResolvers<void>();
+		const dispatch = createDispatch(
+			asService({
+				gate: new WorkspaceGate(clock),
+				ensureTreeFor: () => tree.promise,
+				describe: () => {
+					log.push("describe");
+					return null;
+				},
+			}),
+		);
+
+		const answer = dispatch("describe", { symbolId: SYMBOL }, { gateWaitMs: 50 });
+		await tick();
+		clock.advance(50);
+		await answer;
+		tree.resolve();
+
+		expect(log).toEqual(["describe"]);
 	});
 });
 

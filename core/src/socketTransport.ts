@@ -11,20 +11,23 @@ import { createServer as createNetServer, type Server, type Socket } from "node:
 import { DaemonStartingError, DaemonStoppingError, lineSplitter, writeFrame } from "@nyaa-lexicon/client";
 import {
 	ClientFrameSchema,
+	GATE_BUSY_CODE,
 	HEARTBEAT_MISSED_LIMIT,
 	HEARTBEAT_MS,
 	HELLO_DEADLINE_MS,
 	OLDEST_CLIENT_MAJOR,
 	PROTOCOL_VERSION,
 	type RequestFrame,
+	type RequestOptions,
 	SERVER_LINE_CAP,
 } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
+import { GateBusy } from "./workspaceGate.js";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-export type FrameHandle = (method: string, params: unknown) => Promise<unknown>;
+export type FrameHandle = (method: string, params: unknown, options: RequestOptions) => Promise<unknown>;
 
 export interface FrameServerOptions {
 	/** From the lock file; a hello presenting anything else is rejected and the socket closed. */
@@ -149,7 +152,11 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 
 		async function answer(frame: RequestFrame): Promise<void> {
 			try {
-				const result = await options.handle(frame.method, frame.params);
+				const result = await options.handle(
+					frame.method,
+					frame.params,
+					frame.gateWaitMs === undefined ? {} : { gateWaitMs: frame.gateWaitMs },
+				);
 				writeFrame(socket, { kind: "response", id: frame.id, ok: true, result });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -161,7 +168,12 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 								waitingFor: error.waitingFor,
 							}
 						: {};
-				const code = error instanceof DaemonStoppingError ? { code: "stopping" as const } : {};
+				const code =
+					error instanceof DaemonStoppingError
+						? { code: "stopping" as const }
+						: error instanceof GateBusy
+							? { code: GATE_BUSY_CODE }
+							: {};
 				writeFrame(socket, { kind: "response", id: frame.id, ok: false, error: message, ...starting, ...code });
 			}
 		}

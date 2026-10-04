@@ -4,6 +4,7 @@
 // A daemon's own words travel inside DaemonError; the other two are the client's own verdicts,
 // reached before any daemon is asked.
 
+import { GATE_BUSY_CODE } from "@nyaa-lexicon/protocol";
 import type { DaemonRef } from "./daemonRef.js";
 
 ////////////////////////////////
@@ -74,7 +75,8 @@ export class DaemonError extends Error {
 		| "notRunning"
 		| "daemon";
 	readonly waitingFor: string | undefined;
-	readonly code: "stopping" | undefined;
+	/** `busy`: a bounded read never ran. */
+	readonly code: "stopping" | "busy" | undefined;
 	readonly from: DaemonRef | undefined;
 	readonly stale: boolean;
 	readonly older: boolean;
@@ -84,7 +86,7 @@ export class DaemonError extends Error {
 		this.name = "DaemonError";
 		this.cause = cause;
 		this.waitingFor = details.waitingFor;
-		this.code = details.code === "stopping" ? "stopping" : undefined;
+		this.code = details.code === "stopping" || details.code === GATE_BUSY_CODE ? details.code : undefined;
 		this.from = details.from;
 		this.stale = details.stale === true;
 		this.older = details.older === true;

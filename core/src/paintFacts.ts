@@ -54,15 +54,16 @@ function paintStoredReferences(references: readonly StoredReference[]): PaintFac
 		role: reference.role,
 		range: storedReferenceRange(reference),
 		bound: reference.targetId !== null,
+		name: reference.name,
+		target: reference.targetId,
 	}));
 }
 
 function paintCandidateReferences(references: readonly Reference[]): PaintFacts["references"] {
-	return references.map((reference) => ({
-		role: reference.role,
-		range: reference.range,
-		bound: reference.binding.status === "bound",
-	}));
+	return references.map((reference) => {
+		const target = reference.binding.status === "bound" ? reference.binding.symbolId : null;
+		return { role: reference.role, range: reference.range, bound: target !== null, name: reference.name, target };
+	});
 }
 
 /** A literal's kind and range, the same shape a stored row and a fresh candidate both carry. */
