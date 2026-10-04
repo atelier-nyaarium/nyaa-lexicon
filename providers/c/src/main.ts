@@ -369,6 +369,9 @@ export class CProvider {
 	/** Include lookup uses held facts. */
 	readonly store = moduleStore<ParsedCFile, CProject>({ read: (module, text) => parseC(module, text) });
 
+	/** `meter` counts header lookup work, so a test asserts its growth without a clock. */
+	constructor(private readonly meter?: { steps: number }) {}
+
 	initialize(_workspaceRoot: string) {
 		return {
 			providerId: "c-provider",
@@ -635,6 +638,7 @@ export class CProvider {
 		const unfound = { candidates: [], external, ...defined({ reason, detail }) };
 		const depths = names.get(name) ?? [];
 		for (let depth = 0; depth < depths.length; depth++) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const declared = depths[depth];
 			const candidates = declared === undefined ? [] : accept(declared);
 			if (candidates.length > 0) return { ...unfound, candidates };
@@ -683,6 +687,7 @@ export class CProvider {
 			}
 			frontier.push({ from: landed, imports: header.imports });
 			for (const declaration of header.declarations) {
+				if (this.meter !== undefined) this.meter.steps++;
 				const lexical = lexicalScope(header, declaration);
 				const fileScope =
 					declaration.containerId === undefined || (lexical !== undefined && lexical.scope === undefined);

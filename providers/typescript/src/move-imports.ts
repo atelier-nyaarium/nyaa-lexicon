@@ -316,10 +316,11 @@ function isDirective(statement: ts.Statement): boolean {
 	return ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression);
 }
 
+/** A local `export { x };` names the file's own bindings, so it belongs to the body. */
 function isImportLike(statement: ts.Statement): boolean {
 	return (
 		ts.isImportDeclaration(statement) ||
-		ts.isExportDeclaration(statement) ||
+		(ts.isExportDeclaration(statement) && statement.moduleSpecifier !== undefined) ||
 		ts.isImportEqualsDeclaration(statement)
 	);
 }

@@ -1111,6 +1111,11 @@ describe("move edits", () => {
 				target: 'import { a } from "./a";',
 				expected: `import { a } from "./a";\nimport { sibling } from "./source";\n\n${BODY}`,
 			},
+			// A local re-export belongs to the file's body, under its banner, not to the imports.
+			{
+				target: 'import type { a } from "./a";\n\n////\n//  Types\n\nexport type { a };\n',
+				expected: `import type { a } from "./a";\nimport { sibling } from "./source";\n\n////\n//  Types\n\nexport type { a };\n\n${BODY}`,
+			},
 			// Without imports: past the file's header, above the banner and the doc its declaration owns.
 			{
 				target: "// Header.\n\n////\n//  Types\n\n/** Doc. */\nconst kept = 1;\n",

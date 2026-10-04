@@ -2070,26 +2070,26 @@ describe("C binding and imports", () => {
 		]);
 	});
 
-	test("looks names up in the headers a file reaches in time linear in their count", () => {
-		const timed = (count: number) => {
+	test("looks names up in the headers a file reaches with work linear in their count", () => {
+		const work = (count: number) => {
 			const headers = Object.fromEntries(
 				Array.from({ length: count }, (_, index) => [`h${index}.h`, `int v${index};\n`]),
 			);
 			const includes = Array.from({ length: count }, (_, index) => `#include "h${index}.h"`).join("\n");
 			const uses = Array.from({ length: count }, (_, index) => `v${index} + u${index}`).join(" + ");
 			const text = `${includes}\nint run(void) { return ${uses}; }\n`;
-			const handlers = started(workspace({ ...headers, "main.c": text }));
+			const meter = { steps: 0 };
+			const handlers = handlersFor(new CProvider(meter));
+			const root = workspace({ ...headers, "main.c": text });
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+			handlers.discoverProject({ workspaceRoot: root });
 			facts(handlers, "main.c", text);
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				handlers.parseFile({ module: "main.c", contentHash: `round${round}`, text });
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			meter.steps = 0;
+			handlers.parseFile({ module: "main.c", contentHash: "measured", text });
+			return meter.steps;
 		};
 		// Linear reads 8x; a scan of every header per name reads 64x.
-		expect(timed(1_600) / timed(200)).toBeLessThan(24);
+		expect(work(1_600) / work(200)).toBeLessThan(12);
 	});
 
 	test("finds same-file candidates through the parsed declaration index", () => {
