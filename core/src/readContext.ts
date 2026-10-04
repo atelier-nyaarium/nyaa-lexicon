@@ -153,6 +153,32 @@ export class ReadContext {
 		return found;
 	}
 
+	/**
+	 * A module's own level, stamped: its top-level declarations, except that a nameless class holding
+	 * the whole module, such as a GDScript file's own class, gives its members instead. `scopes` names
+	 * that class. A nameless class beside other top-level declarations, such as TypeScript's
+	 * `export = class {}`, is one declaration like any other.
+	 */
+	moduleLevel(module: string): { scopes: Set<string>; declarations: StoredDeclaration[] } {
+		const topology = this.topology(module);
+		const top = topology.heldBy(undefined);
+		const implicit = top.filter(
+			(each) => top.length === 1 && each.selectionRange === undefined && each.kind === "class",
+		);
+		const scopes = new Set(implicit.map((each) => each.symbolId));
+		const declarations = [
+			...top.filter((each) => !scopes.has(each.symbolId)),
+			...implicit.flatMap((each) => topology.declaredChildren(each.symbolId)),
+		];
+		return { scopes, declarations };
+	}
+
+	/** Whether the stamped module has complete comment facts. */
+	hasFullFacts(module: string): boolean {
+		this.touch(module);
+		return this.stamps.get(module)?.depth === "full";
+	}
+
 	/** Every module read, stamped at its first touch; every scope read; and the pinned index. */
 	seen(): FactsSeen[] {
 		return [

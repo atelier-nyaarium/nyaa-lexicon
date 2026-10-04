@@ -40,6 +40,15 @@ import {
 	type Refusal,
 	subjectRefused,
 } from "./refusals.js";
+import {
+	type BannerPlacement,
+	bannerPrefixes,
+	bannerRemovals,
+	eolOf,
+	mergeBannerRemovals,
+	NO_LEVEL,
+	sectionBanners,
+} from "./sectionBanners.js";
 import type { SourceWorkspace } from "./sourceWorkspace.js";
 import type { IndexStore, StoredReference } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
@@ -350,6 +359,20 @@ export class ArrangePlanner {
 	/** Every file the arrangement writes, with the hash it was planned over, formatted when `fixText` is set. */
 	async files(plan: Extract<PlannedArrange, { ok: true }>, context: ReadContext): Promise<ArrangedFiles> {
 		const { toModule, fromModule } = plan;
+		let sourceText = "";
+		let banners: BannerPlacement[] = [];
+		if (fromModule !== toModule) {
+			const sourceRead = this.source.writable(fromModule);
+			if ("refused" in sourceRead) return { ok: false, issues: [], reason: sourceRead.refused };
+			sourceText = sourceRead.text ?? "";
+			// Shallow facts hold no comments, so banners stay as they are.
+			if (context.hasFullFacts?.(fromModule) !== false)
+				banners = sectionBanners(
+					sourceText,
+					context.commentsIn?.(fromModule) ?? [],
+					context.moduleLevel?.(fromModule) ?? NO_LEVEL,
+				);
+		}
 		const others = [...plan.referencing.keys()].filter((module) => module !== toModule && module !== fromModule);
 		const modules = [toModule, ...(fromModule === toModule ? [] : [fromModule]), ...others];
 
@@ -363,13 +386,36 @@ export class ArrangePlanner {
 				return { ok: false, issues: [], reason: moduleNotOnDisk(module) };
 			}
 			const text = current.text ?? "";
+			const part = this.partOf(module, text, plan, context);
+			const incomingIds = new Set(
+				plan.members.filter((member) => member.incoming).map((member) => member.symbolId),
+			);
+			// A file the move creates gets its members' banners, in the order the members land.
+			const prefixes =
+				module === toModule && current.text === null
+					? bannerPrefixes(
+							sourceText,
+							eolOf(part.members.map((member) => member.insertion?.text ?? "").join("")),
+							banners,
+							part.members.map((member) => member.symbolId),
+						)
+					: new Map<string, string>();
+			const requestedPart = {
+				...part,
+				members: part.members.map((member) => {
+					const prefix = prefixes.get(member.symbolId);
+					return member.insertion === undefined || prefix === undefined
+						? member
+						: { ...member, insertion: { ...member.insertion, text: `${prefix}${member.insertion.text}` } };
+				}),
+			};
 			const answer = await this.probe.arrangeEdits(module, {
 				module,
 				text,
 				exists: current.text !== null,
 				fromModule,
 				toModule,
-				...this.partOf(module, text, plan, context),
+				...requestedPart,
 			});
 			if (answer.status === "refused") {
 				return {
@@ -386,7 +432,9 @@ export class ArrangePlanner {
 					module,
 				});
 			}
-			const applied = applyEdits(text, answer.edits);
+			const bannerEdits =
+				module === fromModule && fromModule !== toModule ? bannerRemovals(text, banners, incomingIds) : [];
+			const applied = applyEdits(text, mergeBannerRemovals([...answer.edits, ...bannerEdits]));
 			if ("problem" in applied) {
 				return { ok: false, issues: [], reason: providerRefused(module, applied.problem) };
 			}

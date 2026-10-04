@@ -436,6 +436,16 @@ use of another member needs no import, and a member only the set uses gains no e
 gets one `arrangeEdits` request. A result that leaves a member undeclared in the target, or still
 declared in the source, refuses.
 
+### Section banners
+
+A section banner is a module-level standalone comment drawn as one, a separator line or
+`--- Title ---`, after the file's header; its section runs to the next banner. A nameless top-level
+class, such as a GDScript file's own class, counts as the module. When a move or an arrangement to
+another module takes every declaration out of a section, the banner leaves too, with one blank line.
+A target the step creates gets the banners its declarations sat under: a copy wherever a
+declaration's banner differs from the one before it, in landing order. An existing target gets none,
+and a source indexed shallowly keeps its banners. `core/src/sectionBanners.ts` holds the rule.
+
 `previewArrange` answers each file the step would write: `base`, the hash it was planned over, or
 null when created; `text`; and `result`, the text's hash. With `lexicon.json`'s `fixText` set, each
 text is the formatter's output and `formatted` is true. A formatter that fails leaves its file as

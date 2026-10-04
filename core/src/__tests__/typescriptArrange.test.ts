@@ -63,6 +63,35 @@ afterEach(() => {
 //  Tests
 
 describe("an arrangement with the TypeScript provider", () => {
+	it("moves a section banner to a new target and drops it from an emptied section", async () => {
+		const source =
+			"// licence\n\n////////////////////////////////\n// Values\n\nexport function moved() {\n\treturn 1;\n}\n";
+		writeFileSync(path.join(root, "src/source.ts"), source);
+		await service.indexFile("src/source.ts");
+		const symbolId = service.findByName("moved", "src/source.ts").find((found) => found.module === "src/source.ts")
+			?.symbolId as string;
+		const request = { toModule: "src/new-target.ts", placements: [{ symbolId }] };
+		const preview = (await dispatch("previewArrange", request)) as ResponseOf<"previewArrange">;
+		if (!preview.ok) throw new Error(preview.reason);
+
+		expect(preview.files).toEqual([
+			{
+				module: "src/new-target.ts",
+				base: null,
+				created: true,
+				text: "////////////////////////////////\n// Values\n\nexport function moved() {\n\treturn 1;\n}\n",
+				result: expect.any(String),
+			},
+			{
+				module: "src/source.ts",
+				base: expect.any(String),
+				created: false,
+				text: "// licence\n\n",
+				result: expect.any(String),
+			},
+		]);
+	});
+
 	it("re-points a barrel and an importer, leaves a same-named import from elsewhere, and places every target declaration", async () => {
 		const foo = service.findByName("foo").find((found) => found.module === "src/source.ts")?.symbolId as string;
 		const request = { toModule: "src/target.ts", placements: [{ symbolId: foo }] };
