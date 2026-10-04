@@ -32,11 +32,18 @@ function makeWorkspace(files: Record<string, string>): string {
 	return root;
 }
 
-function wire(root = process.cwd()) {
-	const handlers = handlersFor(new CppProvider());
+function wire(root = process.cwd(), provider = new CppProvider()) {
+	const handlers = handlersFor(provider);
 	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
+}
+
+function bindingSteps(text: string): number {
+	const meter = { steps: 0 };
+	const handlers = wire(process.cwd(), new CppProvider(meter));
+	handlers.parseFile({ module: "scaling.cpp", contentHash: "steps", text });
+	return meter.steps;
 }
 
 function declarationNames(text: string, module = "edge.cpp") {
@@ -1056,12 +1063,12 @@ describe("C++ parser edges", () => {
 	});
 
 	test(
-		"binds the locals of sibling blocks in time linear in their count",
+		"binds the locals of sibling blocks with linear lookup work",
 		() => {
 			const blocks = (count: number) =>
 				`void run() {\n${"\t{ int x; x; x; x; x; x; x; x; x; }\n".repeat(count)}}\n`;
 
-			expect(parseTime(blocks(8_000)) / parseTime(blocks(1_000))).toBeLessThan(24);
+			expect(bindingSteps(blocks(8_000)) / bindingSteps(blocks(1_000))).toBeLessThan(12);
 		},
 		{ timeout: 30_000 },
 	);

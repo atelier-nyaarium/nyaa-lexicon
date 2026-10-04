@@ -119,12 +119,13 @@ export class NameBucket {
 	}
 
 	/** The records visible at token `at`: each one without a window, and the windows covering `at`. */
-	visibleAt(at: number): CppDeclarationRecord[] {
+	visibleAt(at: number, meter?: { steps: number }): CppDeclarationRecord[] {
 		if (this.windowed.length === 0) return this.plain;
 		let low = 0;
 		let high = this.windowed.length - 1;
 		let last = -1;
 		while (low <= high) {
+			if (meter !== undefined) meter.steps++;
 			const middle = (low + high) >> 1;
 			if (windowStart(this.windowed[middle] as CppDeclarationRecord) <= at) {
 				last = middle;
@@ -133,6 +134,7 @@ export class NameBucket {
 		}
 		const found = [...this.plain];
 		for (let current = last; current >= 0; current = this.enclosing[current] as number) {
+			if (meter !== undefined) meter.steps++;
 			const record = this.windowed[current] as CppDeclarationRecord;
 			if (at < windowEnd(record)) found.push(record);
 		}

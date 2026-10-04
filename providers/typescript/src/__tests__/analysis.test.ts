@@ -238,10 +238,19 @@ describe("checker-backed analysis", () => {
 			const provider = new TypeScriptProvider();
 			const handlers = warmingHandlers(provider);
 			const events: string[] = [];
+			const waiters = new Set<{ count: number; resolve: () => void }>();
+			const record = (event: string) => {
+				events.push(event);
+				for (const waiter of waiters)
+					if (events.length >= waiter.count) {
+						waiters.delete(waiter);
+						waiter.resolve();
+					}
+			};
 			provider.store.announcePhase = (phase, label) => {
-				events.push(label === undefined ? phase : `${phase}: ${label}`);
+				record(label === undefined ? phase : `${phase}: ${label}`);
 				// A turn later, when a written notice has gone out.
-				setTimeout(() => events.push(`${phase} out`), 0);
+				setTimeout(() => record(`${phase} out`), 0);
 			};
 			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
 			handlers.discoverProject({ workspaceRoot: root });
@@ -257,18 +266,21 @@ describe("checker-backed analysis", () => {
 				dispose: () => {},
 			};
 			provider.store.project.analyzer = fake as unknown as TypeScriptAnalyzer;
-			return { provider, handlers, events };
-		};
-		const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
-		/** Until `events` holds `count`, however late a loaded machine runs the markers. */
-		const settled = async (events: string[], count: number) => {
-			for (let turns = 0; events.length < count && turns < 10_000; turns++) await turn();
+			return {
+				provider,
+				handlers,
+				events,
+				until: (count: number) =>
+					events.length >= count
+						? Promise.resolve()
+						: new Promise<void>((resolve) => waiters.add({ count, resolve })),
+			};
 		};
 
 		// A build that throws still says ready.
 		for (const fails of [false, true]) {
 			const warmed = served(fails);
-			await settled(warmed.events, 5);
+			await warmed.until(5);
 			expect(warmed.events, `fails=${fails}`).toEqual([
 				"initializing: building the TypeScript program",
 				"initializing out",
@@ -282,7 +294,7 @@ describe("checker-backed analysis", () => {
 		const stopped = served();
 		await Promise.resolve();
 		stopped.handlers.shutdown({});
-		await settled(stopped.events, 4);
+		await stopped.until(4);
 		expect(stopped.events).toEqual([
 			"initializing: building the TypeScript program",
 			"initializing out",
@@ -294,7 +306,7 @@ describe("checker-backed analysis", () => {
 		const early = served();
 		early.handlers.shutdown({});
 		// The warm would announce in a microtask, which every timer turn follows.
-		await turn();
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(early.events).toEqual([]);
 	});
 

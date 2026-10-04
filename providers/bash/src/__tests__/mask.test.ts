@@ -123,14 +123,14 @@ describe("the parser's tokens", () => {
 		let comments = 0;
 		for (const [name, text] of corpus()) {
 			await new Promise((resolve) => setImmediate(resolve));
-			const spans = dataSpans(parseBashScript(text).script);
-			const coordinates = coordinatesOf(text);
-			for (const comment of parseBash(name, text).comments) {
+			const parsed = parseBashScript(text);
+			const spans = dataSpans(parsed.script);
+			for (const comment of parsed.tokens.filter((token) => token.kind === "comment")) {
 				comments++;
-				const at = coordinates.offsetsForRange(comment.range)?.start;
-				expect(at).toBeDefined();
-				const inside = spans.find(([start, end]) => start <= (at as number) && (at as number) < end);
-				expect(inside === undefined ? null : { name, comment: comment.text, inside }).toBeNull();
+				const inside = spans.find(([start, end]) => start <= comment.pos && comment.pos < end);
+				expect(
+					inside === undefined ? null : { name, comment: text.slice(comment.pos, comment.end), inside },
+				).toBeNull();
 			}
 		}
 		expect(comments).toBeGreaterThan(0);

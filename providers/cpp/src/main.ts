@@ -247,6 +247,8 @@ export class CppProvider {
 	/** Include lookup reads the store's project and held facts. */
 	readonly store = moduleStore<CppFacts, CppProject>({ read: (module, text) => parseCppFile(module, text) });
 
+	constructor(private readonly meter?: { steps: number }) {}
+
 	initialize(_workspaceRoot: string) {
 		return {
 			providerId: PROVIDER_ID,
@@ -466,6 +468,7 @@ export class CppProvider {
 			},
 			module,
 			facts,
+			this.meter,
 		);
 	}
 

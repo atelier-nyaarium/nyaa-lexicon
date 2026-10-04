@@ -259,6 +259,7 @@ export class CppBinder {
 		private readonly sources: BinderSources,
 		module: string,
 		facts: CppFacts,
+		private readonly meter?: { steps: number },
 	) {
 		this.files.set(module, facts);
 	}
@@ -407,7 +408,7 @@ export class CppBinder {
 		const here = scope.module === module;
 		const bucket = facts.members.get(id)?.get(reference.name);
 		const found = here
-			? visibleOf(bucket?.visibleAt(at) ?? [], reference, complete)
+			? visibleOf(bucket?.visibleAt(at, this.meter) ?? [], reference, complete)
 			: (bucket?.visibleAt(-1) ?? []).filter((record) => kindAllowed(record, reference));
 		for (const inner of facts.transparentOf.get(id) ?? [])
 			if (!here || complete || inView(inner, at, reference.alternative))
