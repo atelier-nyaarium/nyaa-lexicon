@@ -92,20 +92,16 @@ describe("compilation database", () => {
 		]);
 	});
 
-	it("reads a command's include directories in time linear in their count", () => {
-		const timed = (count: number) => {
+	it("reads a command's include directories with work linear in their count", () => {
+		const work = (count: number) => {
 			const args = ["cc", ...Array.from({ length: count }, (_, index) => `-Idir${index}`), "a.c"];
 			const text = JSON.stringify([{ directory: "/", file: "a.c", arguments: args }]);
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				readCompileCommands({ module: "compile_commands.json", text, location: "/" });
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			readCompileCommands({ module: "compile_commands.json", text, location: "/", meter });
+			return meter.steps;
 		};
 		// Linear reads 8x; a scan of the list per directory reads 64x.
-		expect(timed(16_000) / timed(2_000)).toBeLessThan(24);
+		expect(work(16_000) / work(2_000)).toBeLessThan(12);
 	});
 
 	it("answers a database that is not a list of commands with a diagnostic, never a throw", () => {

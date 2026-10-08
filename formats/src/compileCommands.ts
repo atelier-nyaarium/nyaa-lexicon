@@ -3,7 +3,7 @@
 // directories come back absolute. Rules in formats/AGENTS.md.
 
 import path from "node:path";
-import { type Diagnostic, isTooDeep, SourceCursor, TOO_DEEP } from "@nyaa-lexicon/protocol";
+import { type Diagnostic, isTooDeep, SourceCursor, TOO_DEEP, type WorkMeter } from "@nyaa-lexicon/protocol";
 // The ESM entry by path, as `json.ts` reads it, so the database reads with the same tolerance.
 import { type ParseError, parse, printParseErrorCode } from "jsonc-parser/lib/esm/main.js";
 
@@ -49,6 +49,7 @@ export interface CompileDatabaseContext {
 	text: string;
 	/** The directory the database sits in, absolute: a relative `directory` resolves against it. */
 	location: string;
+	meter?: WorkMeter;
 }
 
 type Flag = "quote" | "user" | "system" | "after" | "forced" | "define" | "undefine";
@@ -203,7 +204,7 @@ function after(argument: string, prefix: string): string {
 }
 
 /** One entry's arguments read into its search lists and defines. */
-function commandOf(file: string, directory: string, args: readonly string[]): CompileCommand {
+function commandOf(file: string, directory: string, args: readonly string[], meter?: WorkMeter): CompileCommand {
 	const includes: IncludeSearch = { includerDirectory: true, quote: [], user: [], system: [], after: [] };
 	const forcedIncludes: string[] = [];
 	const defines = new Map<string, string>();
@@ -212,6 +213,7 @@ function commandOf(file: string, directory: string, args: readonly string[]): Co
 	// Each list's members, so a repeat is found without a scan.
 	const members = new Map<string[], Set<string>>();
 	const listed = (list: string[], directory: string) => {
+		if (meter !== undefined) meter.steps++;
 		const known = members.get(list) ?? new Set(list);
 		members.set(list, known);
 		if (known.has(directory)) return;
@@ -299,7 +301,7 @@ export function readCompileCommands(context: CompileDatabaseContext): CompileDat
 			);
 			return;
 		}
-		commands.push(commandOf(file, path.resolve(location, directory), args));
+		commands.push(commandOf(file, path.resolve(location, directory), args, context.meter));
 	});
 	return { commands, diagnostics };
 }
