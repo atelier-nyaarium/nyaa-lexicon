@@ -200,17 +200,21 @@ NyaaCode, asks it and submits the answer.
   it. Health: `orphaned` when an end is gone, `sourceChanged` when an end's digest moved since it was
   stated or judged, `insufficientEvidence` when a computed score rests on one item.
 - **Feedback.** A consumer reports the relations behind each prediction accepted or rejected, per its
-  own intent. Counts halve every thirty days, cap at ten, and scale a score between half and double.
-  They key by symbol id and are discarded with a rebuild; an accept never makes an edge.
+  own intent. Counts halve every thirty days, cap at ten, and scale a score between half and double,
+  which can carry a pair across the floor either way. They key by symbol id and are discarded with a
+  rebuild; an accept never makes an edge.
 - **Discovery.** `core/src/relationWork.ts` runs in the background. Once the index is warm and
   upgraded it records every module's exports by kind and signature, queueing nothing, so an existing
-  workspace starts quiet; a new store queues the exports of files its newest commits touched. After
-  each batch, an export that is new or changed its kind or signature queues; a body edit does not.
-  One export per slice: history read ungated, the scoring under a shared read admitted within a
-  short wait, the write under a short exclusive one, and a busy gate defers the slice. Its best
+  workspace starts quiet; a new store queues the exports of files its newest commits touched, and of
+  files indexed while that history was read. After each batch, an export that is new or changed its
+  kind or signature queues; a body edit does not. A module queues 20 at a time, the rest once those
+  drain. One export per slice: history read ungated, the scoring under a shared read admitted within
+  a short wait, the write under a short exclusive one, and a busy gate defers the slice. The write
+  lands only over the facts it was scored on; a batch between leaves the export queued. Its best
   related symbols in its own language find the modules that use them but not it, and a module
   already using something the export's module declares counts too; the three best keep it as a
-  suggestion for 14 days. An export nothing relates to strongly opens a gap for a model to judge.
+  suggestion for 14 days, shown while the module still uses a symbol that found it. An export
+  nothing relates to strongly opens a gap for a model to judge.
 
 ## Rules
 

@@ -677,9 +677,9 @@ relations.
 `relation: null` with a `reason` when either end names nothing or both are the same.
 
 **`relationCandidates`** takes `module` or `symbolId`, never both. With `module`, the exports
-discovery suggested to it in the last 14 days that it still does not use, best score first; with
-`symbolId`, the modules that export would suit, computed now. Each candidate pairs
-an `export` with a `module` and names the related symbols the module uses (`via`).
+discovery suggested to it in the last 14 days that it still does not use, through related symbols
+it still uses, best score first; with `symbolId`, the modules that export would suit, computed now.
+Each candidate pairs an `export` with a `module` and names the related symbols the module uses (`via`).
 
 **`relationGaps`** (`{ limit? }`) lists new exports nothing relates to strongly, each with
 `candidates` a model may judge it against, newest first, and the `total` open.

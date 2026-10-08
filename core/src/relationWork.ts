@@ -3,7 +3,7 @@
 
 import type { IndexOutcome } from "@nyaa-lexicon/protocol";
 import type { Clock, TimerHandle } from "./clock.js";
-import type { Discovery } from "./relations.js";
+import type { Discovery, QueuedExport } from "./relations.js";
 import type { LexiconService } from "./service.js";
 import type { Timings } from "./timings.js";
 import { GateBusy } from "./workspaceGate.js";
@@ -53,6 +53,9 @@ const TIDY_EVERY_MS = 60 * 60 * 1000;
 export function startRelationWork(options: RelationWorkOptions): RelationWork {
 	const { service, clock } = options;
 	let ready = false;
+	/** Between `ready`'s call and its seeding, which take the modules indexed meanwhile. */
+	let starting = false;
+	const early = new Set<string>();
 	let stopped = false;
 	let running = false;
 	/** Batches whose exports are still being noticed. */
@@ -96,7 +99,7 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 			const history = await service.relationHistory();
 			const found = await service.gate
 				.within(SLICE_WAIT_MS)
-				.shared(async (): Promise<{ symbolId: string; module: string; found: Discovery | null } | null> => {
+				.shared(async (): Promise<{ queued: QueuedExport; found: Discovery | null } | null> => {
 					const queued = service.relations.nextQueued();
 					if (queued === null) return null;
 					const work = async () => discover(queued.symbolId, history);
@@ -104,16 +107,14 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 						options.timings === undefined
 							? await work()
 							: await options.timings.time("relationDiscovery", {}, work);
-					return { ...queued, found: result };
+					return { queued, found: result };
 				});
 			if (found === null) {
 				running = false;
 				if (resting()) quiet();
 				return;
 			}
-			await service.gate.exclusive(async () =>
-				service.relations.settleQueued(found.symbolId, found.module, found.found),
-			);
+			await service.gate.exclusive(async () => service.relations.settleQueued(found.queued, found.found));
 		} catch (error) {
 			if (!(error instanceof GateBusy)) options.onError?.(error);
 			next = RETRY_MS;
@@ -135,24 +136,36 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 
 	return {
 		ready: async () => {
-			if (ready || stopped) return;
+			if (ready || starting || stopped) return;
+			starting = true;
 			try {
 				const recent = await service.recentlyChanged(BACKFILL_COMMITS);
 				await service.gate.exclusive(async () => {
+					// Seeding marks these seen; backfill them.
+					const meanwhile = [...early];
+					early.clear();
+					ready = true;
 					// A module the index does not hold has no exports, so it queues nothing.
-					if (service.relations.seedExports()) service.relations.backfill(recent);
+					if (service.relations.seedExports()) service.relations.backfill([...meanwhile, ...recent]);
 					else service.relations.reconcile();
 					service.relations.tidy();
 				});
 			} catch (error) {
 				options.onError?.(error);
 			}
+			early.clear();
+			starting = false;
 			ready = true;
 			armTidy();
 			schedule(0);
 		},
 		applied: (outcomes) => {
-			if (!ready || stopped) return;
+			if (stopped) return;
+			if (!ready) {
+				if (!starting) return;
+				for (const outcome of outcomes) if (outcome.action === "indexed") early.add(outcome.module);
+				return;
+			}
 			const indexed = outcomes.filter((outcome) => outcome.action === "indexed").map((outcome) => outcome.module);
 			const forgotten = outcomes
 				.filter((outcome) => outcome.action === "forgotten")

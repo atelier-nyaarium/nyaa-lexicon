@@ -119,6 +119,13 @@ function find(relations: readonly Relation[], symbolId: string): Relation | unde
 	return relations.find((relation) => relation.symbolId === symbolId);
 }
 
+/** Discovers and writes the oldest queued export. */
+function settleNext(): void {
+	const queued = ledger.nextQueued();
+	if (queued === null) throw new Error("nothing queued");
+	expect(ledger.settleQueued(queued, ledger.discover(queued.symbolId, HISTORY))).toBe(true);
+}
+
 function reopen(): void {
 	store = IndexStore.open(file, undefined, undefined, clock).store;
 	ledger = new RelationLedger(store, clock);
@@ -333,6 +340,14 @@ describe("feedback", () => {
 			recorded: 0,
 		});
 	});
+
+	it("lifts a pair below the floor into an intent's relations once its predictions are accepted", () => {
+		const adopt = () => find(ledger.relationsOf(ROW, HISTORY, { intent: "adopt" }).relations, LINE);
+		expect(adopt()).toBeUndefined();
+		for (let i = 0; i < 5; i++) ledger.feedback([{ symbolId: ROW, otherId: LINE }], "adopt", "accepted");
+		expect(adopt()?.feedback?.accepted).toBe(5);
+		expect(find(ledger.relationsOf(ROW, HISTORY, { intent: "fix" }).relations, LINE)).toBeUndefined();
+	});
 });
 
 describe("discovery", () => {
@@ -349,34 +364,44 @@ describe("discovery", () => {
 			declared("formatRate", FORMAT, 2, "(perSecond: number, unit: string): string"),
 		]);
 		expect(ledger.notice([FORMAT], [])).toBe(1);
-		expect(ledger.nextQueued()).toEqual({ symbolId: RATE, module: FORMAT });
+		expect(ledger.nextQueued()).toMatchObject({ symbolId: RATE, module: FORMAT });
 	});
 
-	it("queues a burst of new exports over several batches rather than losing what passed the cap", () => {
+	it("queues a burst past the cap once the first exports drain, each once", () => {
 		ledger.seedExports();
 		const burst = Array.from({ length: 25 }, (_, line) => declared(`formatUnit${line}`, FORMAT, line + 3));
 		plantFormat(burst);
-		const queued = () => {
-			let count = 0;
-			for (let next = ledger.nextQueued(); next !== null; next = ledger.nextQueued()) {
-				ledger.settleQueued(next.symbolId, next.module, null);
-				count++;
-			}
-			return count;
-		};
 		ledger.notice([FORMAT], []);
-		expect(queued()).toBe(20);
+		expect(store.relations.queued()).toBe(20);
+		let settled = 0;
+		for (let next = ledger.nextQueued(); next !== null; next = ledger.nextQueued()) {
+			expect(ledger.settleQueued(next, null)).toBe(true);
+			settled++;
+		}
+		expect(settled).toBe(25);
+		expect(ledger.notice([FORMAT], [])).toBe(0);
+	});
+
+	it("leaves an export queued when a batch lands between its scoring and its write", () => {
+		ledger.seedExports();
+		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
 		ledger.notice([FORMAT], []);
-		expect(queued()).toBe(5);
+		const queued = ledger.nextQueued();
+		if (queued === null) throw new Error("nothing queued");
+		const found = ledger.discover(SPEED, HISTORY);
+
+		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number, digits: number): string")]);
 		ledger.notice([FORMAT], []);
-		expect(queued()).toBe(0);
+		expect(ledger.settleQueued(queued, found)).toBe(false);
+		expect(ledger.nextQueued()).toMatchObject({ symbolId: SPEED });
+		expect(ledger.candidatesForModule(TABLE, 5).candidates).toEqual([]);
 	});
 
 	it("drops an export's suggestions when the export goes", () => {
 		ledger.seedExports();
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
 		ledger.notice([FORMAT], []);
-		ledger.settleQueued(SPEED, FORMAT, ledger.discover(SPEED, HISTORY));
+		settleNext();
 		expect(ledger.candidatesForModule(TABLE, 5).candidates).toHaveLength(1);
 
 		plantFormat();
@@ -384,13 +409,23 @@ describe("discovery", () => {
 		expect(ledger.candidatesForModule(TABLE, 5).candidates).toEqual([]);
 	});
 
+	it("drops a suggestion once the module stops using what found it", () => {
+		ledger.seedExports();
+		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
+		ledger.notice([FORMAT], []);
+		settleNext();
+		expect(ledger.candidatesForModule(TABLE, 5).candidates).toHaveLength(1);
+
+		plant(TABLE, [declared("renderRow", TABLE, 0)], [call(DURATION, ROW, 1)]);
+		expect(ledger.candidatesForModule(TABLE, 5).candidates).toEqual([]);
+	});
+
 	it("suggests a new export to the modules using what relates to it, until they use it", () => {
 		ledger.seedExports();
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
 		ledger.notice([FORMAT], []);
-		const queued = ledger.nextQueued();
-		expect(queued).toEqual({ symbolId: SPEED, module: FORMAT });
-		ledger.settleQueued(SPEED, FORMAT, ledger.discover(SPEED, HISTORY));
+		expect(ledger.nextQueued()).toMatchObject({ symbolId: SPEED, module: FORMAT });
+		settleNext();
 
 		const suggested = ledger.candidatesForModule(TABLE, 5).candidates;
 		expect(suggested.map((each) => each.export.symbolId)).toEqual([SPEED]);
@@ -409,7 +444,7 @@ describe("discovery", () => {
 		]);
 		ledger.notice([CLOCK], []);
 		const NOW = idOf("monotonicNow", CLOCK);
-		ledger.settleQueued(NOW, CLOCK, ledger.discover(NOW, HISTORY));
+		settleNext();
 		expect(ledger.gaps(5, HISTORY)).toMatchObject({ gaps: [{ symbol: { symbolId: NOW } }], total: 1 });
 
 		expect(ledger.answerGap(NOW, [{ symbolId: ELAPSED, why: "both read the clock" }], AGENT)).toEqual({
@@ -451,6 +486,29 @@ describe("background discovery", () => {
 		expect(suggested()).toEqual(["formatSpeed"]);
 		work.stop();
 		await work.idle();
+	});
+
+	it("discovers an export indexed while ready still reads history", async () => {
+		const service = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+			clock,
+		);
+		const work = startRelationWork({ service, clock });
+		const starting = work.ready();
+		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
+		work.applied([{ module: FORMAT, action: "indexed" }]);
+		await starting;
+		const suggested = () =>
+			service.relations.candidatesForModule(TABLE, 5).candidates.map((each) => each.export.name);
+		for (let turn = 0; turn < 40 && !suggested().includes("formatSpeed"); turn++) {
+			await settle();
+			clock.advance(1_000);
+		}
+		expect(suggested()).toContain("formatSpeed");
+		work.stop();
 	});
 
 	it("defers a slice while an index write holds the gate, then runs it", async () => {

@@ -2635,6 +2635,15 @@ export class IndexStore {
 		return byModule;
 	}
 
+	/** Whether `module` uses the symbol. */
+	moduleUses(module: string, symbolId: string): boolean {
+		return (
+			this.db
+				.prepare(`SELECT 1 FROM refs r WHERE r.module = ? AND r.targetId = ? AND ${useSql("r")} LIMIT 1`)
+				.get(module, symbolId) !== undefined
+		);
+	}
+
 	/** Use counts for a symbol, grouped by module. */
 	usingModules(symbolId: string): Map<string, number> {
 		const rows = this.db

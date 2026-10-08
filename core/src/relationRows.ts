@@ -379,6 +379,12 @@ export class RelationRows {
 		return (this.db.prepare("SELECT COUNT(*) AS n FROM relation_queue").get() as { n: number }).n;
 	}
 
+	queuedIn(module: string): number {
+		return (
+			this.db.prepare("SELECT COUNT(*) AS n FROM relation_queue WHERE module = ?").get(module) as { n: number }
+		).n;
+	}
+
 	////////////////////////////////
 	//  Discovery
 

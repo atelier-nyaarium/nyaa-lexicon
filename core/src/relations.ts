@@ -79,6 +79,13 @@ interface StatedEnd {
 	row: StatedRow;
 }
 
+/** A waiting export, and the facts generation it was read at. */
+export interface QueuedExport {
+	symbolId: string;
+	module: string;
+	generation: number;
+}
+
 /** The modules an export would suit, and how strongly anything relates to it. */
 export interface Discovery {
 	modules: Array<{ module: string; score: number; via: string[] }>;
@@ -190,6 +197,8 @@ export class RelationLedger {
 	private memo = new Map<string, Scored[]>();
 	private memoGeneration = -1;
 	private memoHistory: CoChangeIndex | null = null;
+	/** Modules with exports past the queue cap, noticed again once their queue drains. */
+	private overflowed = new Set<string>();
 
 	constructor(
 		private readonly store: IndexStore,
@@ -237,16 +246,16 @@ export class RelationLedger {
 		return { relation: null };
 	}
 
-	/** Exports discovery suggested to a module that it still does not use, best first. */
+	/** Exports discovery suggested to a module that it still does not use, through symbols it still does, best first. */
 	candidatesForModule(module: string, limit: number, intent?: string): RelationCandidates {
 		const now = this.clock.now();
 		const candidates: RelationCandidate[] = [];
 		for (const row of this.store.relations.discoveryFor(module, now - DISCOVERY_TTL_MS)) {
 			const exported = this.store.declaration(row.symbolId);
-			if (exported === null || this.store.usingModules(row.symbolId).has(module)) continue;
+			if (exported === null || this.store.moduleUses(module, row.symbolId)) continue;
 			const via = row.via.flatMap((id) => {
 				const declaration = this.store.declaration(id);
-				return declaration === null ? [] : [declaration];
+				return declaration === null || !this.store.moduleUses(module, id) ? [] : [declaration];
 			});
 			if (via.length === 0) continue;
 			const feedback = this.store.relations.feedbackFor(row.symbolId, intent ?? null, now);
@@ -485,13 +494,18 @@ export class RelationLedger {
 		const context = new ReadContext(this.store);
 		let queued = 0;
 		this.store.relationWrite(() => {
-			for (const module of forgotten) this.store.relations.forgetModule(module);
+			for (const module of forgotten) {
+				this.store.relations.forgetModule(module);
+				this.overflowed.delete(module);
+			}
 			for (const module of indexed) {
 				const held = this.store.relations.exportsOf(module);
 				const current = new Map(this.exportsIn(context, module).map((each) => [each.symbolId, shapeOf(each)]));
 				const fresh = [...current].filter(([symbolId, shape]) => held?.get(symbolId) !== shape);
 				const taken = fresh.slice(0, QUEUED_PER_MODULE).map(([symbolId]) => ({ symbolId, module }));
-				// Past the cap an export keeps its old shape, so the next notice queues it.
+				// Past the cap, old shapes stay until the drain re-notices.
+				if (fresh.length > QUEUED_PER_MODULE) this.overflowed.add(module);
+				else this.overflowed.delete(module);
 				const seen = new Map(current);
 				for (const [symbolId] of fresh.slice(QUEUED_PER_MODULE)) {
 					const before = held?.get(symbolId);
@@ -525,13 +539,19 @@ export class RelationLedger {
 		return entries.length;
 	}
 
-	/** The oldest waiting export, or null when none waits. */
-	nextQueued(): { symbolId: string; module: string } | null {
-		return this.store.relations.nextQueued();
+	/** The oldest waiting export and the facts generation it is read at, or null when none waits. */
+	nextQueued(): QueuedExport | null {
+		const queued = this.store.relations.nextQueued();
+		return queued === null ? null : { ...queued, generation: this.store.factsGeneration() };
 	}
 
-	/** One export's discovery written; a gap opens while nothing relates to it strongly, and closes once something does. */
-	settleQueued(symbolId: string, module: string, found: Discovery | null): void {
+	/**
+	 * One export's discovery written, only over the facts it was scored on; otherwise it stays queued
+	 * for another slice. A gap opens while nothing relates to it strongly, and closes once something does.
+	 */
+	settleQueued(queued: QueuedExport, found: Discovery | null): boolean {
+		if (this.store.factsGeneration() !== queued.generation) return false;
+		const { symbolId, module } = queued;
 		const now = this.clock.now();
 		this.store.relationWrite(() => {
 			this.store.relations.dequeue(symbolId);
@@ -540,6 +560,8 @@ export class RelationLedger {
 			if (found.best < GAP_SCORE && !found.stated) this.store.relations.addGap(symbolId, module, now);
 			else this.store.relations.closeGap(symbolId);
 		});
+		if (this.overflowed.has(module) && this.store.relations.queuedIn(module) === 0) this.notice([module], []);
+		return true;
 	}
 
 	/** Stale suggestions and faded feedback, gone. */
@@ -578,7 +600,8 @@ export class RelationLedger {
 			if (end?.row.status === "doubted" && options.withDoubted !== true) continue;
 			const counts = feedback.get(id) ?? null;
 			const score = Math.min(1, each.base * feedbackFactor(counts));
-			const weak = each.base < RELATION_FLOOR;
+			// Feedback can cross the floor.
+			const weak = score < RELATION_FLOOR;
 			if (end === null && weak && !(keepWeak && forced.includes(id))) continue;
 			shown.add(id);
 			relations.push({
