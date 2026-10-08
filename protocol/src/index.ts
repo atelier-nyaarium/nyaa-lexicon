@@ -224,6 +224,8 @@ export {
 	RenameStepOutcomeSchema,
 	type ReplaceOutcome,
 	ReplaceOutcomeSchema,
+	type ReplacePreview,
+	ReplacePreviewSchema,
 	type ReplaceSpanOutcome,
 	ReplaceSpanOutcomeSchema,
 	type ReverseStep,

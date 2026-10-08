@@ -201,6 +201,15 @@ async function previewArrange(
 	};
 }
 
+async function previewReplace(
+	service: LexiconService,
+	args: { module: string; contentHash: string; text: string },
+): Promise<ResponseOf<"previewReplace">> {
+	const plan = await service.planWholeReplacement(args);
+	if (!plan.ok) return { state: "refused", reason: plan.reason, ...(plan.stale ? { stale: true } : {}), issues: [] };
+	return { state: "planned", module: plan.module, contentHash: plan.baseHash, issues: plan.issues };
+}
+
 async function previewInsert(
 	service: LexiconService,
 	args: { after?: string | undefined; module?: string | undefined; text: string },
@@ -358,6 +367,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		previewMove: upgradedRead((params) => previewMove(service, params)),
 		previewArrange: upgradedRead((params) => previewArrange(service, params)),
 		previewInsert: upgradedRead((params) => previewInsert(service, params)),
+		previewReplace: upgradedRead((params) => previewReplace(service, params)),
 		// A current file answers `current`, so the facts cache and status generation stay.
 		indexFile: write((params) => service.indexFile(params.module, "full", true)),
 		symbolSource: read((params) => service.symbolSource(params)),

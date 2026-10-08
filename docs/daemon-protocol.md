@@ -265,6 +265,13 @@ uses the current text as its base. An identical block returns `present`. The blo
 anchor's indentation, except the later lines of a multiline literal, which stay as written unless
 the provider marks the literal `dedented` (its language strips that indentation).
 
+`previewReplace` (`{ module, contentHash, text }`, protocol 6.4.0) judges whole-module text against
+the stored text named by `contentHash`, as `refactorReplace` judges a symbol's. It returns `planned`
+with the base `contentHash` and issues raised across the index by the owning provider's parse of
+`text` (unbound names, orphaned uses, vanished symbols still in use), or `refused`. If the index no
+longer holds the module at `contentHash`, it refuses with `stale: true`; read it again instead of
+retrying.
+
 None opens a transaction or writes workspace files. Their handlers may upgrade outline facts before
 answering and use the planners shared with their corresponding write methods.
 

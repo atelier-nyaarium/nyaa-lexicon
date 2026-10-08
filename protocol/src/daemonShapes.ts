@@ -1299,6 +1299,27 @@ export const InsertPreviewSchema = z
 
 export type InsertPreview = z.infer<typeof InsertPreviewSchema>;
 
+/** What writing a whole module's text would do, judged against the stored text `contentHash` names. */
+export const ReplacePreviewSchema = z
+	.discriminatedUnion("state", [
+		z.object({
+			state: z.literal("planned"),
+			module: z.string(),
+			contentHash: z.string(),
+			issues: z.array(RefactorIssueSchema),
+		}),
+		z.object({
+			state: z.literal("refused"),
+			reason: z.string(),
+			/** The index moved past `contentHash`; read again, never retry. */
+			stale: z.literal(true).optional(),
+			issues: z.array(RefactorIssueSchema),
+		}),
+	])
+	.meta({ id: "ReplacePreview" });
+
+export type ReplacePreview = z.infer<typeof ReplacePreviewSchema>;
+
 export const RefactorBeforeImageSchema = z
 	.union([
 		z.object({ tracked: z.literal(false) }),

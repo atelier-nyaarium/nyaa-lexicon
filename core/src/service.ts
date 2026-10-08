@@ -368,6 +368,12 @@ export class LexiconService {
 		return this.planner.planInsert(...args);
 	}
 
+	planWholeReplacement(
+		...args: Parameters<RefactorPlanner["planWholeReplacement"]>
+	): ReturnType<RefactorPlanner["planWholeReplacement"]> {
+		return this.planner.planWholeReplacement(...args);
+	}
+
 	prepareRename(...args: Parameters<RefactorPlanner["prepareRename"]>): ReturnType<RefactorPlanner["prepareRename"]> {
 		return this.planner.prepareRename(...args);
 	}

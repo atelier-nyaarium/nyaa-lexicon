@@ -51,6 +51,7 @@ import {
 	RenamePlanSchema,
 	RenameStepOutcomeSchema,
 	ReplaceOutcomeSchema,
+	ReplacePreviewSchema,
 	ReplaceSpanOutcomeSchema,
 	ScopeSymbolsSchema,
 	SearchSymbolsResultSchema,
@@ -339,6 +340,14 @@ const Insert = z
 	.refine((args) => (args.after === undefined) !== (args.module === undefined), "Set exactly one of after or module.")
 	.meta({ id: "InsertRequest" });
 const ParseFacts = z.object({ module: ModulePath, text: z.string() }).meta({ id: "ParseFactsRequest" });
+const PreviewReplace = z
+	.object({
+		module: ModulePath,
+		/** The stored hash the caller read; a moved index refuses as stale. */
+		contentHash: z.string().min(1),
+		text: z.string(),
+	})
+	.meta({ id: "PreviewReplaceRequest" });
 const PreviewImport = z
 	.object({ module: ModulePath, text: z.string(), name: z.string().min(1), fromModule: ModulePath })
 	.meta({ id: "PreviewImportRequest" });
@@ -749,6 +758,14 @@ export const DAEMON_METHODS = {
 	previewInsert: {
 		request: Insert,
 		response: InsertPreviewSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "refactor",
+	},
+	/** Whole-module replacement preview. See `docs/daemon-protocol.md` `previewReplace`. */
+	previewReplace: {
+		request: PreviewReplace,
+		response: ReplacePreviewSchema,
 		lifecycle: "query",
 		mutates: false,
 		budget: "refactor",

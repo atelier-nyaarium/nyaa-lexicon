@@ -390,6 +390,20 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			"planned",
 		);
 	},
+	previewReplace: async () => {
+		const { contentHash } = await ask("moduleDeclarations", { module: "item.ref" });
+		const text = "export const ITEM_LIMIT = 4\n";
+		expect({
+			planned: await ask("previewReplace", { module: "item.ref", contentHash: contentHash ?? "none", text }),
+			stale: await ask("previewReplace", { module: "item.ref", contentHash: "elsewhere", text }),
+			written: (await ask("moduleDeclarations", { module: "item.ref" })).contentHash,
+		}).toMatchObject({
+			// The fixture's provider reports no syntax errors.
+			planned: { state: "planned", module: "item.ref", contentHash, issues: [{ kind: "SyntaxUnchecked" }] },
+			stale: { state: "refused", stale: true },
+			written: contentHash,
+		});
+	},
 	indexFile: async () => {
 		const before = (await ask("indexStatus", {})).generation;
 		const answer = await ask("indexFile", { module: "cart.ref" });

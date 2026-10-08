@@ -612,6 +612,16 @@ export function spanChanged(module: string, name: string): Refusal {
 	);
 }
 
+/** The index holds other text for the module than the caller read. */
+export function baseMoved(module: string): Refusal {
+	return mint(`${module} was indexed again since its content hash was read. Read it again and preview again`);
+}
+
+/** A module the index holds no text for. */
+export function notStored(module: string): Refusal {
+	return mint(`${module} is not indexed, so there is nothing to compare a replacement with. Index it first`);
+}
+
 export function staleSincePlanned(modules: string[], kind: string): Refusal {
 	return mint(
 		`${modules.join(", ")} changed since being indexed, so the ${kind} would rewrite stale positions. Re-index and plan again`,

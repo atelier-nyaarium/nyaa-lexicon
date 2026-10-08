@@ -45,6 +45,7 @@ import {
 	anchorNeedsTopLevel,
 	anchorNotSibling,
 	anchorNotTopLevel,
+	baseMoved,
 	candidateDoesNotParse,
 	editsRefused,
 	landingUnchecked,
@@ -58,6 +59,7 @@ import {
 	noProviderOwns,
 	noSingleLineName,
 	nothingToInsert,
+	notStored,
 	occurrencesBlocked,
 	oneAnchorOnly,
 	projectionsUnsettled,
@@ -278,6 +280,11 @@ export type ReplacementPlan =
 	  }
 	| { ok: false; reason: Refusal; stale?: true };
 
+/** What a whole module's new text would break, judged against the stored text `baseHash` names. */
+export type WholeReplacementPlan =
+	| { ok: true; module: string; baseHash: string; issues: RefactorIssue[] }
+	| { ok: false; reason: Refusal; stale?: true };
+
 /** Whole new contents per module, so the writer never re-derives an edit it did not check. */
 export type MoveEditsOutcome =
 	| {
@@ -405,6 +412,29 @@ export class RefactorPlanner {
 			facts: context.seen(),
 			issues,
 		};
+	}
+
+	/** What writing `text` over a whole module would break, judged against the stored text; nothing is written. */
+	async planWholeReplacement(args: {
+		module: string;
+		contentHash: string;
+		text: string;
+	}): Promise<WholeReplacementPlan> {
+		const stored = this.store.contentHashOf(args.module);
+		if (stored === null) return { ok: false, reason: notStored(args.module) };
+		if (stored !== args.contentHash) return { ok: false, reason: baseMoved(args.module), stale: true };
+		const unwritable = writableText(args.module, args.text);
+		if (unwritable !== null) return { ok: false, reason: unwritable };
+		const owner = this.probe.owner(args.module);
+		if (!owner.owned) return { ok: false, reason: noProviderOwns(args.module, owner.reason) };
+		const candidate = await this.probe.parseCandidate(args.module, args.text);
+		if (!candidate.parsed) return { ok: false, reason: candidateDoesNotParse("replacement", candidate.reason) };
+
+		const issues = this.impactWithin(new ReadContext(this.store), args.module, candidate.facts);
+		const unchecked = this.syntaxUnchecked(owner.providerId, args.module);
+		if (unchecked !== null) issues.push(unchecked);
+
+		return { ok: true, module: args.module, baseHash: args.contentHash, issues };
 	}
 
 	/** Modules whose stored facts changed after the read context captured them. */
