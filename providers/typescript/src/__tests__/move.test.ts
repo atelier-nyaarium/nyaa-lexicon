@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
 	applyEdits,
+	composeSymbolId,
 	coordinatesOf,
 	type MoveDependency,
 	type MoveEditsRequest,
@@ -1644,5 +1645,121 @@ describe("move edits", () => {
 		});
 
 		expect(response).toMatchObject({ status: "refused", reason: "InvalidTarget" });
+	});
+
+	it("exports requested private declarations in place and acknowledges only supported declarations", () => {
+		const source =
+			"function helper() { return 1; }\nconst VALUE = 2;\nconst { hidden } = { hidden: 3 };\nexport function moved() { return helper() + VALUE; }\n";
+		const root = workspace({ "source.ts": source, "target.ts": "" });
+		const helper = composeSymbolId({
+			language: "typescript",
+			module: "source.ts",
+			descriptors: [{ kind: "term", name: "helper" }],
+		});
+		const value = composeSymbolId({
+			language: "typescript",
+			module: "source.ts",
+			descriptors: [{ kind: "term", name: "VALUE" }],
+		});
+		const hidden = composeSymbolId({
+			language: "typescript",
+			module: "source.ts",
+			descriptors: [{ kind: "term", name: "hidden" }],
+		});
+		const response = move(root, {
+			module: "source.ts",
+			text: source,
+			exists: true,
+			symbolId: "lexicon typescript source.ts moved.",
+			name: "moved",
+			fromModule: "source.ts",
+			toModule: "target.ts",
+			role: { removal: rangeForText(source, "export function moved() { return helper() + VALUE; }") },
+			importSites: [],
+			dependencies: [],
+			sites: [],
+			exportInPlace: [helper, value, hidden],
+		});
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(response.exportedInPlace).toEqual([helper, value]);
+		const sourceResult = applyEdits(source, response.edits);
+		if ("problem" in sourceResult) throw new Error(sourceResult.problem);
+		expect(sourceResult.text).toContain("export function helper() { return 1; }\nexport const VALUE = 2;");
+		const target = move(root, {
+			module: "target.ts",
+			text: "",
+			exists: true,
+			symbolId: "lexicon typescript source.ts moved.",
+			name: "moved",
+			fromModule: "source.ts",
+			toModule: "target.ts",
+			role: { insertion: { text: "export function moved() { return helper() + VALUE; }\n" } },
+			importSites: [],
+			sites: [],
+			dependencies: [
+				{
+					name: "helper",
+					origin: { kind: "sourceModule", symbolId: helper, name: "helper", exported: false, promoted: true },
+				},
+				{
+					name: "VALUE",
+					origin: { kind: "sourceModule", symbolId: value, name: "VALUE", exported: false, promoted: true },
+				},
+			],
+		});
+		if (target.status !== "ready") throw new Error("target move was refused");
+		const targetResult = applyEdits("", target.edits);
+		if ("problem" in targetResult) throw new Error(targetResult.problem);
+		expect(targetResult.text).toContain('import { helper, VALUE } from "./source";');
+	});
+
+	it("exports every overload and merged interface declaration together", () => {
+		const cases = [
+			{
+				name: "overloaded",
+				descriptor: { kind: "method" as const, name: "overloaded" },
+				text: "function overloaded(value: string): string;\nfunction overloaded(value: number): string;\nfunction overloaded(value: string | number) { return String(value); }\nexport function moved() { return overloaded(1); }\n",
+				prefix: "export function overloaded",
+				count: 3,
+			},
+			{
+				name: "Options",
+				descriptor: { kind: "type" as const, name: "Options" },
+				text: "interface Options { a: string; }\ninterface Options { b: number; }\nexport function moved(value: Options) { return value.a; }\n",
+				prefix: "export interface Options",
+				count: 2,
+			},
+		];
+		for (const item of cases) {
+			const symbolId = composeSymbolId({
+				language: "typescript",
+				module: "source.ts",
+				descriptors: [item.descriptor],
+			});
+			const response = move(workspace({ "source.ts": item.text, "target.ts": "" }), {
+				module: "source.ts",
+				text: item.text,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: {
+					removal: rangeForText(
+						item.text,
+						item.text.slice(item.text.lastIndexOf("export function moved"), item.text.trimEnd().length),
+					),
+				},
+				importSites: [],
+				dependencies: [],
+				sites: [],
+				exportInPlace: [symbolId],
+			});
+			if (response.status !== "ready") throw new Error("move was refused");
+			expect(response.exportedInPlace).toEqual([symbolId]);
+			const applied = applyEdits(item.text, response.edits);
+			if ("problem" in applied) throw new Error(applied.problem);
+			expect(applied.text.match(new RegExp(item.prefix, "g"))).toHaveLength(item.count);
+		}
 	});
 });

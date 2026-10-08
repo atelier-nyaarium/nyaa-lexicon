@@ -160,7 +160,7 @@ export function importForDependency(
 			blocked: blockedSite(dependency.range, "DynamicDependency", origin.reason),
 		};
 	}
-	if (origin.kind === "sourceModule" && origin.exported === false) {
+	if (origin.kind === "sourceModule" && origin.exported === false && origin.promoted !== true) {
 		return {
 			blocked: blockedSite(dependency.range, "PrivateSibling", `${origin.name} is not exported`),
 		};

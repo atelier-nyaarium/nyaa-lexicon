@@ -257,7 +257,9 @@ base `contentHash`, candidate `text`, `created` flag and edits. Applying the edi
 that hash, or to empty text when the file is new, produces the candidate. Files with no edits are
 omitted. It checks source and reference modules against indexed text before provider work, then
 checks current source, target and reference hashes and read stamps after provider work. A stale
-input returns `ok: false` with no files.
+input returns `ok: false` with no files. `promote: true` exports private source-module dependencies
+in place; `promoted` lists the symbol ids and names the provider acknowledged. Without it, private
+dependencies block as before.
 
 `previewInsert` returns `planned`, `present` or `refused`. A planned result carries the base
 `contentHash`, candidate `text`, `created` flag and edits. Applying the edits to the text with
@@ -418,7 +420,8 @@ Otherwise each moves as its own step in the open refactor, after the unexported 
 uses, since a move refuses to leave one of those behind. A declaration inside another moves with it.
 Two that use each other, or a member from another module, refuse the whole call before anything
 moves. A refused or failed step stops the rest and keeps the steps already taken. `MoveOutcome.order`
-names what moved, in order. `planMove` and `previewMove` take one declaration.
+names what moved, in order. `promote: true` also applies to the set and reports acknowledged
+declarations in `promoted`. `planMove` and `previewMove` take one declaration.
 
 ### Placing a move
 
@@ -443,6 +446,9 @@ declaration that moves, from one source module or the target's own, with an opti
 placement, and puts the declaration directly beside it. Without one the target's end takes it, in
 placement order. Imports, statements and loose comments never move. A declaration moves with what its
 provider's range covers, such as a TypeScript doc comment or a Python decorator.
+
+`promote: true` exports private source-module dependencies in place. The preview's `promoted` lists
+the symbol ids and names the provider acknowledged. A missing acknowledgement blocks the plan.
 
 The core plans the whole set once: removals as whole lines where a declaration owns its lines, each
 blank separator owned once, and placements sharing a landing point framed as one group. A member's

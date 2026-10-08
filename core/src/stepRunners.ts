@@ -8,6 +8,7 @@ import {
 	type InsertOutcome,
 	type MoveAnchor,
 	type MoveOutcome,
+	type Promoted,
 	type RefactorIssue,
 	type RenameStepOutcome,
 	type ReplaceSpanOutcome,
@@ -66,6 +67,7 @@ export type StepResult =
 			/** A rename's export fact ids kept at the old name. */
 			stops?: string[];
 			issues: RefactorIssue[];
+			promoted?: Promoted[];
 	  }
 	| ({ done: false; reason: Refusal; issues: RefactorIssue[] } & RefusedWith);
 
@@ -90,7 +92,7 @@ export function refactorMove(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
-	args: { symbolId: string; toModule: string; anchor?: MoveAnchor | undefined },
+	args: { symbolId: string; toModule: string; anchor?: MoveAnchor | undefined; promote?: boolean | undefined },
 	hold: StepPolicy,
 	cancelled?: () => Refusal | null,
 ): Promise<StepResult> {
@@ -99,6 +101,7 @@ export function refactorMove(
 	let source = "";
 	let target = args.toModule;
 	let restore: MoveAnchor | undefined;
+	let promoted: Promoted[] = [];
 	const idMap = new Map<string, string>();
 
 	return journaledStep<StepResult>(
@@ -122,14 +125,16 @@ export function refactorMove(
 						restore,
 					),
 					issues,
+					promoted,
 				};
 			},
 			plan: async () => {
 				// Held past the call, so the stale check below asks what it stamped.
 				const context = service.newReadContext();
-				const plan = service.planMove(args.symbolId, args.toModule, context, args.anchor);
+				const plan = service.planMove(args.symbolId, args.toModule, context, args.anchor, args.promote);
 				if (!plan.ok) return { refused: plan.reason };
 				requested = plan.symbolId;
+				promoted = plan.promoted ?? [];
 				source = plan.fromModule;
 				target = plan.toModule;
 				restore = plan.restore;
@@ -452,13 +457,19 @@ export async function refactorMoveTogether(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
-	args: { symbolId: string; toModule: string; together: readonly string[]; anchor?: MoveAnchor | undefined },
+	args: {
+		symbolId: string;
+		toModule: string;
+		together: readonly string[];
+		anchor?: MoveAnchor | undefined;
+		promote?: boolean | undefined;
+	},
 ): Promise<MoveOutcome> {
 	const context = service.newReadContext();
 	const members: MoveMember[] = [];
 	let from: string | undefined;
 	for (const symbolId of new Set([args.symbolId, ...args.together])) {
-		const plan = service.planMove(symbolId, args.toModule, context, args.anchor);
+		const plan = service.planMove(symbolId, args.toModule, context, args.anchor, args.promote);
 		if (!plan.ok) return { moved: false, issues: [], reason: plan.reason };
 		from ??= plan.fromModule;
 		if (plan.fromModule !== from) {
@@ -484,7 +495,11 @@ export async function refactorMoveTogether(
 		const anchor = previous === undefined ? args.anchor : { symbolId: previous.symbolId, side: "after" as const };
 		return { symbolId: member.symbolId, ...defined({ anchor }) };
 	});
-	const arranged = await arrangeStep(service, transactions, write, { toModule: args.toModule, placements });
+	const arranged = await arrangeStep(service, transactions, write, {
+		toModule: args.toModule,
+		placements,
+		promote: args.promote,
+	});
 	if (!arranged.unsupported) {
 		const order = ordered.order.map((member) => member.name);
 		return arranged.outcome.moved ? { ...arranged.outcome, order } : arranged.outcome;
@@ -493,6 +508,7 @@ export async function refactorMoveTogether(
 	const order: string[] = [];
 	const modules = new Set<string>();
 	const issues: RefactorIssue[] = [];
+	const promoted: Promoted[] = [];
 	let toModule: string | undefined;
 	let anchor = args.anchor;
 	for (const member of ordered.order) {
@@ -502,7 +518,7 @@ export async function refactorMoveTogether(
 			service,
 			transactions,
 			write,
-			{ symbolId: member.symbolId, toModule: args.toModule, ...defined({ anchor }) },
+			{ symbolId: member.symbolId, toModule: args.toModule, promote: args.promote, ...defined({ anchor }) },
 			"join",
 		).then(
 			(result) => {
@@ -520,13 +536,14 @@ export async function refactorMoveTogether(
 			const moved = order.length === 0 ? "" : ` after ${order.join(", ")} moved`;
 			return { moved: false, issues, order, reason: `${member.name} did not move${moved}: ${step.reason}` };
 		}
+		promoted.push(...(step.promoted ?? []));
 		for (const module of step.modules ?? []) modules.add(module);
 		toModule = step.toModule ?? toModule;
 		order.push(member.name);
 		// Each later member lands after the one before it, so their order holds.
 		if (anchor?.side === "after" && root !== undefined) anchor = { symbolId: root, side: "after" };
 	}
-	return { moved: true, ...defined({ toModule }), modules: [...modules], issues, order };
+	return { moved: true, ...defined({ toModule }), modules: [...modules], issues, order, promoted };
 }
 
 /**
@@ -539,7 +556,12 @@ export function refactorArrange(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
-	args: { toModule: string; placements: readonly ArrangePlacement[]; expect: readonly PreviewedFile[] },
+	args: {
+		toModule: string;
+		placements: readonly ArrangePlacement[];
+		expect: readonly PreviewedFile[];
+		promote?: boolean | undefined;
+	},
 ): Promise<MoveOutcome> {
 	return arrangeStep(service, transactions, write, args).then(({ outcome }) => outcome);
 }
@@ -549,11 +571,17 @@ async function arrangeStep(
 	service: LexiconService,
 	transactions: TransactionManager,
 	write: <T>(work: () => Promise<T> | T) => Promise<T>,
-	args: { toModule: string; placements: readonly ArrangePlacement[]; expect?: readonly PreviewedFile[] },
+	args: {
+		toModule: string;
+		placements: readonly ArrangePlacement[];
+		expect?: readonly PreviewedFile[];
+		promote?: boolean | undefined;
+	},
 ): Promise<{ outcome: MoveOutcome; unsupported: boolean }> {
 	let unsupported = false;
 	let touched: string[] = [];
 	let target = args.toModule;
+	let promoted: Promoted[] = [];
 	const idMap = new Map<string, string>();
 
 	const outcome = await journaledStep<MoveOutcome>(
@@ -567,12 +595,14 @@ async function arrangeStep(
 				toModule: target,
 				modules: touched,
 				issues,
+				promoted,
 			}),
 			plan: async () => {
 				const context = service.newReadContext();
-				const plan = await service.planArrange(args.toModule, args.placements, context);
+				const plan = await service.planArrange(args.toModule, args.placements, context, args.promote);
 				if (!plan.ok) return { refused: plan.reason };
 				target = plan.toModule;
+				promoted = plan.promoted;
 				const arranged = await service.arrangedFiles(plan, context);
 				if (!arranged.ok) {
 					unsupported = arranged.unsupported === true;
@@ -582,7 +612,15 @@ async function arrangeStep(
 				if (differs !== null) return { refused: arrangeNotAsPreviewed(differs) };
 				// Nothing to write, so no step.
 				if (arranged.files.length === 0) {
-					return { done: { moved: true, toModule: plan.toModule, modules: [], issues: arranged.issues } };
+					return {
+						done: {
+							moved: true,
+							toModule: plan.toModule,
+							modules: [],
+							issues: arranged.issues,
+							promoted: plan.promoted,
+						},
+					};
 				}
 				touched = arranged.files.map((file) => file.module);
 				const incoming = plan.members.filter((member) => member.incoming);
@@ -644,6 +682,7 @@ export function moveOutcome(result: StepResult): MoveOutcome {
 		...defined({ toModule: result.toModule }),
 		modules: result.modules,
 		issues: result.issues,
+		promoted: result.promoted ?? [],
 	};
 }
 

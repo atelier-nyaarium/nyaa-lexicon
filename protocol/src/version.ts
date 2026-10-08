@@ -155,7 +155,8 @@ export type Compatibility =
 // them; `writeRelation`, `answerRelationGap` and `relationFeedback` write. An older daemon answers
 // each as an unknown method.
 // 6.7.0: `discoverProject` may carry core's workspace-relative file scope.
-export const PROTOCOL_VERSION = "6.7.0" as const;
+// 6.8.0: move and arrange requests may promote private dependencies in place.
+export const PROTOCOL_VERSION = "6.8.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 6;

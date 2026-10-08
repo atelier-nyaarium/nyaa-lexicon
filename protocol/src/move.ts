@@ -78,6 +78,8 @@ export const DependencyOriginSchema = z
 			symbolId: z.string().min(1),
 			name: z.string().min(1),
 			exported: z.boolean().optional(),
+			/** This move exports it in place, so the target may import it. */
+			promoted: z.boolean().optional(),
 		}),
 		/** Declared in some other indexed module, reached by an import the source module writes. */
 		z.object({
@@ -269,6 +271,8 @@ export const MoveEditsRequestSchema = z
 		 * changes the use itself and no import rewrite alone would fix it.
 		 */
 		sites: z.array(RangeSchema),
+		/** Declarations in this module the move exports where they stand; sent to the source only. */
+		exportInPlace: z.array(z.string().min(1)).optional(),
 	})
 	.meta({ id: "MoveEditsRequest" });
 
@@ -286,6 +290,8 @@ export const MoveEditsResponseSchema = z
 			status: z.literal("ready"),
 			edits: z.array(TextEditSchema),
 			blocked: z.array(MoveBlockedSiteSchema),
+			/** The `exportInPlace` ids it exported; the core blocks any it asked for and this omits. */
+			exportedInPlace: z.array(z.string().min(1)).optional(),
 		}),
 		z.object({
 			status: z.literal("refused"),
@@ -347,6 +353,8 @@ export const ArrangeEditsRequestSchema = z
 		importSites: z.array(ArrangeImportSiteSchema),
 		/** Complete, as on a move; a member's use of another member is `insideClosure`. */
 		dependencies: z.array(MoveDependencySchema),
+		/** As on a move. */
+		exportInPlace: z.array(z.string().min(1)).optional(),
 	})
 	.meta({ id: "ArrangeEditsRequest" });
 

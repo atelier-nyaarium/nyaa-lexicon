@@ -15,11 +15,13 @@ import {
 	type MoveDependency,
 	type OffsetRange,
 	type Position,
+	type Promoted,
 	type Range,
 	type StoredLiteral,
 } from "@nyaa-lexicon/protocol";
 import { type Landing, layoutModule } from "./arrangeLayout.js";
 import type { ImportResolver } from "./imports.js";
+import { promoteDependency, promotedFrom, unacknowledgedPromotions } from "./movePromotion.js";
 import type { ProviderProbe } from "./providerProbe.js";
 import { ReadContext } from "./readContext.js";
 import { type RefactorPlanner, workspaceModule } from "./refactorPlanner.js";
@@ -94,6 +96,7 @@ export type PlannedArrange =
 			slots: Array<{ landing: Landing; members: string[] }>;
 			/** What the incoming members use, for the target. */
 			dependencies: MoveDependency[];
+			promoted: Promoted[];
 			/** Incoming members that what stays in the source still uses. */
 			usedAtSource: string[];
 			/** Other modules using incoming members, with the members each uses. */
@@ -176,6 +179,7 @@ export class ArrangePlanner {
 		rawTarget: string,
 		placements: readonly ArrangePlacement[],
 		context: ReadContext,
+		promote = false,
 	): Promise<PlannedArrange> {
 		const target = workspaceModule(rawTarget);
 		if ("refused" in target) return { ok: false, reason: target.refused };
@@ -244,7 +248,7 @@ export class ArrangePlanner {
 				const settled: MoveDependency =
 					origin.kind === "sourceModule" && inside.has(origin.symbolId)
 						? { ...dependency, origin: { kind: "insideClosure", symbolId: origin.symbolId } }
-						: dependency;
+						: promoteDependency(dependency, promote);
 				const key = `${settled.name}\0${JSON.stringify(settled.origin)}`;
 				if (!dependencies.has(key)) dependencies.set(key, settled);
 			}
@@ -296,6 +300,7 @@ export class ArrangePlanner {
 			members,
 			slots: slots.map((slot) => ({ landing: slot.landing, members: slot.members })),
 			dependencies: [...dependencies.values()],
+			promoted: promotedFrom([...dependencies.values()]),
 			usedAtSource,
 			referencing,
 			importSites,
@@ -425,6 +430,16 @@ export class ArrangePlanner {
 					...(answer.reason === "NotImplemented" ? { unsupported: true as const } : {}),
 				};
 			}
+			if (requestedPart.exportInPlace?.length) {
+				blocked.push(
+					...unacknowledgedPromotions(
+						requestedPart.exportInPlace,
+						answer.exportedInPlace ?? [],
+						plan.promoted,
+						module,
+					),
+				);
+			}
 			for (const site of answer.blocked) {
 				blocked.push({
 					kind: site.reason,
@@ -470,7 +485,7 @@ export class ArrangePlanner {
 		text: string,
 		plan: Extract<PlannedArrange, { ok: true }>,
 		context: ReadContext,
-	): Pick<ArrangeEditsRequest, "members" | "importSites" | "dependencies"> {
+	): Pick<ArrangeEditsRequest, "members" | "importSites" | "dependencies" | "exportInPlace"> {
 		const memberOf = (symbolId: string) =>
 			plan.members.find((member) => member.symbolId === symbolId) as ArrangedMember;
 		const users = plan.referencing.get(module) ?? [];
@@ -528,6 +543,7 @@ export class ArrangePlanner {
 						origin: { kind: "workspaceModule", symbolId, module: plan.toModule },
 					}),
 				),
+				...(plan.promoted.length > 0 ? { exportInPlace: plan.promoted.map((item) => item.symbolId) } : {}),
 			};
 		}
 

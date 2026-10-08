@@ -36,6 +36,7 @@ import type { FileEdits } from "./applyEdits.js";
 import { separatedRemoval } from "./arrangeLayout.js";
 import { landingKey, narrowed } from "./exportProjection.js";
 import type { ImportResolver } from "./imports.js";
+import { promoteDependency, promotedFrom, unacknowledgedPromotions } from "./movePromotion.js";
 import type { ProviderProbe } from "./providerProbe.js";
 import { type FactsSeen, factsMovedSince, type NestingReads, ReadContext, sentReads } from "./readContext.js";
 import type { PlannedMove, PlannedRename, PlannedRenameEdits, RenameBlocker } from "./refusalSlots.js";
@@ -763,7 +764,13 @@ export class RefactorPlanner {
 	}
 
 	/** Derives move facts for `previewMove` from one read context. See `docs/daemon-protocol.md`. */
-	planMove(symbolId: string, rawTarget: string, context: ReadContext, anchor?: MoveAnchor): PlannedMove {
+	planMove(
+		symbolId: string,
+		rawTarget: string,
+		context: ReadContext,
+		anchor?: MoveAnchor,
+		promote = false,
+	): PlannedMove {
 		const target = workspaceModule(rawTarget);
 		if ("refused" in target) return { ok: false, reason: target.refused };
 		const toModule = target.module;
@@ -785,9 +792,12 @@ export class RefactorPlanner {
 		if (placed !== undefined && "refused" in placed) return { ok: false, reason: placed.refused };
 
 		// Declared at the target already, so nothing to import there.
-		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId, context).filter(
-			(dependency) => dependency.origin.kind !== "workspaceModule" || dependency.origin.module !== toModule,
-		);
+		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId, context)
+			.filter(
+				(dependency) => dependency.origin.kind !== "workspaceModule" || dependency.origin.module !== toModule,
+			)
+			.map((dependency) => promoteDependency(dependency, promote));
+		const promoted = promotedFrom(dependencies);
 
 		// Modules whose imports name the moved symbol, plus the source itself when something left
 		// behind still uses it.
@@ -811,6 +821,8 @@ export class RefactorPlanner {
 			removal: source.range,
 			closure,
 			dependencies: reorder ? [] : dependencies,
+			// Present only when promoting, so a plain plan answers as it always has.
+			...(reorder || promoted.length === 0 ? {} : { promoted }),
 			referencing: reorder ? [] : [...referencing],
 			usedAtSource: !reorder && usedAtSource,
 			exportsAtTarget: !reorder && (usedAtSource || referencing.size > 0) && declaration.exported === false,
@@ -938,6 +950,16 @@ export class RefactorPlanner {
 			if (answer.status === "refused") {
 				return { ok: false, issues: [], reason: providerRefused(request.module, answer.reason, answer.detail) };
 			}
+			if (request.exportInPlace?.length) {
+				blocked.push(
+					...unacknowledgedPromotions(
+						request.exportInPlace,
+						answer.exportedInPlace ?? [],
+						plan.promoted ?? [],
+						request.module,
+					),
+				);
+			}
 			for (const site of answer.blocked) {
 				blocked.push({
 					kind: site.reason,
@@ -1003,6 +1025,7 @@ export class RefactorPlanner {
 							},
 						]
 					: [],
+				...(plan.promoted?.length ? { exportInPlace: plan.promoted.map((item) => item.symbolId) } : {}),
 				sites: [],
 			},
 			{

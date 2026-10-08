@@ -163,8 +163,8 @@ const MoveOne = z.object({
 	/** Absent: the target's end. With it, the target may be the source, which reorders. */
 	anchor: MoveAnchorSchema.optional(),
 });
-const Move = MoveOne.meta({ id: "MoveRequest" });
-const MoveTogether = MoveOne.extend({
+const Move = MoveOne.extend({ promote: z.boolean().optional() }).meta({ id: "MoveRequest" });
+const MoveTogether = Move.extend({
 	/** More declarations moving to the same target; each moves after the ones it uses. */
 	together: z.array(z.string().min(1)).max(100).optional(),
 }).meta({ id: "MoveTogetherRequest" });
@@ -187,7 +187,11 @@ const ArrangePlacement = z.object({
 	anchor: MoveAnchorSchema.optional(),
 });
 const Arrange = z
-	.object({ toModule: ModulePath, placements: z.array(ArrangePlacement).min(1).max(100) })
+	.object({
+		toModule: ModulePath,
+		placements: z.array(ArrangePlacement).min(1).max(100),
+		promote: z.boolean().optional(),
+	})
 	.meta({ id: "ArrangeRequest" });
 const ArrangeApply = Arrange.extend({
 	/** Every file of the preview: the hash it was planned over, and its text's hash. */

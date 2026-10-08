@@ -161,6 +161,38 @@ describe("an arrangement with the TypeScript provider", () => {
 		});
 	}, 120_000);
 
+	it("promotes private helpers for move-together only when requested", async () => {
+		const source =
+			"const VALUE = 3;\nfunction helper() { return VALUE; }\nexport function run() { return helper(); }\nexport function extra() { return 0; }\n";
+		writeFileSync(path.join(root, "src/source.ts"), source);
+		await service.indexFile("src/source.ts");
+		const run = service.findByName("run", "src/source.ts")[0]?.symbolId as string;
+		const helper = service.findByName("helper", "src/source.ts")[0]?.symbolId as string;
+		const extra = service.findByName("extra", "src/source.ts")[0]?.symbolId as string;
+		const off = (await dispatch("previewMove", {
+			symbolId: run,
+			toModule: "src/target.ts",
+		})) as ResponseOf<"previewMove">;
+		const shown = (await dispatch("previewMove", {
+			symbolId: run,
+			toModule: "src/target.ts",
+			promote: true,
+		})) as ResponseOf<"previewMove">;
+		expect(off).toMatchObject({ ok: false, issues: [{ kind: "PrivateSibling" }] });
+		expect(shown).toMatchObject({ ok: true, promoted: [{ symbolId: helper, name: "helper" }] });
+		const outcome = await dispatch("refactorMove", {
+			symbolId: run,
+			toModule: "src/target.ts",
+			promote: true,
+			together: [extra],
+		});
+		expect({ outcome, source: read("src/source.ts"), target: read("src/target.ts") }).toMatchObject({
+			outcome: { moved: true, promoted: [{ symbolId: helper, name: "helper" }] },
+			source: "const VALUE = 3;\nexport function helper() { return VALUE; }\n",
+			target: expect.stringContaining('import { helper } from "./source";'),
+		});
+	}, 120_000);
+
 	it("refuses a move a wildcard barrel re-exports, leaving the barrel's importer whole", async () => {
 		writeFileSync(path.join(root, "src/star.ts"), 'export * from "./source";\n');
 		writeFileSync(path.join(root, "src/viaStar.ts"), 'import { foo } from "./star";\n\nexport const v = foo();\n');

@@ -184,6 +184,8 @@ export {
 	OverviewResultSchema,
 	type ParseFactsResult,
 	ParseFactsResultSchema,
+	type Promoted,
+	PromotedSchema,
 	type ProviderStatus,
 	ProviderStatusSchema,
 	type RefactorBeforeImage,

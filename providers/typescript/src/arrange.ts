@@ -13,6 +13,7 @@ import type {
 import type ts from "typescript";
 import {
 	exportedText,
+	exportInPlace,
 	moduleScope,
 	parseDiagnostics,
 	planImports,
@@ -132,5 +133,7 @@ export function makeArrangeEdits(
 	// After the imports, which may share a point.
 	edits.push(...landings.values());
 
-	return validateEdits(coordinates, settleBlankLines(source.text, coordinates, edits), blocked);
+	const promoted = exportInPlace(source, request.module, request.exportInPlace ?? []);
+	edits.push(...promoted.edits);
+	return validateEdits(coordinates, settleBlankLines(source.text, coordinates, edits), blocked, promoted.ids);
 }

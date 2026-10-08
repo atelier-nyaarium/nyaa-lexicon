@@ -3,6 +3,7 @@
 
 import type {
 	MovePlan,
+	Promoted,
 	RefactorCommitResult,
 	RefactorNoteWriteResult,
 	RefactorRevertResult,
@@ -31,7 +32,9 @@ export type PlannedSourceRead =
 	| (Extract<SymbolSource, { found: true }> & { fileText: string })
 	| { found: false; reason: Refusal; stale?: boolean };
 
-export type PlannedMove = Extract<MovePlan, { ok: true }> | { ok: false; reason: Refusal };
+export type PlannedMove =
+	| (Extract<MovePlan, { ok: true }> & { promoted?: Promoted[] })
+	| { ok: false; reason: Refusal };
 
 /** Core's own answer for an id it holds no declaration for; a provider's unknown passes through. */
 export type UnknownType = Extract<TypeInfo, { status: "unknown" }> & { detail: Refusal };

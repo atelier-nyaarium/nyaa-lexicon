@@ -34,6 +34,10 @@ import { UnknownReasonSchema } from "./values.js";
 ////////////////////////////////
 //  Vocabularies
 
+/** A source declaration the move exported in place. */
+export const PromotedSchema = z.object({ symbolId: z.string(), name: z.string() }).meta({ id: "Promoted" });
+export type Promoted = z.infer<typeof PromotedSchema>;
+
 /** How a fact was obtained, carried on every answer so a consumer can weigh it. */
 export const AnswerTierSchema = z.enum(["bound", "nameMatched", "unknown"]).meta({ id: "AnswerTier" });
 
@@ -1267,6 +1271,7 @@ export const MovePreviewSchema = z
 			files: z.array(MovePreviewFileSchema),
 			issues: z.array(RefactorIssueSchema),
 			blockers: z.array(z.object({ module: z.string().optional(), reason: z.string() })),
+			promoted: z.array(PromotedSchema),
 		}),
 		z.object({
 			ok: z.literal(false),
@@ -1572,16 +1577,27 @@ export const ReplaceSpanOutcomeSchema = ReplaceOutcomeSchema.extend({
 export type ReplaceSpanOutcome = z.infer<typeof ReplaceSpanOutcomeSchema>;
 
 export const MoveOutcomeSchema = z
-	.object({
-		moved: z.boolean(),
-		/** Canonical target spelling, on success. */
-		toModule: z.string().optional(),
-		modules: z.array(z.string()).optional(),
-		issues: z.array(RefactorIssueSchema),
-		reason: z.string().optional(),
-		/** With `together`: the names that moved, one step each, in order. */
-		order: z.array(z.string()).optional(),
-	})
+	.discriminatedUnion("moved", [
+		z.object({
+			moved: z.literal(true),
+			/** Canonical target spelling, on success. */
+			toModule: z.string().optional(),
+			modules: z.array(z.string()).optional(),
+			issues: z.array(RefactorIssueSchema),
+			reason: z.string().optional(),
+			/** With `together`: the names that moved, one declaration per step, in order. */
+			order: z.array(z.string()).optional(),
+			promoted: z.array(PromotedSchema).optional(),
+		}),
+		z.object({
+			moved: z.literal(false),
+			toModule: z.string().optional(),
+			modules: z.array(z.string()).optional(),
+			issues: z.array(RefactorIssueSchema),
+			reason: z.string().optional(),
+			order: z.array(z.string()).optional(),
+		}),
+	])
 	.meta({ id: "MoveOutcome" });
 
 export type MoveOutcome = z.infer<typeof MoveOutcomeSchema>;
@@ -1611,6 +1627,7 @@ export const ArrangePreviewSchema = z
 			formatted: z.boolean(),
 			/** Each top-level declaration's span in the target's final text; a placed one by its id before the move. */
 			placed: z.array(z.object({ symbolId: z.string(), range: RangeSchema })),
+			promoted: z.array(PromotedSchema),
 		}),
 		z.object({
 			ok: z.literal(false),

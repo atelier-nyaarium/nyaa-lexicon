@@ -105,7 +105,7 @@ export function gateOf(gate: WorkspaceGate, gateWaitMs?: number): Gate {
 
 async function previewMove(
 	service: LexiconService,
-	args: { symbolId: string; toModule: string; anchor?: MoveAnchor | undefined },
+	args: { symbolId: string; toModule: string; anchor?: MoveAnchor | undefined; promote?: boolean | undefined },
 ): Promise<ResponseOf<"previewMove">> {
 	const refused = (reason: Refusal): ResponseOf<"previewMove"> => ({
 		ok: false,
@@ -116,7 +116,7 @@ async function previewMove(
 	});
 
 	const context = service.newReadContext();
-	const plan = service.planMove(args.symbolId, args.toModule, context, args.anchor);
+	const plan = service.planMove(args.symbolId, args.toModule, context, args.anchor, args.promote);
 	if (!plan.ok) return refused(plan.reason);
 	// Check stale sites before provider requests.
 	const stale = service.staleModules([plan.fromModule, ...plan.referencing]);
@@ -157,12 +157,13 @@ async function previewMove(
 		}),
 		issues: result.issues,
 		blockers: [],
+		promoted: plan.promoted ?? [],
 	};
 }
 
 async function previewArrange(
 	service: LexiconService,
-	args: { toModule: string; placements: readonly ArrangePlacement[] },
+	args: { toModule: string; placements: readonly ArrangePlacement[]; promote?: boolean | undefined },
 ): Promise<ResponseOf<"previewArrange">> {
 	const refused = (reason: Refusal): ResponseOf<"previewArrange"> => ({
 		ok: false,
@@ -172,7 +173,7 @@ async function previewArrange(
 	});
 
 	const context = service.newReadContext();
-	const plan = await service.planArrange(args.toModule, args.placements, context);
+	const plan = await service.planArrange(args.toModule, args.placements, context, args.promote);
 	if (!plan.ok) return refused(plan.reason);
 	// Check stale sites before provider requests.
 	const stale = service.staleModules([plan.fromModule, ...plan.referencing.keys()]);
@@ -201,6 +202,7 @@ async function previewArrange(
 		issues: arranged.issues,
 		formatted: arranged.formatted,
 		placed: arranged.placed,
+		promoted: plan.promoted ?? [],
 	};
 }
 

@@ -11,6 +11,7 @@ import {
 	type MoveImportSite,
 	normalizeModulePath,
 	type OffsetRange,
+	parseSymbolId,
 	planEdits,
 	type Range,
 	type TextCoordinates,
@@ -194,8 +195,10 @@ export function makeMoveEdits(
 	);
 	// After the imports, which may share its point.
 	if (landing !== undefined) edits.push(landing);
+	const promoted = exportInPlace(source, request.module, request.exportInPlace ?? []);
+	edits.push(...promoted.edits);
 
-	return validateEdits(coordinates, settleBlankLines(source.text, coordinates, edits), blocked);
+	return validateEdits(coordinates, settleBlankLines(source.text, coordinates, edits), blocked, promoted.ids);
 }
 
 ////////////////////////////////
@@ -525,6 +528,7 @@ export function validateEdits(
 	coordinates: TextCoordinates,
 	edits: TextEdit[],
 	blocked: MoveBlockedSite[],
+	exportedInPlace: string[] = [],
 ): MoveEditsResponse {
 	const plan = planEdits(coordinates, edits);
 	for (const { edit, conflict } of plan.conflicts) {
@@ -533,7 +537,89 @@ export function validateEdits(
 	}
 	// Joined insertions are deliberate here: collecting several for one point is how a move adds
 	// more than one import to a file.
-	return { status: "ready", edits: plan.edits, blocked };
+	return { status: "ready", edits: plan.edits, blocked, ...(exportedInPlace.length > 0 ? { exportedInPlace } : {}) };
+}
+
+/** Adds `export` to every top-level declaration each id names; answers the ids it exported whole. */
+export function exportInPlace(
+	source: ts.SourceFile,
+	module: string,
+	ids: readonly string[],
+): { edits: TextEdit[]; ids: string[] } {
+	const wanted = new Set(ids);
+	const edits: TextEdit[] = [];
+	const exported: string[] = [];
+	const modified = new Set<ts.Statement>();
+	for (const symbolId of wanted) {
+		const parsed = parseSymbolId(symbolId);
+		if (parsed?.module !== module || parsed.descriptors.length !== 1) continue;
+		const name = parsed.descriptors[0]?.name;
+		if (name === undefined) continue;
+		const statements = source.statements.filter((statement) => declarationNames(statement).includes(name));
+		if (statements.length === 0 || statements.some((statement) => !canExportInPlace(statement, source, name)))
+			continue;
+		for (const statement of statements) {
+			if (modified.has(statement)) continue;
+			const modifiers = ts.canHaveModifiers(statement) ? (ts.getModifiers(statement) ?? []) : [];
+			if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+			const first =
+				modifiers[0] ??
+				statement
+					.getChildren(source)
+					.find((child) => child.kind !== ts.SyntaxKind.SyntaxList && !ts.isJSDoc(child));
+			if (first === undefined) continue;
+			const position = source.getLineAndCharacterOfPosition(first.getStart(source));
+			edits.push({
+				range: {
+					start: { line: position.line, character: position.character },
+					end: { line: position.line, character: position.character },
+				},
+				newText: "export ",
+			});
+			modified.add(statement);
+		}
+		exported.push(symbolId);
+	}
+	return { edits, ids: exported };
+}
+
+function canExportInPlace(statement: ts.Statement, source: ts.SourceFile, name: string): boolean {
+	if (!isExportable(statement)) return false;
+	if (
+		ts.isVariableStatement(statement) &&
+		statement.declarationList.declarations.some((declaration) => !ts.isIdentifier(declaration.name))
+	)
+		return false;
+	const modifiers = ts.canHaveModifiers(statement) ? (ts.getModifiers(statement) ?? []) : [];
+	if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) return false;
+	return !source.statements.some(
+		(item) =>
+			ts.isExportDeclaration(item) &&
+			item.exportClause !== undefined &&
+			ts.isNamedExports(item.exportClause) &&
+			item.exportClause.elements.some(
+				(element) => element.propertyName?.text === name || element.name.text === name,
+			),
+	);
+}
+
+function declarationNames(statement: ts.Statement): string[] {
+	if (ts.isVariableStatement(statement)) {
+		if (statement.declarationList.declarations.some((declaration) => !ts.isIdentifier(declaration.name))) return [];
+		return statement.declarationList.declarations.map((declaration) => (declaration.name as ts.Identifier).text);
+	}
+	if (
+		(ts.isFunctionDeclaration(statement) ||
+			ts.isClassDeclaration(statement) ||
+			ts.isInterfaceDeclaration(statement) ||
+			ts.isTypeAliasDeclaration(statement) ||
+			ts.isEnumDeclaration(statement) ||
+			ts.isModuleDeclaration(statement)) &&
+		statement.name !== undefined &&
+		ts.isIdentifier(statement.name)
+	)
+		return [statement.name.text];
+	return [];
 }
 
 export function parseDiagnostics(source: ts.SourceFile): readonly ts.Diagnostic[] {
