@@ -10,6 +10,7 @@ import {
 	type Literal,
 	type Reference,
 	type TypeInfo,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import { bracketDelta } from "./angles.js";
 import { CppBodyParser } from "./bodies.js";
@@ -112,13 +113,13 @@ function ownersByToken(records: CppDeclarationRecord[], tokenCount: number): Arr
  * A file's facts. What the first read declares settles a `<` its tokens leave open, as after a
  * variable or a template; when that moves any template bracket, the file is read again with them.
  */
-export function parseCppFile(module: string, text: string): CppFacts {
-	const source = tokenize(text, module);
-	const first = new CppParser(module, text, source.tokens, source.blankLines, source.diagnostics);
+export function parseCppFile(module: string, text: string, meter?: WorkMeter): CppFacts {
+	const source = tokenize(text, module, meter);
+	const first = new CppParser(module, text, source.tokens, source.blankLines, source.diagnostics, undefined, meter);
 	first.parse();
 	const names = first.declaredNames();
 	if (!first.anglesDifferWith(names)) return first.finish();
-	const second = new CppParser(module, text, source.tokens, source.blankLines, source.diagnostics, names);
+	const second = new CppParser(module, text, source.tokens, source.blankLines, source.diagnostics, names, meter);
 	second.parse();
 	return second.finish();
 }
@@ -262,6 +263,7 @@ class CppParser extends CppBodyParser {
 		const accessed = this.accessedNames();
 		const closes = this.listCloses();
 		for (let index = 0; index < this.tokens.length; index++) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const token = tokenAt(this.tokens, index);
 			if (
 				token?.kind !== "identifier" ||
@@ -474,6 +476,7 @@ class CppParser extends CppBodyParser {
 		const closes = new Map<number, ListClose>();
 		const open: number[] = [];
 		for (let index = 0; index < this.tokens.length; index++) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const delta = bracketDelta(tokenAt(this.tokens, index), this.angles);
 			if (delta > 0) open.push(index);
 			for (let closed = 0; closed < -delta; closed++) {

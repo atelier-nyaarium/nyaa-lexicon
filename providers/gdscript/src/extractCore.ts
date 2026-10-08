@@ -1,6 +1,6 @@
 // Owns the text-taking extractor entry points, each over one fresh parse.
 
-import type { Reference } from "@nyaa-lexicon/protocol";
+import type { Reference, WorkMeter } from "@nyaa-lexicon/protocol";
 import { declarationsOf } from "./declarations.js";
 import type { ComposeSymbolId, DeclarationFact } from "./parse-model.js";
 import { referencesOf } from "./references.js";
@@ -14,8 +14,13 @@ export type { DeclarationFact, DeclarationKind, Descriptor, Visibility } from ".
 export type { LoaderCall } from "./path-syntax.js";
 export type { TypeAnnotationFact } from "./type-facts.js";
 
-export function extractDeclarationsCore(module: string, text: string, compose: ComposeSymbolId): DeclarationFact[] {
-	return declarationsOf(new ParsedScript(module, text, compose));
+export function extractDeclarationsCore(
+	module: string,
+	text: string,
+	compose: ComposeSymbolId,
+	meter?: WorkMeter,
+): DeclarationFact[] {
+	return declarationsOf(new ParsedScript(module, text, compose, meter));
 }
 
 export function extractReferencesCore(module: string, text: string, compose: ComposeSymbolId): Reference[] {

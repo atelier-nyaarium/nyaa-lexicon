@@ -219,7 +219,7 @@ export class CppDraftTable extends CppDeclaratorReader {
 		lead?: TokenSpan,
 		splitEnd = false,
 	): string | undefined {
-		return headerOf(this.text, this.tokens, startIndex, endIndex, kind, this.angles, lead, splitEnd);
+		return headerOf(this.text, this.tokens, startIndex, endIndex, kind, this.angles, lead, splitEnd, this.meter);
 	}
 
 	protected visibilityFor(scope: Scope, modifiers: Set<string>, fallback?: Visibility): Visibility {
@@ -241,10 +241,21 @@ export class CppDraftTable extends CppDeclaratorReader {
 		const around = scope.parent === null ? [] : writtenPath(scope.parent);
 		for (let depth = around.length; depth >= 0; depth--) {
 			const candidates = this.scopesByPath.get([...around.slice(0, depth), ...qualifier].join("::"));
-			const first = candidates?.find(fits);
+			let first: DraftRecord | undefined;
+			for (const candidate of candidates ?? []) {
+				if (this.meter !== undefined) this.meter.steps++;
+				if (fits(candidate)) {
+					first = candidate;
+					break;
+				}
+			}
 			if (candidates === undefined || first === undefined) continue;
 			if (first.kind === "namespace" || first.hasBody) return first;
-			return candidates.find((draft) => draft.hasBody && fits(draft)) ?? first;
+			for (const candidate of candidates) {
+				if (this.meter !== undefined) this.meter.steps++;
+				if (candidate.hasBody && fits(candidate)) return candidate;
+			}
+			return first;
 		}
 		return null;
 	}

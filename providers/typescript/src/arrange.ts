@@ -8,6 +8,7 @@ import type {
 	MoveEditsResponse,
 	OffsetRange,
 	TextEdit,
+	WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import type ts from "typescript";
 import {
@@ -20,7 +21,7 @@ import {
 	validateEdits,
 } from "./move.js";
 import { sameModulePath } from "./move-dependencies.js";
-import { blockedSite, type WorkMeter } from "./move-imports.js";
+import { blockedSite } from "./move-imports.js";
 import { settleBlankLines } from "./move-layout.js";
 import { type Leaving, orphanedImports, repointLeavingExports } from "./move-sites.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";

@@ -1,5 +1,6 @@
 // The object types and member braces a declaration owns.
 
+import type { WorkMeter } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 
 ////////////////////////////////
@@ -76,9 +77,10 @@ export function partsOf(type: ts.Node): readonly ts.TypeNode[] | undefined {
  * The object types a declaration's own type is made of, through unions, intersections and arrays.
  * A type literal anywhere else, a return type's or a type argument's, belongs to nothing.
  */
-export function ownedTypeLiterals(node: ts.Node): ts.TypeLiteralNode[] {
+export function ownedTypeLiterals(node: ts.Node, meter?: WorkMeter): ts.TypeLiteralNode[] {
 	const literals: ts.TypeLiteralNode[] = [];
 	const visit = (type: ts.TypeNode): void => {
+		if (meter !== undefined) meter.steps++;
 		if (ts.isTypeLiteralNode(type)) literals.push(type);
 		else partsOf(type)?.forEach(visit);
 	};

@@ -1,15 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { coordinatesOf, FOLD_MARK, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, FOLD_MARK, parseSymbolId, type WorkMeter } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { extractFile } from "../extract";
 
 ////////////////////////////////
 //  Helpers
 
-function extract(text: string, module = "src/a.ts") {
+function extract(text: string, module = "src/a.ts", meter?: WorkMeter) {
 	const kind = module.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
 	const source = ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, kind);
-	return extractFile(module, source);
+	return extractFile(module, source, undefined, meter);
 }
 
 function qualifiedByName(text: string, module?: string) {
@@ -678,34 +678,30 @@ export enum Color { Red }
 		]);
 	});
 
-	it("renders a statement of many declarators in time linear in their count", () => {
-		const timed = (count: number) => {
+	it("renders a statement of many declarators with work linear in their count", () => {
+		const work = (count: number) => {
 			const text = `var ${Array.from({ length: count }, (_, index) => `a${index} = ${index}`).join(", ")};\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				extract(text, "src/many.js");
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			extract(text, "src/many.js", meter);
+			return meter.steps;
 		};
-		// Linear reads 8x; a walk of every sibling per declarator read 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		// Each declarator rebuilds the statement header.
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 
-	it("reads a wide union's members in time linear in its constituents", () => {
-		const timed = (count: number) => {
+	it("reads a wide union's members with work linear in its constituents", () => {
+		const work = (count: number) => {
 			const text = `export type Wide = ${Array.from({ length: count }, (_, index) => `{ k${index}: ${index} }`).join(" | ")};\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				expect(extract(text).declarations).toHaveLength(count + 1);
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			expect(extract(text, "src/a.ts", meter).declarations).toHaveLength(count + 1);
+			return meter.steps;
 		};
-		// Linear reads 8x; reading every constituent per member read over 40x.
-		expect(timed(8_000) / timed(1_000)).toBeLessThan(32);
+		// Each owner discovers its union's type literals once.
+		const small = work(1_000);
+		const large = work(8_000);
+		expect(large / small).toBeLessThan(12);
 	});
 
 	it("marks what a running body declares local, however deep the body sits in an initializer", () => {

@@ -26,6 +26,7 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { CppBinder } from "./binder.js";
@@ -248,9 +249,11 @@ function resolutionOf(found: FoundInclude | undefined, name: string, kind: Inclu
 
 export class CppProvider {
 	/** Include lookup reads the store's project and held facts. */
-	readonly store = moduleStore<CppFacts, CppProject>({ read: (module, text) => parseCppFile(module, text) });
+	readonly store = moduleStore<CppFacts, CppProject>({
+		read: (module, text) => parseCppFile(module, text, this.meter),
+	});
 
-	constructor(private readonly meter?: { steps: number }) {}
+	constructor(private readonly meter?: WorkMeter) {}
 
 	initialize(_workspaceRoot: string) {
 		return {

@@ -50,18 +50,6 @@ function declarationNames(text: string, module = "edge.cpp") {
 	return parseCppFile(module, text).declarations;
 }
 
-/** The best of three parses and bindings of `text`, in milliseconds. */
-function parseTime(text: string): number {
-	let best = Number.POSITIVE_INFINITY;
-	for (let round = 0; round < 3; round++) {
-		const handlers = wire();
-		const started = performance.now();
-		handlers.parseFile({ module: "scaling.cpp", contentHash: String(round), text });
-		best = Math.min(best, performance.now() - started);
-	}
-	return best;
-}
-
 /** The last descriptor of an id: what a test names a declaration by. */
 function shortId(symbolId: string): string {
 	return symbolId.split(" ").at(-1) ?? "";
@@ -1043,23 +1031,32 @@ describe("C++ parser edges", () => {
 		expect(aliased?.binding).toMatchObject({ status: "bound", symbolId: expect.stringContaining("Vec#[T]") });
 	});
 
-	test("parses and binds a file of many same-named members in time linear in their count", () => {
+	// A reference must not rescan every declaration sharing its name.
+	test("parses and binds a file of many same-named members with work linear in their count", () => {
 		const members = (count: number) =>
 			Array.from(
 				{ length: count },
 				(_, index) =>
 					`struct S${index} { int field; int get(int a) { int b = a + field; if (b) return b; return get(b); } };`,
 			).join("\n");
-		// Linear reads 8x; a scan of every same-named declaration per use reads 64x.
-		expect(parseTime(members(2_000)) / parseTime(members(250))).toBeLessThan(24);
+		const small = bindingSteps(members(250));
+		const large = bindingSteps(members(2_000));
+		// Each reference checks its same-named candidates once.
+		expect(large / small).toBeLessThan(12);
 	});
 
-	// Linear reads 8x in each of these; the scans they replace read 64x.
-	test("finds each nested template name's follower in time linear in their depth", () => {
+	// Nested template names must not rescan their enclosing angle lists.
+	test("finds each nested template name's follower with work linear in their depth", () => {
 		const nested = (count: number) =>
 			`template <typename T> struct Box {};\nvoid f() { sizeof(${"Box<".repeat(count)}int${">".repeat(count)}); }\n`;
-
-		expect(parseTime(nested(4_000)) / parseTime(nested(500))).toBeLessThan(24);
+		const work = (count: number) => {
+			const meter = { steps: 0 };
+			parseCppFile("nested.cpp", nested(count), meter);
+			return meter.steps;
+		};
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 
 	test(
@@ -1074,7 +1071,7 @@ describe("C++ parser edges", () => {
 	);
 
 	test(
-		"finds the namespace of qualified definitions in time linear in its openings",
+		"finds the namespace of qualified definitions with work linear in its openings",
 		() => {
 			const reopened = (count: number) =>
 				Array.from(
@@ -1082,7 +1079,14 @@ describe("C++ parser edges", () => {
 					(_, index) => `namespace a { void f${index}(); }\nvoid a::f${index}() {}\n`,
 				).join("");
 
-			expect(parseTime(reopened(4_000)) / parseTime(reopened(500))).toBeLessThan(24);
+			const work = (count: number) => {
+				const meter = { steps: 0 };
+				parseCppFile("qualified.cpp", reopened(count), meter);
+				return meter.steps;
+			};
+			const small = work(500);
+			const large = work(4_000);
+			expect(large / small).toBeLessThan(12);
 		},
 		{ timeout: 30_000 },
 	);

@@ -36,6 +36,11 @@ export interface HeaderSpan {
 	angles?: readonly number[];
 }
 
+/** Steps a lookup takes, counted for tests that bound its work instead of timing it. */
+export interface WorkMeter {
+	steps: number;
+}
+
 ////////////////////////////////
 //  Constants
 
@@ -223,9 +228,17 @@ function collapse(raw: string, marks: Marks): string {
 }
 
 /** One line from the span: omissions dropped, folds marked, literals kept. Undefined if empty. */
-export function renderHeader(text: string, span: HeaderSpan): string | undefined {
+export function renderHeader(text: string, span: HeaderSpan, meter?: WorkMeter): string | undefined {
 	if (span.end <= span.start) return undefined;
 	const pieces = [...(span.lead === undefined ? [] : [span.lead]), { start: span.start, end: span.end }];
+	if (meter !== undefined) {
+		// Each piece reads its text and every cut.
+		const cuts = [span.folds, span.omit, span.splices, span.verbatim, span.angles].reduce(
+			(sum, list) => sum + (list?.length ?? 0),
+			0,
+		);
+		for (const piece of pieces) meter.steps += piece.end - piece.start + cuts;
+	}
 	const free = freeMarks(text, pieces, 3);
 	if (free === null) return undefined;
 	const [literal = "", open = "", close = ""] = free;

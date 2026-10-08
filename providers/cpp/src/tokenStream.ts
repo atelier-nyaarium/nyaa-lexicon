@@ -1,6 +1,6 @@
 // Token marks, line walks and diagnostics under every C++ parse layer.
 
-import { comparePositions, type Diagnostic } from "@nyaa-lexicon/protocol";
+import { comparePositions, type Diagnostic, type WorkMeter } from "@nyaa-lexicon/protocol";
 import { type DeclaredName, templateAngles } from "./angles.js";
 import type { ImportFact } from "./model.js";
 import type { Token } from "./tokens.js";
@@ -37,6 +37,7 @@ export class CppTokenStream {
 		protected readonly blankLines: number[],
 		diagnostics: Diagnostic[],
 		names?: ReadonlyMap<string, DeclaredName>,
+		protected readonly meter?: WorkMeter,
 	) {
 		this.diagnostics = diagnostics.map((item) => ({ ...item, path: module }));
 		this.directiveTokens = directiveTokenIndexes(tokens);

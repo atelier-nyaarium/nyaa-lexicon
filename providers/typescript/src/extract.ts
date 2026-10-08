@@ -14,6 +14,7 @@ import {
 	type Literal,
 	type Reference,
 	RUNNING_KINDS,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import {
@@ -102,8 +103,13 @@ interface Scope {
  * Exported-ness is taken from the modifier only. A re-export through a barrel is not syntactic,
  * and claiming otherwise here would be exactly the confident-wrong-answer the design refuses.
  */
-export function extractFile(module: string, source: ts.SourceFile, checker?: ts.TypeChecker): Extracted {
-	const extracted = extractFileWithNodes(module, source, checker);
+export function extractFile(
+	module: string,
+	source: ts.SourceFile,
+	checker?: ts.TypeChecker,
+	meter?: WorkMeter,
+): Extracted {
+	const extracted = extractFileWithNodes(module, source, checker, meter);
 	return {
 		declarations: extracted.declarations,
 		references: extracted.references,
@@ -118,6 +124,7 @@ export function extractFileWithNodes(
 	module: string,
 	source: ts.SourceFile,
 	checker?: ts.TypeChecker,
+	meter?: WorkMeter,
 ): ExtractedWithNodes {
 	const declarations: Declaration[] = [];
 	const references: Reference[] = [];
@@ -170,7 +177,7 @@ export function extractFileWithNodes(
 		if (!declarationNodes.has(owner)) return false;
 		let owned = ownedLiterals.get(owner);
 		if (owned === undefined) {
-			owned = new Set(ownedTypeLiterals(owner));
+			owned = new Set(ownedTypeLiterals(owner, meter));
 			ownedLiterals.set(owner, owned);
 		}
 		return owned.has(literal);
@@ -319,7 +326,7 @@ export function extractFileWithNodes(
 			visibility,
 			exported: visibility === "public",
 			metrics: { lines: range.end.line - range.start.line + 1 },
-			...defined({ signature: headerOf(parameter, source), containerId: home.containerId }),
+			...defined({ signature: headerOf(parameter, source, meter), containerId: home.containerId }),
 		});
 	}
 
@@ -338,7 +345,7 @@ export function extractFileWithNodes(
 			const name = ts.isExportAssignment(node) && node.isExportEquals ? EXPORT_EQUALS : "default";
 			const { descriptors, symbolId } = mint(scope, { kind: anonymousDefault.descriptor, name });
 			const range = declarationRangeOf(node, source);
-			const signature = headerOf(node, source);
+			const signature = headerOf(node, source, meter);
 			const defaultSpan = defaultSelectionRange(node, source);
 
 			noteDeclaredIn(scope);
@@ -386,7 +393,7 @@ export function extractFileWithNodes(
 			metrics: metricsOf(node, range),
 			...defined({
 				languageKind: classified.languageKind,
-				signature: headerOf(node, source),
+				signature: headerOf(node, source, meter),
 				containerId: scope.containerId,
 				memberInsertLine: memberInsertLineOf(node, source),
 			}),
@@ -415,7 +422,7 @@ export function extractFileWithNodes(
 		const range = declarationRangeOf(holder, source);
 
 		for (const declaration of declarations) {
-			const signature = headerOf(declaration, source);
+			const signature = headerOf(declaration, source, meter);
 			for (const binding of boundNames(declaration)) {
 				const name = binding.name.text;
 				const { descriptors, symbolId } = mint(scope, { kind: "term", name });

@@ -1,6 +1,6 @@
 // Token access, delimiter matching and diagnostics under every C# parse layer.
 
-import { type Diagnostic, type HeaderSpan, NestingGauge, renderHeader } from "@nyaa-lexicon/protocol";
+import { type Diagnostic, type HeaderSpan, NestingGauge, renderHeader, type WorkMeter } from "@nyaa-lexicon/protocol";
 import { type LexedSource, lastLine, positionRange, type Token, tokenize } from "./tokens.js";
 import { isTrivia, syntaxValue } from "./words.js";
 
@@ -58,6 +58,7 @@ export class CsharpTokenStream {
 		protected readonly outline = false,
 		/** Defined before the file's own `#define` lines: its project's. */
 		symbols: readonly string[] = [],
+		protected readonly meter?: WorkMeter,
 	) {
 		this.lexed = tokenize(text, { collectLiterals: !outline, collectComments: !outline, symbols });
 		this.tokens = this.lexed.tokens;
@@ -144,7 +145,7 @@ export class CsharpTokenStream {
 
 	/** A header over the source, which no layer above reads directly. */
 	protected render(span: HeaderSpan): string | undefined {
-		return renderHeader(this.text, span);
+		return renderHeader(this.text, span, this.meter);
 	}
 
 	/** Runs `read` one nesting level deeper, at `index`. */
@@ -166,13 +167,19 @@ export class CsharpTokenStream {
 	protected nextSignificant(index: number, end = this.tokens.length): number {
 		if (index < 0) return -1;
 		let current = index;
-		while (current < end && isTrivia(this.token(current))) current++;
+		while (current < end && isTrivia(this.token(current))) {
+			if (this.meter !== undefined) this.meter.steps++;
+			current++;
+		}
 		return current < end ? current : -1;
 	}
 
 	protected previousSignificant(index: number, start = 0): number {
 		let current = index - 1;
-		while (current >= start && isTrivia(this.token(current))) current--;
+		while (current >= start && isTrivia(this.token(current))) {
+			if (this.meter !== undefined) this.meter.steps++;
+			current--;
+		}
 		return current;
 	}
 
@@ -185,6 +192,7 @@ export class CsharpTokenStream {
 		}
 		let depth = 0;
 		for (let current = index; current < end; current++) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const item = this.token(current);
 			const value = item?.kind === "punctuation" ? item.value : undefined;
 			if (value === open) depth++;

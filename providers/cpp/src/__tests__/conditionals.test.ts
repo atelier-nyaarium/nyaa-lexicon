@@ -213,48 +213,42 @@ describe("C++ conditional groups", () => {
 		]);
 	});
 
-	test("binds a name declared in many alternatives in time linear in their count", () => {
-		const timed = (count: number) => {
+	test("binds a name declared in many alternatives with work linear in their count", () => {
+		const work = (count: number) => {
 			const branches = Array.from(
 				{ length: count },
 				(_, index) => `${index === 0 ? "#if" : "#elif"} A${index}\n\tint x = ${index};\n`,
 			);
 			const text = `void f() {\n${branches.join("")}#endif\n${"\tx++;\n".repeat(32)}}\n`;
-			let best = Number.POSITIVE_INFINITY;
-			let candidates = 0;
-			for (let round = 0; round < 3; round++) {
-				const provider = handlersFor(new CppProvider());
-				provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
-				const started = performance.now();
-				const facts = provider.parseFile({ module: "branches.cpp", contentHash: String(round), text });
-				best = Math.min(best, performance.now() - started);
-				const use = facts.references.at(-1)?.binding;
-				candidates = use?.status === "ambiguous" ? use.candidates.length : 0;
-			}
-			return { best, candidates };
+			const meter = { steps: 0 };
+			const provider = handlersFor(new CppProvider(meter));
+			provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+			const facts = provider.parseFile({ module: "branches.cpp", contentHash: "work", text });
+			const candidates = facts.references.at(-1)?.binding;
+			return {
+				steps: meter.steps,
+				candidates: candidates?.status === "ambiguous" ? candidates.candidates.length : 0,
+			};
 		};
-		const small = timed(250);
-		const large = timed(2_000);
+		const small = work(250);
+		const large = work(2_000);
 
-		// Each alternative's local stays in view, and each use lists them all: linear reads 8x, comparing
-		// every pair 64x.
+		// Candidate pairs must not be compared repeatedly.
 		expect([small.candidates, large.candidates]).toEqual([250, 2_000]);
-		expect(large.best / small.best).toBeLessThan(24);
+		expect(large.steps / small.steps).toBeLessThan(12);
 	});
 
-	test("resolves deeply nested groups in time linear in their depth", () => {
-		const timed = (count: number) => {
+	test("resolves deeply nested groups with work linear in their depth", () => {
+		const work = (count: number) => {
 			const text = `${"#if A\n".repeat(count)}int x;\n${"#else\nint y;\n#endif\n".repeat(count)}`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				tokenize(text, "nested.cpp");
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			tokenize(text, "nested.cpp", meter);
+			return meter.steps;
 		};
-		// Linear reads 8x; rescanning each enclosing branch per group reads 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		// Linear reads 8x; rescanning each enclosing branch per group grows quadratically.
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 
 	test("keeps duplicate declarations from whole alternatives", () => {

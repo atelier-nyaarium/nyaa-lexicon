@@ -464,7 +464,7 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 	const { coordinates, lexed, module, compose, blocks } = script;
 	const statementLines = new Set(blocks.statements.map((statement) => statement.line));
 	const lines = lexed.lines;
-	const headers = new HeaderReader(script.text, lexed);
+	const headers = new HeaderReader(script.text, lexed, script.meter);
 	const classLine = lines
 		.map((line) => ({
 			line,
@@ -814,7 +814,7 @@ function metricsForDeclaration(blocks: Blocks, declaration: DeclarationFact): Me
 function extractGeneric(script: ParsedScript): DeclarationFact[] {
 	const { lexed } = script;
 	const declarations: DeclarationFact[] = [];
-	const headers = new HeaderReader(script.text, lexed);
+	const headers = new HeaderReader(script.text, lexed, script.meter);
 	for (const line of lexed.lines) {
 		const parsed = parseLineHeads(lexed, line.line, true)[0];
 		if (parsed === undefined || parsed.name === null) continue;

@@ -149,18 +149,16 @@ describe("C declaration headers", () => {
 		});
 	});
 
-	test("renders a statement of many declarators in time linear in their count", () => {
-		const timed = (count: number) => {
+	test("renders a statement of many declarators with work linear in their count", () => {
+		const work = (count: number) => {
 			const text = `int ${Array.from({ length: count }, (_, index) => `a${index} = ${index}`).join(", ")};\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				parseC("many.c", text);
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			parseC("many.c", text, meter);
+			return meter.steps;
 		};
-		// Linear reads 8x; a walk of every sibling per declarator reads 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		// Each declarator header scans its own tokens, not every sibling.
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 });

@@ -369,7 +369,7 @@ export {
 	referenceFactId,
 } from "./factId.js";
 export { hashBytes, hashContent } from "./hash.js";
-export { FOLD_MARK, type HeaderFold, type HeaderSpan, renderHeader } from "./header.js";
+export { FOLD_MARK, type HeaderFold, type HeaderSpan, renderHeader, type WorkMeter } from "./header.js";
 export {
 	type ImportEditsRequest,
 	ImportEditsRequestSchema,

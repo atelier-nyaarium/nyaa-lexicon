@@ -1,6 +1,6 @@
 // Delimiter pairs, directives and conditional groups: the structure every C parse layer reads.
 
-import type { CommentSpan, Diagnostic } from "@nyaa-lexicon/protocol";
+import type { CommentSpan, Diagnostic, WorkMeter } from "@nyaa-lexicon/protocol";
 import type { ConditionalFrame, DelimiterEntry, Directive } from "./model.js";
 import type { CToken } from "./tokens.js";
 import { nextCode, previousCode, tokenValue } from "./tokenWalk.js";
@@ -42,6 +42,7 @@ export class CStructure {
 		protected readonly comments: CommentSpan[],
 		protected readonly blankLines: number[],
 		initialDiagnostics: Diagnostic[],
+		protected readonly meter?: WorkMeter,
 	) {
 		this.diagnostics = [...initialDiagnostics];
 	}

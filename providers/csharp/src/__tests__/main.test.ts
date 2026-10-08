@@ -618,7 +618,8 @@ describe("a using directive resolves to what the index holds", () => {
 
 describe("C# protocol behavior", () => {
 	it("holds no state beside its store and the index over it, in any of its layers", () => {
-		expect(Object.keys(new CsharpProvider()).sort()).toEqual(["index", "store"]);
+		// The meter counts work for tests; it holds nothing a request leaves behind.
+		expect(Object.keys(new CsharpProvider()).sort()).toEqual(["index", "meter", "store"]);
 	});
 
 	it("reports syntax errors and keeps the declarations under attributes", () => {

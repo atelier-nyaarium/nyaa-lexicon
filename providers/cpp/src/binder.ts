@@ -2,7 +2,7 @@
 // its receiver's type, a qualified name in the scope its qualifier names, each with what the
 // includes before it reach, directly or through the headers they include.
 
-import type { Binding, SymbolKind, UnknownReason } from "@nyaa-lexicon/protocol";
+import type { Binding, SymbolKind, UnknownReason, WorkMeter } from "@nyaa-lexicon/protocol";
 import type { CppDeclarationRecord, CppFacts, CppReferenceRecord, CppUsing, Receiver, TypeShape } from "./model.js";
 import { includesBefore, type Reach, type Reaches } from "./reach.js";
 import { isTransparent, memberPath, namespaceScopeId, scopeIdOf, seenScope } from "./scopes.js";
@@ -152,18 +152,21 @@ function visibleOf(
 	records: readonly CppDeclarationRecord[],
 	reference: CppReferenceRecord,
 	complete: boolean,
+	meter?: WorkMeter,
 ): CppDeclarationRecord[] {
 	const at = reference.tokenIndex;
-	const kept = records.filter(
-		(record) =>
+	const kept = records.filter((record) => {
+		if (meter !== undefined) meter.steps++;
+		return (
 			record.nameTokenStart !== at &&
 			kindAllowed(record, reference) &&
 			!exclusive(record.alternative, reference.alternative) &&
-			(record.visibleEnd !== undefined || complete || record.declaredAt < at),
-	);
+			(record.visibleEnd !== undefined || complete || record.declaredAt < at)
+		);
+	});
 	const locals = kept.filter((record) => record.visibleEnd !== undefined);
 	if (locals.length === 0) return kept;
-	return innermost(locals);
+	return innermost(locals, meter);
 }
 
 /**
@@ -171,7 +174,7 @@ function visibleOf(
  * two stand in different branches of one `#if` group. Each local is weighed against all later ones
  * at once, by counting the later ones inside each group and each branch around it.
  */
-function innermost(locals: readonly CppDeclarationRecord[]): CppDeclarationRecord[] {
+function innermost(locals: readonly CppDeclarationRecord[], meter?: WorkMeter): CppDeclarationRecord[] {
 	const inside = new Map<string, number>();
 	const around = (local: CppDeclarationRecord) => {
 		const keys: Array<[string, string]> = [];
@@ -190,7 +193,10 @@ function innermost(locals: readonly CppDeclarationRecord[]): CppDeclarationRecor
 		const tied = latestFirst.slice(start, end);
 		for (const local of tied) {
 			let apart = 0;
-			for (const [group, branch] of around(local)) apart += (inside.get(group) ?? 0) - (inside.get(branch) ?? 0);
+			for (const [group, branch] of around(local)) {
+				if (meter !== undefined) meter.steps++;
+				apart += (inside.get(group) ?? 0) - (inside.get(branch) ?? 0);
+			}
 			if (later > apart) hidden.add(local);
 		}
 		for (const local of tied) for (const key of around(local).flat()) inside.set(key, (inside.get(key) ?? 0) + 1);
@@ -259,7 +265,7 @@ export class CppBinder {
 		private readonly sources: BinderSources,
 		module: string,
 		facts: CppFacts,
-		private readonly meter?: { steps: number },
+		private readonly meter?: WorkMeter,
 	) {
 		this.files.set(module, facts);
 	}
@@ -408,7 +414,7 @@ export class CppBinder {
 		const here = scope.module === module;
 		const bucket = facts.members.get(id)?.get(reference.name);
 		const found = here
-			? visibleOf(bucket?.visibleAt(at, this.meter) ?? [], reference, complete)
+			? visibleOf(bucket?.visibleAt(at, this.meter) ?? [], reference, complete, this.meter)
 			: (bucket?.visibleAt(-1) ?? []).filter((record) => kindAllowed(record, reference));
 		for (const inner of facts.transparentOf.get(id) ?? [])
 			if (!here || complete || inView(inner, at, reference.alternative))

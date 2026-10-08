@@ -191,20 +191,18 @@ describe("a GDScript header", () => {
 		});
 	});
 
-	test("renders a line of many declarations in time linear in their count", () => {
-		const timed = (count: number) => {
+	test("renders a line of many declarations with work linear in their count", () => {
+		const work = (count: number) => {
 			const segments = Array.from({ length: count }, (_, index) => `var a${index} = "s  ${index}"`).join("; ");
 			const members = Array.from({ length: count }, (_, index) => `M${index} = ${index}`).join(", ");
 			const text = `${segments}\nenum Big { ${members} }\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				extractDeclarationsCore("scripts/many.gd", text, composeSymbolId);
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			extractDeclarationsCore("scripts/many.gd", text, composeSymbolId, meter);
+			return meter.steps;
 		};
-		// Linear reads 8x; a walk of every sibling per declaration reads 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		// Each header scan stops at its declaration's boundary.
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 });

@@ -132,6 +132,7 @@ export abstract class CsharpImports extends CsharpWorkspace {
 		const key = segmentKey(segments);
 		const brought: { place: number; namespace: string; key: string }[] = [];
 		for (const named of this.index.typesNamed(segmentKey([last]))) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const place =
 				named.key === key
 					? level.namespaces.get(named.namespace)

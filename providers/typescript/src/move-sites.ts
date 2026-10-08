@@ -7,10 +7,11 @@ import type {
 	OffsetRange,
 	TextCoordinates,
 	TextEdit,
+	WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { moduleBindings, sameModulePath } from "./move-dependencies.js";
-import { append, blockedSite, type PlannedImport, type Quote, quoted, type WorkMeter } from "./move-imports.js";
+import { append, blockedSite, type PlannedImport, type Quote, quoted } from "./move-imports.js";
 import type { SpecifierRenderer, SpecifierRenderResult } from "./project.js";
 
 ////////////////////////////////

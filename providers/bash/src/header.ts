@@ -1,6 +1,13 @@
 // A declaration's header spans, handed to the protocol's one renderer.
 
-import { type HeaderFold, type HeaderSpan, type OffsetRange, renderHeader, SourceCursor } from "@nyaa-lexicon/protocol";
+import {
+	type HeaderFold,
+	type HeaderSpan,
+	type OffsetRange,
+	renderHeader,
+	SourceCursor,
+	type WorkMeter,
+} from "@nyaa-lexicon/protocol";
 import { rangesOf } from "./comments.js";
 import { assignmentOf, type Walk } from "./context.js";
 import type { Token, Word } from "./syntax/ast.js";
@@ -77,7 +84,7 @@ function outermost(pairs: readonly number[]): OffsetRange[] {
 }
 
 /** Every declaration's signature: comments and line continuations out, quoted parts as written. */
-export function signHeaders(w: Walk, tokens: readonly Token[]): void {
+export function signHeaders(w: Walk, tokens: readonly Token[], meter?: WorkMeter): void {
 	const comments = rangesOf(tokens, "comment");
 	const continuations = rangesOf(tokens, "continuation");
 	const quoted = outermost(w.quoted);
@@ -91,7 +98,7 @@ export function signHeaders(w: Walk, tokens: readonly Token[]): void {
 			splices.push(...startingWithin(continuations, piece));
 			verbatim.push(...startingWithin(quoted, piece));
 		}
-		const signature = renderHeader(w.text, { ...span, omit, splices, verbatim });
+		const signature = renderHeader(w.text, { ...span, omit, splices, verbatim }, meter);
 		if (signature !== undefined) declaration.signature = signature;
 	}
 }

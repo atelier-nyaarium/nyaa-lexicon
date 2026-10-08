@@ -1,6 +1,6 @@
 // A declaration's header spans, handed to the protocol's one renderer.
 
-import { type OffsetRange, renderHeader, SourceCursor } from "@nyaa-lexicon/protocol";
+import { type OffsetRange, renderHeader, SourceCursor, type WorkMeter } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 
 ////////////////////////////////
@@ -124,8 +124,16 @@ function typeBrackets(node: ts.Node, children: readonly ts.Node[], source: ts.So
 }
 
 /** Folds, comments, literals and type brackets within `span`, in one walk that never enters a fold. */
-function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: ts.SourceFile, cuts: Cuts): void {
+function collectCuts(
+	node: ts.Node,
+	types: boolean,
+	span: OffsetRange,
+	source: ts.SourceFile,
+	cuts: Cuts,
+	meter?: WorkMeter,
+): void {
 	if (node.pos >= span.end || node.end <= span.start) return;
+	if (meter !== undefined) meter.steps++;
 	if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
 	const whole = foldedWhole(node, types, source);
 	if (whole !== undefined) {
@@ -154,7 +162,8 @@ function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: t
 	// Signature types stay whole.
 	const inner = types && !ts.isParameter(node) && !ts.isFunctionTypeNode(node) && !ts.isConstructorTypeNode(node);
 	for (const child of children) {
-		if (from === undefined || child.end <= from) collectCuts(child, inner, span, source, cuts);
+		if (meter !== undefined) meter.steps++;
+		if (from === undefined || child.end <= from) collectCuts(child, inner, span, source, cuts, meter);
 	}
 }
 
@@ -163,17 +172,17 @@ function collectCuts(node: ts.Node, types: boolean, span: OffsetRange, source: t
  * A variable leads with its statement's `export const`, or a loop head's `const`, then its own
  * declarator alone.
  */
-export function headerOf(node: ts.Node, source: ts.SourceFile): string | undefined {
+export function headerOf(node: ts.Node, source: ts.SourceFile, meter?: WorkMeter): string | undefined {
 	const cuts: Cuts = { folds: [], omit: [], splices: [], verbatim: [], angles: [] };
 	if (ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent)) {
 		const holder = ts.isVariableStatement(node.parent.parent) ? node.parent.parent : node.parent;
 		const lead = { start: holder.getStart(source), end: node.parent.declarations.pos };
 		const own = { start: node.getStart(source), end: node.getEnd() };
-		collectCuts(holder, false, lead, source, cuts);
-		collectCuts(node, true, own, source, cuts);
+		collectCuts(holder, false, lead, source, cuts, meter);
+		collectCuts(node, true, own, source, cuts, meter);
 		return renderHeader(source.text, { lead, ...own, ...cuts });
 	}
 	const span = { start: node.getStart(source), end: bodyStart(node, source) ?? node.getEnd() };
-	collectCuts(node, foldsTypes(node), span, source, cuts);
+	collectCuts(node, foldsTypes(node), span, source, cuts, meter);
 	return renderHeader(source.text, { ...span, ...cuts });
 }

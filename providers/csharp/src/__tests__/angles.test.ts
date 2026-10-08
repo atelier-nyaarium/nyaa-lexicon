@@ -50,19 +50,17 @@ describe("C# splitters read only the angles the walk read as type brackets", () 
 		expect(roles(text, "unmanaged")).toEqual([]);
 	});
 
-	test("reads a long run of comparisons in time linear in its length", () => {
-		const timed = (count: number) => {
+	test("reads a long run of comparisons with work linear in its length", () => {
+		const work = (count: number) => {
 			const text = `class C { static bool[] f = { ${Array.from({ length: count }, () => "a < b").join(", ")} }; }\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				new CsharpParser("Many.cs", text).parse();
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			new CsharpParser("Many.cs", text, false, [], meter).parse();
+			return meter.steps;
 		};
-		// Linear reads scale 8x; repeated suffix walks scale 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		// Repeated suffix walks would revisit each comparison.
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 
 	test("a where clause with no constraint yet ends the parse", () => {

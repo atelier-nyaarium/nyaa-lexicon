@@ -1,7 +1,7 @@
 // Lookup indexes over a file's declarations: each scope's names, the windows its locals are visible
 // in, the scopes code outside sees by name, and the scopes whose names a scope sees as its own.
 
-import { ANONYMOUS_NAMESPACE, type ScopeContribution } from "@nyaa-lexicon/protocol";
+import { ANONYMOUS_NAMESPACE, type ScopeContribution, type WorkMeter } from "@nyaa-lexicon/protocol";
 import { listAt, mapAt } from "./collections.js";
 import type { CppDeclarationRecord } from "./model.js";
 
@@ -119,7 +119,7 @@ export class NameBucket {
 	}
 
 	/** The records visible at token `at`: each one without a window, and the windows covering `at`. */
-	visibleAt(at: number, meter?: { steps: number }): CppDeclarationRecord[] {
+	visibleAt(at: number, meter?: WorkMeter): CppDeclarationRecord[] {
 		if (this.windowed.length === 0) return this.plain;
 		let low = 0;
 		let high = this.windowed.length - 1;

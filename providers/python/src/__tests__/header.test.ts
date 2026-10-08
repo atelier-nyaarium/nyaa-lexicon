@@ -146,28 +146,34 @@ describe("Python declaration headers", () => {
 		expect(found.get("only")).toBe("with open(c) as only:");
 	});
 
-	it("renders a statement of many bound names in time linear in their count", async () => {
-		const timed = async (count: number) => {
+	it("renders a statement of many bound names with work linear in their count", async () => {
+		const work = async (count: number) => {
 			const names = Array.from({ length: count }, (_, index) => `n${index}`);
 			const lines = [
 				`${names.join(" = \\\n")} = 0`,
 				`(\n${names.map((name) => `    u${name},`).join("\n")}\n) = pair()`,
 			];
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				const found = await signatures(lines);
-				best = Math.min(best, performance.now() - started);
-				// A parse that failed fast is not linear.
-				expect([found.get(`n${count - 1}`), found.get(`un${count - 1}`)]).toEqual([
-					`n${count - 1} = 0`,
-					`un${count - 1}`,
-				]);
-			}
-			return best;
+			const meter = { steps: 0 };
+			const root = mkdtempSync(path.join(tmpdir(), "lexicon-python-header-meter-"));
+			roots.push(root);
+			const handlers = wireHandlers(new PythonProvider(undefined, meter));
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+			handlers.discoverProject({ workspaceRoot: root });
+			const found = await handlers.parseFile({
+				module: "src/header.py",
+				contentHash: "metered",
+				text: lines.join("\n"),
+			});
+			expect([
+				found.declarations.find((item) => item.name === `n${count - 1}`)?.signature,
+				found.declarations.find((item) => item.name === `un${count - 1}`)?.signature,
+			]).toEqual([`n${count - 1} = 0`, `un${count - 1}`]);
+			return meter.steps;
 		};
-		// Linear reads 8x; a header spanning every sibling read 64x.
-		expect((await timed(4_000)) / (await timed(500))).toBeLessThan(24);
+		// A shared header scan across every bound name grows quadratically.
+		const small = await work(500);
+		const large = await work(4_000);
+		expect(large / small).toBeLessThan(12);
 	}, 120_000);
 
 	it("drops comments and line continuations inside a header", async () => {

@@ -1,6 +1,6 @@
 // Owns GDScript header spans, handed to the protocol's one renderer.
 
-import { type HeaderFold, type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { type HeaderFold, type OffsetRange, renderHeader, type WorkMeter } from "@nyaa-lexicon/protocol";
 import { declarationStart } from "./line-syntax.js";
 import type { ReferenceToken, SourceLine } from "./parse-model.js";
 import {
@@ -69,6 +69,7 @@ export class HeaderReader {
 	constructor(
 		private readonly text: string,
 		private readonly lexed: LexedSource,
+		private readonly meter?: WorkMeter,
 	) {
 		this.lines = lexed.lines;
 		this.tokens = lexed.tokens;
@@ -134,6 +135,7 @@ export class HeaderReader {
 		let depth = 0;
 		let at = from;
 		while (at < tokens.length) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const token = tokens[at] as ReferenceToken;
 			const value = token.value;
 			if (token.kind === "newline") {

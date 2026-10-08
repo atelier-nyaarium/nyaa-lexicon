@@ -1,6 +1,13 @@
 // Imports a move plans: their forms, their text, and where each joins or lands.
 
-import type { MoveBlockedReason, MoveBlockedSite, Range, TextCoordinates, TextEdit } from "@nyaa-lexicon/protocol";
+import type {
+	MoveBlockedReason,
+	MoveBlockedSite,
+	Range,
+	TextCoordinates,
+	TextEdit,
+	WorkMeter,
+} from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 
 ////////////////////////////////
@@ -19,11 +26,6 @@ export type MergeSlot = "value" | "type" | "default";
 
 /** One key per module a specifier written here lands on; an unresolved one keys by its text. */
 export type LandingKey = (specifier: string) => string;
-
-/** Lookup steps a move takes, counted for tests that bound its work. */
-export interface WorkMeter {
-	steps: number;
-}
 
 ////////////////////////////////
 //  Rendering
@@ -119,6 +121,7 @@ export function mergeIndex(
 	const index = new Map<string, ts.ImportDeclaration>();
 	const touched = overlapIndex(coordinates, edits, meter);
 	for (const statement of source.statements) {
+		if (meter !== undefined) meter.steps++;
 		if (excluded.has(statement)) continue;
 		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
 		// Attributes can change which export binds a name.

@@ -1,6 +1,6 @@
 // The walk over the syntax tree: what each node means to an index.
 
-import { coordinatesOf, parseSymbolId, SourceCursor } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, parseSymbolId, SourceCursor, type WorkMeter } from "@nyaa-lexicon/protocol";
 import {
 	aliases,
 	DECLARING,
@@ -247,7 +247,7 @@ function walkNode(w: Walk, scope: Scope, node: Node | undefined): void {
 ////////////////////////////////
 //  Main
 
-export function parseBash(module: string, source: string): ParsedBashFile {
+export function parseBash(module: string, source: string, meter?: WorkMeter): ParsedBashFile {
 	const shift = new SourceCursor(source).peek() === BYTE_ORDER_MARK ? 1 : 0;
 	const text = source.slice(shift);
 	const { script, tokens } = parseBashScript(text);
@@ -283,7 +283,7 @@ export function parseBash(module: string, source: string): ParsedBashFile {
 	settle(w);
 	out.comments = commentSpans(w, tokens);
 	out.blankLines = blankLinesOf(w, tokens);
-	signHeaders(w, tokens);
+	signHeaders(w, tokens, meter);
 	for (const error of script.errors) {
 		out.diagnostics.push({
 			severity: "error",

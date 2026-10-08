@@ -245,6 +245,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		let previous: Token | undefined;
 		let before = -1;
 		for (let index = first; index <= last; index++) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const item = this.tokens[index] as Token;
 			if (index === skip?.from) {
 				const shared = this.token(before);
@@ -359,6 +360,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			current >= 0 && current < end;
 			current = this.nextSignificant(current + 1, end)
 		) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const item = this.token(current) as Token;
 			const text = syntaxValue(item);
 			const typed = lists.length > 0 || !inValue;

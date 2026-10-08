@@ -35,6 +35,7 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import type { CDeclaration, CImportFact, CReference, ParsedCFile, TypeName } from "./model.js";
@@ -380,7 +381,7 @@ export class CProvider {
 	readonly store = moduleStore<ParsedCFile, CProject>({ read: (module, text) => parseC(module, text) });
 
 	/** `meter` counts header lookup work, so a test asserts its growth without a clock. */
-	constructor(private readonly meter?: { steps: number }) {}
+	constructor(private readonly meter?: WorkMeter) {}
 
 	initialize(_workspaceRoot: string) {
 		return {

@@ -1,6 +1,6 @@
 // Owns one parse of a GDScript file, read once and shared by every extractor.
 
-import { coordinatesOf, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, type TextCoordinates, type WorkMeter } from "@nyaa-lexicon/protocol";
 import { type Blocks, blocksOf } from "./blocks.js";
 import { extractGdscript } from "./declarations.js";
 import type { ComposeSymbolId, DeclarationFact } from "./parse-model.js";
@@ -19,6 +19,7 @@ export class ParsedScript {
 		readonly module: string,
 		readonly text: string,
 		readonly compose: ComposeSymbolId,
+		readonly meter?: WorkMeter,
 	) {
 		this.lexed = lexSource(text);
 		this.coordinates = coordinatesOf(text);

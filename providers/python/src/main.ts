@@ -29,6 +29,7 @@ import {
 	serveProvider,
 	type TypeInfo,
 	type UnknownReason,
+	type WorkMeter,
 	workspaceFile,
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
@@ -259,9 +260,12 @@ function containsPosition(range: Range, position: Range["start"]): boolean {
 export class PythonProvider {
 	readonly store;
 
-	constructor(private readonly python3 = new Python3Dispatch()) {
+	constructor(
+		private readonly python3 = new Python3Dispatch(),
+		private readonly meter?: WorkMeter,
+	) {
 		this.store = asyncModuleStore<MappedFacts>({
-			read: async (module, text) => mapFacts(module, text, extractFacts(module, text)),
+			read: async (module, text) => mapFacts(module, text, extractFacts(module, text, this.meter)),
 		});
 	}
 

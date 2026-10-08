@@ -268,19 +268,15 @@ describe("C# signatures are whole headers on one line", () => {
 				`private int ${Array.from({ length: count }, (_, index) => `a${index} = ${index}`).join(", ")};`,
 		],
 		["deeply nested parentheses", (count: number) => `private int a = ${"(".repeat(count)}1${")".repeat(count)};`],
-	])("renders a statement of %s in time linear in their count", (_label, member) => {
-		const timed = (count: number) => {
+	])("renders a statement of %s with work linear in their count", (_label, member) => {
+		const work = (count: number) => {
 			const text = `class C\n{\n    ${member(count)}\n}\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				// Outline: headers without literal facts.
-				new CsharpParser("Many.cs", text, true).parse();
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			// Outline: headers without literal facts.
+			new CsharpParser("Many.cs", text, true, [], meter).parse();
+			return meter.steps;
 		};
 		// Linear reads 8x; a walk of every sibling or inner group read 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		expect(work(4_000) / work(500)).toBeLessThan(12);
 	});
 });

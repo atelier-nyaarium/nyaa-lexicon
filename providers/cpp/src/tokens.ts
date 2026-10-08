@@ -6,6 +6,7 @@ import {
 	type Position,
 	type Range,
 	SourceCursor,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import {
 	isDigit,
@@ -448,7 +449,7 @@ function blankLinesOf(tokens: readonly Token[], spliced: readonly number[], line
 	return blank;
 }
 
-export function tokenize(text: string, module?: string): TokenizedSource {
+export function tokenize(text: string, module?: string, meter?: WorkMeter): TokenizedSource {
 	const cursor = new SourceCursor(text);
 	const tokens: Token[] = [];
 	const spliced: number[] = [];
@@ -527,7 +528,7 @@ export function tokenize(text: string, module?: string): TokenizedSource {
 	}
 	markTrivia(tokens);
 	const blankLines = blankLinesOf(tokens, spliced, cursor.line + (cursor.column > 0 ? 1 : 0));
-	const resolved = resolveConditionals(tokens, diagnostics);
+	const resolved = resolveConditionals(tokens, diagnostics, meter);
 	if (module !== undefined) {
 		for (const item of diagnostics) item.path = module;
 	}
@@ -609,9 +610,11 @@ function bracketRun(
 	branch: ConditionalBranch,
 	directiveTokens: Set<number>,
 	groupAt: ReadonlyMap<number, ConditionalGroup>,
+	meter?: WorkMeter,
 ): string[] {
 	const run: string[] = [];
 	for (let index = branch.start; index < branch.end; index++) {
+		if (meter !== undefined) meter.steps++;
 		const inner = groupAt.get(index);
 		if (inner?.kept !== undefined) {
 			for (const bracket of inner.kept) extendRun(run, bracket);
@@ -627,7 +630,7 @@ function bracketRun(
 	return run;
 }
 
-function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[]): Token[] {
+function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[], meter?: WorkMeter): Token[] {
 	const directives = directivesIn(tokens);
 	const directiveByIndex = new Map(directives.map((directive) => [directive.start, directive]));
 	const directiveTokens = new Set<number>();
@@ -702,7 +705,7 @@ function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[]): Token[
 		if (!closedThroughout.has(group)) continue;
 		const directive = directiveByIndex.get(group.ifIndex) as ConditionalDirective;
 		const activeBranch = firstConditionIsZero(tokens, directive) ? 1 : 0;
-		const runs = group.branches.map((branch) => bracketRun(tokens, branch, directiveTokens, groupAt));
+		const runs = group.branches.map((branch) => bracketRun(tokens, branch, directiveTokens, groupAt, meter));
 		const allWhole = runs.every((run) => run.length === 0);
 		const kept: string[] = [];
 		const keptBranches: number[] = [];

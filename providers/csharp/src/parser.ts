@@ -701,6 +701,7 @@ export class CsharpParser extends CsharpStatementParser {
 		const chain = new Map<number, Receiver>();
 		let operator = -1;
 		for (let index = 0; index < this.tokens.length; index++) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const item = this.tokens[index] as Token;
 			if (isTrivia(item)) continue;
 			if (operator >= 0 && isIdentifier(item)) {

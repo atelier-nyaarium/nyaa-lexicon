@@ -1,6 +1,7 @@
 // One parsed file's declarations, and the passes that read them: scopes, references, inference and
 // literals.
 
+import type { WorkMeter } from "@nyaa-lexicon/protocol";
 import type * as A from "../syntax/ast.js";
 import { walk } from "../syntax/ast.js";
 import { moduleExports, readAllList } from "./exports.js";
@@ -123,6 +124,7 @@ export class Analyzer {
 	constructor(
 		readonly source: Source,
 		readonly tree: A.Module,
+		private readonly meter?: WorkMeter,
 	) {}
 
 	////////////////////////////////
@@ -298,7 +300,7 @@ export class Analyzer {
 			node.type !== "ParamSpec" &&
 			node.type !== "TypeVarTuple"
 		) {
-			const header = headerOf(this.source, node, selection, whole, item);
+			const header = headerOf(this.source, node, selection, whole, item, this.meter);
 			if (header !== undefined) raw.header = header;
 			// Code only, without the comments above.
 			raw.metrics = metricsOf(node, this.source.range(start, node.end));

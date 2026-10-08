@@ -3,7 +3,7 @@
 // Nodes use tree-sitter-kotlin 1.1.0's names, fields and leaves, the vocabulary the walkers read.
 // `context_parameters` and `when_guard` name syntax that grammar lacks.
 
-import { isTooDeep, NestingGauge, TOO_DEEP } from "@nyaa-lexicon/protocol";
+import { isTooDeep, NestingGauge, TOO_DEEP, type WorkMeter } from "@nyaa-lexicon/protocol";
 import type { Comment, LexProblem, StringPart, Token } from "./lexer.js";
 import type { SyntaxNode, SyntaxTree } from "./tree.js";
 
@@ -162,6 +162,7 @@ class KotlinGrammar {
 		private readonly tokens: Token[],
 		/** Shared with each template's grammar, so nesting counts across both. */
 		private readonly gauge = new NestingGauge(),
+		private readonly meter?: WorkMeter,
 	) {}
 
 	////////////////////////////////
@@ -897,6 +898,7 @@ class KotlinGrammar {
 		const nodes: SyntaxNode[] = [];
 		let guard = -1;
 		while (!this.done && !this.is("}")) {
+			if (this.meter !== undefined) this.meter.steps++;
 			if (this.at <= guard) throw new Error("Kotlin member list failed to advance");
 			guard = this.at;
 			if (this.is(";")) {
@@ -1983,7 +1985,7 @@ class KotlinGrammar {
 			}
 			case "expression": {
 				const opener = this.span("${", part.start, part.openEnd, false);
-				const inner = new KotlinGrammar(this.text, part.tokens, this.gauge);
+				const inner = new KotlinGrammar(this.text, part.tokens, this.gauge, this.meter);
 				const expression = inner.expression();
 				if (!inner.done) inner.problem("unexpected tokens", inner.token.start, part.end);
 				this.problems.push(...inner.problems);
@@ -2006,8 +2008,13 @@ class KotlinGrammar {
 ////////////////////////////////
 //  Functions
 
-export function parseKotlinSyntax(text: string, tokens: Token[], comments: readonly Comment[]): GrammarResult {
-	return new KotlinGrammar(text, tokens).sourceFile(comments);
+export function parseKotlinSyntax(
+	text: string,
+	tokens: Token[],
+	comments: readonly Comment[],
+	meter?: WorkMeter,
+): GrammarResult {
+	return new KotlinGrammar(text, tokens, undefined, meter).sourceFile(comments);
 }
 
 export type { LexProblem };

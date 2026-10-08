@@ -1,6 +1,7 @@
 // A declaration's header: the span its one-line signature renders, with the literal containers it
 // folds, the comments and continuations it omits, and the strings it keeps as written.
 
+import type { WorkMeter } from "@nyaa-lexicon/protocol";
 import type { RawHeader } from "../header.js";
 import type * as A from "../syntax/ast.js";
 import { childNodes } from "../syntax/ast.js";
@@ -161,7 +162,14 @@ function continues(source: Source, previous: Token, token: Token): boolean {
 }
 
 /** Comments and backslash continuations to omit, strings kept as written; folds skipped. */
-function headerCuts(source: Source, piece: Span, folds: Span[], omit: Range[], verbatim: Range[]): void {
+function headerCuts(
+	source: Source,
+	piece: Span,
+	folds: Span[],
+	omit: Range[],
+	verbatim: Range[],
+	meter?: WorkMeter,
+): void {
 	const [start, end] = piece;
 	let index = source.tokenAt(start);
 	let upcoming = folds.findIndex((fold) => fold[0] >= start);
@@ -170,6 +178,7 @@ function headerCuts(source: Source, piece: Span, folds: Span[], omit: Range[], v
 	let opened = 0;
 	let previous: Token | undefined;
 	while (index < source.tokens.length && (source.tokens[index] as Token).pos < end) {
+		if (meter !== undefined) meter.steps++;
 		const token = source.tokens[index] as Token;
 		const fold = folds[upcoming];
 		if (fold !== undefined && token.pos >= fold[0]) {
@@ -203,6 +212,7 @@ export function headerOf(
 	target: A.Node,
 	whole = true,
 	item?: A.WithItem,
+	meter?: WorkMeter,
 ): RawHeader | undefined {
 	const shape = headerShape(source, node, target, whole, item);
 	if (shape === undefined) return undefined;
@@ -211,7 +221,7 @@ export function headerOf(
 	const omit: Range[] = [];
 	const verbatim: Range[] = [];
 	for (const piece of [lead, [start, end] as const]) {
-		if (piece !== undefined) headerCuts(source, piece, folds, omit, verbatim);
+		if (piece !== undefined) headerCuts(source, piece, folds, omit, verbatim, meter);
 	}
 	return {
 		start: source.position(start),

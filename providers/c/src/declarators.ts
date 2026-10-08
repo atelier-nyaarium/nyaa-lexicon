@@ -426,12 +426,18 @@ export class CDeclaratorReader extends CDeclarationRecords {
 
 	protected header(first: number, last: number, lead?: TokenSpan): string | undefined {
 		if (first < 0 || last < first) return undefined;
-		return tokenHeader(this.text, this.tokens, this.pairs, {
-			first,
-			last,
-			...defined({ lead }),
-			directives: this.directiveEndByToken,
-		});
+		return tokenHeader(
+			this.text,
+			this.tokens,
+			this.pairs,
+			{
+				first,
+				last,
+				...defined({ lead }),
+				directives: this.directiveEndByToken,
+			},
+			this.meter,
+		);
 	}
 
 	/** Specifiers from `first`, then this declarator alone. */

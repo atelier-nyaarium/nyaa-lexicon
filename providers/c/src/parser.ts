@@ -7,6 +7,7 @@ import {
 	type Range,
 	type Reference,
 	type TypeInfo,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import { CDeclarationParser } from "./declarations.js";
 import type { CDeclaration, CReference, NumericValue, ParsedCFile, QualifiedName } from "./model.js";
@@ -75,16 +76,16 @@ function numberValue(raw: string): NumericValue {
 	return Number.isFinite(parsed) ? { valid: true, number: parsed } : { valid: false };
 }
 
-function parserFor(module: string, text: string, lexed: LexedC): CParser {
-	return new CParser(module, text, lexed.tokens, lexed.comments, lexed.blankLines, lexed.diagnostics);
+function parserFor(module: string, text: string, lexed: LexedC, meter?: WorkMeter): CParser {
+	return new CParser(module, text, lexed.tokens, lexed.comments, lexed.blankLines, lexed.diagnostics, meter);
 }
 
-export function parseC(module: string, text: string): ParsedCFile {
+export function parseC(module: string, text: string, meter?: WorkMeter): ParsedCFile {
 	const lexed = lexC(module, text);
-	const c = parserFor(module, text, lexed);
+	const c = parserFor(module, text, lexed, meter);
 	if (!lexed.ghidraDiffers || c.paired()) return c.parse();
 	// Use Ghidra only if the C parser cannot pair delimiters.
-	const ghidra = parserFor(module, text, lexC(module, text, "ghidra"));
+	const ghidra = parserFor(module, text, lexC(module, text, "ghidra"), meter);
 	return (ghidra.paired() ? ghidra : c).parse();
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { BindingSchema, composeSymbolId, parseSymbolId, TypeInfoSchema } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
+import { CsharpParser } from "../parser.js";
 import { parseThroughKit, startProvider } from "./harness.js";
 
 const roots: string[] = [];
@@ -1106,19 +1107,17 @@ describe("C# imports and binding", () => {
 		]);
 	});
 
-	it("reads a long member chain in time linear in its length", () => {
-		const timed = (count: number) => {
+	it("reads a long member chain with work linear in its length", () => {
+		const work = (count: number) => {
 			const text = `class C { void M() { root${".a".repeat(count)}; } }\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				parse(text);
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			new CsharpParser("main.cs", text, false, [], meter).parse();
+			return meter.steps;
 		};
-		// Linear reads scale 8x; a walk back to the chain's head per name scales 64x.
-		expect(timed(8_000) / timed(1_000)).toBeLessThan(24);
+		// Rescanning the chain head for each name is quadratic.
+		const small = work(1_000);
+		const large = work(8_000);
+		expect(large / small).toBeLessThan(12);
 	});
 
 	it("counts nested type argument lists in one walk, lists `>>` closes among them", () => {
@@ -1144,29 +1143,28 @@ describe("C# imports and binding", () => {
 		expect(timed(8_001) / timed(1_001)).toBeLessThan(16);
 	});
 
-	it("looks a type up among many using directives in time linear in them", () => {
-		const timed = (count: number) => {
+	it("looks a type up among many using directives with work linear in them", () => {
+		const work = (count: number) => {
 			const numbered = (write: (index: number) => string) =>
 				Array.from({ length: count }, (_, index) => write(index));
 			const types = numbered((index) => `namespace N${index} { public class T${index} { } }`).join("\n");
 			const usings = numbered((index) => `using N${index};`).join("\n");
 			const text = `${usings}\nclass Use { ${numbered((index) => `T${index} f${index};`).join(" ")} }\n`;
 			const root = makeWorkspace({ "types.cs": types, "use.cs": text });
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const provider = new CsharpProvider();
-				startProvider(provider, root);
-				parseThroughKit(provider, { module: "types.cs", contentHash: "types", text: types });
-				const started = performance.now();
-				const facts = parseThroughKit(provider, { module: "use.cs", contentHash: "use", text });
-				best = Math.min(best, performance.now() - started);
-				const uses = facts.references.filter((item) => item.role === "typeUse");
-				expect(uses.filter((item) => item.binding.status === "bound")).toHaveLength(count);
-			}
-			return best;
+			const meter = { steps: 0 };
+			const provider = new CsharpProvider(meter);
+			startProvider(provider, root);
+			parseThroughKit(provider, { module: "types.cs", contentHash: "types", text: types });
+			meter.steps = 0;
+			const facts = parseThroughKit(provider, { module: "use.cs", contentHash: "use", text });
+			const uses = facts.references.filter((item) => item.role === "typeUse");
+			expect(uses.filter((item) => item.binding.status === "bound")).toHaveLength(count);
+			return meter.steps;
 		};
-		// Lookups through the names scale 8x; a scan of every directive per name scales 64x.
-		expect(timed(800) / timed(100)).toBeLessThan(20);
+		// Scanning every imported type for every name is quadratic.
+		const small = work(100);
+		const large = work(800);
+		expect(large / small).toBeLessThan(12);
 	});
 
 	it("reads a name after `alias::` in the namespace the using alias names, never through a namesake", () => {

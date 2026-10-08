@@ -183,23 +183,31 @@ describe("C++ declaration headers", () => {
 		expect(byName("z")?.range.start).toEqual(byName("x")?.range.start);
 	});
 
-	test("renders a statement of many declarators in time linear in their count", () => {
-		const timed = (count: number) => {
+	test("renders a statement of many declarators with work linear in their count", () => {
+		const work = (count: number) => {
 			const text = `int ${Array.from({ length: count }, (_, index) => `A::a${index} = ${index}`).join(", ")};\n`;
 			const { tokens } = tokenize(text);
 			const commas = tokens.flatMap((token, index) => (token.text === "," ? [index] : []));
 			const ends = [...commas.slice(1), tokens.length];
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				commas.forEach((comma, at) => {
-					headerOf(text, tokens, comma + 1, ends[at] as number, "value", new Set(), { start: 0, end: 1 });
-				});
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			commas.forEach((comma, at) => {
+				headerOf(
+					text,
+					tokens,
+					comma + 1,
+					ends[at] as number,
+					"value",
+					new Set(),
+					{ start: 0, end: 1 },
+					false,
+					meter,
+				);
+			});
+			return meter.steps;
 		};
-		// Linear reads 8x; a walk of every sibling per declarator reads 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		// Shared declaration siblings must not be rescanned.
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 });

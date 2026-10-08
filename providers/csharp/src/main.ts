@@ -228,6 +228,7 @@ export class CsharpProvider extends CsharpBinder {
 					text,
 					depth === "outline",
 					contextFor(this.store.project, module)?.symbols,
+					this.meter,
 				).parse(),
 			),
 		entries: (module, value) => namespaceEntries(module, value),

@@ -1,6 +1,6 @@
 // A declaration's header spans over its tokens, handed to the protocol's one renderer.
 
-import { type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { type OffsetRange, renderHeader, type WorkMeter } from "@nyaa-lexicon/protocol";
 import { bracketDelta, bracketsOf } from "./angles.js";
 import { isSignificant, type Token } from "./tokens.js";
 
@@ -82,10 +82,12 @@ function collectCuts(
 	kind: HeaderKind,
 	angles: ReadonlySet<number>,
 	cuts: Cuts,
+	meter?: WorkMeter,
 ): void {
 	const last = span.end - 1;
 	let depth = 0;
 	for (let index = span.start; index <= last; index++) {
+		if (meter !== undefined) meter.steps++;
 		const token = tokens[index] as Token;
 		const previous = tokens[index - 1];
 		if (index > span.start && previous !== undefined && token.hiddenBefore === true)
@@ -126,13 +128,14 @@ export function headerOf(
 	angles: ReadonlySet<number>,
 	lead?: TokenSpan,
 	splitEnd = false,
+	meter?: WorkMeter,
 ): string | undefined {
 	const own = trimmed(tokens, { start: startIndex, end: endIndex });
 	if (own === undefined) return undefined;
 	const shared = lead === undefined ? undefined : trimmed(tokens, lead);
 	const cuts: Cuts = { folds: [], omit: [], splices: [], verbatim: [], angles: [] };
-	collectCuts(tokens, own, kind, angles, cuts);
-	if (shared !== undefined) collectCuts(tokens, shared, kind, angles, cuts);
+	collectCuts(tokens, own, kind, angles, cuts, meter);
+	if (shared !== undefined) collectCuts(tokens, shared, kind, angles, cuts, meter);
 	const start = offsetsOf(tokens, own).start;
 	const last = tokens[own.end - 1] as Token;
 	const end = splitEnd && own.end === endIndex ? last.startOffset + 1 : last.endOffset;

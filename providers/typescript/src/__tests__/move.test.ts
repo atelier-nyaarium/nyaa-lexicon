@@ -9,11 +9,11 @@ import {
 	type MoveEditsRequest,
 	type MoveImportSite,
 	type Range,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { importOf } from "../imports.js";
 import { makeMoveEdits } from "../move.js";
-import type { WorkMeter } from "../move-imports.js";
 import { harness } from "./harness.js";
 
 const roots: string[] = [];
@@ -841,14 +841,14 @@ describe("move edits", () => {
 		}
 	});
 
-	it("plans many dependencies into a module of many imports in time linear in their count", () => {
-		const timed = (count: number) => {
+	it("plans many dependencies into a module of many imports with work linear in their count", () => {
+		const work = (count: number) => {
 			const target = Array.from(
 				{ length: count },
 				(_, index) => `import { a${index} } from './m${index}';\n`,
 			).join("");
-			const provider = harness();
-			provider.initialize(workspace({ "target.ts": target, "source.ts": "" }));
+			const meter: WorkMeter = { steps: 0 };
+			const source = ts.createSourceFile("target.ts", target, ts.ScriptTarget.ESNext, true);
 			const request: MoveEditsRequest = {
 				module: "target.ts",
 				text: target,
@@ -862,18 +862,23 @@ describe("move edits", () => {
 				dependencies: Array.from({ length: count }, (_, index) => sibling(`s${index}`)),
 				sites: [],
 			};
-			provider.moveEdits(request);
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				expect(provider.moveEdits(request)).toMatchObject({ status: "ready", blocked: [] });
-				best = Math.min(best, performance.now() - started);
-			}
-			provider.shutdown();
-			return best;
+			expect(
+				makeMoveEdits(
+					request,
+					source,
+					undefined,
+					() => ({ specifier: "./source" }),
+					() => "source.ts",
+					false,
+					meter,
+				),
+			).toMatchObject({ status: "ready", blocked: [] });
+			return meter.steps;
 		};
-		// Linear reads 8x; a rescan per dependency read over 28x.
-		expect(timed(8_000) / timed(1_000)).toBeLessThan(16);
+		// Each dependency uses one shared index of the target imports.
+		const small = work(1_000);
+		const large = work(8_000);
+		expect(large / small).toBeLessThan(12);
 	}, 30_000);
 
 	it("plans type-only names beside many value imports, many repointed sites, and many aliases, in near-linear work", () => {

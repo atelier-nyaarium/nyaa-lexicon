@@ -1,14 +1,14 @@
 // One Python file's facts: parsed in-house, then analyzed; comments and blank lines come from the
 // tokens, so a file the parser refuses still has them.
 
-import { TOO_DEEP } from "@nyaa-lexicon/protocol";
+import { TOO_DEEP, type WorkMeter } from "@nyaa-lexicon/protocol";
 import { parsePython } from "../syntax/parser.js";
 import { Analyzer } from "./analyzer.js";
 import { Source } from "./source.js";
 import { blankLines, commentSpans } from "./trivia.js";
 import type { RawFacts } from "./types.js";
 
-export function extractFacts(module: string, text: string): RawFacts {
+export function extractFacts(module: string, text: string, meter?: WorkMeter): RawFacts {
 	const parsed = parsePython(Source.parsedText(text));
 	const source = new Source(text, parsed.tokens);
 	const comments = commentSpans(source);
@@ -38,5 +38,5 @@ export function extractFacts(module: string, text: string): RawFacts {
 			diagnostics: [{ severity: "error", message }],
 		};
 	}
-	return { ...new Analyzer(source, parsed.module).analyze(), comments, blankLines: blank };
+	return { ...new Analyzer(source, parsed.module, meter).analyze(), comments, blankLines: blank };
 }

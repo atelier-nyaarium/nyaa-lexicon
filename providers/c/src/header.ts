@@ -1,6 +1,6 @@
 // A declaration's header over its tokens, handed to the protocol's one renderer.
 
-import { type OffsetRange, renderHeader } from "@nyaa-lexicon/protocol";
+import { type OffsetRange, renderHeader, type WorkMeter } from "@nyaa-lexicon/protocol";
 import type { CToken } from "./tokens.js";
 import { syntaxValue } from "./tokenWalk.js";
 
@@ -37,8 +37,10 @@ function collect(
 	span: TokenSpan,
 	directives: ReadonlyMap<number, number> | undefined,
 	cuts: Cuts,
+	meter?: WorkMeter,
 ): void {
 	for (let index = span.first; index <= span.last; index++) {
+		if (meter !== undefined) meter.steps++;
 		const token = tokens[index] as CToken;
 		if (index > span.first && token.hiddenBefore !== undefined) cuts.omit.push(token.hiddenBefore);
 		if (token.splices !== undefined) cuts.splices.push(...token.splices);
@@ -88,12 +90,14 @@ export function tokenHeader(
 	tokens: readonly CToken[],
 	pairs: ReadonlyMap<number, number>,
 	header: TokenHeader,
+	meter?: WorkMeter,
 ): string | undefined {
 	const own = offsets(tokens, header);
 	if (own === undefined) return undefined;
 	const cuts: Cuts = { folds: [], omit: [], splices: [], verbatim: [] };
 	const lead = header.lead === undefined ? undefined : offsets(tokens, header.lead);
-	if (header.lead !== undefined && lead !== undefined) collect(tokens, pairs, header.lead, header.directives, cuts);
-	collect(tokens, pairs, header, header.directives, cuts);
+	if (header.lead !== undefined && lead !== undefined)
+		collect(tokens, pairs, header.lead, header.directives, cuts, meter);
+	collect(tokens, pairs, header, header.directives, cuts, meter);
 	return renderHeader(text, { ...own, ...(lead === undefined ? {} : { lead }), ...cuts });
 }

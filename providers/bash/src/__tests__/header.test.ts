@@ -106,19 +106,15 @@ describe("signatures", () => {
 		});
 	});
 
-	test("a command declaring many names signs them in time linear in their count", () => {
-		const timed = (count: number) => {
+	test("a command declaring many names signs them with work linear in their count", () => {
+		const work = (count: number) => {
 			const text = `declare ${Array.from({ length: count }, (_, index) => `a${index}=${index}`).join(" ")}\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				parseBash("many.sh", text);
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+			const meter = { steps: 0 };
+			parseBash("many.sh", text, meter);
+			return meter.steps;
 		};
 		// Linear reads 8x; rendering every earlier name per name reads 64x.
-		expect(timed(4_000) / timed(500)).toBeLessThan(24);
+		expect(work(4_000) / work(500)).toBeLessThan(12);
 	});
 
 	test("a header continued over several lines is one line", () => {

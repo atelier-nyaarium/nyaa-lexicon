@@ -15,6 +15,7 @@ import {
 	type Range,
 	type TextCoordinates,
 	type TextEdit,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
@@ -41,7 +42,6 @@ import {
 	type Quote,
 	renderImport,
 	standaloneImports,
-	type WorkMeter,
 } from "./move-imports.js";
 import { settleBlankLines } from "./move-layout.js";
 import {

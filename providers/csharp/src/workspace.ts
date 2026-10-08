@@ -7,6 +7,7 @@ import {
 	type ModuleStore,
 	parseSymbolId,
 	type Reference,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import type { CsharpFacts, DeclarationMeta } from "./model.js";
 import { type IndexEntry, type IndexedType, type NamespaceIndex, typeKey } from "./namespaces.js";
@@ -68,6 +69,8 @@ export function within(range: Range, position: Range["start"]): boolean {
 //  Classes
 
 export abstract class CsharpWorkspace {
+	constructor(protected readonly meter?: WorkMeter) {}
+
 	/** Every module's facts, and the index entries they add. */
 	abstract readonly store: ModuleStore<IndexedFacts, CsharpProjectState, IndexEntry>;
 

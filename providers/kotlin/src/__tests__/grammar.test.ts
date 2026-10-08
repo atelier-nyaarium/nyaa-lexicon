@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { WorkMeter } from "@nyaa-lexicon/protocol";
 import { TOO_DEEP } from "@nyaa-lexicon/protocol";
 import { parseKotlinSyntax } from "../grammar.js";
 import { lexKotlin } from "../lexer.js";
@@ -9,9 +10,9 @@ const D = "$";
 
 const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
 
-function read(text: string): { tree: SyntaxTree; problems: string[] } {
+function read(text: string, meter?: WorkMeter): { tree: SyntaxTree; problems: string[] } {
 	const lexed = lexKotlin(text);
-	const { tree, problems } = parseKotlinSyntax(text, lexed.tokens, lexed.comments);
+	const { tree, problems } = parseKotlinSyntax(text, lexed.tokens, lexed.comments, meter);
 	return { tree, problems: [...lexed.problems, ...problems].map((problem) => problem.message) };
 }
 
@@ -152,24 +153,28 @@ describe("the Kotlin grammar", () => {
 		expect(read(`val x = ${"!".repeat(50_000)}a\n`).problems).toEqual([]);
 	});
 
-	test("thousands of one-line delegations each own a class body, in time linear in the owners", () => {
-		const count = 4000;
-		const text = Array.from(
-			{ length: count },
-			(_, index) => `interface I${index}\nclass A${index}(val d: I${index}) : I${index} by d { fun f() = d }\n`,
-		).join("");
-		const started = performance.now();
-		const { tree, problems } = read(text);
-		const elapsed = performance.now() - started;
-		const owners = nodesOf(tree.root).filter((node) => node.type === "class_declaration");
-
-		expect({
-			problems,
-			breaks: lineageBreaks(text, tree),
-			bodied: owners.filter((owner) => owner.children.some((child) => child.type === "class_body")).length,
-			lambdas: nodesOf(tree.root).filter((node) => node.type === "annotated_lambda").length,
-		}).toEqual({ problems: [], breaks: 0, bodied: count, lambdas: 0 });
-		expect(elapsed).toBeLessThan(5000);
+	test("thousands of one-line delegations each own a class body, with work linear in the owners", () => {
+		const work = (count: number) => {
+			const text = Array.from(
+				{ length: count },
+				(_, index) =>
+					`interface I${index}\nclass A${index}(val d: I${index}) : I${index} by d { fun f() = d }\n`,
+			).join("");
+			const meter = { steps: 0 };
+			const { tree, problems } = read(text, meter);
+			const owners = nodesOf(tree.root).filter((node) => node.type === "class_declaration");
+			expect({
+				problems,
+				breaks: lineageBreaks(text, tree),
+				bodied: owners.filter((owner) => owner.children.some((child) => child.type === "class_body")).length,
+				lambdas: nodesOf(tree.root).filter((node) => node.type === "annotated_lambda").length,
+			}).toEqual({ problems: [], breaks: 0, bodied: count, lambdas: 0 });
+			return meter.steps;
+		};
+		// Each class body visits only its own member candidates.
+		const small = work(500);
+		const large = work(4_000);
+		expect(large / small).toBeLessThan(12);
 	});
 });
 
