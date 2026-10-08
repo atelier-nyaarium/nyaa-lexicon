@@ -53,7 +53,7 @@ const TIDY_EVERY_MS = 60 * 60 * 1000;
 export function startRelationWork(options: RelationWorkOptions): RelationWork {
 	const { service, clock } = options;
 	let ready = false;
-	/** Between `ready`'s call and its seeding, which take the modules indexed meanwhile. */
+	/** `ready` called, not yet seeded. */
 	let starting = false;
 	const early = new Set<string>();
 	let stopped = false;
@@ -146,7 +146,7 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 					ready = true;
 					// A module the index does not hold has no exports, so it queues nothing.
 					if (service.relations.seedExports(meanwhile)) {
-						// Unseeded, so noticed whole like any batch.
+						// Queue modules skipped during seeding.
 						service.relations.notice(meanwhile, []);
 						service.relations.backfill(recent.filter((module) => !meanwhile.includes(module)));
 					} else service.relations.reconcile();

@@ -119,7 +119,7 @@ function find(relations: readonly Relation[], symbolId: string): Relation | unde
 	return relations.find((relation) => relation.symbolId === symbolId);
 }
 
-/** Discovers and writes the oldest queued export. */
+/** Settles the oldest queued export. */
 function settleNext(): void {
 	const queued = ledger.nextQueued();
 	if (queued === null) throw new Error("nothing queued");

@@ -3104,6 +3104,29 @@ export class IndexStore {
 		return rows.map(rowToReference);
 	}
 
+	/** Distinct bound targets used from any of `fromIds`, in one read however many there are. */
+	targetsFrom(fromIds: readonly string[]): Set<string> {
+		if (fromIds.length === 0) return new Set();
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT r.targetId AS targetId FROM refs r
+				 WHERE r.fromId IN (SELECT value FROM json_each(?)) AND r.targetId IS NOT NULL AND ${useSql("r")}`,
+			)
+			.all(JSON.stringify(fromIds)) as Array<{ targetId: string }>;
+		return new Set(rows.map((row) => row.targetId));
+	}
+
+	/** Distinct bound targets a module's top level uses. */
+	topLevelTargets(module: string): Set<string> {
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT r.targetId AS targetId FROM refs r
+				 WHERE r.module = ? AND r.fromId IS NULL AND r.targetId IS NOT NULL AND ${useSql("r")}`,
+			)
+			.all(module) as Array<{ targetId: string }>;
+		return new Set(rows.map((row) => row.targetId));
+	}
+
 	/** Every bound use edge, for a traversal that needs the whole graph rather than one neighbourhood. */
 	useEdges(): Array<{ from: string; to: string }> {
 		return this.db

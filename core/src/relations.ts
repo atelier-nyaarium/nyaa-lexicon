@@ -804,12 +804,9 @@ export class RelationLedger {
 
 	/** What a caller uses: a declaration's own uses and its locals', or a module's top-level uses. */
 	private targetsOf(context: ReadContext, holder: string): Set<string> {
-		const uses = holder.startsWith("module ")
-			? this.store.usesIn(holder.slice("module ".length)).filter((use) => use.fromId === null)
-			: context.ownedIds(holder).flatMap((id) => this.store.usesFrom(id));
-		const targets = new Set<string>();
-		for (const use of uses) if (use.targetId !== null) targets.add(use.targetId);
-		return targets;
+		return holder.startsWith("module ")
+			? this.store.topLevelTargets(holder.slice("module ".length))
+			: this.store.targetsFrom(context.ownedIds(holder));
 	}
 
 	/** Claims both ends and writes the row, the lesser subject first; a refusal when an end cannot be claimed. */
