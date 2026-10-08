@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-markdown",
-	"version": "15.8.5",
+	"version": "15.8.6",
 	"private": true,
 	"type": "module",
 	"description": "Markdown provider for nyaa-lexicon, covering headings, prose and frontmatter",

@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-c",
-	"version": "15.8.5",
+	"version": "15.8.6",
 	"private": true,
 	"type": "module",
 	"description": "C provider for nyaa-lexicon, covering Ghidra decompiler output",
