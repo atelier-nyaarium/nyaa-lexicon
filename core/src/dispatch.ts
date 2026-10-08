@@ -17,6 +17,7 @@ import {
 import type { ArrangePlacement } from "./arrangePlanner.js";
 import { systemClock } from "./clock.js";
 import type { CoChangeIndex } from "./history.js";
+import { promotedField } from "./movePromotion.js";
 import { reindexOwed } from "./refactorStep.js";
 import { changedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
@@ -157,7 +158,7 @@ async function previewMove(
 		}),
 		issues: result.issues,
 		blockers: [],
-		promoted: plan.promoted ?? [],
+		...promotedField(plan.promoted),
 	};
 }
 
@@ -202,7 +203,7 @@ async function previewArrange(
 		issues: arranged.issues,
 		formatted: arranged.formatted,
 		placed: arranged.placed,
-		promoted: plan.promoted ?? [],
+		...promotedField(plan.promoted),
 	};
 }
 

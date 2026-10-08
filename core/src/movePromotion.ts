@@ -18,6 +18,11 @@ export function promotedFrom(dependencies: readonly MoveDependency[]): Promoted[
 	return [...found.values()];
 }
 
+/** An answer's `promoted`, absent when nothing was. */
+export function promotedField(promoted: readonly Promoted[] | undefined): { promoted?: Promoted[] } {
+	return promoted !== undefined && promoted.length > 0 ? { promoted: [...promoted] } : {};
+}
+
 export function unacknowledgedPromotions(
 	ids: readonly string[],
 	acknowledged: readonly string[],

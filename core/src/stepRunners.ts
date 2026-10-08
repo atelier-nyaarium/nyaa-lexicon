@@ -17,6 +17,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { ArrangePlacement, PlannedArrange } from "./arrangePlanner.js";
 import { type MoveMember, moveOrder } from "./moveOrder.js";
+import { promotedField } from "./movePromotion.js";
 import { type ReadContext, UNREAD_FILE } from "./readContext.js";
 import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
 import type { PlannedMove } from "./refusalSlots.js";
@@ -125,7 +126,7 @@ export function refactorMove(
 						restore,
 					),
 					issues,
-					promoted,
+					...promotedField(promoted),
 				};
 			},
 			plan: async () => {
@@ -543,7 +544,7 @@ export async function refactorMoveTogether(
 		// Each later member lands after the one before it, so their order holds.
 		if (anchor?.side === "after" && root !== undefined) anchor = { symbolId: root, side: "after" };
 	}
-	return { moved: true, ...defined({ toModule }), modules: [...modules], issues, order, promoted };
+	return { moved: true, ...defined({ toModule }), modules: [...modules], issues, order, ...promotedField(promoted) };
 }
 
 /**
@@ -595,7 +596,7 @@ async function arrangeStep(
 				toModule: target,
 				modules: touched,
 				issues,
-				promoted,
+				...promotedField(promoted),
 			}),
 			plan: async () => {
 				const context = service.newReadContext();
@@ -618,7 +619,7 @@ async function arrangeStep(
 							toModule: plan.toModule,
 							modules: [],
 							issues: arranged.issues,
-							promoted: plan.promoted,
+							...promotedField(plan.promoted),
 						},
 					};
 				}
@@ -682,7 +683,7 @@ export function moveOutcome(result: StepResult): MoveOutcome {
 		...defined({ toModule: result.toModule }),
 		modules: result.modules,
 		issues: result.issues,
-		promoted: result.promoted ?? [],
+		...promotedField(result.promoted),
 	};
 }
 

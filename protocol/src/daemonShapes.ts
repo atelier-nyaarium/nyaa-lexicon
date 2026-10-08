@@ -1271,7 +1271,8 @@ export const MovePreviewSchema = z
 			files: z.array(MovePreviewFileSchema),
 			issues: z.array(RefactorIssueSchema),
 			blockers: z.array(z.object({ module: z.string().optional(), reason: z.string() })),
-			promoted: z.array(PromotedSchema),
+			/** Absent from a daemon before protocol 6.8.0, and when nothing was promoted. */
+			promoted: z.array(PromotedSchema).optional(),
 		}),
 		z.object({
 			ok: z.literal(false),
@@ -1627,7 +1628,8 @@ export const ArrangePreviewSchema = z
 			formatted: z.boolean(),
 			/** Each top-level declaration's span in the target's final text; a placed one by its id before the move. */
 			placed: z.array(z.object({ symbolId: z.string(), range: RangeSchema })),
-			promoted: z.array(PromotedSchema),
+			/** As on a move preview. */
+			promoted: z.array(PromotedSchema).optional(),
 		}),
 		z.object({
 			ok: z.literal(false),
