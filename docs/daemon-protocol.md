@@ -263,7 +263,12 @@ that hash, or to empty text when the file is new, produces the candidate. Insert
 declaration refuses when its indexed file hash differs from the current text. Insertion by module
 uses the current text as its base. An identical block returns `present`. The block takes the
 anchor's indentation, except the later lines of a multiline literal, which stay as written unless
-the provider marks the literal `dedented` (its language strips that indentation).
+the provider marks the literal `dedented` (its language strips that indentation). With
+`moduleText` (protocol 6.5.0), the anchor module's text as the caller holds it, unsaved edits
+included, that text is the base: the anchor and its siblings come from the owning provider's parse
+of it. It refuses an anchor the text no longer declares, one whose name it declares a different
+number of times (the id would name another copy), and a module gone from disk. `refactorInsert`
+takes no `moduleText`; it writes against disk.
 
 `previewReplace` (`{ module, contentHash, text }`, protocol 6.4.0) judges whole-module text against
 the stored text named by `contentHash`, as `refactorReplace` judges a symbol's. It returns `planned`

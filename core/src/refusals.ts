@@ -314,7 +314,10 @@ export function providerRefused(module: string, reason: string, detail?: string)
 	return mint(`${module}: ${reason}${detail === undefined ? "" : `: ${detail}`}`);
 }
 
-export function candidateDoesNotParse(what: "replacement" | "insert" | "candidate", reason: string): Refusal {
+export function candidateDoesNotParse(
+	what: "replacement" | "insert" | "candidate" | "sent text",
+	reason: string,
+): Refusal {
 	return mint(`the ${what} does not parse: ${reason}`);
 }
 
@@ -343,6 +346,14 @@ export function nothingToInsert(): Refusal {
 
 export function oneAnchorOnly(): Refusal {
 	return mint(`set exactly one of after or module`);
+}
+
+export function anchorNotInText(after: string, module: string): Refusal {
+	return mint(`${after} is not declared in the text sent for ${module}`);
+}
+
+export function anchorCopiesMoved(after: string, module: string): Refusal {
+	return mint(`the text sent for ${module} declares another count of ${after}'s name, so its id names another copy`);
 }
 
 export function noSingleLineName(name: string): Refusal {

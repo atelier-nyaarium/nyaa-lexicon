@@ -212,7 +212,7 @@ async function previewReplace(
 
 async function previewInsert(
 	service: LexiconService,
-	args: { after?: string | undefined; module?: string | undefined; text: string },
+	args: { after?: string | undefined; module?: string | undefined; text: string; moduleText?: string | undefined },
 ): Promise<ResponseOf<"previewInsert">> {
 	const plan = await service.planInsert(args);
 	if (plan.state === "refused") return { state: "refused", reason: plan.reason, issues: [] };

@@ -700,3 +700,95 @@ describe("warning about a name already bound", () => {
 		expect(outcome.issues.map((issue) => issue.kind)).not.toContain("NameAlreadyBound");
 	});
 });
+
+describe("planning against sent text", () => {
+	const STORED = ["function alpha() {}", "", "function beta() {}", ""].join("\n");
+	const SENT = ["// unsaved", "// lines", "function alpha() {}", "", "function beta() {}", ""].join("\n");
+	const stored = [
+		declarationOf({ name: "alpha", range: range(0, 0, 0, 19) }),
+		declarationOf({ name: "beta", range: range(2, 0, 2, 18) }),
+	];
+	const sentRows = [
+		declarationOf({ name: "alpha", range: range(2, 0, 2, 19) }),
+		declarationOf({ name: "beta", range: range(4, 0, 4, 18) }),
+	];
+	const world = (sent: FileFacts | null): World => ({
+		text: STORED,
+		declarations: stored,
+		indexedHash: hashContent(STORED),
+		parse: (candidate) =>
+			candidate !== SENT
+				? { parsed: true, facts: facts([]) }
+				: sent === null
+					? { parsed: false, reason: "x" }
+					: { parsed: true, facts: sent },
+	});
+
+	it("places the insert by the sent text's own lines, unsaved edits included", async () => {
+		const outcome = await plan(world(facts(sentRows)), {
+			after: id("alpha"),
+			text: "function inserted() {}",
+			moduleText: SENT,
+		});
+
+		expect(outcome.state).toBe("planned");
+		if (outcome.state !== "planned") return;
+		expect(outcome.baseHash).toBe(hashContent(SENT));
+		expect(outcome.candidate).toBe(
+			[
+				"// unsaved",
+				"// lines",
+				"function alpha() {}",
+				"",
+				"function inserted() {}",
+				"",
+				"function beta() {}",
+				"",
+			].join("\n"),
+		);
+		const applied = applyEdits(SENT, outcome.edits);
+		expect("text" in applied && applied.text).toBe(outcome.candidate);
+
+		const appended = await plan(world(null), { module: MODULE, text: "function omega() {}", moduleText: SENT });
+		expect(appended.state === "planned" && appended.candidate.startsWith(SENT)).toBe(true);
+	});
+
+	it("refuses an anchor the sent text no longer declares, or sent text that does not parse", async () => {
+		const gone = await plan(world(facts(sentRows.slice(1))), {
+			after: id("alpha"),
+			text: "function x() {}",
+			moduleText: SENT,
+		});
+		expect(gone.state === "refused" && gone.reason).toMatch(/not declared in the text sent/);
+
+		const broken = await plan(world(null), { after: id("alpha"), text: "function x() {}", moduleText: SENT });
+		expect(broken.state === "refused" && broken.reason).toMatch(/sent text does not parse/);
+
+		const absent = await plan(world(null), { module: "src/gone.ts", text: "function x() {}", moduleText: SENT });
+		expect(absent).toMatchObject({ state: "refused" });
+	});
+
+	it("refuses an anchor whose name the sent text declares another number of times, since its id then names another copy", async () => {
+		const copy = (occurrence: number, line: number): StoredDeclaration => ({
+			...declarationOf({ name: "foo", range: range(line, 0, line, 19) }),
+			symbolId: composeSymbolId({
+				language: "test",
+				module: MODULE,
+				descriptors: [{ kind: "term", name: "foo", ...(occurrence > 1 ? { occurrence } : {}) }],
+			}),
+		});
+		const outcome = await plan(
+			{
+				text: STORED,
+				declarations: [copy(1, 0), copy(2, 2)],
+				indexedHash: hashContent(STORED),
+				parse: (candidate) =>
+					candidate === SENT
+						? { parsed: true, facts: facts([copy(1, 0), copy(2, 2), copy(3, 4)]) }
+						: { parsed: true, facts: facts([]) },
+			},
+			{ after: copy(2, 2).symbolId, text: "function x() {}", moduleText: SENT },
+		);
+		expect(outcome.state === "refused" && outcome.reason).toMatch(/names another copy/);
+	});
+});

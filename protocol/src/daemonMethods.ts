@@ -335,10 +335,21 @@ const ReplaceSpan = z
 		standalone: z.boolean().optional(),
 	})
 	.meta({ id: "ReplaceSpanRequest" });
-const Insert = z
-	.object({ after: z.string().min(1).optional(), module: ModulePath.optional(), text: z.string().min(1) })
-	.refine((args) => (args.after === undefined) !== (args.module === undefined), "Set exactly one of after or module.")
-	.meta({ id: "InsertRequest" });
+const InsertFields = z.object({
+	after: z.string().min(1).optional(),
+	module: ModulePath.optional(),
+	text: z.string().min(1),
+});
+const oneAnchor = (args: { after?: string | undefined; module?: string | undefined }) =>
+	(args.after === undefined) !== (args.module === undefined);
+const Insert = InsertFields.refine(oneAnchor, "Set exactly one of after or module.").meta({ id: "InsertRequest" });
+/** A preview may plan against the caller's text; a write plans against disk. */
+const PreviewInsert = InsertFields.extend({
+	/** The anchor module's text as the caller holds it; planned against the stored text when absent. */
+	moduleText: z.string().optional(),
+})
+	.refine(oneAnchor, "Set exactly one of after or module.")
+	.meta({ id: "PreviewInsertRequest" });
 const ParseFacts = z.object({ module: ModulePath, text: z.string() }).meta({ id: "ParseFactsRequest" });
 const PreviewReplace = z
 	.object({
@@ -756,7 +767,7 @@ export const DAEMON_METHODS = {
 	},
 	/** Insertion preview. See `docs/daemon-protocol.md` `previewInsert`. */
 	previewInsert: {
-		request: Insert,
+		request: PreviewInsert,
 		response: InsertPreviewSchema,
 		lifecycle: "query",
 		mutates: false,

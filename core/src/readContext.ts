@@ -11,6 +11,7 @@
 
 import {
 	type AllList,
+	type Declaration,
 	defined,
 	GROUPING_KINDS,
 	type Landing,
@@ -105,6 +106,25 @@ export function factsMovedSince(
 	const pinned = seen.flatMap((entry) => ("index" in entry ? [entry.index] : []));
 	if (moved.length > 0 || pinned.every((generation) => generation === reads.factsGeneration())) return moved;
 	return [UNREAD_FILE];
+}
+
+/** A declaration by id, a container's children and a module's declarations, as a context answers them. */
+export interface NestingReads {
+	declaration(symbolId: string): StoredDeclaration | null;
+	heldBy(module: string, containerId: string | undefined): StoredDeclaration[];
+	heldIn(module: string): StoredDeclaration[];
+}
+
+/** Declarations of text a caller sent, which no store holds, nested as stored rows are. */
+export function sentReads(module: string, declarations: readonly Declaration[]): NestingReads {
+	const rows = declarations.map((row): StoredDeclaration => ({ ...row, module, factId: "" }));
+	const byId = new Map(rows.map((row) => [row.symbolId, row]));
+	const topology = new Containment(rows);
+	return {
+		declaration: (symbolId) => byId.get(symbolId) ?? null,
+		heldBy: (_module, containerId) => topology.heldBy(containerId),
+		heldIn: () => topology.held(),
+	};
 }
 
 export function toSummary(declaration: StoredDeclaration): SymbolSummary {

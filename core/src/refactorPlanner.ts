@@ -37,12 +37,14 @@ import { separatedRemoval } from "./arrangeLayout.js";
 import { landingKey, narrowed } from "./exportProjection.js";
 import type { ImportResolver } from "./imports.js";
 import type { ProviderProbe } from "./providerProbe.js";
-import { type FactsSeen, factsMovedSince, ReadContext } from "./readContext.js";
+import { type FactsSeen, factsMovedSince, type NestingReads, ReadContext, sentReads } from "./readContext.js";
 import type { PlannedMove, PlannedRename, PlannedRenameEdits, RenameBlocker } from "./refusalSlots.js";
 import {
 	alreadyInModule,
 	alreadyNamed,
+	anchorCopiesMoved,
 	anchorNeedsTopLevel,
+	anchorNotInText,
 	anchorNotSibling,
 	anchorNotTopLevel,
 	baseMoved,
@@ -102,6 +104,15 @@ function inside(range: Range, at: Position): boolean {
 
 function contains(outer: Range, inner: Range): boolean {
 	return inside(outer, inner.start) && inside(outer, inner.end);
+}
+
+/** An id without its last occurrence, which every copy of its name path shares. */
+function copiesKey(symbolId: string): string {
+	const id = parseSymbolId(symbolId);
+	const last = id?.descriptors.at(-1);
+	if (id === null || id === undefined || last === undefined) return symbolId;
+	const { occurrence: _occurrence, ...bare } = last;
+	return composeSymbolId({ ...id, descriptors: [...id.descriptors.slice(0, -1), bare] });
 }
 
 /** Member type, or null. */
@@ -304,6 +315,8 @@ export interface InsertArgs {
 	module?: string | undefined;
 	/** The declaration(s), flush-left. The planner owns indentation. */
 	text: string;
+	/** The anchor module's text as the caller holds it; the stored text when absent. */
+	moduleText?: string | undefined;
 }
 
 /** An insert worked out but not written. `present` is the retry answer: the block already sits
@@ -451,8 +464,25 @@ export class RefactorPlanner {
 		}
 
 		const context = new ReadContext(this.store);
+		const sent = args.moduleText;
+		let reads: NestingReads = context;
+		if (args.after !== undefined && sent !== undefined) {
+			const anchor = context.declaration(args.after);
+			if (!anchor) return { state: "refused", reason: subjectRefused(args.after, this.store) };
+			const parsed = await this.parsedReads(anchor.module, sent);
+			if ("refused" in parsed) return { state: "refused", reason: parsed.refused };
+			// Copies of a name path number in source order, so one added or removed above shifts the id.
+			const key = copiesKey(args.after);
+			const copies = (rows: StoredDeclaration[]) => rows.filter((row) => copiesKey(row.symbolId) === key).length;
+			const held = parsed.declaration(args.after) !== null;
+			if (held && copies(context.heldIn(anchor.module)) !== copies(parsed.heldIn(anchor.module)))
+				return { state: "refused", reason: anchorCopiesMoved(args.after, anchor.module) };
+			reads = parsed;
+		}
 		const point =
-			args.after !== undefined ? this.afterPoint(context, args.after) : this.endPoint(args.module as string);
+			args.after !== undefined
+				? this.afterPoint(context, reads, args.after, sent)
+				: this.endPoint(args.module as string, sent);
 		if ("refused" in point) return { state: "refused", reason: point.refused };
 		const unwritable = writableText(point.module, args.text);
 		if (unwritable !== null) return { state: "refused", reason: unwritable };
@@ -522,21 +552,37 @@ export class RefactorPlanner {
 		return lines;
 	}
 
+	/** Sent text's own declarations, standing in for the stored rows of its module. */
+	private async parsedReads(module: string, text: string): Promise<NestingReads | { refused: Refusal }> {
+		const owner = this.probe.owner(module);
+		if (!owner.owned) return { refused: noProviderOwns(module, owner.reason) };
+		const parsed = await this.probe.parseCandidate(module, text);
+		if (!parsed.parsed) return { refused: candidateDoesNotParse("sent text", parsed.reason) };
+		return sentReads(module, parsed.facts.declarations);
+	}
+
 	/** The splice for a sibling anchor, or an honest refusal where no sound point exists. */
-	private afterPoint(context: ReadContext, after: string): SplicePoint | { refused: Refusal } {
-		const anchor = context.declaration(after);
-		if (!anchor) return { refused: subjectRefused(after, this.store) };
-		const module = anchor.module;
+	private afterPoint(
+		context: ReadContext,
+		reads: NestingReads,
+		after: string,
+		sent: string | undefined,
+	): SplicePoint | { refused: Refusal } {
+		const stored = context.declaration(after);
+		if (!stored) return { refused: subjectRefused(after, this.store) };
+		const module = stored.module;
 		const current = this.source.writable(module);
 		if ("refused" in current) return current;
-		const before = current.text;
-		if (before === null) return { refused: moduleNotOnDisk(module) };
+		if (current.text === null) return { refused: moduleNotOnDisk(module) };
+		const before = sent ?? current.text;
 
 		// The stored ranges address ONE version of the file; a moved file makes them wrong lines.
 		const indexed = this.store.contentHashOf(module);
-		if (indexed !== null && indexed !== hashContent(before)) {
+		if (sent === undefined && indexed !== null && indexed !== hashContent(before)) {
 			return { refused: moduleChangedReindex(module) };
 		}
+		const anchor = reads.declaration(after);
+		if (!anchor) return { refused: anchorNotInText(after, module) };
 
 		// The name line is the declaration line; the range starts at leading comments, which may
 		// legally indent differently.
@@ -553,7 +599,7 @@ export class RefactorPlanner {
 
 		const shared = (who: string) => ({ refused: noInsertionPoint(who) });
 
-		const container = anchor.containerId === undefined ? null : context.declaration(anchor.containerId);
+		const container = anchor.containerId === undefined ? null : reads.declaration(anchor.containerId);
 		if (anchor.containerId !== undefined && !container) {
 			return { refused: subjectRefused(anchor.containerId, this.store) };
 		}
@@ -564,7 +610,7 @@ export class RefactorPlanner {
 		// Only siblings inside the container's body: a member's follower cannot be top-level or in
 		// another block. Declarator and overload groups share ranges and never compete.
 		let next: StoredDeclaration | null = null;
-		for (const candidate of context.heldBy(module, anchor.containerId)) {
+		for (const candidate of reads.heldBy(module, anchor.containerId)) {
 			if (candidate.symbolId === anchor.symbolId) continue;
 			if (isWithin(candidate.symbolId, anchor.symbolId)) continue;
 			if (sameRange(candidate.range, anchor.range)) continue;
@@ -585,16 +631,18 @@ export class RefactorPlanner {
 		return { module, before, created: false, line, indent, trailingBlank: false };
 	}
 
-	private endPoint(rawModule: string): SplicePoint | { refused: Refusal } {
+	private endPoint(rawModule: string, sent: string | undefined): SplicePoint | { refused: Refusal } {
 		// "Created if absent" must never mean created OUTSIDE the workspace.
 		const target = workspaceModule(rawModule);
 		if ("refused" in target) return target;
 		const module = target.module;
 		const current = this.source.writable(module);
 		if ("refused" in current) return current;
+		// Sent text is an open file's, so one gone from disk is not created.
+		if (sent !== undefined && current.text === null) return { refused: moduleNotOnDisk(module) };
 		return {
 			module,
-			before: current.text ?? "",
+			before: sent ?? current.text ?? "",
 			created: current.text === null,
 			line: null,
 			indent: "",
