@@ -33,6 +33,7 @@ export interface ProviderMethods {
 	renameEdits(params: Request<"renameEdits">): Response<"renameEdits">;
 	moveEdits(params: Request<"moveEdits">): Response<"moveEdits">;
 	arrangeEdits(params: Request<"arrangeEdits">): Response<"arrangeEdits">;
+	importEdits(params: Request<"importEdits">): Response<"importEdits">;
 	shutdown?(): void;
 	/** The sender for what the provider tells core unasked, once it is served. */
 	connected?(events: ProviderEvents): void;
@@ -93,6 +94,7 @@ export function handlersFor<V extends ModuleValue, P, E>(
 		renameEdits: (params) => provider.renameEdits(params),
 		moveEdits: (params) => provider.moveEdits(params),
 		arrangeEdits: (params) => provider.arrangeEdits(params),
+		importEdits: (params) => provider.importEdits(params),
 		shutdown: () => {
 			provider.shutdown?.();
 			return {};

@@ -448,6 +448,36 @@ async function checkArrangeIsAnswered(session: ProviderSession): Promise<CaseRes
 	};
 }
 
+/**
+ * Every provider answers importEdits, and none claims empty text already binds the name, which would
+ * have a caller skip an import the code needs.
+ */
+async function checkImportIsAnswered(session: ProviderSession): Promise<CaseResult> {
+	const problems: string[] = [];
+
+	try {
+		const answer = await session.call("importEdits", {
+			module: "src/probe-target",
+			text: "",
+			name: "probe",
+			fromModule: "src/probe-source",
+		});
+		if (answer.status === "present") {
+			problems.push("importEdits answered present for text that binds nothing");
+		}
+	} catch (error) {
+		if (error instanceof Stall) throw error;
+		problems.push(error instanceof Error ? error.message : String(error));
+	}
+
+	return {
+		caseId: "importEdits-is-answered",
+		tier: "protocol",
+		outcome: problems.length === 0 ? "passed" : "failed",
+		problems,
+	};
+}
+
 function checkReadyMove(fixture: MoveFixture, answer: MethodResponse<"moveEdits">): string[] {
 	if (answer.status === "refused") {
 		return [`moveEdits refused with ${answer.reason}, expected ready`];
@@ -1423,6 +1453,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 		try {
 			results.push(await checkMoveIsAnswered(session));
 			results.push(await checkArrangeIsAnswered(session));
+			results.push(await checkImportIsAnswered(session));
 			results.push(await checkBadModuleIsRefused(session));
 		} catch (error) {
 			if (!(error instanceof Stall)) throw error;

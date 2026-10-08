@@ -9,6 +9,8 @@ import {
 	discoverByWalk,
 	type FileFacts,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
@@ -36,6 +38,7 @@ import { Binder, type Resolution } from "./binding";
 import { extractFacts } from "./facts/extract";
 import { renameEdits } from "./facts/rename";
 import type { Range, RawTypeReference } from "./facts/types";
+import { makeImportEdits } from "./import-edits";
 import { LANGUAGE, type MappedFacts, mapFacts, type TypeAnswer } from "./mapped";
 import { isValidTargetModule, makeMoveEdits } from "./move";
 import { Python3Dispatch } from "./python3";
@@ -505,6 +508,10 @@ export class PythonProvider {
 
 	arrangeEdits(params: ArrangeEditsRequest): MoveEditsResponse {
 		return invalidTarget(params.toModule) ?? makeArrangeEdits(params, extractFacts(params.module, params.text));
+	}
+
+	importEdits(params: ImportEditsRequest): ImportEditsResponse {
+		return makeImportEdits(params, extractFacts(params.module, params.text));
 	}
 
 	renameEdits(params: RenameEditsRequest): RenameEditsResponse {

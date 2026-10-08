@@ -13,11 +13,14 @@ import {
 	type FileRole,
 	handlersFor,
 	type Import,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedImportEdits,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -765,6 +768,10 @@ export class CProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "C move edits are not implemented" };
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("C import planning is not implemented");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

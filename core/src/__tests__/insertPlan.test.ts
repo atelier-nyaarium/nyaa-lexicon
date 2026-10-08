@@ -106,6 +106,7 @@ function plannerFor(world: World) {
 		renameEdits: () => Promise.reject(new Error("not asked")),
 		moveEdits: () => Promise.reject(new Error("not asked")),
 		arrangeEdits: () => Promise.reject(new Error("not asked")),
+		importEdits: () => Promise.reject(new Error("not asked")),
 		probeBatch: () => Promise.reject(new Error("not asked")),
 	};
 

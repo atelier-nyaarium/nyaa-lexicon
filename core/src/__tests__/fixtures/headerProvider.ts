@@ -49,6 +49,7 @@ const handlers: ProviderHandlers = {
 	renameEdits: () => ({ status: "refused", reason: "NotImplemented", detail: "fixture" }),
 	moveEdits: () => notImplementedMove("fixture"),
 	arrangeEdits: () => notImplementedMove("fixture"),
+	importEdits: () => ({ status: "refused", reason: "NotImplemented", detail: "fixture" }),
 	shutdown: () => ({}),
 };
 

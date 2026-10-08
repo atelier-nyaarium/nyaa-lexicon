@@ -27,6 +27,7 @@ typeOf(target)               -> TypeInfo
 renameEdits(request)         -> RenameEditsResponse
 moveEdits(request)           -> MoveEditsResponse
 arrangeEdits(request)        -> MoveEditsResponse
+importEdits(request)         -> ImportEditsResponse
 shutdown()
 ```
 
@@ -576,6 +577,21 @@ member order, since `applyEdits` refuses two insertions at one point. `exported`
 they mean on a move.
 
 A provider without arrangement support refuses `NotImplemented`.
+
+## Import
+
+`importEdits` plans one import into a module's handed text: `{ module, text, name, fromModule }`,
+`name` as the module writes it and `fromModule` the module declaring it. `protocol/src/importEdits.ts`
+holds the schemas. The provider owns the whole statement: the form `fromModule` exports the name in
+(named, aliased, default or type-only), the specifier, and the place. It joins an import of the same
+module where one fits, else lands where a move lands its imports. The handed text wins over disk.
+
+The answer is `planned` with edits applied together, `present` when the text already binds the name
+to that export, or `refused`. A provider refuses `ParseError` for text it cannot parse,
+`NotExported` when `fromModule` does not export the name, `UnknownExport` when it cannot read how,
+and `TargetCollision` when the name is bound to something else. `present` means an equivalent local
+binding, never a re-export, which binds no local name. A provider without import planning refuses
+`NotImplemented`.
 
 ## Transport
 

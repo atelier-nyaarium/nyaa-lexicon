@@ -6,11 +6,14 @@ import {
 	defined,
 	discoverByWalk,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type IndexDepth,
 	type ModuleStore,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedImportEdits,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -366,6 +369,10 @@ export class CsharpProvider extends CsharpBinder {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("C# move edits are not implemented");
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("C# import planning is not implemented");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

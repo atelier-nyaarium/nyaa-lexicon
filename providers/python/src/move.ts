@@ -348,7 +348,7 @@ export function plannedImportFor(
 		specifier = origin.via.specifier;
 	}
 
-	if (hasExistingBinding(facts, dependency.name, specifier)) return {};
+	if (hasExistingBinding(facts, request.module, dependency.name, specifier)) return {};
 
 	const planned = plannedImport(dependency, specifier);
 	if (planned === undefined) {
@@ -394,10 +394,26 @@ export function importLine(planned: PlannedImport): string {
 	return `from ${planned.specifier} import ${planned.importedName}${alias}`;
 }
 
-function hasExistingBinding(facts: PythonMoveFacts, name: string, specifier: string): boolean {
+/** A module-level binding of `name` from that module, in either spelling. */
+export function hasExistingBinding(facts: PythonMoveFacts, importer: string, name: string, specifier: string): boolean {
+	const wanted = absoluteSpecifier(importer, specifier);
 	return facts.importBindings.some(
-		(binding) => binding.scopePath.length === 0 && binding.localName === name && binding.specifier === specifier,
+		(binding) =>
+			binding.scopePath.length === 0 &&
+			binding.localName === name &&
+			(binding.specifier === specifier ||
+				(wanted !== null && absoluteSpecifier(importer, binding.specifier) === wanted)),
 	);
+}
+
+/** The dotted module a specifier names from `importer`; null when its dots climb past the root. */
+function absoluteSpecifier(importer: string, specifier: string): string | null {
+	const dots = /^\.*/.exec(specifier)?.[0].length ?? 0;
+	if (dots === 0) return specifier;
+	const base = packageParts(importer);
+	if (dots - 1 > base.length) return null;
+	const rest = specifier.slice(dots);
+	return [...base.slice(0, base.length - (dots - 1)), ...(rest === "" ? [] : rest.split("."))].join(".");
 }
 
 ////////////////////////////////
@@ -433,6 +449,8 @@ export function renderPythonSpecifier(
 	while (common < fromPackage.length && common < targetParts.length && fromPackage[common] === targetParts[common]) {
 		common += 1;
 	}
+	// Relative imports stay within a top-level package.
+	if (common === 0) return { specifier: targetParts.join(".") };
 	const dots = ".".repeat(fromPackage.length - common + 1);
 	const remainder = targetParts.slice(common).join(".");
 	return { specifier: `${dots}${remainder}` };

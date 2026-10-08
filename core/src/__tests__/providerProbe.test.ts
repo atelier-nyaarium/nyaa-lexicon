@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { rethrown } from "@nyaa-lexicon/protocol/rejection";
+import { ErrorCodes } from "vscode-jsonrpc/node";
 import type { MethodResponse } from "../providerPort";
 import { liveProbe } from "../providerProbe";
 import { fakeSupervisor } from "./fakeProvider";
@@ -64,5 +66,28 @@ describe("parsing a candidate is one probe", () => {
 			{ parsed: false, reason: "boom" },
 			{ parsed: false, reason: "the provider could not parse the candidate: a descriptor name cannot be empty" },
 		]);
+	});
+});
+
+describe("planning an import", () => {
+	it("reads a provider that does not know the method as NotImplemented, and any other failure as a failure", async () => {
+		const failing = (error: Error) =>
+			fakeSupervisor({
+				claims: [{ providerId: "fake", language: "fake", extensions: [".ts"] }],
+				answers: {
+					importEdits: () => {
+						throw error;
+					},
+				},
+			});
+		const request = { module: "a.ts", text: "", name: "x", fromModule: "b.ts" };
+		const unknown = Object.assign(new Error("Unhandled method importEdits"), { code: ErrorCodes.MethodNotFound });
+		expect(await liveProbe(failing(unknown)).importEdits("a.ts", request)).toMatchObject({
+			status: "refused",
+			reason: "NotImplemented",
+		});
+		expect(await rethrown(liveProbe(failing(new Error("provider exited"))).importEdits("a.ts", request))).toThrow(
+			"provider exited",
+		);
 	});
 });

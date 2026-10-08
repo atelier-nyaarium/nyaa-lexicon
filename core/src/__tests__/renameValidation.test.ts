@@ -115,6 +115,7 @@ function probing(answer: ProbeBatchResponse): ProviderProbe {
 		renameEdits: never,
 		moveEdits: never,
 		arrangeEdits: never,
+		importEdits: never,
 		probeBatch: async () => answer,
 	};
 }

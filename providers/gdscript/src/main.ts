@@ -6,10 +6,13 @@ import {
 	defined,
 	type FileFacts,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
+	notImplementedImportEdits,
 	PROTOCOL_VERSION,
 	type ProbeBatchRequest,
 	type ProbeBatchResponse,
@@ -253,6 +256,10 @@ export class GDScriptProvider {
 
 	arrangeEdits(params: ArrangeEditsRequest): MoveEditsResponse {
 		return makeArrangeEdits(params, this.store);
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("GDScript import planning is not implemented");
 	}
 }
 

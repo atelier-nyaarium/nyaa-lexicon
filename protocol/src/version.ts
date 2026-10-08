@@ -142,7 +142,10 @@ export type Compatibility =
 // ordinary refusal.
 // 6.2.0: an unbound paint reference carries `reason`, why it did not bind, so a client tells an
 // external name from one that resolves to nothing; an older daemon omits it.
-export const PROTOCOL_VERSION = "6.2.0" as const;
+// 6.3.0: `previewImport`, one import added to handed text, planned through the provider method
+// `importEdits`: its form, specifier and place, or `present` or a refusal. An older daemon answers it as
+// an unknown method; an older provider does not know it, which the daemon reads as `NotImplemented`.
+export const PROTOCOL_VERSION = "6.3.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 6;

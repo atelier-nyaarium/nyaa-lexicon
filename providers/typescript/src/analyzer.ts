@@ -9,6 +9,8 @@ import {
 	type Diagnostic,
 	defined,
 	type Import,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportKind,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
@@ -27,6 +29,7 @@ import { isLikelyBundle } from "./bundle.js";
 import { commonJsMemberValue, isCommonJsTarget, isModuleName, meaningOf } from "./edges.js";
 import { type Extracted, extractFile, extractFileWithNodes, LANGUAGE } from "./extract.js";
 import { claimsExtension, scriptKindOf } from "./file-types.js";
+import { exportedAs, makeImportEdits } from "./import-edits.js";
 import { aliasEdgeSpan } from "./imports.js";
 import type { TypeScriptProject, TypeScriptStore, TypeScriptValue } from "./module.js";
 import { makeMoveEdits } from "./move.js";
@@ -292,6 +295,24 @@ export class TypeScriptAnalyzer {
 		const read = this.moveSource(params);
 		if ("refused" in read) return read.refused;
 		return makeArrangeEdits(params, read.source, read.checker, renderSpecifier, resolveModule, read.esm);
+	}
+
+	/** Planned against the request's text, in the form the declaring module's program exports the name. */
+	importEdits(
+		params: ImportEditsRequest,
+		renderSpecifier: SpecifierRenderer,
+		resolveModule: ModuleResolver,
+	): ImportEditsResponse {
+		const read = this.moveSource({ module: params.module, text: params.text, exists: true });
+		if ("refused" in read)
+			return { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" };
+		const home = this.sourceContext(params.fromModule);
+		if (isSourceFailure(home)) return { status: "refused", reason: "UnknownExport", detail: home.detail };
+		const exported = exportedAs(home.checker, home.source, params.name, (symbol) =>
+			resolveAlias(home.checker, symbol),
+		);
+		if ("reason" in exported) return { status: "refused", ...exported };
+		return makeImportEdits(params, read.source, read.checker, exported, renderSpecifier, resolveModule, read.esm);
 	}
 
 	/** The request's text parsed, with the program's checker when the module exists. */

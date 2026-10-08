@@ -68,6 +68,7 @@ import {
 	TypeHierarchySchema,
 	UsesFromResultSchema,
 } from "./daemonShapes.js";
+import { ImportEditsResponseSchema } from "./importEdits.js";
 import { ModuleExclusionSchema } from "./moduleExclusion.js";
 import { ModulePathSchema as ModulePath } from "./modulePath.js";
 import { MoveAnchorSchema } from "./move.js";
@@ -338,6 +339,9 @@ const Insert = z
 	.refine((args) => (args.after === undefined) !== (args.module === undefined), "Set exactly one of after or module.")
 	.meta({ id: "InsertRequest" });
 const ParseFacts = z.object({ module: ModulePath, text: z.string() }).meta({ id: "ParseFactsRequest" });
+const PreviewImport = z
+	.object({ module: ModulePath, text: z.string(), name: z.string().min(1), fromModule: ModulePath })
+	.meta({ id: "PreviewImportRequest" });
 const SymbolAt = z
 	.object({
 		module: ModulePath,
@@ -590,6 +594,14 @@ export const DAEMON_METHODS = {
 	parseFacts: {
 		request: ParseFacts,
 		response: ParseFactsResultSchema,
+		lifecycle: "probe",
+		mutates: false,
+		budget: "read",
+	},
+	/** One import added to handed text, planned by the module's provider; nothing is written. */
+	previewImport: {
+		request: PreviewImport,
+		response: ImportEditsResponseSchema,
 		lifecycle: "probe",
 		mutates: false,
 		budget: "read",

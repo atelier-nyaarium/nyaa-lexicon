@@ -122,6 +122,7 @@ export interface StoreProvider<V extends ModuleValue, P, E> {
 	renameEdits(params: Request<"renameEdits">): Maybe<Response<"renameEdits">>;
 	moveEdits(params: Request<"moveEdits">): Maybe<Response<"moveEdits">>;
 	arrangeEdits(params: Request<"arrangeEdits">): Maybe<Response<"arrangeEdits">>;
+	importEdits(params: Request<"importEdits">): Maybe<Response<"importEdits">>;
 	/** Facts and landings with every proposed text in the store's view; absent answers unsupported. */
 	probeBatch?(params: Request<"probeBatch">): Maybe<Response<"probeBatch">>;
 	shutdown?(): void;
@@ -788,6 +789,8 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 			ready(() => kit.transient(params.module, params.text, "full", () => provider.moveEdits(params))),
 		arrangeEdits: (params: Request<"arrangeEdits">) =>
 			ready(() => kit.transient(params.module, params.text, "full", () => provider.arrangeEdits(params))),
+		importEdits: (params: Request<"importEdits">) =>
+			ready(() => kit.transient(params.module, params.text, "full", () => provider.importEdits(params))),
 		moduleAdmission: (verdict: ModuleAdmission) => kit.settle(verdict),
 		forgetModule: (params: { module: string }) => kit.forget(params.module),
 		releaseModule: (params: { module: string }) => kit.release(params.module),

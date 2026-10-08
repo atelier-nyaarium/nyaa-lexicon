@@ -25,6 +25,7 @@ test("every handler answers, the notifications included, and write operations re
 		"bind",
 		"discoverProject",
 		"forgetModule",
+		"importEdits",
 		"initialize",
 		"moduleAdmission",
 		"moveEdits",

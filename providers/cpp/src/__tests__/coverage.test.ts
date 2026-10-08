@@ -401,6 +401,7 @@ describe("C++ structural coverage", () => {
 			"bind",
 			"discoverProject",
 			"forgetModule",
+			"importEdits",
 			"initialize",
 			"moduleAdmission",
 			"moveEdits",

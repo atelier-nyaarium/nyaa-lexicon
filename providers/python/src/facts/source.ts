@@ -294,12 +294,15 @@ export class Source {
 		return this.line(newline.pos) + 1;
 	}
 
-	/** After shebang, docstring and future imports. */
+	/** After the shebang and encoding lines, the docstring and future imports. */
 	prologueEnd(module: A.Module): Position {
 		const ends: Array<Position | undefined> = [{ line: 0, character: 0 }];
-		const first = this.tokens[0];
-		if (first?.type === "COMMENT" && first.pos === 0 && first.string.startsWith("#!")) {
-			ends.push(this.lineAfter(0, "NL"));
+		// A pragma counts only on the first two lines, so nothing may land above one.
+		for (let index = 0; index < this.tokens.length && (this.tokens[index] as Token).line <= 1; index++) {
+			const token = this.tokens[index] as Token;
+			if (token.type === "COMMENT" && token.column === 0 && isPragma(token)) {
+				ends.push(this.lineAfter(index, "NL"));
+			}
 		}
 		const statements: A.Statement[] = module.body.filter(
 			(node) => node.type === "ImportFrom" && node.module === "__future__" && node.level === 0,

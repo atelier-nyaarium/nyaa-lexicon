@@ -11,10 +11,13 @@ import {
 	defined,
 	discoverByWalk,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedImportEdits,
 	notImplementedMove,
 	type Position,
 	PROTOCOL_VERSION,
@@ -375,6 +378,10 @@ export class BashProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return { status: "refused", reason: "NotImplemented", detail: "Bash move edits are not implemented" };
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("Bash import planning is not implemented");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

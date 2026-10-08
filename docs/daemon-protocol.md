@@ -139,7 +139,7 @@ lands, the handler, and a client deciding whether it may start a daemon.
 lifecycle  starts  warms  waits  after a failed warmup  requests
 query      yes     yes    yes    refused                every read and write not below
 status     no      no     no     refused                indexStatus, cacheStats
-probe      yes     no     no     answered               refactorStatus, parseFacts, the git history reads
+probe      yes     no     no     answered               refactorStatus, parseFacts, previewImport, the git history reads
 trigger    yes     yes    no     refused                indexWorkspace
 control    no      no     no     answered               shutdown, answered even before the handler
 ```
@@ -634,6 +634,19 @@ names the step kind in `label`. A batch re-parsing ten or more modules beyond it
 that work in `label`, "re-parsing modules", and counts it in `done` and `total` instead. Of works
 that overlap, the first of refactor, batch, scan, rebind and upgrade is named. Status reads take no
 gate.
+
+### Adding an import
+
+**`previewImport`** (`{ module, text, name, fromModule }`, protocol 6.3.0) plans the import that
+binds `name`, declared in `fromModule`, into the handed `text` of `module`, and writes nothing. The
+module's provider plans it through `importEdits`: the form `fromModule` exports the name in, the
+specifier, and the place, or a join into an import of the same module already there. It answers
+`{ status: "planned", edits }`, applied together, `{ status: "present" }` when the text already
+binds the name to that export, or `{ status: "refused", reason, detail? }` with `reason` from
+`ImportRefusal`. A module no provider owns, and a provider that does not know the method, refuse
+`NotImplemented`; any other provider failure is an error, as for every read. It reads under the
+gate, since the provider holds the handed text while it plans.
+An older daemon answers it as an unknown method.
 
 `describe.moduleRole` is present when the module's provider reported a role. `overview.entryPoints`
 is present when any file in scope has one, lists at most 50 entries, and `moreEntryPoints` counts

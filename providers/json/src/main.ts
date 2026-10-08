@@ -8,12 +8,15 @@ import {
 	defined,
 	discoverByWalk,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedBinding,
 	notImplementedImport,
+	notImplementedImportEdits,
 	notImplementedMove,
 	notImplementedType,
 	PROTOCOL_VERSION,
@@ -167,6 +170,10 @@ export class JsonProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("JSON move edits are not implemented");
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("JSON has no imports");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

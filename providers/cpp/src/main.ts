@@ -7,11 +7,14 @@ import {
 	comparePositions,
 	discoverByWalk,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedImportEdits,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -430,6 +433,10 @@ export class CppProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("C++ move rendering is not implemented");
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("C++ import planning is not implemented");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

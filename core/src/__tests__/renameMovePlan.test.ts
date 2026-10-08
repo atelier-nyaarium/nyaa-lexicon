@@ -132,6 +132,7 @@ function plannerFor(world: World): RefactorPlanner {
 			return { status: "ready", edits: [], blocked: [] };
 		},
 		arrangeEdits: () => Promise.reject(new Error("not asked")),
+		importEdits: () => Promise.reject(new Error("not asked")),
 		probeBatch: () => Promise.reject(new Error("not asked")),
 	};
 
@@ -308,6 +309,7 @@ describe("moving a declaration into a module that imports it", () => {
 				return { status: "ready", edits, blocked: [] };
 			},
 			arrangeEdits: () => Promise.reject(new Error("not asked")),
+			importEdits: () => Promise.reject(new Error("not asked")),
 			probeBatch: () => Promise.reject(new Error("not asked")),
 		};
 		const imports = {
@@ -368,6 +370,7 @@ describe("moving a declaration that shares its line", () => {
 					blocked: [],
 				}),
 				arrangeEdits: () => Promise.reject(new Error("not asked")),
+				importEdits: () => Promise.reject(new Error("not asked")),
 				probeBatch: () => Promise.reject(new Error("not asked")),
 			};
 			const source = { writable: (module: string) => ({ text: module === MODULE ? text : "" }) };
@@ -589,6 +592,7 @@ function multiPlannerFor(world: ImportWorld, resolve: ResolveSpecifier): Refacto
 			return { status: "ready", edits: [], blocked: [] };
 		},
 		arrangeEdits: () => Promise.reject(new Error("not asked")),
+		importEdits: () => Promise.reject(new Error("not asked")),
 		probeBatch: () => Promise.reject(new Error("not asked")),
 	};
 

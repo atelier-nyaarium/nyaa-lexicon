@@ -6,6 +6,7 @@
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
 import type { z } from "zod";
 import { defined } from "./defined.js";
+import type { ImportEditsResponse } from "./importEdits.js";
 import type {
 	METHOD_SCHEMAS,
 	ProbeBatchResponse,
@@ -198,5 +199,9 @@ export function notImplementedImport(detail: string): ImportResolution {
 }
 
 export function notImplementedMove(detail: string): MoveEditsResponse {
+	return { status: "refused", reason: "NotImplemented", detail };
+}
+
+export function notImplementedImportEdits(detail: string): ImportEditsResponse {
 	return { status: "refused", reason: "NotImplemented", detail };
 }

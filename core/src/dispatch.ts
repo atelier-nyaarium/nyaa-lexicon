@@ -312,6 +312,8 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		// Candidate parses read under the gate: an index parse landing between a candidate and its
 		// restore would bind against the unsaved text and store it.
 		parseFacts: read((params) => service.parseFacts(params.module, params.text)),
+		// The provider holds the handed text while it plans, so the gate keeps an index parse out.
+		previewImport: read((params) => service.previewImport(params)),
 		symbolAt: read((params) => service.symbolAt(params)),
 		findImports: read((params) => service.findImports(params)),
 		overview: read(() => service.overview()),

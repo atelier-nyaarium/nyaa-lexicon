@@ -7,12 +7,15 @@ import {
 	defined,
 	type FileRole,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type Landing,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedImportEdits,
 	notImplementedMove,
 	type OffsetRange,
 	PROTOCOL_VERSION,
@@ -511,6 +514,10 @@ export class RustProvider {
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("Rust move edits are not implemented");
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("Rust import planning is not implemented");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

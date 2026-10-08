@@ -11,6 +11,8 @@ import {
 	type Cycle,
 	type FileEdits,
 	type FileHistory,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type ModuleFactsResult,
 	type MostReferencedResult,
@@ -444,6 +446,22 @@ export class LexiconService {
 
 	symbolAt(request: Parameters<PaintReads["symbolAt"]>[0]): Promise<SymbolAtReply> {
 		return this.paint.symbolAt(request);
+	}
+
+	////////////////////////////////
+	//  Imports, planned by the module's provider
+
+	/** One import planned against `text`; nothing is written. A provider failure throws. Caller holds the read gate. */
+	async previewImport(request: ImportEditsRequest): Promise<ImportEditsResponse> {
+		const owner = this.probe.owner(request.module);
+		if (!owner.owned) {
+			return {
+				status: "refused",
+				reason: "NotImplemented",
+				detail: `no provider owns the module: ${owner.reason}`,
+			};
+		}
+		return await this.probe.importEdits(request.module, request);
 	}
 
 	////////////////////////////////

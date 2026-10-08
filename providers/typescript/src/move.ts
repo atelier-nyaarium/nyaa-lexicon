@@ -363,9 +363,25 @@ export function planImports<S extends MoveImportSite>(
 		}
 	}
 
+	placeImports(scope, joins, pendingImports.values(), work.landings, edits, blocked);
+}
+
+/**
+ * Joins each planned import into an import of the same module where one fits, else adds them after
+ * the imports; text landing at that point follows them a blank line apart.
+ */
+export function placeImports(
+	scope: ModuleScope,
+	joins: (planned: PlannedImport) => ts.ImportDeclaration | undefined,
+	pending: Iterable<PlannedImport>,
+	landings: readonly TextEdit[],
+	edits: TextEdit[],
+	blocked: MoveBlockedSite[],
+): void {
+	const { source, coordinates, quote } = scope;
 	const merges = new Map<ts.ImportDeclaration, PlannedImport[]>();
 	const unmerged: PlannedImport[] = [];
-	for (const planned of pendingImports.values()) {
+	for (const planned of pending) {
 		const into = joins(planned);
 		// A statement takes one default.
 		const taken =
@@ -386,7 +402,7 @@ export function planImports<S extends MoveImportSite>(
 		const { offset, lineBreak, blankAfter } = importInsertion(source);
 		const insertion = coordinates.positionAt(offset);
 		// Text landing here follows the imports, a blank line apart.
-		const landing = work.landings.find((edit) => coordinates.offsetAt(edit.range.start) === offset);
+		const landing = landings.find((edit) => coordinates.offsetAt(edit.range.start) === offset);
 		const blank = landing === undefined ? blankAfter : !/^\r?\n/.test(landing.newText);
 		if (insertion === undefined) {
 			blocked.push({ reason: "ParseError", detail: "the import insertion point is outside the module" });

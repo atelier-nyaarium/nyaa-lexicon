@@ -7,11 +7,14 @@ import {
 	type Declaration,
 	defined,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	moduleStore,
+	notImplementedImportEdits,
 	notImplementedMove,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -444,6 +447,10 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("Kotlin move edits are not implemented");
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("Kotlin import planning is not implemented");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

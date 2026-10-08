@@ -7,12 +7,15 @@ import {
 	defined,
 	discoverByWalk,
 	handlersFor,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	notImplementedBinding,
 	notImplementedImport,
+	notImplementedImportEdits,
 	notImplementedMove,
 	notImplementedType,
 	PROTOCOL_VERSION,
@@ -102,6 +105,10 @@ export class HtmlProvider {
 	}
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("HTML move edits are not implemented");
+	}
+
+	importEdits(_params: ImportEditsRequest): ImportEditsResponse {
+		return notImplementedImportEdits("HTML import planning is not implemented");
 	}
 
 	arrangeEdits(_params: ArrangeEditsRequest): MoveEditsResponse {

@@ -7,6 +7,8 @@ import {
 	type FileFacts,
 	handlersFor,
 	hashContent,
+	type ImportEditsRequest,
+	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
 	type MoveEditsRequest,
@@ -458,6 +460,11 @@ export class TypeScriptProvider {
 		);
 	}
 
+	importEdits(params: ImportEditsRequest): ImportEditsResponse {
+		const { render, resolve } = this.specifiers();
+		return this.analyzed().importEdits(params, render, resolve);
+	}
+
 	programStats() {
 		return this.analyzed().programStats();
 	}
@@ -481,14 +488,20 @@ export class TypeScriptProvider {
 				detail: `the target is not a TypeScript module: ${toModule}`,
 			};
 		}
+		const { render, resolve } = this.specifiers();
+		return work(render, resolve);
+	}
+
+	/** This project's specifier lookups. */
+	private specifiers(): { render: SpecifierRenderer; resolve: ModuleResolver } {
 		const setup = this.store.project.loaded;
 		const surface = (module: string) => this.runtimeSurface(module);
-		return work(
-			(fromModule, targetModule, preferredSpecifier, style) =>
+		return {
+			render: (fromModule, targetModule, preferredSpecifier, style) =>
 				renderSpecifier(this.store.root, fromModule, targetModule, setup, preferredSpecifier, surface, style),
-			(fromModule, specifier) =>
+			resolve: (fromModule, specifier) =>
 				landingOf(resolveSpecifier(this.store.root, fromModule, specifier, setup, [], surface)),
-		);
+		};
 	}
 
 	private runtimeSurface(module: string): boolean {
@@ -529,7 +542,16 @@ export function warmingHandlers(provider: TypeScriptProvider): ReturnType<typeof
 		return model;
 	};
 	const reads = handlers as unknown as Record<string, (params: { depth?: IndexDepth }) => unknown>;
-	for (const method of ["parseFile", "probeFile", "bind", "typeOf", "renameEdits", "moveEdits", "arrangeEdits"]) {
+	for (const method of [
+		"parseFile",
+		"probeFile",
+		"bind",
+		"typeOf",
+		"renameEdits",
+		"moveEdits",
+		"arrangeEdits",
+		"importEdits",
+	]) {
 		const handle = reads[method] as (params: { depth?: IndexDepth }) => unknown;
 		reads[method] = (params) => {
 			// An outline reads no program.

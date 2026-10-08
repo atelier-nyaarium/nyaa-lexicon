@@ -4,6 +4,7 @@
 // (Unknown with a reason), never by omitting a method, so the core cannot branch on language.
 
 import { z } from "zod";
+import { ImportEditsRequestSchema, ImportEditsResponseSchema } from "./importEdits.js";
 import { ArrangeEditsRequestSchema, MoveEditsRequestSchema, MoveEditsResponseSchema } from "./move.js";
 import { FileFactsSchema, ImportResolutionSchema, IndexDepthSchema, ProjectModelSchema } from "./project.js";
 import { RenameEditsRequestSchema, RenameEditsResponseSchema } from "./rename.js";
@@ -280,6 +281,7 @@ export const PROVIDER_METHODS = [
 	"renameEdits",
 	"moveEdits",
 	"arrangeEdits",
+	"importEdits",
 	"shutdown",
 ] as const;
 
@@ -301,6 +303,8 @@ export const METHOD_SCHEMAS = {
 	moveEdits: { request: MoveEditsRequestSchema, response: MoveEditsResponseSchema },
 	/** One module's part of an arrangement, answered as `moveEdits` is. */
 	arrangeEdits: { request: ArrangeEditsRequestSchema, response: MoveEditsResponseSchema },
+	/** One import added to a module's text. */
+	importEdits: { request: ImportEditsRequestSchema, response: ImportEditsResponseSchema },
 	shutdown: { request: z.object({}), response: z.object({}) },
 } as const satisfies Record<ProviderMethod, { request: z.ZodType; response: z.ZodType }>;
 

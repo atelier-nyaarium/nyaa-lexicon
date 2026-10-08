@@ -310,6 +310,15 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		const refused = await ask("parseFacts", { module: "notes.txt", text: "hi" });
 		expect(refused.ok).toBe(false);
 	},
+	previewImport: async () => {
+		const asked = (module: string) =>
+			ask("previewImport", { module, text: "use(ITEM_LIMIT)\n", name: "ITEM_LIMIT", fromModule: "item.ref" });
+		// The fixture's provider writes no imports, and no provider owns notes.txt.
+		expect({ declined: await asked("cart.ref"), unowned: await asked("notes.txt") }).toMatchObject({
+			declined: { status: "refused", reason: "NotImplemented" },
+			unowned: { status: "refused", reason: "NotImplemented" },
+		});
+	},
 	symbolAt: async () => {
 		const text = "export class Basket {}\n";
 		expect({

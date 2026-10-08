@@ -14,6 +14,7 @@ import type { CommentSpan, FileFacts } from "../project.js";
 import {
 	notImplementedBinding,
 	notImplementedImport,
+	notImplementedImportEdits,
 	notImplementedMove,
 	notImplementedType,
 	type ProviderHandlers,
@@ -270,6 +271,7 @@ export const referenceHandlers: ProviderHandlers = {
 	}),
 	moveEdits: makeReferenceMoveEdits,
 	arrangeEdits: () => notImplementedMove("the reference provider does not arrange declarations"),
+	importEdits: () => notImplementedImportEdits("the reference provider does not write imports"),
 	shutdown: () => ({}),
 };
 

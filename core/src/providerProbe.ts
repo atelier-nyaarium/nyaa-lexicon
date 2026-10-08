@@ -5,6 +5,8 @@
 import type {
 	ArrangeEditsRequest,
 	FileFacts,
+	ImportEditsRequest,
+	ImportEditsResponse,
 	MoveEditsRequest,
 	MoveEditsResponse,
 	ProbeBatchRequest,
@@ -15,6 +17,7 @@ import type {
 	RenameEditsResponse,
 } from "@nyaa-lexicon/protocol";
 import { hashContent } from "@nyaa-lexicon/protocol";
+import { ErrorCodes } from "vscode-jsonrpc/node";
 import type { ProviderPort } from "./providerPort.js";
 
 ////////////////////////////////
@@ -35,6 +38,7 @@ export interface ProviderProbe {
 	renameEdits(module: string, request: RenameEditsRequest): Promise<RenameEditsResponse>;
 	moveEdits(module: string, request: MoveEditsRequest): Promise<MoveEditsResponse>;
 	arrangeEdits(module: string, request: ArrangeEditsRequest): Promise<MoveEditsResponse>;
+	importEdits(module: string, request: ImportEditsRequest): Promise<ImportEditsResponse>;
 	/** Facts for `request.answer` with every proposed text as one view, asked of `module`'s owner. */
 	probeBatch(module: string, request: ProbeBatchRequest): Promise<ProbeBatchResponse>;
 }
@@ -66,6 +70,15 @@ export function liveProbe(supervisor: ProviderPort): ProviderProbe {
 
 		moveEdits: (module, request) => supervisor.ask(module, "moveEdits", request),
 		arrangeEdits: (module, request) => supervisor.ask(module, "arrangeEdits", request),
+		async importEdits(module, request) {
+			try {
+				return await supervisor.ask(module, "importEdits", request);
+			} catch (error) {
+				// Only an unknown method means unsupported.
+				if ((error as { code?: number }).code !== ErrorCodes.MethodNotFound) throw error;
+				return { status: "refused", reason: "NotImplemented", detail: "the provider does not plan imports" };
+			}
+		},
 		probeBatch: (module, request) => supervisor.ask(module, "probeBatch", request),
 
 		async parseCandidate(module, text) {

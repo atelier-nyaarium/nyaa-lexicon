@@ -369,6 +369,14 @@ export {
 export { hashBytes, hashContent } from "./hash.js";
 export { FOLD_MARK, type HeaderFold, type HeaderSpan, renderHeader } from "./header.js";
 export {
+	type ImportEditsRequest,
+	ImportEditsRequestSchema,
+	type ImportEditsResponse,
+	ImportEditsResponseSchema,
+	type ImportRefusal,
+	ImportRefusalSchema,
+} from "./importEdits.js";
+export {
 	type MermaidStatement,
 	type MermaidToken,
 	mermaidClick,
@@ -585,6 +593,7 @@ export { readSwept, sourceFiles } from "./residue.js";
 export {
 	notImplementedBinding,
 	notImplementedImport,
+	notImplementedImportEdits,
 	notImplementedMove,
 	notImplementedType,
 	type ProviderEvents,
