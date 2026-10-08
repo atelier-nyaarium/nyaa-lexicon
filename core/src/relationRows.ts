@@ -81,6 +81,11 @@ CREATE TABLE IF NOT EXISTS relation_exports (
   exports TEXT NOT NULL
 );
 
+-- One row once discovery has started on this store, so a later start never seeds quietly again.
+CREATE TABLE IF NOT EXISTS relation_seeded (
+  seeded INTEGER PRIMARY KEY CHECK (seeded = 1)
+);
+
 -- New or changed exports waiting for discovery.
 CREATE TABLE IF NOT EXISTS relation_queue (
   symbolId TEXT PRIMARY KEY,
@@ -305,10 +310,6 @@ export class RelationRows {
 	////////////////////////////////
 	//  Exports discovery has seen
 
-	hasExports(): boolean {
-		return this.db.prepare("SELECT 1 FROM relation_exports LIMIT 1").get() !== undefined;
-	}
-
 	exportModules(): string[] {
 		const rows = this.db.prepare("SELECT module FROM relation_exports ORDER BY module").all() as Array<{
 			module: string;
@@ -332,14 +333,46 @@ export class RelationRows {
 		}
 	}
 
-	setExports(module: string, exports: ReadonlyMap<string, string>): void {
+	/**
+	 * A module's export shapes and their queue entries, written together: `admitted` queue, `quiet`
+	 * are recorded without queueing (only a store's first seed), and `gone` leave with their
+	 * suggestions, queue entries and gaps. Any other export keeps the shape it had.
+	 */
+	recordExports(
+		module: string,
+		change: {
+			admitted: ReadonlyMap<string, string>;
+			quiet?: ReadonlyMap<string, string>;
+			gone?: readonly string[];
+		},
+		now: number,
+	): void {
+		const shapes = this.exportsOf(module) ?? new Map<string, string>();
+		for (const symbolId of change.gone ?? []) {
+			shapes.delete(symbolId);
+			this.forgetExport(symbolId);
+		}
+		for (const [symbolId, shape] of change.quiet ?? []) shapes.set(symbolId, shape);
+		for (const [symbolId, shape] of change.admitted) shapes.set(symbolId, shape);
 		this.db
 			.prepare("INSERT OR REPLACE INTO relation_exports (module, exports) VALUES (?, ?)")
-			.run(module, JSON.stringify(Object.fromEntries([...exports].sort(([a], [b]) => (a < b ? -1 : 1)))));
+			.run(module, JSON.stringify(Object.fromEntries([...shapes].sort(([a], [b]) => (a < b ? -1 : 1)))));
+		const insert = this.db.prepare(
+			"INSERT OR REPLACE INTO relation_queue (symbolId, module, queuedAt) VALUES (?, ?, ?)",
+		);
+		for (const symbolId of change.admitted.keys()) insert.run(symbolId, module, now);
+	}
+
+	seeded(): boolean {
+		return this.db.prepare("SELECT 1 FROM relation_seeded").get() !== undefined;
+	}
+
+	markSeeded(): void {
+		this.db.prepare("INSERT OR IGNORE INTO relation_seeded (seeded) VALUES (1)").run();
 	}
 
 	/** An export gone from its module: its suggestions, queue entry and gap. */
-	forgetExport(symbolId: string): void {
+	private forgetExport(symbolId: string): void {
 		this.db.prepare("DELETE FROM relation_discovery WHERE symbolId = ?").run(symbolId);
 		this.db.prepare("DELETE FROM relation_queue WHERE symbolId = ?").run(symbolId);
 		this.db.prepare("DELETE FROM relation_gaps WHERE symbolId = ?").run(symbolId);
@@ -355,13 +388,6 @@ export class RelationRows {
 
 	////////////////////////////////
 	//  Queue
-
-	enqueue(entries: ReadonlyArray<{ symbolId: string; module: string }>, now: number): void {
-		const insert = this.db.prepare(
-			"INSERT OR REPLACE INTO relation_queue (symbolId, module, queuedAt) VALUES (?, ?, ?)",
-		);
-		for (const entry of entries) insert.run(entry.symbolId, entry.module, now);
-	}
 
 	/** The oldest waiting export. */
 	nextQueued(): { symbolId: string; module: string } | null {

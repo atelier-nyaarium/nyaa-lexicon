@@ -12,6 +12,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { CoChangeIndex, type Commit } from "../history";
 import * as refusal from "../refusals";
+import { RelationDiscovery } from "../relationDiscovery";
 import { RelationLedger } from "../relations";
 import { startRelationWork } from "../relationWork";
 import { LexiconService } from "../service";
@@ -28,6 +29,7 @@ let file: string;
 let store: IndexStore;
 let clock: FakeClock;
 let ledger: RelationLedger;
+let discovery: RelationDiscovery;
 
 const PERSON: NoteAuthor = { kind: "person" };
 const AGENT: NoteAuthor = { kind: "agent", model: "gpt-6-luna", via: "test", run: null };
@@ -119,16 +121,28 @@ function find(relations: readonly Relation[], symbolId: string): Relation | unde
 	return relations.find((relation) => relation.symbolId === symbolId);
 }
 
-/** Settles the oldest queued export. */
+/** Discovers and settles the oldest queued export. */
 function settleNext(): void {
-	const queued = ledger.nextQueued();
+	const queued = discovery.next();
 	if (queued === null) throw new Error("nothing queued");
-	expect(ledger.settleQueued(queued, ledger.discover(queued.symbolId, HISTORY))).toBe(true);
+	expect(discovery.settle(queued, ledger.discover(queued.symbolId, HISTORY))).toBe(true);
+}
+
+/** Settles every queued export without scoring, each id once; the ids settled. */
+function drain(owner = discovery): string[] {
+	const settled: string[] = [];
+	for (let next = owner.next(); next !== null; next = owner.next()) {
+		expect(owner.settle(next, null)).toBe(true);
+		settled.push(next.symbolId);
+	}
+	expect(new Set(settled).size).toBe(settled.length);
+	return settled;
 }
 
 function reopen(): void {
 	store = IndexStore.open(file, undefined, undefined, clock).store;
 	ledger = new RelationLedger(store, clock);
+	discovery = new RelationDiscovery(store, clock);
 }
 
 beforeEach(() => {
@@ -355,64 +369,102 @@ describe("discovery", () => {
 	const ELAPSED = idOf("elapsedSince", CLOCK);
 
 	it("seeds an existing workspace quietly; a reshaped export queues and a body edit does not", () => {
-		expect(ledger.seedExports()).toBe(true);
-		expect(ledger.nextQueued()).toBeNull();
+		discovery.start([]);
+		expect(discovery.next()).toBeNull();
 
 		plant(FORMAT, [
 			{ ...declared("formatBytes", FORMAT, 0, "(bytes: number): string"), range: at(5) },
 			declared("formatDuration", FORMAT, 1, "(ms: number): string"),
 			declared("formatRate", FORMAT, 2, "(perSecond: number, unit: string): string"),
 		]);
-		expect(ledger.notice([FORMAT], [])).toBe(1);
-		expect(ledger.nextQueued()).toMatchObject({ symbolId: RATE, module: FORMAT });
+		expect(discovery.observe([FORMAT], [])).toBe(1);
+		expect(discovery.next()).toMatchObject({ symbolId: RATE, module: FORMAT });
+	});
+
+	it("samples a new store's recent files within its budget and seeds the rest quietly", () => {
+		plantFormat(Array.from({ length: 40 }, (_, line) => declared(`formatUnit${line}`, FORMAT, line + 3)));
+		discovery.start([CLOCK, FORMAT]);
+		expect(drain()).toHaveLength(21);
+		expect(discovery.observe([FORMAT, CLOCK, TABLE], [])).toBe(0);
 	});
 
 	it("queues a burst past the cap once the first exports drain, each once", () => {
-		ledger.seedExports();
-		const burst = Array.from({ length: 25 }, (_, line) => declared(`formatUnit${line}`, FORMAT, line + 3));
-		plantFormat(burst);
-		ledger.notice([FORMAT], []);
+		discovery.start([]);
+		plantFormat(Array.from({ length: 25 }, (_, line) => declared(`formatUnit${line}`, FORMAT, line + 3)));
+		discovery.observe([FORMAT], []);
 		expect(store.relations.queued()).toBe(20);
-		let settled = 0;
-		for (let next = ledger.nextQueued(); next !== null; next = ledger.nextQueued()) {
-			expect(ledger.settleQueued(next, null)).toBe(true);
-			settled++;
+		expect(drain()).toHaveLength(25);
+		expect(discovery.observe([FORMAT], [])).toBe(0);
+	});
+
+	it("settles a burst exactly once across a restart mid-drain", () => {
+		discovery.start([]);
+		plantFormat(Array.from({ length: 45 }, (_, line) => declared(`formatUnit${line}`, FORMAT, line + 3)));
+		discovery.observe([FORMAT], []);
+		const before: string[] = [];
+		for (let turn = 0; turn < 10; turn++) {
+			const next = discovery.next();
+			if (next === null) break;
+			discovery.settle(next, null);
+			before.push(next.symbolId);
 		}
-		expect(settled).toBe(25);
-		expect(ledger.notice([FORMAT], [])).toBe(0);
+		const restarted = new RelationDiscovery(store, clock);
+		restarted.start([]);
+		const after = drain(restarted);
+		expect(new Set([...before, ...after]).size).toBe(45);
+		expect(before.length + after.length).toBe(45);
+	});
+
+	it("observes changes made while no daemon watched, even when the first start found no exports", () => {
+		for (const module of [FORMAT, TABLE, SUMMARY, REPORT, PARSE, CLOCK]) plant(module, []);
+		discovery.start([]);
+		plantFormat();
+		new RelationDiscovery(store, clock).start([]);
+		expect(drain().sort()).toEqual([BYTES, DURATION, RATE].sort());
+	});
+
+	it("writes nothing from a start that fails partway", () => {
+		store.relations.markSeeded = () => {
+			throw new Error("disk full");
+		};
+		expect(() => discovery.start([FORMAT])).toThrow("disk full");
+		expect({ snapshot: store.relations.exportModules(), queued: store.relations.queued() }).toEqual({
+			snapshot: [],
+			queued: 0,
+		});
 	});
 
 	it("leaves an export queued when a batch lands between its scoring and its write", () => {
-		ledger.seedExports();
+		discovery.start([]);
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
-		ledger.notice([FORMAT], []);
-		const queued = ledger.nextQueued();
+		discovery.observe([FORMAT], []);
+		const queued = discovery.next();
 		if (queued === null) throw new Error("nothing queued");
 		const found = ledger.discover(SPEED, HISTORY);
 
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number, digits: number): string")]);
-		ledger.notice([FORMAT], []);
-		expect(ledger.settleQueued(queued, found)).toBe(false);
-		expect(ledger.nextQueued()).toMatchObject({ symbolId: SPEED });
+		discovery.observe([FORMAT], []);
+		expect(discovery.settle(queued, found)).toBe(false);
+		expect(discovery.next()).toMatchObject({ symbolId: SPEED });
 		expect(ledger.candidatesForModule(TABLE, 5).candidates).toEqual([]);
 	});
 
 	it("drops an export's suggestions when the export goes", () => {
-		ledger.seedExports();
+		discovery.start([]);
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
-		ledger.notice([FORMAT], []);
+		discovery.observe([FORMAT], []);
 		settleNext();
 		expect(ledger.candidatesForModule(TABLE, 5).candidates).toHaveLength(1);
 
 		plantFormat();
-		ledger.notice([FORMAT], []);
+		discovery.observe([FORMAT], []);
 		expect(ledger.candidatesForModule(TABLE, 5).candidates).toEqual([]);
 	});
 
 	it("drops a suggestion once the module stops using what found it", () => {
-		ledger.seedExports();
+		discovery.start([]);
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
-		ledger.notice([FORMAT], []);
+		discovery.observe([FORMAT], []);
 		settleNext();
 		expect(ledger.candidatesForModule(TABLE, 5).candidates).toHaveLength(1);
 
@@ -421,10 +473,10 @@ describe("discovery", () => {
 	});
 
 	it("suggests a new export to the modules using what relates to it, until they use it", () => {
-		ledger.seedExports();
+		discovery.start([]);
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
-		ledger.notice([FORMAT], []);
-		expect(ledger.nextQueued()).toMatchObject({ symbolId: SPEED, module: FORMAT });
+		discovery.observe([FORMAT], []);
+		expect(discovery.next()).toMatchObject({ symbolId: SPEED, module: FORMAT });
 		settleNext();
 
 		const suggested = ledger.candidatesForModule(TABLE, 5).candidates;
@@ -437,12 +489,12 @@ describe("discovery", () => {
 	});
 
 	it("opens a gap for a new export nothing relates to, which a model's answer closes with proposals", () => {
-		ledger.seedExports();
+		discovery.start([]);
 		plant(CLOCK, [
 			declared("elapsedSince", CLOCK, 0, "(start: number): number"),
 			declared("monotonicNow", CLOCK, 1, "(): number"),
 		]);
-		ledger.notice([CLOCK], []);
+		discovery.observe([CLOCK], []);
 		const NOW = idOf("monotonicNow", CLOCK);
 		settleNext();
 		expect(ledger.gaps(5, HISTORY)).toMatchObject({ gaps: [{ symbol: { symbolId: NOW } }], total: 1 });
@@ -473,7 +525,7 @@ describe("background discovery", () => {
 		);
 		const work = startRelationWork({ service, clock });
 		await work.ready();
-		expect(service.relations.nextQueued()).toBeNull();
+		expect(service.discovery.next()).toBeNull();
 
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
 		work.applied([{ module: FORMAT, action: "indexed" }]);
@@ -524,13 +576,7 @@ describe("background discovery", () => {
 		plantFormat(Array.from({ length: 35 }, (_, line) => declared(`formatUnit${line}`, FORMAT, line + 3)));
 		work.applied([{ module: FORMAT, action: "indexed" }]);
 		await starting;
-		expect(store.relations.queued()).toBe(20);
-		let settled = 0;
-		for (let next = service.relations.nextQueued(); next !== null; next = service.relations.nextQueued()) {
-			service.relations.settleQueued(next, null);
-			settled++;
-		}
-		expect(settled).toBe(38);
+		expect(drain(service.discovery)).toHaveLength(38);
 		work.stop();
 	});
 
@@ -546,7 +592,7 @@ describe("background discovery", () => {
 		await work.ready();
 		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
 		work.applied([{ module: FORMAT, action: "indexed" }]);
-		for (let turn = 0; turn < 5 && service.relations.nextQueued() === null; turn++) await settle();
+		for (let turn = 0; turn < 5 && service.discovery.next() === null; turn++) await settle();
 
 		let release = () => {};
 		const writing = service.gate.exclusive(() => new Promise<void>((resolve) => (release = resolve)));

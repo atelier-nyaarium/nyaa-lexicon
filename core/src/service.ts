@@ -66,6 +66,7 @@ import { RefactorPlanner } from "./refactorPlanner.js";
 import type { PlannedWrite } from "./refactorStep.js";
 import type { UnknownType } from "./refusalSlots.js";
 import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
+import { RelationDiscovery } from "./relationDiscovery.js";
 import { RelationLedger } from "./relations.js";
 import { holdsWord } from "./renameRoutes.js";
 import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
@@ -124,6 +125,7 @@ export class LexiconService {
 		});
 		this.notes = new NoteLedger(store, this.clock);
 		this.relations = new RelationLedger(store, this.clock);
+		this.discovery = new RelationDiscovery(store, this.clock);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
 		this.indexer = new WorkspaceIndexer(
 			store,
@@ -183,6 +185,8 @@ export class LexiconService {
 	readonly notes: NoteLedger;
 
 	readonly relations: RelationLedger;
+
+	readonly discovery: RelationDiscovery;
 
 	/** Cached history read shared by relation queries until it expires. */
 	private history: { at: number; commits: Promise<Commit[]>; index: Promise<CoChangeIndex | null> } | null = null;

@@ -310,6 +310,10 @@ Ordered by how much they prove:
   only by rebinding the address. A refactor step journals what its rebind moved, with the state it
   replaced, in the same transaction as the move, and every reversal restores exactly that, never a
   state inferred from the subject as it stands.
+- **Relation discovery's snapshot and queue have one writer, `core/src/relationDiscovery.ts`.**
+  `recordExports` writes an export's shape and its queue entry together, so a shape is seen only as
+  it queues, or by a store's first quiet seed. `discovery-owner-residue.test.ts` refuses any other
+  caller of the discovery row writes.
 - **A read derives its declaration topology once, through `core/src/readContext.ts`.** Which
   declarations a module holds, how they nest, which are local, which grouping stands above one, and
   the summary a declaration answers as: one derivation, built per read and handed down, so no two

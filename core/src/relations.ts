@@ -79,13 +79,6 @@ interface StatedEnd {
 	row: StatedRow;
 }
 
-/** A waiting export, and the facts generation it was read at. */
-export interface QueuedExport {
-	symbolId: string;
-	module: string;
-	generation: number;
-}
-
 /** The modules an export would suit, and how strongly anything relates to it. */
 export interface Discovery {
 	modules: Array<{ module: string; score: number; via: string[] }>;
@@ -132,18 +125,8 @@ export const DISCOVERY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /** What a module already using the export's module earns toward a suggestion. */
 const NEIGHBOUR_LIFT = 0.5;
 
-/** Below this best relation score, an export with no statement is a model gap. */
-export const GAP_SCORE = 0.25;
-
 /** Symbols a gap offers a model to judge. */
 const GAP_CANDIDATES = 16;
-
-/** Exports one module queues per batch, and suggestions one module keeps. */
-const QUEUED_PER_MODULE = 20;
-const DISCOVERY_PER_MODULE = 10;
-
-/** Exports a new store's backfill queues. */
-const BACKFILL_EXPORTS = 30;
 
 const NO_EVIDENCE: RelationEvidence = { holders: 0, commits: null, words: [], imports: 0, sameModule: false };
 const NO_PARTS: RelationParts = { callers: 0, cochange: null, words: 0, imports: 0, file: 0 };
@@ -175,9 +158,9 @@ function renderStated(row: StatedRow): StatedRelation {
 	};
 }
 
-/** What another module sees of an export; a body edit leaves it alone. */
-function shapeOf(declaration: StoredDeclaration): string {
-	return `${declaration.kind}\n${declaration.signature ?? ""}`;
+/** A module's top-level declarations its provider says it exports. */
+export function exportsIn(context: ReadContext, module: string): StoredDeclaration[] {
+	return context.moduleLevel(module).declarations.filter((each) => each.exported === true);
 }
 
 function rankOf(relation: Relation): number {
@@ -197,8 +180,6 @@ export class RelationLedger {
 	private memo = new Map<string, Scored[]>();
 	private memoGeneration = -1;
 	private memoHistory: CoChangeIndex | null = null;
-	/** Modules with exports past the queue cap, noticed again once their queue drains. */
-	private overflowed = new Set<string>();
 
 	constructor(
 		private readonly store: IndexStore,
@@ -473,101 +454,7 @@ export class RelationLedger {
 	}
 
 	////////////////////////////////
-	//  Discovery's upkeep
-
-	/**
-	 * Seeds the export snapshot without queueing, once per store, so an existing workspace starts
-	 * quiet. `unseen` modules stay out of it, for `notice` to queue whole.
-	 */
-	seedExports(unseen: readonly string[] = []): boolean {
-		if (this.store.relations.hasExports()) return false;
-		const context = new ReadContext(this.store);
-		const skipped = new Set(unseen);
-		this.store.relationWrite(() => {
-			for (const module of this.store.exportingModules()) {
-				if (skipped.has(module)) continue;
-				const exports = new Map(this.exportsIn(context, module).map((each) => [each.symbolId, shapeOf(each)]));
-				this.store.relations.setExports(module, exports);
-			}
-		});
-		return true;
-	}
-
-	/** Queues added or reshaped exports, all of a module discovery never saw; a gone export takes its suggestions along. */
-	notice(indexed: readonly string[], forgotten: readonly string[]): number {
-		const now = this.clock.now();
-		const context = new ReadContext(this.store);
-		let queued = 0;
-		this.store.relationWrite(() => {
-			for (const module of forgotten) {
-				this.store.relations.forgetModule(module);
-				this.overflowed.delete(module);
-			}
-			for (const module of indexed) {
-				const held = this.store.relations.exportsOf(module);
-				const current = new Map(this.exportsIn(context, module).map((each) => [each.symbolId, shapeOf(each)]));
-				const fresh = [...current].filter(([symbolId, shape]) => held?.get(symbolId) !== shape);
-				const taken = fresh.slice(0, QUEUED_PER_MODULE).map(([symbolId]) => ({ symbolId, module }));
-				// Past the cap, old shapes stay until the drain re-notices.
-				if (fresh.length > QUEUED_PER_MODULE) this.overflowed.add(module);
-				else this.overflowed.delete(module);
-				const seen = new Map(current);
-				for (const [symbolId] of fresh.slice(QUEUED_PER_MODULE)) {
-					const before = held?.get(symbolId);
-					if (before === undefined) seen.delete(symbolId);
-					else seen.set(symbolId, before);
-				}
-				for (const symbolId of held?.keys() ?? []) {
-					if (!current.has(symbolId)) this.store.relations.forgetExport(symbolId);
-				}
-				this.store.relations.enqueue(taken, now);
-				this.store.relations.setExports(module, seen);
-				queued += taken.length;
-			}
-		});
-		return queued;
-	}
-
-	/** Queues export changes made while no daemon watched. */
-	reconcile(): number {
-		const modules = new Set([...this.store.exportingModules(), ...this.store.relations.exportModules()]);
-		return this.notice([...modules], []);
-	}
-
-	/** Queues up to `BACKFILL_EXPORTS` exports in files the newest commits touched, newest first, so a new store samples recent work. */
-	backfill(modules: readonly string[]): number {
-		const context = new ReadContext(this.store);
-		const entries = [...new Set(modules)]
-			.flatMap((module) => this.exportsIn(context, module).map((each) => ({ symbolId: each.symbolId, module })))
-			.slice(0, BACKFILL_EXPORTS);
-		this.store.relationWrite(() => this.store.relations.enqueue(entries, this.clock.now()));
-		return entries.length;
-	}
-
-	/** The oldest waiting export and the facts generation it is read at, or null when none waits. */
-	nextQueued(): QueuedExport | null {
-		const queued = this.store.relations.nextQueued();
-		return queued === null ? null : { ...queued, generation: this.store.factsGeneration() };
-	}
-
-	/**
-	 * One export's discovery written, only over the facts it was scored on; otherwise it stays queued
-	 * for another slice. A gap opens while nothing relates to it strongly, and closes once something does.
-	 */
-	settleQueued(queued: QueuedExport, found: Discovery | null): boolean {
-		if (this.store.factsGeneration() !== queued.generation) return false;
-		const { symbolId, module } = queued;
-		const now = this.clock.now();
-		this.store.relationWrite(() => {
-			this.store.relations.dequeue(symbolId);
-			if (found === null || this.store.declaration(symbolId) === null) return;
-			this.store.relations.replaceDiscovery(symbolId, module, found.modules, now, DISCOVERY_PER_MODULE);
-			if (found.best < GAP_SCORE && !found.stated) this.store.relations.addGap(symbolId, module, now);
-			else this.store.relations.closeGap(symbolId);
-		});
-		if (this.overflowed.has(module) && this.store.relations.queuedIn(module) === 0) this.notice([module], []);
-		return true;
-	}
+	//  Upkeep
 
 	/** Stale suggestions and faded feedback, gone. */
 	tidy(): void {
@@ -722,14 +609,13 @@ export class RelationLedger {
 		}
 		for (const partner of history?.partners(focus.module, PARTNER_MODULES) ?? []) {
 			if (apart(partner.file)) continue;
-			for (const each of this.exportsIn(context, partner.file).slice(0, PARTNER_EXPORTS)) {
+			for (const each of exportsIn(context, partner.file).slice(0, PARTNER_EXPORTS)) {
 				candidates.add(each.symbolId);
 			}
 		}
 		const focusImports = this.store.importTargets(focus.module);
 		for (const module of focusImports.slice(0, IMPORTED_MODULES)) {
-			for (const each of this.exportsIn(context, module).slice(0, IMPORTED_EXPORTS))
-				candidates.add(each.symbolId);
+			for (const each of exportsIn(context, module).slice(0, IMPORTED_EXPORTS)) candidates.add(each.symbolId);
 		}
 		for (const id of inside) candidates.delete(id);
 
@@ -795,11 +681,6 @@ export class RelationLedger {
 			});
 		}
 		return scored;
-	}
-
-	/** A module's top-level declarations its provider says it exports. */
-	private exportsIn(context: ReadContext, module: string): StoredDeclaration[] {
-		return context.moduleLevel(module).declarations.filter((each) => each.exported === true);
 	}
 
 	/** What a caller uses: a declaration's own uses and its locals', or a module's top-level uses. */

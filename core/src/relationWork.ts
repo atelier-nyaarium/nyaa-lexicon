@@ -3,7 +3,8 @@
 
 import type { IndexOutcome } from "@nyaa-lexicon/protocol";
 import type { Clock, TimerHandle } from "./clock.js";
-import type { Discovery, QueuedExport } from "./relations.js";
+import type { QueuedExport } from "./relationDiscovery.js";
+import type { Discovery } from "./relations.js";
 import type { LexiconService } from "./service.js";
 import type { Timings } from "./timings.js";
 import { GateBusy } from "./workspaceGate.js";
@@ -20,7 +21,7 @@ export interface RelationWorkOptions {
 }
 
 export interface RelationWork {
-	/** Called after indexing and upgrades complete; seeds discovery and starts queued work. */
+	/** Called after indexing and upgrades complete; starts discovery and its queued work. */
 	ready: () => Promise<void>;
 	/** Queues changed exports and removes forgotten modules from discovery. */
 	applied: (outcomes: readonly IndexOutcome[]) => void;
@@ -41,8 +42,8 @@ const SLICE_GAP_MS = 200;
 /** After a busy gate or a failure. */
 const RETRY_MS = 5_000;
 
-/** Number of recent commits used to backfill a new store. */
-const BACKFILL_COMMITS = 20;
+/** Newest commits whose files a store's first start samples. */
+const SAMPLE_COMMITS = 20;
 
 /** Stale suggestions and faded feedback are tidied this often. */
 const TIDY_EVERY_MS = 60 * 60 * 1000;
@@ -53,9 +54,8 @@ const TIDY_EVERY_MS = 60 * 60 * 1000;
 export function startRelationWork(options: RelationWorkOptions): RelationWork {
 	const { service, clock } = options;
 	let ready = false;
-	/** `ready` called, not yet seeded. */
+	/** `ready` called, not yet started. */
 	let starting = false;
-	const early = new Set<string>();
 	let stopped = false;
 	let running = false;
 	/** Batches whose exports are still being noticed. */
@@ -100,7 +100,7 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 			const found = await service.gate
 				.within(SLICE_WAIT_MS)
 				.shared(async (): Promise<{ queued: QueuedExport; found: Discovery | null } | null> => {
-					const queued = service.relations.nextQueued();
+					const queued = service.discovery.next();
 					if (queued === null) return null;
 					const work = async () => discover(queued.symbolId, history);
 					const result =
@@ -114,7 +114,7 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 				if (resting()) quiet();
 				return;
 			}
-			await service.gate.exclusive(async () => service.relations.settleQueued(found.queued, found.found));
+			await service.gate.exclusive(async () => service.discovery.settle(found.queued, found.found));
 		} catch (error) {
 			if (!(error instanceof GateBusy)) options.onError?.(error);
 			next = RETRY_MS;
@@ -139,35 +139,22 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 			if (ready || starting || stopped) return;
 			starting = true;
 			try {
-				const recent = await service.recentlyChanged(BACKFILL_COMMITS);
+				const recent = await service.recentlyChanged(SAMPLE_COMMITS);
 				await service.gate.exclusive(async () => {
-					const meanwhile = [...early];
-					early.clear();
-					ready = true;
-					// A module the index does not hold has no exports, so it queues nothing.
-					if (service.relations.seedExports(meanwhile)) {
-						// Queue modules skipped during seeding.
-						service.relations.notice(meanwhile, []);
-						service.relations.backfill(recent.filter((module) => !meanwhile.includes(module)));
-					} else service.relations.reconcile();
+					service.discovery.start(recent);
 					service.relations.tidy();
 				});
 			} catch (error) {
 				options.onError?.(error);
 			}
-			early.clear();
 			starting = false;
 			ready = true;
 			armTidy();
 			schedule(0);
 		},
 		applied: (outcomes) => {
-			if (stopped) return;
-			if (!ready) {
-				if (!starting) return;
-				for (const outcome of outcomes) if (outcome.action === "indexed") early.add(outcome.module);
-				return;
-			}
+			// Batches before `ready` belong to the quiet seed; those while it reads history are observed.
+			if (stopped || (!ready && !starting)) return;
 			const indexed = outcomes.filter((outcome) => outcome.action === "indexed").map((outcome) => outcome.module);
 			const forgotten = outcomes
 				.filter((outcome) => outcome.action === "forgotten")
@@ -175,7 +162,7 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 			if (indexed.length === 0 && forgotten.length === 0) return;
 			noticing++;
 			void service.gate
-				.exclusive(async () => service.relations.notice(indexed, forgotten))
+				.exclusive(async () => service.discovery.observe(indexed, forgotten))
 				.catch((error) => options.onError?.(error))
 				.finally(() => {
 					noticing--;

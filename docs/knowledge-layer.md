@@ -203,14 +203,17 @@ NyaaCode, asks it and submits the answer.
   own intent. Counts halve every thirty days, cap at ten, and scale a score between half and double,
   which can carry a pair across the floor either way. They key by symbol id and are discarded with a
   rebuild; an accept never makes an edge.
-- **Discovery.** `core/src/relationWork.ts` runs in the background. Once the index is warm and
-  upgraded it records every module's exports by kind and signature, queueing nothing, so an existing
-  workspace starts quiet; a new store queues up to 30 exports of files its newest commits touched,
-  and every export of files indexed while that history was read. After each batch, an export that
-  is new or changed its kind or signature queues; a body edit does not. A module queues 20 at a
-  time, the rest once those drain. One export per slice: history read ungated, the scoring under a shared read admitted within
-  a short wait, the write under a short exclusive one, and a busy gate defers the slice. The write
-  lands only over the facts it was scored on; a batch between leaves the export queued. Its best
+- **Discovery.** `core/src/relationWork.ts` runs it in the background; `core/src/relationDiscovery.ts`
+  is the only writer of its export snapshot and queue, and records a shape seen only as its export
+  queues. The first start on a store, once the index is warm and upgraded, records every module's
+  exports by kind and signature quietly, so an existing workspace starts quiet, except up to 30
+  exports of files its newest commits touched, which queue; a module indexed while that history was
+  read is observed instead. Every later start observes every module. An observed export that is new
+  or changed its kind or signature queues; a body edit does not. A module admits 20 per observe, the
+  rest once its queue drains. One export per slice: history read ungated, the scoring under a shared
+  read admitted within a short wait, the write under a short exclusive one, and a busy gate defers
+  the slice. The write lands only over the facts it was scored on; a batch between leaves the
+  export queued. Its best
   related symbols in its own language find the modules that use them but not it, and a module
   already using something the export's module declares counts too; the three best keep it as a
   suggestion for 14 days, shown while the module still uses a symbol that found it. An export
