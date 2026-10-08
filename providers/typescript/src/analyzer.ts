@@ -34,7 +34,7 @@ import { aliasEdgeSpan } from "./imports.js";
 import type { TypeScriptProject, TypeScriptStore, TypeScriptValue } from "./module.js";
 import { makeMoveEdits } from "./move.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";
-import { overlaidSystem, runsAsEsm, toModule } from "./project.js";
+import { overlaidSystem, runsAsEsm, runtimeOf, toModule } from "./project.js";
 import {
 	contextualPropertySymbol,
 	destructuredElement,
@@ -131,6 +131,10 @@ export interface Overlay {
 
 export class TypeScriptAnalyzer {
 	private readonly service: ts.LanguageService;
+
+	runtime(module: string): "esm" | "cjs" | undefined {
+		return runtimeOf(this.fileName(module), this.project.loaded);
+	}
 	private readonly programCounters = new ProgramGenerationStats();
 
 	/** Store text gates symbols; disk serves type reads. An overlay's texts stand in for the store's. */
@@ -223,7 +227,9 @@ export class TypeScriptAnalyzer {
 		const context = this.sourceContext(module);
 		if (isSourceFailure(context)) return extractFile(module, source);
 		const version = this.scriptVersion(context.source.fileName);
-		return this.memo(`extract:${module}:${version}`, () => extractFile(module, context.source, context.checker));
+		return this.memo(`extract:${module}:${version}`, () =>
+			extractFile(module, context.source, context.checker, undefined, this.project.loaded.options),
+		);
 	}
 
 	bind(module: string, name: string, range: Range): Binding {

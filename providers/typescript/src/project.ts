@@ -380,6 +380,26 @@ export function runsAsEsm(fileName: string, setup: CompilerSetup): boolean {
 	return setup.options !== FALLBACK && kind >= ts.ModuleKind.ES2015 && kind <= ts.ModuleKind.ESNext;
 }
 
+/** Module format when TypeScript can name one from the project and file. */
+export function runtimeOf(fileName: string, setup: CompilerSetup): "esm" | "cjs" | undefined {
+	const kind = setup.options.module;
+	if (/\.m[tj]s$/.test(fileName)) return "esm";
+	if (/\.c[tj]s$/.test(fileName)) return "cjs";
+	if (kind === undefined || kind === ts.ModuleKind.Preserve) return undefined;
+	if (kind >= ts.ModuleKind.Node16 && kind <= ts.ModuleKind.NodeNext) {
+		return runsAsEsm(fileName, setup) ? "esm" : "cjs";
+	}
+	if (
+		kind === ts.ModuleKind.CommonJS ||
+		kind === ts.ModuleKind.AMD ||
+		kind === ts.ModuleKind.UMD ||
+		kind === ts.ModuleKind.System
+	)
+		return "cjs";
+	if (kind >= ts.ModuleKind.ES2015 && kind <= ts.ModuleKind.ESNext) return "esm";
+	return undefined;
+}
+
 /** Workspace-relative and POSIX, matching the id grammar. Null when it escapes the workspace. */
 export function toModule(workspaceRoot: string, absolute: string): string | null {
 	try {

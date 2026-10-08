@@ -147,6 +147,10 @@ const SELECTING_KINDS: readonly string[] = ["wildcard", "injection"];
  */
 export const ImportEdgeSchema = z
 	.object({
+		/** Whether evaluating the file loads this edge. */
+		loads: z.enum(["static", "deferred"]).optional(),
+		/** Whether TypeScript emit removes this import edge. */
+		elided: z.boolean().optional(),
 		kind: ImportKindSchema,
 		/**
 		 * The edge as written: `x as y`, `*`, a default or namespace clause, an injection or
@@ -460,6 +464,8 @@ export type FileRole = z.infer<typeof FileRoleSchema>;
 export const FileFactsSchema = z
 	.object({
 		module: z.string().min(1),
+		/** Module format chosen by the compiler for this file. */
+		runtime: z.enum(["esm", "cjs"]).optional(),
 		/** Content hash the facts were derived from, so a stale result is detectable. */
 		contentHash: z.string().min(1),
 		declarations: z.array(DeclarationSchema),

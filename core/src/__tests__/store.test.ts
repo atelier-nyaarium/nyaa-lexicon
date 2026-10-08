@@ -73,6 +73,31 @@ describe("keeping what a provider said below error", () => {
 	const warning = { severity: "warning" as const, message: "duplicate key", range: POINT };
 	const info = { severity: "info" as const, message: "comment in strict JSON" };
 
+	it("round trips load-cycle facts through their dedicated columns", () => {
+		store.replaceFile({
+			module: "src/a.ts",
+			contentHash: "h1",
+			runtime: "esm",
+			declarations: [],
+			references: [reference("read", null)],
+			imports: [
+				{
+					specifier: "./b",
+					edges: [{ ...sideEffect("./b", POINT, 0).edges[0]!, loads: "deferred", elided: true }],
+				},
+			],
+		});
+		expect(store.moduleRuntime("src/a.ts")).toBe("esm");
+		expect(store.importsIn("src/a.ts")[0]).toMatchObject({ loads: "deferred", elided: true });
+		const raw = new DatabaseSync(path.join(dir, "index.sqlite"));
+		expect(raw.prepare("SELECT runtime FROM files WHERE module = ?").get("src/a.ts")).toEqual({ runtime: "esm" });
+		expect(raw.prepare("SELECT loads, elided FROM imports WHERE module = ?").get("src/a.ts")).toEqual({
+			loads: "deferred",
+			elided: 1,
+		});
+		raw.close();
+	});
+
 	it("keeps a file's notes with its facts, replaces them with the file, and forgets them with it", () => {
 		store.replaceFile({
 			module: "src/a.json",

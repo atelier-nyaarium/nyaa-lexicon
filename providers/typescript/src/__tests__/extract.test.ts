@@ -521,7 +521,7 @@ export enum Color { Red }
 		).toEqual([
 			["type:Box", "class", undefined, "public"],
 			["type:Box/method:static", "constructor", "staticBlock", "public"],
-			["type:Box/method:static/term:init", "constant", undefined, "local"],
+			["type:Box/method:static/term:init", "constant", "const", "local"],
 			["type:Box/term:init", "property", undefined, "public"],
 		]);
 		const block = found[1];
@@ -1358,6 +1358,7 @@ describe("imports", () => {
 						kind: "sideEffect",
 						span: rangeForText('import "./polyfill";', 'import "./polyfill";'),
 						bindsLocally: false,
+						loads: "static",
 						certainty: { status: "known" },
 						order: 0,
 					},

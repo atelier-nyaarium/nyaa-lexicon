@@ -449,6 +449,7 @@ export class WorkspaceIndexer {
 		try {
 			this.store.replaceFile({
 				module,
+				...(facts.runtime === undefined ? {} : { runtime: facts.runtime }),
 				contentHash: readHash,
 				declarations: facts.declarations,
 				references: facts.references,

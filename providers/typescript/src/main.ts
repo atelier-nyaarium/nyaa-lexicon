@@ -46,6 +46,7 @@ import {
 	readableSystem,
 	renderSpecifier,
 	resolveSpecifier,
+	runtimeOf,
 	type SpecifierRenderer,
 	toModule,
 } from "./project.js";
@@ -189,9 +190,11 @@ function fullFacts(analyzer: TypeScriptAnalyzer, params: ReadText): FileFacts {
 		analyzer.sourceFile(params.module) ??
 		ts.createSourceFile(params.module, params.text, ts.ScriptTarget.ESNext, true, scriptKindOf(params.module));
 	const extracted = analyzer.extract(params.module, source);
+	const runtime = analyzer.runtime(params.module);
 	return {
 		module: params.module,
 		contentHash: params.contentHash,
+		...(runtime === undefined ? {} : { runtime }),
 		declarations: extracted.declarations,
 		references: analyzer.bindReferences(params.module, extracted.references, extracted.imports),
 		imports: extracted.imports,
@@ -315,6 +318,7 @@ export class TypeScriptProvider {
 
 		// Outline parses skip binding and type analysis.
 		if (params.depth === "outline") {
+			const runtime = runtimeOf(path.resolve(this.store.project.root, params.module), this.store.project.loaded);
 			const source = ts.createSourceFile(
 				params.module,
 				params.text,
@@ -326,6 +330,7 @@ export class TypeScriptProvider {
 			return {
 				module: params.module,
 				contentHash: params.contentHash,
+				...(runtime === undefined ? {} : { runtime }),
 				declarations: extracted.declarations,
 				references: [],
 				imports: extracted.imports,

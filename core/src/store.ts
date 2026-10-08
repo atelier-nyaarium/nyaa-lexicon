@@ -151,6 +151,7 @@ export interface DocFilter {
 
 export interface ReplaceFileInput {
 	module: string;
+	runtime?: "esm" | "cjs";
 	contentHash: string;
 	declarations: Declaration[];
 	references: Reference[];
@@ -245,6 +246,7 @@ CREATE TABLE meta (
 
 CREATE TABLE files (
   module      TEXT PRIMARY KEY,
+  runtime     TEXT CHECK (runtime IN ('esm', 'cjs')),
   contentHash TEXT NOT NULL,
   indexedAt   INTEGER NOT NULL,
   -- Outline rows require a full parse.
@@ -390,6 +392,8 @@ CREATE TABLE imports (
   module     TEXT NOT NULL,
   specifier  TEXT NOT NULL,
   kind       TEXT NOT NULL,
+  loads      TEXT CHECK (loads IN ('static', 'deferred')),
+  elided     INTEGER CHECK (elided IN (0, 1)),
   -- The source name and its span; null when the edge names no export.
   name       TEXT,
   startLine  INTEGER,
@@ -1416,12 +1420,13 @@ export class IndexStore {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
 				.prepare(
-					`INSERT OR REPLACE INTO files (module, contentHash, indexedAt, depth, content, provider, generated, generatedReason,
+					`INSERT OR REPLACE INTO files (module, runtime, contentHash, indexedAt, depth, content, provider, generated, generatedReason,
 					 role, roleHow, roleSymbolId, roleReason, surface, exportsKnown, allList)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					module,
+					input.runtime ?? null,
 					contentHash,
 					this.nextStamp(),
 					depth,
@@ -1524,11 +1529,11 @@ export class IndexStore {
 			}
 
 			const importRow = this.db.prepare(
-				`INSERT INTO imports (factId, module, specifier, kind, name, startLine, startChar, endLine, endChar,
+				`INSERT INTO imports (factId, module, specifier, kind, loads, elided, name, startLine, startChar, endLine, endChar,
 				 localName, localStartLine, localStartChar, localEndLine, localEndChar,
 				 spanStartLine, spanStartChar, spanEndLine, spanEndChar, bindsLocally, typeOnly, edge,
 				 landing, target, targetScope, surfaceTarget)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			// One row per edge, a side effect and a wildcard included: the edge is real when it names nothing.
 			for (const statement of imports) {
@@ -1540,6 +1545,8 @@ export class IndexStore {
 						module,
 						statement.specifier,
 						edge.kind,
+						edge.loads ?? null,
+						edge.elided === undefined ? null : edge.elided ? 1 : 0,
 						edge.name ?? null,
 						edge.range?.start.line ?? null,
 						edge.range?.start.character ?? null,
@@ -2274,6 +2281,13 @@ export class IndexStore {
 			| { depth: IndexDepth }
 			| undefined;
 		return row?.depth ?? null;
+	}
+
+	moduleRuntime(module: string): "esm" | "cjs" | null {
+		const row = this.db.prepare("SELECT runtime FROM files WHERE module = ?").get(module) as
+			| { runtime: "esm" | "cjs" | null }
+			| undefined;
+		return row?.runtime ?? null;
 	}
 
 	/** Null means no role was reported. */
@@ -3559,6 +3573,8 @@ interface ImportRow {
 	module: string;
 	specifier: string;
 	edge: string;
+	loads: string | null;
+	elided: number | null;
 	landing: string | null;
 }
 
@@ -3567,6 +3583,8 @@ function rowToImport(raw: unknown): StoredImport {
 	const row = raw as ImportRow;
 	return {
 		...(JSON.parse(row.edge) as ImportEdge),
+		...(row.loads === null ? {} : { loads: row.loads as ImportEdge["loads"] }),
+		...(row.elided === null ? {} : { elided: row.elided === 1 }),
 		factId: row.factId,
 		module: row.module,
 		specifier: row.specifier,

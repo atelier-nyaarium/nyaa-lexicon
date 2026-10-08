@@ -156,13 +156,14 @@ export type Compatibility =
 // each as an unknown method.
 // 6.7.0: `discoverProject` may carry core's workspace-relative file scope.
 // 6.8.0: move and arrange requests may promote private dependencies in place.
-export const PROTOCOL_VERSION = "6.8.0" as const;
+// 6.9.0: optional module runtime and import load facts.
+export const PROTOCOL_VERSION = "6.9.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 6;
 
 /** Store layout version; each names its own index file. */
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 

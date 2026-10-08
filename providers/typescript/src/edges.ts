@@ -36,6 +36,7 @@ export interface EdgeReads {
 	idsOf(node: ts.Node, name: string): readonly string[];
 	/** Proves CommonJS requires and whether a namespace holds values. */
 	checker?: ts.TypeChecker | undefined;
+	compilerOptions?: ts.CompilerOptions | undefined;
 	/** JavaScript, where CommonJS reads apply. */
 	javascript: boolean;
 	/** Only the imports a re-export names, as a runtime bundle reports them. */
@@ -91,32 +92,99 @@ export function moduleEdges(source: ts.SourceFile, reads: EdgeReads): ModuleEdge
 function importDrafts(source: ts.SourceFile, reads: EdgeReads): { all: DraftImport[]; topLevel: DraftImport[] } {
 	const all: DraftImport[] = [];
 	const topLevel: DraftImport[] = [];
-	const add = (draft: DraftImport | undefined, top: boolean) => {
+	const add = (draft: DraftImport | undefined, top: boolean, loads?: "static" | "deferred") => {
 		if (draft === undefined) return;
+		if (loads !== undefined) for (const edge of draft.edges) edge.loads = loads;
 		all.push(draft);
 		if (top) topLevel.push(draft);
 	};
 	if (reads.reExportsOnly === true) {
 		for (const statement of source.statements) {
-			if (ts.isExportDeclaration(statement)) add(importOf(statement, source), true);
+			if (ts.isExportDeclaration(statement)) add(importOf(statement, source), true, "static");
 		}
 		return { all, topLevel };
 	}
 	const requires = reads.javascript ? reads.checker : undefined;
 	const visit = (node: ts.Node): void => {
 		if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) {
-			add(importOf(node, source), node.parent === source);
+			const imported = importOf(node, source);
+			if (ts.isImportDeclaration(node)) markElided(imported, node, source, reads);
+			add(imported, node.parent === source, "static");
 			return;
 		}
-		if (ts.isCallExpression(node) && isDynamicImport(node)) add(dynamicImportOf(node, source), false);
-		else if (ts.isCallExpression(node) && requires !== undefined) {
+		if (ts.isCallExpression(node) && isDynamicImport(node)) {
+			const topLevelAwait =
+				ts.isAwaitExpression(node.parent) && node.parent.expression === node && !insideFunction(node);
+			add(dynamicImportOf(node, source), false, topLevelAwait ? "static" : "deferred");
+		} else if (ts.isCallExpression(node) && requires !== undefined) {
 			const draft = requireOf(node, source, requires);
-			add(draft, draft?.edges.some((edge) => edge.bindsLocally) === true);
+			add(
+				draft,
+				draft?.edges.some((edge) => edge.bindsLocally) === true,
+				insideFunction(node) ? "deferred" : "static",
+			);
 		}
 		ts.forEachChild(node, visit);
 	};
 	visit(source);
 	return { all, topLevel };
+}
+
+function markElided(
+	draft: DraftImport | undefined,
+	node: ts.ImportDeclaration,
+	source: ts.SourceFile,
+	reads: EdgeReads,
+): void {
+	if (draft === undefined) return;
+	const options = reads.compilerOptions;
+	if (
+		options === undefined ||
+		options.verbatimModuleSyntax === true ||
+		options.preserveValueImports === true ||
+		scriptIsJavaScript(source)
+	)
+		return;
+	const bindings = node.importClause?.namedBindings;
+	const names: ts.Identifier[] = [];
+	if (node.importClause?.name !== undefined) names.push(node.importClause.name);
+	if (bindings !== undefined && ts.isNamespaceImport(bindings)) names.push(bindings.name);
+	if (bindings !== undefined && ts.isNamedImports(bindings))
+		names.push(...bindings.elements.map((element) => element.name));
+	if (names.length === 0) return;
+	const checker = reads.checker;
+	const hasValueUse =
+		checker !== undefined &&
+		names.some((name) => {
+			const symbol = checker.getSymbolAtLocation(name);
+			if (symbol === undefined) return false;
+			let used = false;
+			const visit = (item: ts.Node) => {
+				if (used) return;
+				if (
+					ts.isIdentifier(item) &&
+					item !== name &&
+					checker.getSymbolAtLocation(item) === symbol &&
+					!ts.isPartOfTypeNode(item)
+				)
+					used = true;
+				ts.forEachChild(item, visit);
+			};
+			visit(source);
+			return used;
+		});
+	if (!hasValueUse) for (const edge of draft.edges) edge.elided = true;
+}
+
+function scriptIsJavaScript(source: ts.SourceFile): boolean {
+	return /\.jsx?$/.test(source.fileName);
+}
+
+function insideFunction(node: ts.Node): boolean {
+	for (let current = node.parent; current !== undefined && !ts.isSourceFile(current); current = current.parent) {
+		if (ts.isFunctionLike(current)) return true;
+	}
+	return false;
 }
 
 /** A declaration's meanings by its syntax; a namespace's only when the checker says whether it holds values. */
