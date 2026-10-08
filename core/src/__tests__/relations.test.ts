@@ -580,6 +580,60 @@ describe("background discovery", () => {
 		work.stop();
 	});
 
+	it("retries a failed start, observing batches meanwhile", async () => {
+		const service = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+			clock,
+		);
+		const markSeeded = store.relations.markSeeded.bind(store.relations);
+		let failures = 1;
+		store.relations.markSeeded = () => {
+			if (failures-- > 0) throw new Error("disk full");
+			markSeeded();
+		};
+		const errors: unknown[] = [];
+		const work = startRelationWork({ service, clock, onError: (error) => errors.push(error) });
+		await work.ready();
+		const failed = store.relations.seeded();
+		plantFormat([declared("formatSpeed", FORMAT, 3, "(bytesPerSecond: number): string")]);
+		work.applied([{ module: FORMAT, action: "indexed" }]);
+		const suggested = () =>
+			service.relations.candidatesForModule(TABLE, 5).candidates.map((each) => each.export.name);
+		for (let turn = 0; turn < 40 && !suggested().includes("formatSpeed"); turn++) {
+			await settle();
+			clock.advance(1_000);
+		}
+		expect({ failed, seeded: store.relations.seeded(), errors: errors.length }).toEqual({
+			failed: false,
+			seeded: true,
+			errors: 1,
+		});
+		expect(suggested()).toContain("formatSpeed");
+		work.stop();
+	});
+
+	it("writes nothing from a start that stop overtook", async () => {
+		const service = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+			clock,
+		);
+		const work = startRelationWork({ service, clock });
+		const starting = work.ready();
+		work.stop();
+		await starting;
+		await work.idle();
+		expect({ seeded: store.relations.seeded(), snapshot: store.relations.exportModules() }).toEqual({
+			seeded: false,
+			snapshot: [],
+		});
+	});
+
 	it("defers a slice while an index write holds the gate, then runs it", async () => {
 		const service = new LexiconService(
 			store,

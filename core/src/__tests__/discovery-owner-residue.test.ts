@@ -1,14 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
 import { sourceFiles } from "@nyaa-lexicon/protocol";
-import { memberCalls, parsedFiles } from "@nyaa-lexicon/protocol/ast";
+import { declarationNamed, lineOf, memberCalls, parsedFiles, stringsIn } from "@nyaa-lexicon/protocol/ast";
+import type ts from "typescript";
 
 ////////////////////////////////
 //  Interfaces & Types
 
 /**
- * Holds RelationDiscovery as the only writer of discovery's export snapshot, queue, suggestions and
- * gaps.
+ * Holds RelationDiscovery as the only writer of discovery's export snapshot and queue, and of the
+ * suggestions and gaps a settle writes.
  *
  * Bug class killed: a changed export that never reaches the queue. The snapshot records a shape as
  * seen, so a second writer that records shapes apart from queueing them loses those exports for
@@ -17,6 +18,14 @@ import { memberCalls, parsedFiles } from "@nyaa-lexicon/protocol/ast";
 const CORE_SRC = join(import.meta.dirname, "..");
 
 const OWNER = "relationDiscovery.ts";
+
+const ROWS = "relationRows.ts";
+
+/** SQL that writes the snapshot, the queue or the first-start marker. */
+const TABLE_WRITE = /\b(INSERT|REPLACE|UPDATE|DELETE\s+FROM|DROP\s+TABLE)\b[^;]*\brelation_(exports|queue|seeded)\b/i;
+
+/** The row methods whose SQL may write those tables; each is the owner's or private to the rows. */
+const ROW_WRITERS = ["recordExports", "markSeeded", "forgetExport", "forgetModule", "dequeue"];
 
 /** The row writes only the owner may call. */
 const WRITES = [
@@ -55,6 +64,31 @@ describe("only RelationDiscovery writes discovery's snapshot and queue", () => {
 		expect(
 			offenders,
 			"discovery's snapshot and queue belong to RelationDiscovery. Route through start, observe or settle.",
+		).toEqual([]);
+	});
+
+	it("keeps those table writes inside the listed row methods", () => {
+		const files = parsedFiles(CORE_SRC, SKIP);
+		const rows = files.find(({ file }) => basename(file) === ROWS);
+		if (rows === undefined) throw new Error(`${ROWS} not found`);
+		const writers = ROW_WRITERS.flatMap((name) => {
+			const node = declarationNamed(rows.source, name);
+			return node === undefined ? [] : [node];
+		});
+		expect(writers).toHaveLength(ROW_WRITERS.length);
+		const inWriter = (node: ts.Node) => writers.some((writer) => node.pos >= writer.pos && node.end <= writer.end);
+
+		const writes = files.flatMap((parsed) =>
+			stringsIn(parsed.source)
+				.filter(({ text }) => TABLE_WRITE.test(text))
+				.map(({ node }) => ({ where: `${parsed.file}:${lineOf(parsed, node)}`, rows: parsed === rows, node })),
+		);
+		expect(writes.filter((write) => write.rows).length, "the row writers' own SQL should be found").toBeGreaterThan(
+			0,
+		);
+		expect(
+			writes.filter((write) => !write.rows || !inWriter(write.node)).map((write) => write.where),
+			"only the listed row methods write the snapshot and queue tables; the owner calls them.",
 		).toEqual([]);
 	});
 });

@@ -42,6 +42,9 @@ const SLICE_GAP_MS = 200;
 /** After a busy gate or a failure. */
 const RETRY_MS = 5_000;
 
+/** A failed start's retry delay doubles up to this. */
+const START_RETRY_MAX_MS = 10 * 60_000;
+
 /** Newest commits whose files a store's first start samples. */
 const SAMPLE_COMMITS = 20;
 
@@ -62,6 +65,8 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 	let noticing = 0;
 	let timer: TimerHandle | null = null;
 	let tidy: TimerHandle | null = null;
+	let restart: TimerHandle | null = null;
+	let failedStarts = 0;
 	let waiters: Array<() => void> = [];
 
 	const quiet = () => {
@@ -123,7 +128,44 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 		schedule(next);
 	}
 
+	/** Starts discovery; a failure stays `starting`, still observing batches, and retries with backoff. */
+	async function begin(): Promise<void> {
+		let started = false;
+		try {
+			const recent = await service.recentlyChanged(SAMPLE_COMMITS);
+			started = await service.gate.exclusive(async () => {
+				if (stopped) return false;
+				service.discovery.start(recent);
+				try {
+					service.relations.tidy();
+				} catch (error) {
+					// The start stands; the next tidy runs on schedule.
+					options.onError?.(error);
+				}
+				return true;
+			});
+		} catch (error) {
+			options.onError?.(error);
+		}
+		if (stopped) return;
+		if (!started) {
+			restart = clock.setTimer(
+				() => {
+					restart = null;
+					void begin();
+				},
+				Math.min(START_RETRY_MAX_MS, RETRY_MS * 2 ** failedStarts++),
+			);
+			return;
+		}
+		starting = false;
+		ready = true;
+		armTidy();
+		schedule(0);
+	}
+
 	const armTidy = () => {
+		if (stopped) return;
 		tidy = clock.setTimer(() => {
 			void service.gate
 				.exclusive(async () => service.relations.tidy())
@@ -138,19 +180,7 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 		ready: async () => {
 			if (ready || starting || stopped) return;
 			starting = true;
-			try {
-				const recent = await service.recentlyChanged(SAMPLE_COMMITS);
-				await service.gate.exclusive(async () => {
-					service.discovery.start(recent);
-					service.relations.tidy();
-				});
-			} catch (error) {
-				options.onError?.(error);
-			}
-			starting = false;
-			ready = true;
-			armTidy();
-			schedule(0);
+			await begin();
 		},
 		applied: (outcomes) => {
 			// Batches before `ready` belong to the quiet seed; those while it reads history are observed.
@@ -172,10 +202,10 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 		},
 		stop: () => {
 			stopped = true;
-			if (timer !== null) clock.clearTimer(timer);
-			if (tidy !== null) clock.clearTimer(tidy);
+			for (const armed of [timer, tidy, restart]) if (armed !== null) clock.clearTimer(armed);
 			timer = null;
 			tidy = null;
+			restart = null;
 			quiet();
 		},
 		idle: () =>
