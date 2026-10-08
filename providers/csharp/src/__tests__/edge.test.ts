@@ -1121,26 +1121,24 @@ describe("C# imports and binding", () => {
 	});
 
 	it("counts nested type argument lists in one walk, lists `>>` closes among them", () => {
-		const timed = (depth: number) => {
+		const work = (depth: number) => {
 			const type = `H<${"G<".repeat(depth)}int${">".repeat(depth)}, int>`;
 			const text = `class G<T> { } class H<A, B> { } class U { ${type} f; }\n`;
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				const { facts } = parse(text);
-				best = Math.min(best, performance.now() - started);
-				const bound = facts.references.map((item) =>
-					item.binding.status === "bound" ? item.binding.symbolId : item.binding.status,
-				);
-				expect(bound).toHaveLength(depth + 1);
-				expect(new Set(bound)).toEqual(
-					new Set(["lexicon csharp main.cs H(2)#", "lexicon csharp main.cs G(1)#"]),
-				);
-			}
-			return best;
+			const meter = { steps: 0 };
+			const provider = new CsharpProvider(meter);
+			startProvider(provider);
+			const facts = parseThroughKit(provider, { module: "main.cs", contentHash: "nested", text });
+			const bound = facts.references.map((item) =>
+				item.binding.status === "bound" ? item.binding.symbolId : item.binding.status,
+			);
+			expect(bound).toHaveLength(depth + 1);
+			expect(new Set(bound)).toEqual(new Set(["lexicon csharp main.cs H(2)#", "lexicon csharp main.cs G(1)#"]));
+			return meter.steps;
 		};
-		// An odd depth leaves one `>` past the `>>` pairs. One walk scales 8x; a walk per list scales 64x.
-		expect(timed(8_001) / timed(1_001)).toBeLessThan(16);
+		// A walk per nested list would multiply the token visits.
+		const small = work(1_001);
+		const large = work(8_001);
+		expect(large / small).toBeLessThan(12);
 	});
 
 	it("looks a type up among many using directives with work linear in them", () => {

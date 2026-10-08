@@ -23,6 +23,7 @@ import {
 	PROTOCOL_VERSION,
 	parseSymbolId,
 	type Range,
+	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import { memberReads, parsedFiles } from "@nyaa-lexicon/protocol/ast";
 import { CppProvider, REFERENCE_ROLES, TIERS } from "../main.js";
@@ -43,8 +44,8 @@ function workspace(files: Record<string, string>): string {
 	return root;
 }
 
-function wire(root = process.cwd()) {
-	const handlers = handlersFor(new CppProvider());
+function wire(root = process.cwd(), meter?: WorkMeter) {
+	const handlers = handlersFor(new CppProvider(meter));
 	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
@@ -797,7 +798,7 @@ describe("C++ provider contract", () => {
 		expect(spread.scopeReads).toBeLessThanOrEqual(2 * count);
 	});
 
-	test("binds names reached through many headers in time near linear in their count", () => {
+	test("binds names reached through many headers with work near linear in their count", () => {
 		const shapes: Record<string, (count: number) => string[]> = {
 			interleaved: (count) =>
 				Array.from({ length: count }, (_, index) => `#include <h${index}.hpp>\nint u${index} = v${index};`),
@@ -815,26 +816,21 @@ describe("C++ provider contract", () => {
 					`${chained && index + 1 < count ? `#include <h${index + 1}.hpp>\n` : ""}int v${index};\n${unused(index)}`,
 				]),
 			);
-		const timed = (shape: string, count: number) => {
+		const work = (shape: string, count: number) => {
 			const root = workspace(headers(count, shape === "chained"));
 			const text = (shapes[shape] as (count: number) => string[])(count).join("\n");
-			let best = Number.POSITIVE_INFINITY;
-			let bound = 0;
-			for (let round = 0; round < 3; round++) {
-				const provider = wire(root);
-				const started = performance.now();
-				const facts = provider.parseFile({ module: "src/main.cpp", contentHash: "main", text });
-				best = Math.min(best, performance.now() - started);
-				bound = facts.references.filter((reference) => reference.binding.status === "bound").length;
-			}
-			return { best, bound };
+			const meter: WorkMeter = { steps: 0 };
+			const provider = wire(root, meter);
+			const facts = provider.parseFile({ module: "src/main.cpp", contentHash: "main", text });
+			const bound = facts.references.filter((reference) => reference.binding.status === "bound").length;
+			return { steps: meter.steps, bound };
 		};
-		// Linear reads 8x; a walk or a scan of every header per include or per name reads 64x.
+		// A per-name scan across every reached header grows quadratically.
 		for (const shape of Object.keys(shapes)) {
-			const small = timed(shape, 100);
-			const large = timed(shape, 800);
+			const small = work(shape, 100);
+			const large = work(shape, 800);
 			expect([small.bound, large.bound]).toEqual([100, 800]);
-			expect(large.best / small.best).toBeLessThan(24);
+			expect(large.steps / small.steps).toBeLessThan(12);
 		}
 	});
 

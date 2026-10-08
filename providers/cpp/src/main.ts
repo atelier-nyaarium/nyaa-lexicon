@@ -528,11 +528,17 @@ export class CppProvider {
 					...agreed,
 					{ status: "unresolved", reason: "Ambiguous", detail: "the entries force different includes" },
 				];
-		return reachesOf(unit, forced, facts, {
-			resolve: (includer, include) =>
-				this.resolveInclude(context, includer, include.specifier, include.quoted ? "quoted" : "angle"),
-			load: (module) => this.store.load(module),
-		});
+		return reachesOf(
+			unit,
+			forced,
+			facts,
+			{
+				resolve: (includer, include) =>
+					this.resolveInclude(context, includer, include.specifier, include.quoted ? "quoted" : "angle"),
+				load: (module) => this.store.load(module),
+			},
+			this.meter,
+		);
 	}
 }
 

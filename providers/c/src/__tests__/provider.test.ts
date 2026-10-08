@@ -2499,7 +2499,7 @@ describe("C edge coverage", () => {
 		expect(parsed.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
 	});
 
-	test("parses repeated and nested shapes in time near linear in their size", () => {
+	test("parses repeated and nested shapes with work near linear in their size", () => {
 		const shapes: Record<string, (count: number) => string> = {
 			prototypes: (count) =>
 				Array.from({ length: count }, (_, index) => `static int f${index}(int a);`)
@@ -2512,21 +2512,23 @@ describe("C edge coverage", () => {
 			initializers: (count) =>
 				`int ${Array.from({ length: count * 4 }, (_, index) => `a${index}[1] = {${index}}`).join(", ")};\n`,
 		};
-		const timed = (text: string) => {
-			let best = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 3; round++) {
-				const started = performance.now();
-				parseC("scale.c", text);
-				best = Math.min(best, performance.now() - started);
-			}
-			return best;
+		const work = (text: string) => {
+			const meter = { steps: 0 };
+			parseC("scale.c", text, meter);
+			return meter.steps;
 		};
-		// Linear reads 8x; a rescan per item reads 64x.
-		for (const make of Object.values(shapes)) expect(timed(make(800)) / timed(make(100))).toBeLessThan(24);
-		// Each declarator spans the whole statement: linear reads 16x, a rescan per token 256x.
+		// A delimiter candidate scan must not revisit every token for each token.
+		for (const make of Object.values(shapes)) {
+			const small = work(make(100));
+			const large = work(make(800));
+			expect(large / small).toBeLessThan(12);
+		}
+		// The typedef input grows 16x, so linear work needs a bound above 16.
 		const declarators = (count: number) =>
 			`typedef int ${Array.from({ length: count }, (_, index) => `T${index}`).join(", ")};`;
-		expect(timed(declarators(25_600)) / timed(declarators(1_600))).toBeLessThan(32);
+		const small = work(declarators(1_600));
+		const large = work(declarators(25_600));
+		expect(large / small).toBeLessThan(20);
 	});
 
 	test("reports one problem past the nesting limit instead of exhausting the stack", () => {

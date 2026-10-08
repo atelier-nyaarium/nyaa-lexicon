@@ -99,5 +99,5 @@ export function tokenHeader(
 	if (header.lead !== undefined && lead !== undefined)
 		collect(tokens, pairs, header.lead, header.directives, cuts, meter);
 	collect(tokens, pairs, header, header.directives, cuts, meter);
-	return renderHeader(text, { ...own, ...(lead === undefined ? {} : { lead }), ...cuts });
+	return renderHeader(text, { ...own, ...(lead === undefined ? {} : { lead }), ...cuts }, meter);
 }

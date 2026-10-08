@@ -1,7 +1,7 @@
 // What a unit's includes reach, for every count of them that can stand before a reference: each
 // header at its include depth, walked once, and each scope's names indexed once.
 
-import type { ImportResolution } from "@nyaa-lexicon/protocol";
+import type { ImportResolution, WorkMeter } from "@nyaa-lexicon/protocol";
 import type { CppDeclarationRecord, CppFacts, ImportFact } from "./model.js";
 
 ////////////////////////////////
@@ -83,6 +83,7 @@ export function reachesOf(
 	forced: readonly ImportResolution[],
 	facts: CppFacts,
 	sources: ReachSources,
+	meter?: WorkMeter,
 ): Reaches {
 	const includes = facts.importFacts;
 	const walked = new Map<string, Walked>();
@@ -144,6 +145,7 @@ export function reachesOf(
 		const byName = new Map<string, Declaring[]>();
 		for (const { walked: entry, names } of byPath.get(path) ?? [])
 			for (const [name, records] of names) {
+				if (meter !== undefined) meter.steps++;
 				const found = byName.get(name) ?? [];
 				found.push({ walked: entry, records });
 				byName.set(name, found);

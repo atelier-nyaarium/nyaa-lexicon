@@ -92,6 +92,7 @@ export class CStructure {
 	private buildPairs(): void {
 		const stack: DelimiterEntry[] = [];
 		for (let index = 0; index < this.tokens.length; index++) {
+			if (this.meter !== undefined) this.meter.steps++;
 			const token = this.tokens[index] as CToken;
 			const directive = this.directives.get(index);
 			if (directive !== undefined) {
