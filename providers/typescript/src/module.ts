@@ -44,6 +44,8 @@ export interface TypeScriptProject {
 	analyzer: TypeScriptAnalyzer | undefined;
 	/** The analyzer's first program build, while it runs. */
 	warming: Promise<void> | undefined;
+	/** Declaration ids by name position, keyed by module and script version. */
+	readonly declarationIds: Map<string, Map<string, string[]>>;
 }
 
 export type TypeScriptStore = ModuleStore<TypeScriptValue, TypeScriptProject, string>;
@@ -56,6 +58,7 @@ export function createTypeScriptProject(root: string, loaded: LoadedProject, fin
 		fingerprint,
 		analyzer: undefined,
 		warming: undefined,
+		declarationIds: new Map(),
 	};
 }
 

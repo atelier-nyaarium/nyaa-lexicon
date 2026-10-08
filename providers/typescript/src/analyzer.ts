@@ -46,6 +46,12 @@ import { makeRenameEdits } from "./rename.js";
 import { extractSurfaceFile } from "./surface.js";
 
 ////////////////////////////////
+//  Constants
+
+/** Module texts whose declaration ids stay cached, newest kept. */
+const DECLARATION_IDS_KEPT = 4_000;
+
+////////////////////////////////
 //  Interfaces & Types
 
 interface Position {
@@ -676,22 +682,33 @@ export class TypeScriptAnalyzer {
 			if (held === undefined) return { id: undefined, external: false, withheld: true, node };
 			let ids = idsByFile.get(source.fileName);
 			if (ids === undefined) {
-				ids = new Map<string, string[]>();
-				const declarations = held.surface
-					? this.surfaceDeclarations(module, source)
-					: this.extract(module, source).declarations;
-				for (const declaration of declarations) {
-					// Extracted names occur in source.
-					const key = positionKey(declaration.selectionRange ?? declaration.range);
-					const same = ids.get(key);
-					if (same === undefined) ids.set(key, [declaration.symbolId]);
-					else same.push(declaration.symbolId);
-				}
+				ids = held.surface
+					? idsByPosition(this.surfaceDeclarations(module, source))
+					: this.declarationIdsOf(module, source);
 				idsByFile.set(source.fileName, ids);
 			}
 			const matches = ids.get(selectionKeyOf(node, source));
 			return { id: matches?.length === 1 ? matches[0] : undefined, external: false, withheld: false, node };
 		});
+	}
+
+	/**
+	 * A module's declaration ids by name position. Declarations read no checker, so they hold for the
+	 * module's text across generations, transients and probes, which a generation's memo does not.
+	 */
+	private declarationIdsOf(module: string, source: ts.SourceFile): Map<string, string[]> {
+		const cache = this.project.declarationIds;
+		const key = `${module}:${this.scriptVersion(source.fileName)}`;
+		const kept = cache.get(key);
+		if (kept !== undefined) {
+			cache.delete(key);
+			cache.set(key, kept);
+			return kept;
+		}
+		const ids = idsByPosition(extractFile(module, source).declarations);
+		cache.set(key, ids);
+		if (cache.size > DECLARATION_IDS_KEPT) cache.delete(cache.keys().next().value as string);
+		return ids;
 	}
 
 	/** A surface module binds only to the ids its surface facts admit, settled as the wire settles them. */
@@ -981,6 +998,18 @@ function firstOfOnePath(ids: readonly string[]): string[] {
 
 function positionKey(range: { start: Position; end: Position }): string {
 	return `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
+}
+
+/** Extracted names occur in source, so a name's position finds its ids. */
+function idsByPosition(declarations: readonly Declaration[]): Map<string, string[]> {
+	const ids = new Map<string, string[]>();
+	for (const declaration of declarations) {
+		const key = positionKey(declaration.selectionRange ?? declaration.range);
+		const same = ids.get(key);
+		if (same === undefined) ids.set(key, [declaration.symbolId]);
+		else same.push(declaration.symbolId);
+	}
+	return ids;
 }
 
 function selectionKeyOf(node: ts.Declaration, source: ts.SourceFile): string {

@@ -219,7 +219,13 @@ export const RelationsOfRequestSchema = z
 	.object({
 		symbolId: z.string().min(1),
 		/** Per kind; 20 when absent. */
-		limit: z.number().int().positive().max(100).optional(),
+		limit: z
+			.number()
+			.int()
+			.positive()
+			.max(100)
+			.optional()
+			.meta({ description: "Relations kept per kind, not in total; 20 when absent." }),
 		kinds: z.array(RelationKindSchema).optional(),
 		intent: Intent.optional(),
 		/** Doubted relations are left out unless asked for. */

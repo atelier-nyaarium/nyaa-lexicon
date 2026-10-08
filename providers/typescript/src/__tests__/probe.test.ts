@@ -130,6 +130,23 @@ describe("batch probe", () => {
 		provider.shutdown();
 	});
 
+	it("binds a probed file into a declaration the index moved since the last probe", async () => {
+		const { provider, held } = admitted();
+		held();
+		const probed = 'import { one } from "./a";\none();\n';
+		const boundOne = async (text: string) => {
+			const facts = await provider.probeFile({ module: "src/b.ts", contentHash: hashContent(text), text });
+			const binding = facts.references.find((reference) => reference.name === "one")?.binding;
+			return binding?.status === "bound" ? parseSymbolId(binding.symbolId)?.module : binding?.status;
+		};
+		const before = await boundOne(probed);
+		const moved = "export function zero() {}\n\nexport function one() {}\n";
+		provider.parseFile({ module: "src/a.ts", contentHash: hashContent(moved), text: moved });
+		const after = await boundOne(`${probed}\n`);
+		expect({ before, after }).toEqual({ before: "src/a.ts", after: "src/a.ts" });
+		provider.shutdown();
+	});
+
 	it("is unsupported before a project is discovered", () => {
 		const answer = new TypeScriptProvider().probeBatch({ files: proposed(PROBE), answer: ["src/b.ts"] });
 		expect(answer.status).toBe("unsupported");
