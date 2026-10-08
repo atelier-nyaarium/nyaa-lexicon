@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-bash",
-	"version": "15.8.3",
+	"version": "15.8.4",
 	"private": true,
 	"type": "module",
 	"description": "Bash provider for nyaa-lexicon",
