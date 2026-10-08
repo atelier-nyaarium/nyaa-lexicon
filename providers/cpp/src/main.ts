@@ -265,7 +265,11 @@ export class CppProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string, _previous?: CppProject): { model: ProjectModel; project: CppProject } {
+	discoverProject(
+		workspaceRoot: string,
+		_previous?: CppProject,
+		scope?: string[],
+	): { model: ProjectModel; project: CppProject } {
 		const root = path.resolve(workspaceRoot);
 		const failed = (message: string) => ({ model: projectDiagnostic(root, message), project: bareProject(root) });
 		try {
@@ -274,13 +278,17 @@ export class CppProvider {
 			const walked = discoverByWalk(root, {
 				extensions: EXTENSIONS,
 				excludedDirectories: EXCLUDED_DIRECTORIES,
+				scope,
 			});
 			if (walked.diagnostics.length > 0) return { model: walked, project: bareProject(root) };
 			const project = discoverCppProject(root, EXCLUDED_DIRECTORIES, this.store.policy);
+			const scoped = scope === undefined ? undefined : new Set(scope);
 			return {
 				model: {
 					// A forced include is no file's import, so its header is named here, however its directory is kept out.
-					files: [...new Set([...walked.files, ...project.forcedModules])].sort(),
+					files: [...new Set([...walked.files, ...project.forcedModules])]
+						.filter((module) => scoped === undefined || scoped.has(module))
+						.sort(),
 					externalRoots: [],
 					configFiles: [...new Set([...walked.configFiles, ...project.databases])],
 					diagnostics: [...project.diagnostics],

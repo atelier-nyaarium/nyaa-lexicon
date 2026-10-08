@@ -622,8 +622,9 @@ export class WorkspaceIndexer {
 			// for itself. Once, rather than per file: a scan reads what is already on disk.
 			this.caches.resolutions.invalidate();
 			const fingerprints = new Map<string, string>();
+			const scope = await this.discoveryScope();
 			for (const provider of this.supervisor.running()) {
-				const project = await this.discover(provider.providerId);
+				const project = await this.discover(provider.providerId, scope);
 				if (project.fingerprint !== undefined) fingerprints.set(provider.providerId, project.fingerprint);
 			}
 			this.restated = new Set(
@@ -730,10 +731,20 @@ export class WorkspaceIndexer {
 		}
 	}
 
+	/** What git admits, so no provider walks what the scope ignores; a walk scope has no list to give. */
+	private async discoveryScope(): Promise<string[] | undefined> {
+		const { candidates } = await this.admitted();
+		return this.scopeOrThrow().mode === "git" ? candidates : undefined;
+	}
+
 	/** Asks one provider for its project, noting its files and the config it consults. */
-	private async discover(providerId: string): Promise<MethodResponse<"discoverProject">> {
+	private async discover(
+		providerId: string,
+		scope: string[] | undefined,
+	): Promise<MethodResponse<"discoverProject">> {
 		const project = await this.supervisor.askProvider(providerId, "discoverProject", {
 			workspaceRoot: this.workspaceRoot,
+			...(scope === undefined ? {} : { scope }),
 		});
 		// Replaced, not added to: a file the project no longer names leaves the roots with it.
 		this.discovered.set(providerId, new Set(project.files));
@@ -760,8 +771,9 @@ export class WorkspaceIndexer {
 	): Promise<Array<{ providerId: string; fingerprint: string; written: string[] }>> {
 		const providers = new Set(modules.flatMap((module) => [...(this.configFiles.get(module) ?? [])]));
 		const owed: Array<{ providerId: string; fingerprint: string; written: string[] }> = [];
+		const scope = providers.size === 0 ? undefined : await this.discoveryScope();
 		for (const providerId of providers) {
-			const project = await this.discover(providerId);
+			const project = await this.discover(providerId, scope);
 			const fingerprint = project.fingerprint;
 			if (fingerprint === undefined || fingerprint === this.store.projectFingerprint(providerId)) continue;
 			const written = [...this.store.writers()]

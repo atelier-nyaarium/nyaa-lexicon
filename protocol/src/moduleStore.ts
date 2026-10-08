@@ -113,6 +113,7 @@ export interface StoreProvider<V extends ModuleValue, P, E> {
 	discoverProject(
 		workspaceRoot: string,
 		previous: P | undefined,
+		scope?: string[],
 	): Maybe<{ model: Response<"discoverProject">; project: P }>;
 	/** Answer after the kit exposes the parsed value. */
 	parseFile(params: Request<"parseFile">, value: V): Maybe<Response<"parseFile">>;
@@ -748,8 +749,8 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 ): ProviderHandlers & ProviderNotificationHandlers {
 	const kit = kits.get(provider.store) as Kit<V, P, E> | undefined;
 	if (kit === undefined) throw new Error("the provider's store was not made by moduleStore or asyncModuleStore");
-	const discover = (root: string) =>
-		after(provider.discoverProject(root, kit.previousProject()), ({ model, project }) => {
+	const discover = (root: string, scope?: string[]) =>
+		after(provider.discoverProject(root, kit.previousProject(), scope), ({ model, project }) => {
 			kit.rediscover(root, model.files, project, model.fingerprint);
 			return model;
 		});
@@ -762,7 +763,7 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 			kit.reset(params.workspaceRoot, policy);
 			return provider.initialize(params.workspaceRoot, policy);
 		},
-		discoverProject: (params: Request<"discoverProject">) => discover(params.workspaceRoot),
+		discoverProject: (params: Request<"discoverProject">) => discover(params.workspaceRoot, params.scope),
 		parseFile: (params: Request<"parseFile">) =>
 			ready(() =>
 				kit.stage(params.module, params.contentHash, params.text, params.depth ?? "full", (value) =>

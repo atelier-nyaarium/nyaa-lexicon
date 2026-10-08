@@ -195,16 +195,17 @@ class ScopeReader {
 
 //////// Functions
 
-export function discoverProject(workspaceRoot: string, policy = OPEN_READ_POLICY): ProjectModel {
-	return discoverGDScriptProject(workspaceRoot, policy).model;
+export function discoverProject(workspaceRoot: string, policy = OPEN_READ_POLICY, scope?: string[]): ProjectModel {
+	return discoverGDScriptProject(workspaceRoot, policy, scope).model;
 }
 
 export function discoverGDScriptProject(
 	workspaceRoot: string,
 	policy = OPEN_READ_POLICY,
+	scope?: string[],
 ): { model: ProjectModel; project: GDScriptProject } {
 	const root = path.resolve(workspaceRoot);
-	const { projectDirectories, resources, ...model } = discoverProjectCore(root, normalizeModulePath);
+	const { projectDirectories, resources, ...model } = discoverProjectCore(root, normalizeModulePath, scope);
 	const consulted = new Set<string>();
 	const diagnostics = [...model.diagnostics];
 	const readers = projectDirectories.map(
@@ -222,7 +223,12 @@ export function discoverGDScriptProject(
 		),
 	);
 	return {
-		model: { ...model, diagnostics, configFiles: [...consulted].sort(), fingerprint },
+		model: {
+			...model,
+			diagnostics,
+			configFiles: [...consulted].sort(),
+			fingerprint,
+		},
 		project: { scopes },
 	};
 }

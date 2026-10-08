@@ -117,9 +117,9 @@ export class JsonProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
+	discoverProject(workspaceRoot = this.workspaceRoot, scope?: string[]): ProjectModel {
 		this.workspaceRoot = path.resolve(workspaceRoot);
-		return discoverByWalk(this.workspaceRoot, { extensions: EXTENSIONS });
+		return discoverByWalk(this.workspaceRoot, { extensions: EXTENSIONS, scope });
 	}
 
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {

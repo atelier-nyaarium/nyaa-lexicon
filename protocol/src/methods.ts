@@ -131,9 +131,14 @@ export const InitializeResponseSchema = z
 
 export type ProviderTiers = z.infer<typeof ProviderTiersSchema>;
 
-export const DiscoverProjectRequestSchema = z.object({ workspaceRoot: z.string().min(1) }).meta({
-	id: "DiscoverProjectRequest",
-});
+export const DiscoverProjectRequestSchema = z
+	.object({
+		workspaceRoot: z.string().min(1),
+		scope: z.array(z.string().min(1)).optional().describe("Workspace-relative module paths in core scope."),
+	})
+	.meta({
+		id: "DiscoverProjectRequest",
+	});
 
 export const ParseFileRequestSchema = z
 	.object({

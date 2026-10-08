@@ -25,7 +25,7 @@ type Response<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["re
 export interface ProviderMethods {
 	/** `policy` says which workspace files it may read. */
 	initialize(workspaceRoot: string, policy: ReadPolicy): Response<"initialize">;
-	discoverProject(workspaceRoot: string): Response<"discoverProject">;
+	discoverProject(workspaceRoot: string, scope?: string[]): Response<"discoverProject">;
 	parseFile(params: Request<"parseFile">): Response<"parseFile">;
 	resolveImport(params: Request<"resolveImport">): Response<"resolveImport">;
 	bind(params: Request<"bind">): Response<"bind">;
@@ -52,6 +52,8 @@ export interface WalkOptions {
 	excludedDirectories?: ReadonlySet<string>;
 	/** Claim every regular file below the root. */
 	everything?: boolean;
+	/** Core-owned workspace-relative modules to consider. */
+	scope?: readonly string[] | undefined;
 }
 
 ////////////////////////////////
@@ -83,7 +85,7 @@ export function handlersFor<V extends ModuleValue, P, E>(
 	const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 		initialize: (params) =>
 			provider.initialize(params.workspaceRoot, readPolicy(params.workspaceRoot, params.deny)),
-		discoverProject: (params) => provider.discoverProject(params.workspaceRoot),
+		discoverProject: (params) => provider.discoverProject(params.workspaceRoot, params.scope),
 		parseFile: (params) => provider.parseFile(params),
 		probeFile: (params) => provider.parseFile(params),
 		// Reads other files from disk, so it holds no view of several proposed texts.
@@ -129,22 +131,29 @@ function extensionless(name: string): boolean {
 	return name.lastIndexOf(".") <= 0;
 }
 
-/** Every claimed file under `root`, sorted. An unreadable directory is skipped, never fatal. */
-export function walkWorkspace(root: string, options: WalkOptions): { files: string[]; configFiles: string[] } {
-	const excluded = options.excludedDirectories ?? DEFAULT_EXCLUDED_DIRECTORIES;
+/** Whether a module is claimed as source, by its name or, extensionless, its shebang, and as config. */
+function claimsOf(root: string, options: WalkOptions) {
 	const shebangs = options.shebangs ?? [];
-	const claimed = (name: string, absolute: string) =>
-		options.everything === true ||
-		options.extensions.some((extension) => name.endsWith(extension)) ||
-		(options.filenames?.includes(name) ?? false) ||
-		(shebangs.length > 0 && extensionless(name) && claimedByShebang(absolute));
-	const claimedByShebang = (absolute: string) => {
-		const module = workspaceModule(root, absolute);
-		const head = module === null ? undefined : readWorkspaceHead(root, module);
-		const interpreter = shebangInterpreter(head ?? "");
+	const byShebang = (module: string | null) => {
+		const interpreter = module === null ? undefined : shebangInterpreter(readWorkspaceHead(root, module) ?? "");
 		return interpreter !== undefined && shebangs.includes(interpreter);
 	};
-	const config = (name: string) => options.configExtensions?.some((extension) => name.endsWith(extension)) ?? false;
+	return {
+		/** `module` is asked only for an extensionless name. */
+		source: (name: string, module: () => string | null) =>
+			options.everything === true ||
+			options.extensions.some((extension) => name.endsWith(extension)) ||
+			(options.filenames?.includes(name) ?? false) ||
+			(shebangs.length > 0 && extensionless(name) && byShebang(module())),
+		config: (name: string) => options.configExtensions?.some((extension) => name.endsWith(extension)) ?? false,
+	};
+}
+
+/** Every claimed file under `root`, or in `options.scope`, sorted. An unreadable directory is skipped, never fatal. */
+export function walkWorkspace(root: string, options: WalkOptions): { files: string[]; configFiles: string[] } {
+	if (options.scope !== undefined) return scopedWorkspace(root, options);
+	const excluded = options.excludedDirectories ?? DEFAULT_EXCLUDED_DIRECTORIES;
+	const claims = claimsOf(root, options);
 	const files: string[] = [];
 	const configFiles: string[] = [];
 
@@ -162,8 +171,8 @@ export function walkWorkspace(root: string, options: WalkOptions): { files: stri
 				continue;
 			}
 			if (!entry.isFile()) continue;
-			const source = claimed(entry.name, absolute);
-			const configuration = config(entry.name);
+			const source = claims.source(entry.name, () => workspaceModule(root, absolute));
+			const configuration = claims.config(entry.name);
 			if (!source && !configuration) continue;
 			const module = workspaceModule(root, absolute);
 			if (module === null) continue;
@@ -173,6 +182,20 @@ export function walkWorkspace(root: string, options: WalkOptions): { files: stri
 	}
 	visit(root);
 	return { files: files.sort(), configFiles: configFiles.sort() };
+}
+
+/** The claimed files among core's scope, which already left out what the workspace ignores. */
+function scopedWorkspace(root: string, options: WalkOptions): { files: string[]; configFiles: string[] } {
+	const claims = claimsOf(root, options);
+	const files = new Set<string>();
+	const configFiles = new Set<string>();
+	for (const module of options.scope ?? []) {
+		if (workspaceModule(root, path.resolve(root, module)) === null) continue;
+		const name = path.basename(module);
+		if (claims.source(name, () => module)) files.add(module);
+		if (claims.config(name)) configFiles.add(module);
+	}
+	return { files: [...files].sort(), configFiles: [...configFiles].sort() };
 }
 
 /** The project model of a workspace with no build system to ask: a walk, or why not. */

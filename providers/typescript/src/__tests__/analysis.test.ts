@@ -46,6 +46,15 @@ afterEach(() => {
 //  Tests
 
 describe("checker-backed analysis", () => {
+	it("walks only core's scope when no tsconfig names the files", () => {
+		const root = workspace({
+			"src/kept.ts": "export const kept = 1;",
+			"volumes/home/ignored.ts": "export const ignored = 1;",
+		});
+		const discovered = new TypeScriptProvider().discoverProject(root, undefined, ["src/kept.ts"]);
+		expect(discovered.model.files).toEqual(["src/kept.ts"]);
+	});
+
 	it("binds default imports to anonymous default declarations", () => {
 		const files = {
 			"class-default.ts": "export default class { run() {} }\n",

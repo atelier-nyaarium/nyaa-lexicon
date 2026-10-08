@@ -259,12 +259,13 @@ export class TypeScriptProvider {
 	discoverProject(
 		workspaceRoot: string,
 		previous: TypeScriptProject | undefined,
+		scope?: string[],
 	): { model: ProjectModel; project: TypeScriptProject } {
 		const root = path.resolve(workspaceRoot);
 		const loaded = loadProject(root, readableSystem(this.store.policy));
 		const discovered =
 			loaded.configFiles.length === 0
-				? discoverByWalk(root, { extensions: EXTENSIONS })
+				? discoverByWalk(root, { extensions: EXTENSIONS, scope })
 				: {
 						files: loaded.files
 							.map((file) => toModule(root, file))

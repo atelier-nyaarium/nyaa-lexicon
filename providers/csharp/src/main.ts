@@ -251,6 +251,7 @@ export class CsharpProvider extends CsharpBinder {
 	discoverProject(
 		workspaceRoot: string,
 		_previous: CsharpProjectState | undefined,
+		scope?: string[],
 	): { model: ProjectModel; project: CsharpProjectState } {
 		const root = path.resolve(workspaceRoot);
 		try {
@@ -268,6 +269,7 @@ export class CsharpProvider extends CsharpBinder {
 				extensions: EXTENSIONS,
 				configExtensions: [".csproj", ".sln"],
 				excludedDirectories: EXCLUDED_DIRECTORIES,
+				scope,
 			});
 			const projects = walked.configFiles.filter((file) => file.endsWith(".csproj"));
 			const discovered = discoverContexts(root, projects, this.store.policy);

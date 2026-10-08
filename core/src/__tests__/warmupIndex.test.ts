@@ -300,9 +300,10 @@ describe("warmup pass", () => {
 	it("reports a failed scan as a plain admission error", async () => {
 		await initGit();
 		put("a.fake", "export class A {}\n");
-		service = serviceOver(
-			depthSupervisor(["a.fake"], true, [], { discovery: Promise.reject(new Error("discovery broke")) }),
-		);
+		const discovery = Promise.reject(new Error("discovery broke"));
+		// Awaited only after admission reads git.
+		discovery.catch(() => {});
+		service = serviceOver(depthSupervisor(["a.fake"], true, [], { discovery }));
 		await service.warmupWorkspace().catch(() => {});
 		const refusal = warmRefusal(service);
 		expect(refusal).toBeInstanceOf(Error);

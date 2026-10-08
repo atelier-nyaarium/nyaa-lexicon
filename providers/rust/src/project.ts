@@ -337,6 +337,7 @@ function fingerprintOf(targets: ReadonlyMap<string, RustTarget>): string {
 export function discoverRustProject(
 	workspaceRoot: string,
 	policy = OPEN_READ_POLICY,
+	scope?: string[],
 ): { state: RustProjectState; model: ProjectModel } {
 	const root = path.resolve(workspaceRoot);
 	const missing = !existsSync(root) ? "does not exist" : !statSync(root).isDirectory() ? "is not a directory" : null;
@@ -351,7 +352,11 @@ export function discoverRustProject(
 			},
 		};
 	}
-	const files = walkWorkspace(root, { extensions: RUST_EXTENSIONS, excludedDirectories: EXCLUDED_DIRECTORIES }).files;
+	const files = walkWorkspace(root, {
+		extensions: RUST_EXTENSIONS,
+		excludedDirectories: EXCLUDED_DIRECTORIES,
+		scope,
+	}).files;
 	const fileSet = new Set(files);
 	const configFiles = ["Cargo.toml", "Cargo.lock"].filter((file) => existsSync(path.join(root, file)));
 	const diagnostics: Diagnostic[] = [];

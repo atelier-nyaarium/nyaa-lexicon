@@ -327,7 +327,11 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 		};
 	}
 
-	discoverProject(workspaceRoot: string, _previous: null | undefined): { model: ProjectModel; project: null } {
+	discoverProject(
+		workspaceRoot: string,
+		_previous: null | undefined,
+		scope?: string[],
+	): { model: ProjectModel; project: null } {
 		const root = path.resolve(workspaceRoot);
 		try {
 			if (!existsSync(root))
@@ -342,6 +346,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 					files: walkWorkspace(root, {
 						extensions: EXTENSIONS,
 						excludedDirectories: EXCLUDED_DIRECTORIES,
+						scope,
 					}).files,
 					externalRoots: [],
 					configFiles: [],

@@ -277,7 +277,7 @@ export class PythonProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string): { model: ProjectModel; project: null } {
+	discoverProject(workspaceRoot: string, scope?: string[]): { model: ProjectModel; project: null } {
 		const root = path.resolve(workspaceRoot);
 		try {
 			if (!existsSync(root)) {
@@ -294,6 +294,7 @@ export class PythonProvider {
 					files: discoverByWalk(root, {
 						extensions: EXTENSIONS,
 						excludedDirectories: EXCLUDED_DIRECTORIES,
+						scope,
 					}).files,
 					externalRoots: [],
 					configFiles: [],

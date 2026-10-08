@@ -95,6 +95,15 @@ describe("walking a workspace", () => {
 		expect(walkWorkspace(root, { extensions: [], shebangs: ["bash"] }).files).toEqual(["bin/run"]);
 	});
 
+	it("uses the supplied scope without walking unscoped directories", () => {
+		put("src/kept.ts");
+		put("volumes/home/a.js");
+		put("volumes/home/b.js");
+		expect(discoverByWalk(root, { extensions: [".ts", ".js"], scope: ["src/kept.ts"] }).files).toEqual([
+			"src/kept.ts",
+		]);
+	});
+
 	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 		"skips a directory it cannot read rather than failing the walk",
 		() => {

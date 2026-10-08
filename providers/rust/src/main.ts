@@ -392,8 +392,12 @@ export class RustProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string): { model: ProjectModel; project: RustProjectState } {
-		const discovered = discoverRustProject(workspaceRoot, this.store.policy);
+	discoverProject(
+		workspaceRoot: string,
+		_previous: RustProjectState | undefined,
+		scope?: string[],
+	): { model: ProjectModel; project: RustProjectState } {
+		const discovered = discoverRustProject(workspaceRoot, this.store.policy, scope);
 		return { model: discovered.model, project: discovered.state };
 	}
 

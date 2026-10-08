@@ -162,8 +162,8 @@ export class GDScriptProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string, _previous: GDScriptProject | undefined) {
-		return discoverGDScriptProject(workspaceRoot, this.store.policy);
+	discoverProject(workspaceRoot: string, _previous: GDScriptProject | undefined, scope?: string[]) {
+		return discoverGDScriptProject(workspaceRoot, this.store.policy, scope);
 	}
 
 	parseFile(

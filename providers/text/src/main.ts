@@ -68,9 +68,9 @@ export class TextProvider implements ProviderMethods {
 		};
 	}
 
-	discoverProject(workspaceRoot = this.workspaceRoot): ProjectModel {
+	discoverProject(workspaceRoot = this.workspaceRoot, scope?: string[]): ProjectModel {
 		this.workspaceRoot = path.resolve(workspaceRoot);
-		return discoverByWalk(this.workspaceRoot, { extensions: [], everything: true });
+		return discoverByWalk(this.workspaceRoot, { extensions: [], everything: true, scope });
 	}
 
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth }) {

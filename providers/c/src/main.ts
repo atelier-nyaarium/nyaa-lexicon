@@ -340,20 +340,27 @@ function agreed(answers: readonly ImportResolution[], detail: string): ImportRes
 		: { status: "unresolved", reason: "Ambiguous", detail };
 }
 
-function discover(root: string, policy: ReadPolicy): { model: ProjectModel; project: CProject } {
+function discover(root: string, policy: ReadPolicy, scope?: string[]): { model: ProjectModel; project: CProject } {
 	const failed = (message: string) => ({ model: projectDiagnostic(root, message), project: bareProject(root) });
 	if (!existsSync(root)) return failed(`workspace root does not exist: ${root}`);
 	try {
 		if (!statSync(root).isDirectory()) return failed(`workspace root is not a directory: ${root}`);
-		const model = discoverByWalk(root, { extensions: EXTENSIONS, excludedDirectories: EXCLUDED_DIRECTORIES });
+		const model = discoverByWalk(root, {
+			extensions: EXTENSIONS,
+			excludedDirectories: EXCLUDED_DIRECTORIES,
+			scope,
+		});
 		if (model.diagnostics.length > 0) return { model, project: bareProject(root) };
 		const project = discoverCProject(root, EXCLUDED_DIRECTORIES, policy);
 		const configs = PROJECT_CONFIGS.filter((name) => existsSync(path.join(root, name)));
+		const scoped = scope === undefined ? undefined : new Set(scope);
 		return {
 			model: {
 				...model,
 				// A forced header in an excluded directory is reached by no include, so core learns it here.
-				files: [...new Set([...model.files, ...project.forcedHeaders])],
+				files: [...new Set([...model.files, ...project.forcedHeaders])].filter(
+					(module) => scoped === undefined || scoped.has(module),
+				),
 				configFiles: [...new Set([...configs, ...project.databases])],
 				diagnostics: [...project.diagnostics],
 				fingerprint: project.fingerprint,
@@ -387,8 +394,12 @@ export class CProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string): { model: ProjectModel; project: CProject } {
-		return discover(path.resolve(workspaceRoot), this.store.policy);
+	discoverProject(
+		workspaceRoot: string,
+		_previous?: CProject,
+		scope?: string[],
+	): { model: ProjectModel; project: CProject } {
+		return discover(path.resolve(workspaceRoot), this.store.policy, scope);
 	}
 
 	parseFile(

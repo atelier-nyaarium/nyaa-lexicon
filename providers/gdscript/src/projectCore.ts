@@ -51,10 +51,26 @@ function filesUnder(root: string, directory: string, found: Found, normalize: No
 	}
 }
 
-export function discoverProjectCore(workspaceRoot: string, normalize: NormalizeModulePath): ProjectModelFact {
+export function discoverProjectCore(
+	workspaceRoot: string,
+	normalize: NormalizeModulePath,
+	scope?: readonly string[],
+): ProjectModelFact {
 	const root = path.resolve(workspaceRoot);
 	const found: Found = { files: [], projectDirectories: [], resources: [] };
-	filesUnder(root, root, found, normalize);
+	if (scope === undefined) filesUnder(root, root, found, normalize);
+	else {
+		for (const module of scope) {
+			const absolute = path.resolve(root, module);
+			if (!absolute.startsWith(`${root}${path.sep}`)) continue;
+			if (path.basename(module) === "project.godot") {
+				const directory = path.posix.dirname(module);
+				found.projectDirectories.push(directory === "." ? "" : directory);
+			}
+			if (module.endsWith(".gd")) found.files.push(normalize(module));
+			else if (module.endsWith(".uid") || module.endsWith(".tscn")) found.resources.push(module);
+		}
+	}
 	const { files, projectDirectories, resources } = found;
 	files.sort();
 	projectDirectories.sort();

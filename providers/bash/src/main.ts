@@ -245,7 +245,7 @@ function declarationWire(declaration: BashDeclaration): Declaration {
 	return wire;
 }
 
-function discover(root: string): ProjectModel {
+function discover(root: string, scope?: string[]): ProjectModel {
 	if (!existsSync(root)) return projectDiagnostic(root, `workspace root does not exist: ${root}`);
 	try {
 		if (!statSync(root).isDirectory()) return projectDiagnostic(root, `workspace root is not a directory: ${root}`);
@@ -254,6 +254,7 @@ function discover(root: string): ProjectModel {
 			filenames: FILENAMES,
 			shebangs: SHEBANGS,
 			excludedDirectories: EXCLUDED_DIRECTORIES,
+			scope,
 		});
 	} catch (error) {
 		return projectDiagnostic(
@@ -284,8 +285,8 @@ export class BashProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string): { model: ProjectModel; project: null } {
-		return { model: discover(path.resolve(workspaceRoot)), project: null };
+	discoverProject(workspaceRoot: string, scope?: string[]): { model: ProjectModel; project: null } {
+		return { model: discover(path.resolve(workspaceRoot), scope), project: null };
 	}
 
 	parseFile(params: { module: string; contentHash: string; text: string }, parsed: ParsedBashFile) {

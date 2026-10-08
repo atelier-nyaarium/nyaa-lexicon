@@ -196,6 +196,25 @@ describe("a batch that changes nothing", () => {
 	});
 });
 
+describe("provider discovery scope", () => {
+	it("passes admitted workspace modules to discoverProject", async () => {
+		await initGit();
+		put("src/kept.fake", "export class Kept {}\n");
+		let received: string[] | undefined;
+		const base = fakeSupervisor(["src/kept.fake"]);
+		const port: ProviderPort = {
+			...base,
+			askProvider: (providerId, method, params) => {
+				if (method === "discoverProject") received = (params as { scope: string[] }).scope;
+				return base.askProvider(providerId, method, params);
+			},
+		};
+		service = new LexiconService(store, port, sourceReader(root), root);
+		await service.indexWorkspace();
+		expect(received).toContain("src/kept.fake");
+	});
+});
+
 describe("where a specifier lands", () => {
 	/**
 	 * One root importing a chain of ignored files, so each link is reachable only through the one
