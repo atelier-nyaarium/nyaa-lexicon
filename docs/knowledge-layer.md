@@ -195,9 +195,9 @@ NyaaCode, asks it and submits the answer.
 - **Stated by subject pair.** `symbol_relations` keys a relation by two subjects, the lesser first,
   so it follows a rename or a move as notes do, and a rebuild salvages it with both ends placed or
   neither. A person's relation is confirmed; an agent's or a model's waits as proposed, and a later
-  agent write over a pair a person judged changes nothing. A person may confirm, doubt or remove
-  any relation, a computed one included; a doubted relation leaves every read that does not ask for
-  it. Health: `orphaned` when an end is gone, `sourceChanged` when an end's digest moved since it was
+  agent write over a pair a person judged changes nothing. A person may confirm or doubt any
+  relation, a computed one included, and remove a stated one; a doubted relation leaves every read
+  that does not ask for it. Health: `orphaned` when an end is gone, `sourceChanged` when an end's digest moved since it was
   stated or judged, `insufficientEvidence` when a computed score rests on one item.
 - **Feedback.** A consumer reports the relations behind each prediction accepted or rejected, per its
   own intent. Counts halve every thirty days, cap at ten, and scale a score between half and double,
