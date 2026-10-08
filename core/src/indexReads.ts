@@ -36,7 +36,7 @@ import {
 	type UsesFromResult,
 } from "@nyaa-lexicon/protocol";
 import { isEdgeRole, NameCount, type NamespaceTarget, PeerTally } from "./edges.js";
-import { findCycles } from "./graph.js";
+import { type Cycle, findCycles } from "./graph.js";
 import { inSourceOrder } from "./locals.js";
 import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
 import { proseHit } from "./proseText.js";
@@ -188,7 +188,18 @@ function useOf(context: ReadContext, reference: StoredReference): ReferenceUse {
 
 /** Read queries against one index. Usable alone by anything holding a store. */
 export class IndexReadModel {
+	private heldCycles: { generation: number; cycles: Cycle[] } | null = null;
+
 	constructor(private readonly store: IndexStore) {}
+
+	/** Every symbol cycle, found once per facts generation. */
+	private symbolCycles(): readonly Cycle[] {
+		const generation = this.store.factsGeneration();
+		if (this.heldCycles?.generation !== generation) {
+			this.heldCycles = { generation, cycles: findCycles(this.store.useEdges()) };
+		}
+		return this.heldCycles.cycles;
+	}
 
 	/** Symbols matching a name, so a caller holding a name rather than an id can start. */
 	findByName(name: string, module?: string): SymbolSummary[] {
@@ -723,7 +734,7 @@ export class IndexReadModel {
 	 * may only mean "barely resolved".
 	 */
 	private graphSummary(context: ReadContext, symbolId: string): GraphSummary {
-		const cycle = findCycles(this.store.useEdges()).find((found) => found.members.includes(symbolId));
+		const cycle = this.symbolCycles().find((found) => found.members.includes(symbolId));
 
 		// Members counted too, because a reference inside a method belongs to the METHOD. Asking a
 		// class for its own fan-out returned zero however much it used, since nothing is written
@@ -755,9 +766,7 @@ export class IndexReadModel {
 
 	/** Every cycle in the workspace, largest first. */
 	cycles(limit = 20) {
-		return findCycles(this.store.useEdges())
-			.sort((a, b) => b.members.length - a.members.length)
-			.slice(0, limit);
+		return [...this.symbolCycles()].sort((a, b) => b.members.length - a.members.length).slice(0, limit);
 	}
 
 	/**
