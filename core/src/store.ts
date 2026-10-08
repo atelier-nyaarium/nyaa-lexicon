@@ -1673,7 +1673,7 @@ export class IndexStore {
 			});
 			// A star selecting by the module's list reads it, so a moved list owes its forwarders.
 			if (allListBefore !== (allList === undefined ? null : JSON.stringify(allList))) this.oweForwarders(module);
-			this.advanceGenerations(module, scopesBefore, heldBefore);
+			this.advanceGenerations(module, scopesBefore, heldBefore, change !== null);
 			return change;
 		});
 	}
@@ -1811,11 +1811,19 @@ export class IndexStore {
 
 	/**
 	 * Advances the store-wide facts generation and every scope the module touched, owes its
-	 * projection, and records the scopes it left or joined, all in the caller's transaction.
+	 * projection, and records as moved the scopes it left or joined, or every one it touched when
+	 * its surface moved, all in the caller's transaction.
 	 * `heldBefore`: the index held the module before this write.
 	 */
-	private advanceGenerations(module: string, scopesBefore: readonly string[], heldBefore: boolean): void {
-		const touched = [...new Set([...scopesBefore, ...this.scopeKeysOf(module)])].sort();
+	private advanceGenerations(
+		module: string,
+		scopesBefore: readonly string[],
+		heldBefore: boolean,
+		surfaceMoved: boolean,
+	): void {
+		const before = new Set(scopesBefore);
+		const after = new Set(this.scopeKeysOf(module));
+		const touched = [...new Set([...before, ...after])].sort();
 		this.db
 			.prepare(
 				`INSERT INTO meta (key, value) VALUES ('factsGeneration', '1')
@@ -1835,8 +1843,10 @@ export class IndexStore {
 			.run(module, heldBefore ? 1 : 0);
 		// A forwarder from a touched scope reads its members; one landing on a module new to the index read none.
 		this.oweForwarders(heldBefore ? null : module, touched);
-		if (touched.length > 0) {
-			this.recordMove(module, { gained: [], lost: [], boundInto: [], heldBefore, scopes: touched });
+		// A rewrite keeping its surface and its scopes moves nothing a scope's importer reads.
+		const moved = surfaceMoved ? touched : touched.filter((key) => before.has(key) !== after.has(key));
+		if (moved.length > 0) {
+			this.recordMove(module, { gained: [], lost: [], boundInto: [], heldBefore, scopes: moved });
 		}
 	}
 
@@ -2201,7 +2211,7 @@ export class IndexStore {
 			this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
 			if (removed || held) {
 				this.recordMove(module, { gained: [], lost, boundInto, heldBefore: held, scopes: [] });
-				this.advanceGenerations(module, scopesBefore, held);
+				this.advanceGenerations(module, scopesBefore, held, true);
 				// What forwarded from it now lands on nothing the index holds.
 				this.oweForwarders(module);
 			}

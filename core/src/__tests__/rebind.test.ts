@@ -859,6 +859,44 @@ describe("what a surface carries", () => {
 		expect(batch).toEqual(["com/a.fake", "user.fake"]);
 	});
 
+	// Scopes importing each other would otherwise rebind one another forever.
+	it("parses no importer of a scope for a body edit that keeps its scopes and its surface", async () => {
+		await gitInit(root);
+		put("com/a.fake", 'import "org"\nexport class Foo {}\nuse Bar\n');
+		put("org/b.fake", 'import "com"\nexport class Bar {}\nuse Foo\n');
+		const scopes = (module: string): ScopeContribution[] => {
+			const [scopeId = ""] = module.split("/");
+			const name = scopeId === "com" ? "Foo" : "Bar";
+			return [{ kind: "packageScope", scopeId, members: [`lexicon fake ${module} ${name}#`] }];
+		};
+		const resolves = (request: MethodRequest<"resolveImport">): MethodResponse<"resolveImport"> =>
+			request.specifier === "com" || request.specifier === "org"
+				? {
+						status: "resolved",
+						landing: { kind: "packageScope", providerId: "fake", scopeId: request.specifier },
+					}
+				: resolveFake(request);
+		const parses: string[] = [];
+		// Its own store, closed if the pump never settles, so a regression fails rather than hangs.
+		const own = IndexStore.open(path.join(root, "scopes.sqlite")).store;
+		service = bindingService(parses, { resolves, scopes, over: own });
+		await service.indexWorkspace();
+		await service.upgradeRemaining();
+		parses.length = 0;
+
+		put("com/a.fake", 'import "org"\nexport class Foo { edited }\nuse Bar\n');
+		const batch = parsedIn(
+			await service.applyBatch([{ kind: "changed", module: "com/a.fake", contentHash: "a-2" }]),
+		);
+		const settled = await Promise.race([
+			service.upgradeRemaining().then(() => true),
+			Bun.sleep(5_000).then(() => false),
+		]);
+		own.close();
+
+		expect({ settled, batch, parses }).toEqual({ settled: true, batch: ["com/a.fake"], parses: ["com/a.fake"] });
+	});
+
 	// A standalone road forgets a module; the specifiers that landed on it are asked again.
 	it("asks again where a specifier lands once the module it landed on is forgotten", async () => {
 		await gitInit(root);
