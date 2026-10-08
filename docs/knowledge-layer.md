@@ -205,10 +205,10 @@ NyaaCode, asks it and submits the answer.
   rebuild; an accept never makes an edge.
 - **Discovery.** `core/src/relationWork.ts` runs in the background. Once the index is warm and
   upgraded it records every module's exports by kind and signature, queueing nothing, so an existing
-  workspace starts quiet; a new store queues the exports of files its newest commits touched, and of
-  files indexed while that history was read. After each batch, an export that is new or changed its
-  kind or signature queues; a body edit does not. A module queues 20 at a time, the rest once those
-  drain. One export per slice: history read ungated, the scoring under a shared read admitted within
+  workspace starts quiet; a new store queues up to 30 exports of files its newest commits touched,
+  and every export of files indexed while that history was read. After each batch, an export that
+  is new or changed its kind or signature queues; a body edit does not. A module queues 20 at a
+  time, the rest once those drain. One export per slice: history read ungated, the scoring under a shared read admitted within
   a short wait, the write under a short exclusive one, and a busy gate defers the slice. The write
   lands only over the facts it was scored on; a batch between leaves the export queued. Its best
   related symbols in its own language find the modules that use them but not it, and a module

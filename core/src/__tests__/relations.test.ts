@@ -511,6 +511,29 @@ describe("background discovery", () => {
 		work.stop();
 	});
 
+	it("queues every export of a module indexed while ready reads history, past both caps", async () => {
+		const service = new LexiconService(
+			store,
+			new ProviderSupervisor(),
+			fromText(() => null),
+			dir,
+			clock,
+		);
+		const work = startRelationWork({ service, clock });
+		const starting = work.ready();
+		plantFormat(Array.from({ length: 35 }, (_, line) => declared(`formatUnit${line}`, FORMAT, line + 3)));
+		work.applied([{ module: FORMAT, action: "indexed" }]);
+		await starting;
+		expect(store.relations.queued()).toBe(20);
+		let settled = 0;
+		for (let next = service.relations.nextQueued(); next !== null; next = service.relations.nextQueued()) {
+			service.relations.settleQueued(next, null);
+			settled++;
+		}
+		expect(settled).toBe(38);
+		work.stop();
+	});
+
 	it("defers a slice while an index write holds the gate, then runs it", async () => {
 		const service = new LexiconService(
 			store,

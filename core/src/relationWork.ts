@@ -141,13 +141,15 @@ export function startRelationWork(options: RelationWorkOptions): RelationWork {
 			try {
 				const recent = await service.recentlyChanged(BACKFILL_COMMITS);
 				await service.gate.exclusive(async () => {
-					// Seeding marks these seen; backfill them.
 					const meanwhile = [...early];
 					early.clear();
 					ready = true;
 					// A module the index does not hold has no exports, so it queues nothing.
-					if (service.relations.seedExports()) service.relations.backfill([...meanwhile, ...recent]);
-					else service.relations.reconcile();
+					if (service.relations.seedExports(meanwhile)) {
+						// Unseeded, so noticed whole like any batch.
+						service.relations.notice(meanwhile, []);
+						service.relations.backfill(recent.filter((module) => !meanwhile.includes(module)));
+					} else service.relations.reconcile();
 					service.relations.tidy();
 				});
 			} catch (error) {

@@ -475,12 +475,17 @@ export class RelationLedger {
 	////////////////////////////////
 	//  Discovery's upkeep
 
-	/** Seeds the export snapshot without queueing, once per store, so an existing workspace starts quiet. */
-	seedExports(): boolean {
+	/**
+	 * Seeds the export snapshot without queueing, once per store, so an existing workspace starts
+	 * quiet. `unseen` modules stay out of it, for `notice` to queue whole.
+	 */
+	seedExports(unseen: readonly string[] = []): boolean {
 		if (this.store.relations.hasExports()) return false;
 		const context = new ReadContext(this.store);
+		const skipped = new Set(unseen);
 		this.store.relationWrite(() => {
 			for (const module of this.store.exportingModules()) {
+				if (skipped.has(module)) continue;
 				const exports = new Map(this.exportsIn(context, module).map((each) => [each.symbolId, shapeOf(each)]));
 				this.store.relations.setExports(module, exports);
 			}
@@ -529,10 +534,10 @@ export class RelationLedger {
 		return this.notice([...modules], []);
 	}
 
-	/** Queues exports in files the newest commits touched, so a new store discovers recent work. */
+	/** Queues up to `BACKFILL_EXPORTS` exports in files the newest commits touched, newest first, so a new store samples recent work. */
 	backfill(modules: readonly string[]): number {
 		const context = new ReadContext(this.store);
-		const entries = modules
+		const entries = [...new Set(modules)]
 			.flatMap((module) => this.exportsIn(context, module).map((each) => ({ symbolId: each.symbolId, module })))
 			.slice(0, BACKFILL_EXPORTS);
 		this.store.relationWrite(() => this.store.relations.enqueue(entries, this.clock.now()));
