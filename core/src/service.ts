@@ -33,6 +33,8 @@ import { bindsModule, type NamespaceTarget, namespaceTargetOf, sameTarget } from
 import { describeScope, type FileScope, isExternalModule, readScopeConfig } from "./fileScope.js";
 import { runFix, runFixText } from "./fixOnWrite.js";
 import {
+	CoChangeIndex,
+	type Commit,
 	coChangesFor,
 	commitsMentioning,
 	DEFAULT_DEPTH,
@@ -64,6 +66,7 @@ import { RefactorPlanner } from "./refactorPlanner.js";
 import type { PlannedWrite } from "./refactorStep.js";
 import type { UnknownType } from "./refusalSlots.js";
 import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
+import { RelationLedger } from "./relations.js";
 import { holdsWord } from "./renameRoutes.js";
 import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
 import type { SourceReader } from "./sourceRead.js";
@@ -85,6 +88,9 @@ const COMMENT_COUNT_SCAN = 200_000;
 
 /** Entry list reporting cap. */
 const ENTRY_POINTS_SHOWN = 50;
+
+/** History cache lifetime in milliseconds. */
+const HISTORY_FRESH_MS = 5 * 60 * 1000;
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -117,6 +123,7 @@ export class LexiconService {
 			return this.caches.resolutions.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, ask);
 		});
 		this.notes = new NoteLedger(store, this.clock);
+		this.relations = new RelationLedger(store, this.clock);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
 		this.indexer = new WorkspaceIndexer(
 			store,
@@ -174,6 +181,11 @@ export class LexiconService {
 	readonly imports: ImportResolver;
 
 	readonly notes: NoteLedger;
+
+	readonly relations: RelationLedger;
+
+	/** Cached history read shared by relation queries until it expires. */
+	private history: { at: number; commits: Promise<Commit[]>; index: Promise<CoChangeIndex | null> } | null = null;
 
 	/** Hit and miss counts, so a claim that the cache helps is checkable rather than asserted. */
 	cacheStats(): CacheStats {
@@ -721,6 +733,29 @@ export class LexiconService {
 			const { partners, report } = coChangesFor(module, commits, undefined, presentIn(this.workspaceRoot));
 			return { module, partners: partners.slice(0, limit), total: partners.length, ...report };
 		});
+	}
+
+	/** Co-change index, or null when the workspace has no readable history. */
+	relationHistory(): Promise<CoChangeIndex | null> {
+		return this.historyRead().index;
+	}
+
+	/** Distinct files touched by the newest commits, in encounter order. */
+	async recentlyChanged(commits: number): Promise<string[]> {
+		return CoChangeIndex.recentFiles(await this.historyRead().commits, commits);
+	}
+
+	private historyRead(): { commits: Promise<Commit[]>; index: Promise<CoChangeIndex | null> } {
+		const now = this.clock.now();
+		if (this.history === null || now - this.history.at > HISTORY_FRESH_MS) {
+			const commits = readHistory(this.workspaceRoot, DEFAULT_DEPTH, this.clock);
+			this.history = {
+				at: now,
+				commits,
+				index: commits.then((read) => (read.length === 0 ? null : new CoChangeIndex(read))),
+			};
+		}
+		return this.history;
 	}
 
 	/**

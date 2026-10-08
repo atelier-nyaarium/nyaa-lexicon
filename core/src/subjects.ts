@@ -160,12 +160,32 @@ export interface SalvagedNoteProposal {
 	proposedAt: number;
 }
 
+/** A salvaged relation whose ends are restored independently by subject id or address. */
+export interface SalvagedRelation {
+	subjectId: string | null;
+	otherId: string | null;
+	recordedAs: string;
+	otherAs: string;
+	provenance: "computed" | "person" | "agent" | "model";
+	status: "proposed" | "confirmed" | "doubted";
+	revision: number;
+	why: string | null;
+	author: string | null;
+	authoredAt: number;
+	judgedBy: string | null;
+	judgedAt: number | null;
+	reason: string | null;
+	digest: string | null;
+	otherDigest: string | null;
+}
+
 /** The salvaged knowledge in closed shapes, and how many rows were unreadable. */
 export interface NormalizedSalvage {
 	subjects: SalvagedSubject[];
 	notes: SalvagedNote[];
 	noteLinks: SalvagedNoteLink[];
 	noteProposals: SalvagedNoteProposal[];
+	relations: SalvagedRelation[];
 	dropped: number;
 }
 
@@ -254,6 +274,28 @@ CREATE TABLE IF NOT EXISTS symbol_note_proposals (
   proposedAt   INTEGER NOT NULL
 );
 
+-- One row per pair of subjects, the lesser id first; addresses and digests record each end at the last write.
+CREATE TABLE IF NOT EXISTS symbol_relations (
+  subjectId   TEXT NOT NULL,
+  otherId     TEXT NOT NULL,
+  recordedAs  TEXT NOT NULL,
+  otherAs     TEXT NOT NULL,
+  provenance  TEXT NOT NULL CHECK (provenance IN ('computed', 'person', 'agent', 'model')),
+  status      TEXT NOT NULL CHECK (status IN ('proposed', 'confirmed', 'doubted')),
+  revision    INTEGER NOT NULL CHECK (revision > 0),
+  why         TEXT,
+  author      TEXT,
+  authoredAt  INTEGER NOT NULL,
+  judgedBy    TEXT,
+  judgedAt    INTEGER,
+  reason      TEXT,
+  digest      TEXT,
+  otherDigest TEXT,
+  PRIMARY KEY (subjectId, otherId),
+  CHECK (subjectId < otherId)
+);
+CREATE INDEX IF NOT EXISTS symbol_relations_other ON symbol_relations(otherId);
+
 -- A key never changes: identity moves by rebinding the subject's address and by nothing else.
 CREATE TRIGGER IF NOT EXISTS knowledge_subjects_key_frozen BEFORE UPDATE OF subjectId ON knowledge_subjects
   BEGIN SELECT RAISE(ABORT, 'knowledge_subjects.subjectId never changes'); END;
@@ -263,6 +305,8 @@ CREATE TRIGGER IF NOT EXISTS symbol_note_links_key_frozen BEFORE UPDATE OF subje
   BEGIN SELECT RAISE(ABORT, 'symbol_note_links.subjectId never changes'); END;
 CREATE TRIGGER IF NOT EXISTS symbol_note_proposals_key_frozen BEFORE UPDATE OF subjectId ON symbol_note_proposals
   BEGIN SELECT RAISE(ABORT, 'symbol_note_proposals.subjectId never changes'); END;
+CREATE TRIGGER IF NOT EXISTS symbol_relations_key_frozen BEFORE UPDATE OF subjectId, otherId ON symbol_relations
+  BEGIN SELECT RAISE(ABORT, 'symbol_relations keys never change'); END;
 
 CREATE VIEW IF NOT EXISTS subjects_addressed AS
   SELECT subjectId, currentSymbolId AS symbolId, state, boundAt, orphanedAt, fromSymbolId, evidence, lastDigest, lastCoverage
@@ -270,10 +314,16 @@ CREATE VIEW IF NOT EXISTS subjects_addressed AS
 CREATE VIEW IF NOT EXISTS notes_addressed AS
   SELECT n.*, s.currentSymbolId AS symbolId, s.state, s.lastDigest
   FROM symbol_notes n JOIN knowledge_subjects s ON s.subjectId = n.subjectId;
+CREATE VIEW IF NOT EXISTS relations_addressed AS
+  SELECT r.*, a.currentSymbolId AS symbolId, a.state, a.lastDigest,
+    b.currentSymbolId AS otherSymbolId, b.state AS otherState, b.lastDigest AS otherLastDigest
+  FROM symbol_relations r
+  JOIN knowledge_subjects a ON a.subjectId = r.subjectId
+  JOIN knowledge_subjects b ON b.subjectId = r.otherId;
 `;
 
 /** The view names, so a rebuild can drop them before the tables they read. */
-export const KNOWLEDGE_VIEWS = ["subjects_addressed", "notes_addressed"] as const;
+export const KNOWLEDGE_VIEWS = ["subjects_addressed", "notes_addressed", "relations_addressed"] as const;
 
 /** The tables a rebuild salvages, subjects first so the rows that key by them restore after. */
 export const KNOWLEDGE_TABLES = [
@@ -281,6 +331,7 @@ export const KNOWLEDGE_TABLES = [
 	"symbol_notes",
 	"symbol_note_links",
 	"symbol_note_proposals",
+	"symbol_relations",
 ] as const;
 
 /** Checked before the insert, so a salvaged row from another version cannot fail the rebuild. */
@@ -290,6 +341,10 @@ const EVIDENCE = new Set<string>(EVIDENCE_VALUES);
 const NOTE_FIELD_COLUMNS = ["summary", "description", "why", "gotchas"] as const;
 
 const COVERAGE = new Set<string>(["commentsStripped", "commentsKept"]);
+
+const RELATION_PROVENANCE = new Set<string>(["computed", "person", "agent", "model"]);
+
+const RELATION_STATUS = new Set<string>(["proposed", "confirmed", "doubted"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -527,7 +582,43 @@ export function normalizeSalvaged(
 			proposedAt: num(row["proposedAt"], 0),
 		});
 	}
-	return { subjects, notes, noteLinks, noteProposals, dropped };
+
+	const relations: SalvagedRelation[] = [];
+	for (const row of raw["symbol_relations"] ?? []) {
+		const recordedAs = str(row["recordedAs"]) || null;
+		const otherAs = str(row["otherAs"]) || null;
+		const provenance = str(row["provenance"]);
+		const status = str(row["status"]);
+		if (
+			recordedAs === null ||
+			otherAs === null ||
+			provenance === null ||
+			!RELATION_PROVENANCE.has(provenance) ||
+			status === null ||
+			!RELATION_STATUS.has(status)
+		) {
+			dropped++;
+			continue;
+		}
+		relations.push({
+			subjectId: str(row["subjectId"]),
+			otherId: str(row["otherId"]),
+			recordedAs,
+			otherAs,
+			provenance: provenance as SalvagedRelation["provenance"],
+			status: status as SalvagedRelation["status"],
+			revision: Math.max(1, num(row["revision"], 1)),
+			why: str(row["why"]),
+			author: str(row["author"]),
+			authoredAt: num(row["authoredAt"], 0),
+			judgedBy: str(row["judgedBy"]),
+			judgedAt: at(row["judgedAt"]),
+			reason: str(row["reason"]),
+			digest: str(row["digest"]),
+			otherDigest: str(row["otherDigest"]),
+		});
+	}
+	return { subjects, notes, noteLinks, noteProposals, relations, dropped };
 }
 
 /** Salvaged subject rows put back as they were; every other row finds its subject through `placeRow`. */
@@ -750,13 +841,16 @@ export class KnowledgeSubjects {
 		return { subjects, kept };
 	}
 
-	/** The subject and its rows, gone. */
+	/** Deletes the subject and its knowledge, including relations at either end. */
 	delete(subjectId: string): void {
 		const notes = this.db.prepare("DELETE FROM symbol_notes WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM symbol_note_proposals WHERE subjectId = ?").run(subjectId);
+		const relations = this.db
+			.prepare("DELETE FROM symbol_relations WHERE subjectId = ? OR otherId = ?")
+			.run(subjectId, subjectId);
 		const subject = this.db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(subjectId);
-		this.recordKnowledgeWrite(notes.changes > 0 || subject.changes > 0);
+		this.recordKnowledgeWrite(notes.changes > 0 || relations.changes > 0 || subject.changes > 0);
 	}
 
 	/** Orphans whose kept address the module holds again are bound: the address resolves, so nothing was lost. */

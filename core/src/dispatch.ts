@@ -16,6 +16,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { ArrangePlacement } from "./arrangePlanner.js";
 import { systemClock } from "./clock.js";
+import type { CoChangeIndex } from "./history.js";
 import { reindexOwed } from "./refactorStep.js";
 import { changedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
@@ -271,6 +272,20 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			return gate.read(() => answer(params));
 		});
 
+	/** Git history read outside the gate, since a subprocess must never hold it; the answer under the shared gate. */
+	const historyFirst = <M extends DaemonMethod>(
+		answer: (params: RequestOf<M>, history: CoChangeIndex | null) => ResponseOf<M>,
+	): Handler<M> =>
+		staged(async (params, gate) => {
+			let history: CoChangeIndex | null = null;
+			await gate.ahead(
+				service.relationHistory().then((read) => {
+					history = read;
+				}),
+			);
+			return gate.read(() => answer(params, history));
+		});
+
 	return {
 		findByName: read((params) => service.findByName(params.name, params.module)),
 		describe: treeFirst(
@@ -348,6 +363,28 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 			),
 		),
 		noteBacklinks: read((params) => service.noteBacklinks(params.symbolId, params.limit)),
+		relationsOf: historyFirst(({ symbolId, ...options }, history) =>
+			service.relations.relationsOf(symbolId, history, options),
+		),
+		relationsBetween: historyFirst((params, history) =>
+			service.relations.between(params.symbolId, params.otherId, history, params.intent),
+		),
+		relationCandidates: historyFirst((params, history) =>
+			params.module !== undefined
+				? service.relations.candidatesForModule(params.module, params.limit ?? 10, params.intent)
+				: service.relations.candidatesForSymbol(
+						params.symbolId ?? "",
+						params.limit ?? 10,
+						history,
+						params.intent,
+					),
+		),
+		relationGaps: historyFirst((params, history) => service.relations.gaps(params.limit ?? 5, history)),
+		writeRelation: write((params) => service.relations.write(params)),
+		answerRelationGap: write((params) =>
+			service.relations.answerGap(params.symbolId, params.related, params.author),
+		),
+		relationFeedback: write((params) => service.relations.feedback(params.pairs, params.intent, params.outcome)),
 		searchRefs: read((params) => service.searchRefs(params.text, params.limit, params.kinds)),
 		diagnoseSubject: read((params) => service.diagnoseSubject(params.symbolId)),
 		typeOf: treeFirst(

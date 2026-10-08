@@ -37,6 +37,9 @@ const UPGRADED = [
 	"previewReplace",
 ];
 
+/** History read ungated, then the answer shared. */
+const HISTORY_FIRST = ["relationsOf", "relationsBetween", "relationCandidates", "relationGaps"];
+
 /** Answered with no gate, so no batch or step holding it delays them. */
 const STATUS = ["indexStatus", "indexWorkspace", "cacheStats", "refactorStatus", "refactorSettlements"];
 
@@ -98,6 +101,7 @@ describe("one place mints a daemon handler", () => {
 		expect(entries(source, "staged")).toEqual([...STAGED].sort());
 		expect(entries(source, "treeFirst")).toEqual([...TREE_FIRST].sort());
 		expect(entries(source, "upgradedRead")).toEqual([...UPGRADED].sort());
+		expect(entries(source, "historyFirst")).toEqual([...HISTORY_FIRST].sort());
 		expect(entries(source, "status")).toEqual([...STATUS].sort());
 	});
 });

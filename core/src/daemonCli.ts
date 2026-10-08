@@ -45,6 +45,7 @@ import { ownSource } from "./ownSource.js";
 import { finishAbandonedDelete, pruneProjectStores } from "./projectStores.js";
 import { describeStart, startProviders } from "./providers.js";
 import { recoverSteps } from "./refactorStep.js";
+import { type RelationWork, startRelationWork } from "./relationWork.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
@@ -225,6 +226,7 @@ async function main(argv: string[]): Promise<void> {
 	let supervisor: ProviderSupervisor | null = null;
 	let transactions: TransactionManager | null = null;
 	let live: { stop: () => void } | null = null;
+	let relations: RelationWork | null = null;
 	let linger: ReturnType<typeof lingerWhileEmpty> | null = null;
 	let collector: Collector | null = null;
 	// The service's own gate, once there is a service. Before that nothing else is running.
@@ -274,6 +276,7 @@ async function main(argv: string[]): Promise<void> {
 			// While the providers are still alive to be measured.
 			["diagnostics", () => collector?.stop()],
 			["watcher", () => live?.stop()],
+			["relation discovery", () => relations?.stop()],
 			["providers", () => supervisor?.stopAll()],
 			["store", () => store?.close()],
 			// A git call this daemon killed but whose grandchild is still draining a pipe otherwise
@@ -406,6 +409,14 @@ async function main(argv: string[]): Promise<void> {
 		}
 
 		const dispatch = createDispatch(service, { transactions: journal }, timings);
+		const discovery = startRelationWork({
+			service,
+			clock,
+			timings,
+			stopping: () => stopping,
+			onError: (error) => log(`relation discovery failed: ${describeError(error)}`),
+		});
+		relations = discovery;
 
 		collector = startDiagnostics({
 			file: paths.diagnosticsFile,
@@ -453,6 +464,7 @@ async function main(argv: string[]): Promise<void> {
 					() => {
 						const status = service.indexStatus();
 						log(`upgraded to full facts, ${clock.now() - started}ms total (${status.failures} failures)`);
+						void discovery.ready();
 					},
 					(error) => log(`upgrade failed: ${error instanceof Error ? error.message : error}`),
 				);
@@ -490,6 +502,7 @@ async function main(argv: string[]): Promise<void> {
 							if (touched.length > 0) log(`reindexed ${touched.map((o) => o.module).join(", ")}`);
 							if (failures.length > 0)
 								log(`reindex failures: ${failures.map((o) => `${o.module}: ${o.failure}`).join(", ")}`);
+							discovery.applied(applied);
 						},
 						onError: (error) => log(`reindex failed: ${error instanceof Error ? error.message : error}`),
 					});

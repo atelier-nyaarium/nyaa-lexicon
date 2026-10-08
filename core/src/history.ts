@@ -225,6 +225,68 @@ export function presentIn(workspaceRoot: string): (file: string) => boolean {
 	return (file) => statSync(path.join(workspaceRoot, file), { throwIfNoEntry: false })?.isFile() === true;
 }
 
+/** File-to-commit index for bounded pairwise co-change queries. */
+export class CoChangeIndex {
+	private readonly byFile = new Map<string, Set<number>>();
+	private readonly files: string[][] = [];
+
+	constructor(commits: readonly Commit[], widthLimit = DEFAULT_WIDTH_LIMIT) {
+		for (const commit of commits) {
+			const files = filesOf(commit);
+			if (files.length > widthLimit) continue;
+			const at = this.files.push(files) - 1;
+			for (const file of files) {
+				const held = this.byFile.get(file);
+				if (held === undefined) this.byFile.set(file, new Set([at]));
+				else held.add(at);
+			}
+		}
+	}
+
+	/** Number of indexed commits that touched the file. */
+	outOf(file: string): number {
+		return this.byFile.get(file)?.size ?? 0;
+	}
+
+	/** Number of indexed commits that touched both files. */
+	together(a: string, b: string): number {
+		const left = this.byFile.get(a);
+		const right = this.byFile.get(b);
+		if (left === undefined || right === undefined) return 0;
+		const [small, large] = left.size <= right.size ? [left, right] : [right, left];
+		let count = 0;
+		for (const commit of small) if (large.has(commit)) count++;
+		return count;
+	}
+
+	/** Files sharing commits with this one, ordered by shared commit count. */
+	partners(file: string, limit: number): Array<{ file: string; together: number }> {
+		const commits = this.byFile.get(file);
+		if (commits === undefined) return [];
+		const together = new Map<string, number>();
+		for (const commit of commits) {
+			for (const other of this.files[commit] ?? []) {
+				if (other !== file) together.set(other, (together.get(other) ?? 0) + 1);
+			}
+		}
+		return [...together]
+			.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+			.slice(0, limit)
+			.map(([other, count]) => ({ file: other, together: count }));
+	}
+
+	/** Distinct files touched by the newest `commits` entries, in encounter order. */
+	static recentFiles(history: readonly Commit[], commits: number, widthLimit = DEFAULT_WIDTH_LIMIT): string[] {
+		const seen = new Set<string>();
+		for (const commit of history.slice(0, commits)) {
+			const files = filesOf(commit);
+			if (files.length > widthLimit) continue;
+			for (const file of files) seen.add(file);
+		}
+		return [...seen];
+	}
+}
+
 export function coChangesFor(
 	module: string,
 	commits: Commit[],

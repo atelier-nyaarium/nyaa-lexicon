@@ -484,6 +484,81 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect(backlinks.notes.map((entry) => entry.symbolId)).toEqual([symbolId]);
 	},
 
+	// Relations: nothing binds in the fixture, so history and the shared file carry the evidence.
+	relationsOf: async () => {
+		const related = await ask("relationsOf", { symbolId: cart, limit: 5 });
+		expect(related.relations.map((relation) => [relation.symbol?.name, relation.kind])).toContainEqual([
+			"ITEM_LIMIT",
+			"changedTogether",
+		]);
+		expect(related.unavailable).toEqual([]);
+		await ask("relationsOf", { symbolId: cart, kinds: ["sameFile"], intent: "adopt", withDoubted: true });
+	},
+	relationsBetween: async () => {
+		const add = harness.symbol("add", "cart.ref");
+		expect((await ask("relationsBetween", { symbolId: cart, otherId: add })).relation?.evidence.sameModule).toBe(
+			true,
+		);
+		const itself = await ask("relationsBetween", { symbolId: cart, otherId: cart });
+		expect(itself.relation).toBeNull();
+	},
+	writeRelation: async () => {
+		const pair = { symbolId: cart, otherId: harness.symbol("add", "cart.ref") };
+		const proposed = await ask("writeRelation", {
+			...pair,
+			action: "state",
+			why: "add fills a cart",
+			expectedRevision: 0,
+			author: AGENT,
+		});
+		expect(proposed.outcome).toBe("proposed");
+		const confirmed = await ask("writeRelation", {
+			...pair,
+			action: "confirm",
+			expectedRevision: 1,
+			author: { kind: "person" },
+		});
+		expect(confirmed.outcome === "saved" && confirmed.relation?.stated).toMatchObject({
+			provenance: "agent",
+			status: "confirmed",
+			revision: 2,
+		});
+		const kept = await ask("writeRelation", {
+			...pair,
+			action: "state",
+			why: "add empties a cart",
+			expectedRevision: 2,
+			author: AGENT,
+		});
+		expect(kept.outcome).toBe("kept");
+		const stale = await ask("writeRelation", {
+			...pair,
+			action: "remove",
+			expectedRevision: 1,
+			author: { kind: "person" },
+		});
+		expect(stale.outcome === "refused" && stale.current?.stated?.revision).toBe(2);
+	},
+	relationFeedback: async () => {
+		const pairs = [{ symbolId: cart, otherId: harness.symbol("add", "cart.ref") }];
+		expect(await ask("relationFeedback", { pairs, intent: "adopt", outcome: "accepted" })).toEqual({ recorded: 1 });
+	},
+	relationCandidates: async () => {
+		expect(await ask("relationCandidates", { module: "item.ref", limit: 5 })).toEqual({
+			candidates: [],
+			unavailable: [],
+		});
+		await ask("relationCandidates", { symbolId: cart, intent: "adopt" });
+	},
+	relationGaps: async () => {
+		expect(await ask("relationGaps", { limit: 2 })).toEqual({ gaps: [], total: 0 });
+	},
+	answerRelationGap: async () => {
+		const related = [{ symbolId: harness.symbol("ITEM_LIMIT", "item.ref"), why: "a cart holds at most this many" }];
+		const answer = await ask("answerRelationGap", { symbolId: cart, related, author: AGENT });
+		expect(answer).toEqual({ proposed: 1, kept: 0, refused: [] });
+	},
+
 	// Refactoring, in the order the plan runs it; the three steps this provider cannot do refuse.
 	refactorStart: async () => {
 		expect((await ask("refactorStart", {})).started).toBe(true);
@@ -634,6 +709,13 @@ const KNOWLEDGE = [
 	"confirmNote",
 	"resolveNoteProposal",
 	"noteBacklinks",
+	"relationsOf",
+	"relationsBetween",
+	"writeRelation",
+	"relationFeedback",
+	"relationCandidates",
+	"relationGaps",
+	"answerRelationGap",
 ] as const satisfies readonly DaemonMethod[];
 
 const REFACTOR = [

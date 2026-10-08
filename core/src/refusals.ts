@@ -91,6 +91,37 @@ export function proposalReplaced(symbolId: string): Refusal {
 	return mint(`a newer proposal replaced the one shown for ${symbolId}. Review it before resolving`);
 }
 
+////////////////////////////////
+//  Relations
+
+export function relationToItself(symbolId: string): Refusal {
+	return mint(`${symbolId} cannot relate to itself. Name two different symbols`);
+}
+
+export function relationRevisionMoved(expected: number, current: number): Refusal {
+	return mint(
+		current === 0
+			? `no stated relation stands between these two, so expectedRevision is 0, not ${expected}`
+			: `the relation is at revision ${current}, not ${expected}. Read it again and write over what stands`,
+	);
+}
+
+export function relationNeedsPerson(action: string): Refusal {
+	return mint(`only a person can ${action} a relation. State one instead, and a person judges it`);
+}
+
+export function relationNeedsWhy(): Refusal {
+	return mint(`a stated relation needs a why: it is what a reader weighs it by`);
+}
+
+export function noRelationStands(symbolId: string, otherId: string): Refusal {
+	return mint(`no stated relation stands between ${symbolId} and ${otherId}. \`state\` writes one`);
+}
+
+export function relationNotLocal(kind: string): Refusal {
+	return mint(`${kind} is function-scoped and relates to nothing on its own. Name the declaration that owns it`);
+}
+
 export function refModuleNotIndexed(module: string): Refusal {
 	return mint(`${module} is not an indexed file`);
 }

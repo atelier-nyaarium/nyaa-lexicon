@@ -660,6 +660,43 @@ binds the name to that export, or `{ status: "refused", reason, detail? }` with 
 gate, since the provider holds the handed text while it plans.
 An older daemon answers it as an unknown method.
 
+## Relations
+
+Protocol 6.6.0. `docs/knowledge-layer.md` holds what a relation is; this is the wire.
+
+**`relationsOf`** (`{ symbolId, limit?, kinds?, intent?, withDoubted? }`) answers the symbols
+related to one, each with `score` in [0, 1], its strongest `kind`, the five `parts` (`callers`,
+`cochange`, `words`, `imports`, `file`), the `evidence` behind them, `health`, what was `stated`
+about the pair, and `feedback`. Each kind keeps `limit` relations, 20 by default, and `truncated`
+says one held more. `cochange` is null and `unavailable` names `history` when the workspace has no
+history to read; the score then weighs only the parts it read. A doubted relation is left out unless
+`withDoubted`. `intent` applies that consumer's feedback only. An unknown symbol answers no
+relations.
+
+**`relationsBetween`** (`{ symbolId, otherId, intent? }`) answers one pair whatever it scores, or
+`relation: null` with a `reason` when either end names nothing or both are the same.
+
+**`relationCandidates`** takes `module` or `symbolId`, never both. With `module`, the exports
+discovery suggested to it in the last 14 days that it still does not use, best score first; with
+`symbolId`, the modules that export would suit, computed now. Each candidate pairs
+an `export` with a `module` and names the related symbols the module uses (`via`).
+
+**`relationGaps`** (`{ limit? }`) lists new exports nothing relates to strongly, each with
+`candidates` a model may judge it against, newest first, and the `total` open.
+
+**`writeRelation`** (`{ symbolId, otherId, action, why?, reason?, expectedRevision, author? }`):
+`state` with a `why`; a person's is confirmed, an agent's proposed, and an agent's over a pair a
+person judged answers `kept`. `confirm`, `doubt` (with a `reason`) and `remove` are a person's; a
+confirm or doubt of a pair nothing stated keeps the computed relation's word. A revision other than
+the one standing refuses with `current`. **`answerRelationGap`** (`{ symbolId, related, author? }`)
+writes a model's judgments as proposals and closes the gap, even when `related` is empty.
+**`relationFeedback`** (`{ pairs, intent, outcome }`) counts one accepted or rejected prediction
+for each pair under that intent.
+
+`relationsOf`, `relationsBetween`, `relationCandidates` and `relationGaps` read git history before
+taking the gate (`historyFirst` in `dispatch.ts`), since a subprocess must never hold it. One history
+read serves them for five minutes.
+
 `describe.moduleRole` is present when the module's provider reported a role. `overview.entryPoints`
 is present when any file in scope has one, lists at most 50 entries, and `moreEntryPoints` counts
 the rest. Each `main` entry carries its declaration's `symbolId`; `guardedMain` and `topLevel`

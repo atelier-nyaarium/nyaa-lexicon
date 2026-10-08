@@ -87,6 +87,22 @@ import {
 	WriteNoteRequestSchema,
 } from "./noteShapes.js";
 import { ImportResolutionSchema } from "./project.js";
+import {
+	AnswerRelationGapRequestSchema,
+	RelationBetweenSchema,
+	RelationCandidatesRequestSchema,
+	RelationCandidatesSchema,
+	RelationFeedbackRequestSchema,
+	RelationFeedbackResultSchema,
+	RelationGapAnswerSchema,
+	RelationGapsRequestSchema,
+	RelationGapsSchema,
+	RelationOutcomeSchema,
+	RelationsBetweenRequestSchema,
+	RelationsOfRequestSchema,
+	RelationsSchema,
+	WriteRelationRequestSchema,
+} from "./relationShapes.js";
 import { PositionSchema } from "./symbols.js";
 import { TypeInfoSchema } from "./values.js";
 
@@ -717,6 +733,62 @@ export const DAEMON_METHODS = {
 		response: NoteBacklinksSchema,
 		lifecycle: "query",
 		mutates: false,
+		budget: "read",
+	},
+	/** Symbols related to one, scored from the index and history, with what was stated about each. */
+	relationsOf: {
+		request: RelationsOfRequestSchema,
+		response: RelationsSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "history",
+	},
+	/** How two symbols relate, scored whatever the score. */
+	relationsBetween: {
+		request: RelationsBetweenRequestSchema,
+		response: RelationBetweenSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "history",
+	},
+	/** Exports a module does not use yet that relate to what it does, or the modules an export suits. */
+	relationCandidates: {
+		request: RelationCandidatesRequestSchema,
+		response: RelationCandidatesSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "history",
+	},
+	/** New exports nothing relates to strongly, for a model to judge. */
+	relationGaps: {
+		request: RelationGapsRequestSchema,
+		response: RelationGapsSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** State, confirm, doubt or remove a relation between two symbols. */
+	writeRelation: {
+		request: WriteRelationRequestSchema,
+		response: RelationOutcomeSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** A model's judgment of a gap, stored as proposals. */
+	answerRelationGap: {
+		request: AnswerRelationGapRequestSchema,
+		response: RelationGapAnswerSchema,
+		lifecycle: "query",
+		mutates: true,
+		budget: "read",
+	},
+	/** Predictions some relations found were accepted or rejected. */
+	relationFeedback: {
+		request: RelationFeedbackRequestSchema,
+		response: RelationFeedbackResultSchema,
+		lifecycle: "query",
+		mutates: true,
 		budget: "read",
 	},
 	/** Symbols and files a ref could name, by name, with the ref written. */

@@ -80,6 +80,7 @@ import { stampSeen } from "./lastSeen.js";
 import { insertNote, NoteRows } from "./noteRows.js";
 import type { PatternDigest } from "./patternDigest.js";
 import { normalizeDocText } from "./proseText.js";
+import { insertRelation, orderedPair, RELATION_TABLES, RelationRows } from "./relationRows.js";
 import type { ScopeFilter } from "./scope.js";
 import { compileSearchRegex, searchTerm } from "./search.js";
 import {
@@ -558,6 +559,8 @@ CREATE INDEX docs_fact ON docs(factId);
 -- The knowledge layer's tables, keyed by subject and owned by subjects.ts.
 ${KNOWLEDGE_SCHEMA}
 
+${RELATION_TABLES}
+
 ${JOURNAL_DDL}
 `;
 
@@ -761,6 +764,25 @@ function restoreKnowledge(
 		const subjectId = notePlaced.get(row.subjectId);
 		if (subjectId === undefined) continue;
 		proposal.run(subjectId, row.baseRevision, row.text, row.proposedBy, row.proposedAt);
+	}
+
+	// Both ends placed, or the relation stays out: two subjects never merge.
+	for (const row of rows.relations) {
+		const one = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
+		const other = subjects.placeRow({ subjectId: row.otherId, recordedAs: row.otherAs, at: now });
+		if (!one.placed || !other.placed || one.subjectId === other.subjectId) {
+			unplaced++;
+			continue;
+		}
+		const [first] = orderedPair(one.subjectId, other.subjectId);
+		const swapped = first !== one.subjectId;
+		insertRelation(db, swapped ? other.subjectId : one.subjectId, swapped ? one.subjectId : other.subjectId, {
+			...row,
+			recordedAs: swapped ? row.otherAs : row.recordedAs,
+			otherAs: swapped ? row.recordedAs : row.otherAs,
+			digest: swapped ? row.otherDigest : row.digest,
+			otherDigest: swapped ? row.digest : row.otherDigest,
+		});
 	}
 
 	for (const table of SALVAGED_JOURNAL) restoreByColumn(db, table, salvaged[table] ?? []);
@@ -1027,6 +1049,8 @@ export class IndexStore {
 	readonly subjects: KnowledgeSubjects;
 	/** Note rows, keyed by subject. */
 	readonly notes: NoteRows;
+	/** Stated relations, feedback counts and discovery state. */
+	readonly relations: RelationRows;
 
 	/** The newest stamp written or held, so no two commits share one. */
 	private newestStamp: number;
@@ -1042,11 +1066,17 @@ export class IndexStore {
 	) {
 		this.subjects = new KnowledgeSubjects(db, (changed) => this.recordKnowledgeWrite(changed));
 		this.notes = new NoteRows(db, (changed) => this.recordKnowledgeWrite(changed));
+		this.relations = new RelationRows(db, (changed) => this.recordKnowledgeWrite(changed));
 		this.newestStamp = this.newestIndexedAt() ?? 0;
 	}
 
 	/** Runs a note write in one transaction, so a note and its links never land apart. */
 	noteWrite<T>(work: () => T): T {
+		return this.inTransaction(work);
+	}
+
+	/** Runs a relation write in one transaction, so a relation and the subjects it claims land together. */
+	relationWrite<T>(work: () => T): T {
 		return this.inTransaction(work);
 	}
 
@@ -1244,6 +1274,7 @@ export class IndexStore {
 		}
 		// Every statement is IF NOT EXISTS, so an index, trigger or view added later lands on an existing store here.
 		db.exec(KNOWLEDGE_SCHEMA);
+		db.exec(RELATION_TABLES);
 		db.exec(JOURNAL_DDL);
 		if (!columnExists(db, "refactor_recovery_intents", "diskStates")) {
 			db.exec("ALTER TABLE refactor_recovery_intents ADD COLUMN diskStates TEXT");
@@ -2562,6 +2593,73 @@ export class IndexStore {
 			)
 			.all(module) as Array<{ symbolId: string; n: number }>;
 		return new Map(rows.map((row) => [row.symbolId, row.n]));
+	}
+
+	/** Distinct using declarations per symbol; top-level uses count their module, and unused symbols are absent. */
+	holderCounts(symbolIds: readonly string[]): Map<string, number> {
+		if (symbolIds.length === 0) return new Map();
+		const rows = this.db
+			.prepare(
+				`SELECT r.targetId AS symbolId, COUNT(DISTINCT COALESCE(r.fromId, 'module ' || r.module)) AS n
+				 FROM refs r WHERE r.targetId IN (SELECT value FROM json_each(?)) AND ${useSql("r")}
+				 GROUP BY r.targetId`,
+			)
+			.all(JSON.stringify(symbolIds)) as Array<{ symbolId: string; n: number }>;
+		return new Map(rows.map((row) => [row.symbolId, row.n]));
+	}
+
+	/** Whether a module's path reads as a test, by the rule name searches rank with. */
+	testModule(module: string): boolean {
+		const row = this.db.prepare(`SELECT ${TEST_PATH} AS test FROM (SELECT ? AS module)`).get(module) as {
+			test: number;
+		};
+		return row.test === 1;
+	}
+
+	/** Each other module using something `module` declares, with up to three of those, `except` aside. */
+	usesInto(module: string, except: string): Map<string, string[]> {
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT r.module AS module, r.targetId AS targetId FROM refs r
+				 JOIN symbols s ON s.symbolId = r.targetId
+				 WHERE s.module = ? AND r.module <> ? AND r.targetId <> ? AND ${useSql("r")}
+				 ORDER BY r.module, r.targetId`,
+			)
+			.all(module, module, except) as Array<{ module: string; targetId: string }>;
+		const byModule = new Map<string, string[]>();
+		for (const row of rows) {
+			const held = byModule.get(row.module) ?? [];
+			if (held.length < 3) held.push(row.targetId);
+			byModule.set(row.module, held);
+		}
+		return byModule;
+	}
+
+	/** Use counts for a symbol, grouped by module. */
+	usingModules(symbolId: string): Map<string, number> {
+		const rows = this.db
+			.prepare(
+				`SELECT r.module AS module, COUNT(*) AS n FROM refs r WHERE r.targetId = ? AND ${useSql("r")}
+				 GROUP BY r.module`,
+			)
+			.all(symbolId) as Array<{ module: string; n: number }>;
+		return new Map(rows.map((row) => [row.module, row.n]));
+	}
+
+	/** Distinct resolved import targets for a module. */
+	importTargets(module: string): string[] {
+		const rows = this.db
+			.prepare("SELECT DISTINCT target FROM imports WHERE module = ? AND target IS NOT NULL ORDER BY target")
+			.all(module) as Array<{ target: string }>;
+		return rows.map((row) => row.target);
+	}
+
+	/** Modules with at least one declaration marked exported by its provider. */
+	exportingModules(): string[] {
+		const rows = this.db
+			.prepare("SELECT DISTINCT module FROM symbols WHERE exported = 1 ORDER BY module")
+			.all() as Array<{ module: string }>;
+		return rows.map((row) => row.module);
 	}
 
 	/** Mentions included; see usesIn. */

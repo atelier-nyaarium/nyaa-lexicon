@@ -10,7 +10,6 @@ import {
 	NOTE_MAX,
 	type Note,
 	type NoteAuthor,
-	NoteAuthorSchema,
 	type NoteBacklinks,
 	type NoteLink,
 	type NoteOutcome,
@@ -21,6 +20,7 @@ import {
 	type SearchRefs,
 	walkChain,
 } from "@nyaa-lexicon/protocol";
+import { authorOf, authorText, isPerson } from "./authors.js";
 import { type Clock, systemClock } from "./clock.js";
 import { MODULE_TARGET, type NoteLinkRow, type NoteProposalRow, type NoteRow } from "./noteRows.js";
 import { noteOpening, type OpeningBlock } from "./noteText.js";
@@ -79,24 +79,6 @@ const SEARCH_SCANNED = 2000;
 
 function refused(reason: refusal.Refusal, extra: Partial<Omit<Refused, "outcome" | "reason">> = {}): LedgerNoteOutcome {
 	return { outcome: "refused", reason, ...extra };
-}
-
-function authorText(author: NoteAuthor | null | undefined): string | null {
-	return author === null || author === undefined ? null : JSON.stringify(author);
-}
-
-function authorOf(text: string | null): NoteAuthor | null {
-	if (text === null) return null;
-	try {
-		const parsed = NoteAuthorSchema.safeParse(JSON.parse(text));
-		return parsed.success ? parsed.data : null;
-	} catch {
-		return null;
-	}
-}
-
-function isPerson(author: NoteAuthor | null | undefined): boolean {
-	return author?.kind === "person";
 }
 
 /** A person wrote or vouched for the standing revision. */
