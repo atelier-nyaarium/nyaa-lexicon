@@ -42,7 +42,7 @@ function installAt(root: string, protocolVersion: string = PROTOCOL_VERSION, old
 
 /** A daemon serving the workspace, its lock wearing the install's identity. */
 async function daemonAnswering(
-	answer: (method: string) => FakeAnswer | Promise<FakeAnswer>,
+	answer: (method: string, params: unknown, gateWaitMs?: number) => FakeAnswer | Promise<FakeAnswer>,
 	protocolVersion: string = PROTOCOL_VERSION,
 	buildVersion: string = BUILD,
 	oldestClientMajor?: number,
@@ -352,6 +352,25 @@ describe("what the daemon says back", () => {
 		expect(await rethrown(failed)).toThrow(DaemonError);
 		expect(await rejection(failed)).toMatchObject({ waitingFor: "the warmup pass" });
 		expect(fake.asked).toEqual(["cacheStats"]);
+	});
+
+	it("sends a call's gate budget and reads the refusal past it as busy", async () => {
+		writeInstallRecord(install, host);
+		const budgets: Array<number | undefined> = [];
+		await daemonAnswering((_method, _params, gateWaitMs) => {
+			budgets.push(gateWaitMs);
+			return gateWaitMs === undefined
+				? { ok: true, result: STATS }
+				: { ok: false, error: "the workspace is busy with an index write", code: "busy" };
+		});
+		const session = await open({ workspaceRoot: workspace });
+
+		const bounded = session.cacheStats({}, { gateWaitMs: 25 });
+
+		expect(await rejection(bounded)).toMatchObject({ code: "busy" });
+		expect(await session.ask("cacheStats", {}, { gateWaitMs: 25 }).catch(() => "busy")).toBe("busy");
+		expect(await session.cacheStats({})).toEqual(STATS);
+		expect(budgets).toEqual([25, 25, undefined]);
 	});
 });
 

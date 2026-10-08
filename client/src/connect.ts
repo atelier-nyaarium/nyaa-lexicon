@@ -13,6 +13,7 @@ import {
 	type InstallVersion,
 	PROTOCOL_VERSION,
 	type RequestOf,
+	type RequestOptions,
 	type ResponseOf,
 	servesClient,
 } from "@nyaa-lexicon/protocol";
@@ -50,12 +51,17 @@ export interface ConnectOptions {
 	signal?: AbortSignal;
 }
 
-/** Every daemon method as a typed call. Mapped from the table, so its JSDoc reaches hover. */
-export type Facade = { [M in DaemonMethod]: (params: RequestOf<M>) => Promise<ResponseOf<M>> };
+/**
+ * Every daemon method as a typed call. Mapped from the table, so its JSDoc reaches hover.
+ * `gateWaitMs` bounds a read's wait behind an index write; past it the call throws `busy`.
+ */
+export type Facade = {
+	[M in DaemonMethod]: (params: RequestOf<M>, options?: RequestOptions) => Promise<ResponseOf<M>>;
+};
 
 export interface Session extends Facade {
 	/** The method by name, for a caller holding the name rather than the call. */
-	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>>;
+	ask<M extends DaemonMethod>(method: M, params: RequestOf<M>, options?: RequestOptions): Promise<ResponseOf<M>>;
 	/** Closes the session; the daemon keeps running.
 	 * Later asks fail closed without reconnect; sent writes report unknown outcomes. */
 	close(): void;
@@ -180,18 +186,22 @@ export async function connect(options: ConnectOptions): Promise<Session> {
 	};
 	const channel = daemonChannel(channelOptions);
 
-	async function ask<M extends DaemonMethod>(method: M, params: RequestOf<M>): Promise<ResponseOf<M>> {
+	async function ask<M extends DaemonMethod>(
+		method: M,
+		params: RequestOf<M>,
+		options?: RequestOptions,
+	): Promise<ResponseOf<M>> {
 		try {
-			return await channel.ask(method, params);
+			return await channel.ask(method, params, options);
 		} catch (error) {
 			throw asDaemonError(error);
 		}
 	}
 
 	// Cast once, so every method exists with no hand-written member to fall behind the table.
-	const calls: Record<string, (params: never) => Promise<unknown>> = {};
+	const calls: Record<string, (params: never, options?: RequestOptions) => Promise<unknown>> = {};
 	for (const method of Object.keys(DAEMON_METHODS) as DaemonMethod[]) {
-		calls[method] = (params) => ask(method, params);
+		calls[method] = (params, options) => ask(method, params, options);
 	}
 
 	return Object.assign(calls as Facade, {

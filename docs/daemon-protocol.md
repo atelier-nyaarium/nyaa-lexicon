@@ -101,6 +101,8 @@ answers from the depth it finds, while the upgrade runs on. It does not bound th
 admitted in time still waits on its provider, and a starting daemon still answers `starting`. A
 method that mutates ignores it, and a status read takes no gate to wait for. An older daemon strips
 the field and queues as before, so a client relying on the bound checks the daemon's version first.
+The client's session takes it as each call's second argument, `session.parseFacts(params, { gateWaitMs })`,
+and throws a `DaemonError` with `code: "busy"`.
 
 **Ping and pong:** every thirty seconds the daemon sends `{ kind: "ping", n }` and the client
 answers `{ kind: "pong", n }`. Any frame from the client resets its silence counter, and a client

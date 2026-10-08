@@ -11,14 +11,14 @@ import { lineSplitter, writeFrame } from "../transport";
 
 export type FakeAnswer =
 	| { ok: true; result: unknown }
-	| { ok: false; error: string; starting?: boolean; retryInMs?: number; waitingFor?: string };
+	| { ok: false; error: string; starting?: boolean; retryInMs?: number; waitingFor?: string; code?: "busy" };
 
 export interface FakeDaemonOptions {
 	token: string;
 	/** What the welcome claims. */
 	protocolVersion?: string;
 	oldestClientMajor?: number;
-	answer: (method: string, params: unknown) => FakeAnswer | Promise<FakeAnswer>;
+	answer: (method: string, params: unknown, gateWaitMs?: number) => FakeAnswer | Promise<FakeAnswer>;
 }
 
 export interface FakeDaemon {
@@ -70,7 +70,7 @@ export function fakeDaemon(options: FakeDaemonOptions): Promise<FakeDaemon> {
 					}
 					if (!welcomed || frame.kind !== "request") return;
 					asked.push(frame.method);
-					void Promise.resolve(options.answer(frame.method, frame.params)).then((answer) =>
+					void Promise.resolve(options.answer(frame.method, frame.params, frame.gateWaitMs)).then((answer) =>
 						writeFrame(socket, { kind: "response", id: frame.id, ...answer }),
 					);
 				},
