@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-csharp",
-	"version": "15.8.6",
+	"version": "15.9.0",
 	"private": true,
 	"type": "module",
 	"description": "C# provider for nyaa-lexicon",
