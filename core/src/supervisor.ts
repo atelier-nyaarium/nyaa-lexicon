@@ -43,6 +43,7 @@ import {
 	routeModule,
 	routingContextOf,
 } from "./routing.js";
+import { Timings, textSizes } from "./timings.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -157,7 +158,10 @@ export function absorbingWrites(stdin: Writable): Writable {
 //  Class
 
 export class ProviderSupervisor implements ProviderPort {
-	constructor(private readonly clock: Clock = systemClock) {}
+	constructor(
+		private readonly clock: Clock = systemClock,
+		private readonly timings: Timings = new Timings(clock),
+	) {}
 
 	private readonly providers = new Map<string, RunningProvider>();
 	/** Minted per spawn, so a verdict for a dead process never reaches its replacement. */
@@ -539,37 +543,41 @@ export class ProviderSupervisor implements ProviderPort {
 		if (!provider) throw new Error(`provider ${providerId} is not running`);
 		const timeout = provider.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-		return provider.queue.run(async () => {
-			let raw: unknown;
-			try {
-				// A death mid-request fails this caller through the queue, typed.
-				raw = await withTimeout(
-					this.clock,
-					provider.connection.sendRequest(method, params),
-					timeout,
-					method,
-					() => this.warmingGrace(provider, timeout, method),
-				);
-			} catch (error) {
-				// A transport write error can beat the exit event; a dead child retypes it so the
-				// failure never reads as the file's.
-				if (
-					!(error instanceof ProviderUnavailableError) &&
-					(provider.child.exitCode !== null || provider.child.killed)
-				) {
-					throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
+		// Its work alone: the queue's wait is the provider's other callers.
+		const stage = `${providerId}.${method}`;
+		return provider.queue.run(() =>
+			this.timings.time(stage, textSizes(params), async () => {
+				let raw: unknown;
+				try {
+					// A death mid-request fails this caller through the queue, typed.
+					raw = await withTimeout(
+						this.clock,
+						provider.connection.sendRequest(method, params),
+						timeout,
+						method,
+						() => this.warmingGrace(provider, timeout, method),
+					);
+				} catch (error) {
+					// A transport write error can beat the exit event; a dead child retypes it so the
+					// failure never reads as the file's.
+					if (
+						!(error instanceof ProviderUnavailableError) &&
+						(provider.child.exitCode !== null || provider.child.killed)
+					) {
+						throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
+					}
+					throw error;
 				}
-				throw error;
-			}
-			// Validated here so a malformed answer fails at the provider that produced it, rather
-			// than as a confusing shape error somewhere downstream.
-			const parsed = METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
-			const facts = method === "parseFile" || method === "probeFile";
-			if (facts && typeof parsed === "object" && parsed !== null) {
-				settleDeclaredTiers(provider.tiers, parsed as Partial<FileFacts>);
-			}
-			return parsed;
-		});
+				// Validated here so a malformed answer fails at the provider that produced it, rather
+				// than as a confusing shape error somewhere downstream.
+				const parsed = METHOD_SCHEMAS[method].response.parse(raw) as MethodResponse<K>;
+				const facts = method === "parseFile" || method === "probeFile";
+				if (facts && typeof parsed === "object" && parsed !== null) {
+					settleDeclaredTiers(provider.tiers, parsed as Partial<FileFacts>);
+				}
+				return parsed;
+			}),
+		);
 	}
 
 	/**

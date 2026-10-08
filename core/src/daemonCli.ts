@@ -49,6 +49,7 @@ import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
+import { Timings } from "./timings.js";
 import { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
 import { admitStateDir, admitWorkspace } from "./workspaceAdmission.js";
@@ -366,7 +367,9 @@ async function main(argv: string[]): Promise<void> {
 			log(`${opened.dropped} salvaged knowledge row(s) were unreadable and were not restored`);
 		}
 
-		const spawned = new ProviderSupervisor(clock);
+		// One ring for the daemon's methods and the provider work under them.
+		const timings = new Timings(clock);
+		const spawned = new ProviderSupervisor(clock, timings);
 		supervisor = spawned;
 		// Held until the collector exists, so a death during startup is still an incident.
 		const earlyExits: Parameters<Collector["recordExit"]>[0][] = [];
@@ -402,7 +405,7 @@ async function main(argv: string[]): Promise<void> {
 			}
 		}
 
-		const dispatch = createDispatch(service, { transactions: journal });
+		const dispatch = createDispatch(service, { transactions: journal }, timings);
 
 		collector = startDiagnostics({
 			file: paths.diagnosticsFile,
@@ -423,6 +426,7 @@ async function main(argv: string[]): Promise<void> {
 				};
 			},
 			onError: (message) => log(message),
+			timings: () => timings.recorded(),
 		});
 		for (const exit of earlyExits.splice(0)) collector.recordExit(exit);
 		log(`diagnostics ${paths.diagnosticsFile}`);

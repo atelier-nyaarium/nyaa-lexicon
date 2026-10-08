@@ -146,6 +146,12 @@ describe("the collection on disk", () => {
 		expect(read().writtenAt).toBe(clock.now());
 	});
 
+	it("writes the daemon's timings with its samples, and none when it keeps none", () => {
+		const kept = { calls: [{ at: 1, stage: "parseFacts", ms: 412, sizes: { text: 9000 } }], stages: [] };
+		expect(harness({ timings: () => kept }).read().timings).toEqual(kept);
+		expect(harness().read().timings).toBeUndefined();
+	});
+
 	it("leaves no temp file behind, and a file that always parses", () => {
 		const { clock, paths, collector } = harness();
 		clock.advance(WRITE * 3);

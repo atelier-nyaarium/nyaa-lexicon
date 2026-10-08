@@ -279,6 +279,28 @@ describe("reading a store's diagnostics", () => {
 		expect(result.content[0]?.text).toContain("EACCES");
 	});
 
+	it("shows each stage's calls, its slow ones and the spread of those kept, busiest first", () => {
+		const call = (stage: string, ms: number) => ({ at: NOW, stage, ms, sizes: {} });
+		const timings = {
+			calls: [call("parseFacts", 40), call("parseFacts", 900), call("parseFacts", 60)],
+			stages: [
+				{ stage: "moduleFacts", count: 3, slow: 0 },
+				{ stage: "parseFacts", count: 50, slow: 1 },
+			],
+		};
+		const shown = (data: Diagnostics) =>
+			projectDiagnosticsTool(
+				deps([store()], undefined, { diagnostics: () => ({ state: "present", file: FILE, data }) }),
+				{ store: "proj-abc123" },
+			).content[0]?.text ?? "";
+
+		const text = shown(collection({ timings }));
+		expect(text).toContain("- parseFacts: 50 calls, 1 slow; kept 3: p50 60 ms, p90 900 ms, max 900 ms");
+		expect(text.indexOf("parseFacts:")).toBeLessThan(text.indexOf("moduleFacts:"));
+		expect(text).toContain("- moduleFacts: 3 calls, 0 slow; none kept");
+		expect(shown(collection())).toContain("None kept yet.");
+	});
+
 	it("names the process that peaked, how close to the limit, and what it died of while the daemon did what", () => {
 		const result = projectDiagnosticsTool(
 			deps([store()], undefined, { diagnostics: () => ({ state: "present", file: FILE, data: collection() }) }),

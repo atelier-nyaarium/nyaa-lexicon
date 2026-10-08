@@ -85,7 +85,7 @@ export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
 
 Read a store's daemon, providers, and adjacent reports from disk. Works after the daemon dies.
 
-Pass a key or directory from \`list_project_stores\`. Shows peaks against host memory, newest incidents first with daemon activity, sampled range, report triggers and memory, and snapshot sizes.
+Pass a key or directory from \`list_project_stores\`. Shows peaks against host memory, newest incidents first with daemon activity, sampled range, sparse timings per daemon and provider method, report triggers and memory, and snapshot sizes.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
@@ -353,6 +353,26 @@ export function renderStores(stores: ProjectStore[], now: number, pruned: Pruned
 	].join("\n");
 }
 
+/** Per stage: its calls, the slow ones, and the spread of those kept. */
+function timingLines(timings: Diagnostics["timings"]): string[] {
+	if (timings === undefined || timings.stages.length === 0) return [`None kept yet.`];
+	const at = (sorted: number[], share: number) =>
+		sorted[Math.min(sorted.length - 1, Math.floor(share * sorted.length))] ?? 0;
+	return [...timings.stages]
+		.sort((a, b) => b.count - a.count)
+		.map((stage) => {
+			const ms = timings.calls
+				.filter((call) => call.stage === stage.stage)
+				.map((call) => call.ms)
+				.sort((a, b) => a - b);
+			const spread =
+				ms.length === 0
+					? `none kept`
+					: `kept ${ms.length}: p50 ${at(ms, 0.5)} ms, p90 ${at(ms, 0.9)} ms, max ${ms.at(-1)} ms`;
+			return `- ${stage.stage}: ${stage.count} calls, ${stage.slow} slow; ${spread}`;
+		});
+}
+
 export function renderDiagnostics(
 	label: string,
 	file: string,
@@ -443,6 +463,12 @@ export function renderDiagnostics(
 		`## Samples`,
 		"",
 		...sampled,
+		"",
+		`## Timings`,
+		"",
+		`Kept: every slow call and one in a few of the rest, so the kept spread leans slow.`,
+		"",
+		...timingLines(data.timings),
 		"",
 		`## Reports`,
 		"",

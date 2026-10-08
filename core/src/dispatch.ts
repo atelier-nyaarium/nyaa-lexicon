@@ -15,6 +15,7 @@ import {
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
 import type { ArrangePlacement } from "./arrangePlanner.js";
+import { systemClock } from "./clock.js";
 import { reindexOwed } from "./refactorStep.js";
 import { changedWhilePlanned, type Refusal, staleSincePlanned } from "./refusals.js";
 import type { LexiconService } from "./service.js";
@@ -34,6 +35,7 @@ import {
 	renameStepOutcome,
 	underClientStep,
 } from "./stepRunners.js";
+import { Timings, textSizes } from "./timings.js";
 import type { TransactionManager } from "./transactions.js";
 import { BUILD_VERSION } from "./version.js";
 import type { WorkspaceGate } from "./workspaceGate.js";
@@ -462,7 +464,11 @@ export function unknownMethod(method: string): Error {
  * An unknown method throws rather than answering null, so a client built against a newer daemon
  * learns the method is missing instead of reading an empty answer as a real one.
  */
-export function createDispatch(service: LexiconService, refactor?: RefactorDeps) {
+export function createDispatch(
+	service: LexiconService,
+	refactor?: RefactorDeps,
+	timings: Timings = new Timings(systemClock),
+) {
 	const handlers = daemonHandlers(service, refactor);
 	const unbounded = gateOf(service.gate);
 	return async (method: string, params: unknown, options: RequestOptions = {}): Promise<unknown> => {
@@ -484,7 +490,7 @@ export function createDispatch(service: LexiconService, refactor?: RefactorDeps)
 		}
 		// Looked up by a runtime key, the handler's parameter is the intersection of every request.
 		const handler: { effect: Effect; run: (params: never, gate: Gate) => unknown } = handlers[method];
-		const run = () => handler.run(args as never, gate);
+		const run = () => timings.time(method, textSizes(args), async () => handler.run(args as never, gate));
 		const answer =
 			handler.effect === "read"
 				? await gate.read(run)

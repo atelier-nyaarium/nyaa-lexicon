@@ -17,6 +17,7 @@ import { hostMemory, processMemory, runtimeVerdict, storePaths } from "@nyaa-lex
 import { z } from "zod";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import type { ProviderExit } from "./supervisor.js";
+import { type Recorded, TimingsSchema } from "./timings.js";
 
 ////////////////////////////////
 //  Constants
@@ -98,6 +99,8 @@ const CollectionSchema = z.object({
 	peaks: z.array(PeakSchema),
 	incidents: z.array(IncidentSchema),
 	samples: z.array(SampleSchema),
+	/** Absent from a daemon that kept none. */
+	timings: TimingsSchema.optional(),
 });
 
 export const DiagnosticsSchema = CollectionSchema.extend({ version: z.literal(2), host: HostSchema });
@@ -159,6 +162,8 @@ export interface CollectorOptions {
 	env?: Record<string, string | undefined>;
 	sampleMs?: number;
 	writeMs?: number;
+	/** The daemon's sparse timings, written with its samples. */
+	timings?: () => Recorded;
 }
 
 export interface Collector {
@@ -538,6 +543,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 	}
 
 	function current(): Diagnostics {
+		const recorded = options.timings?.();
 		const host = readHost();
 		return {
 			version: 2,
@@ -554,6 +560,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 			peaks: [...peaks.values()],
 			incidents: [...incidents],
 			samples: [...samples],
+			...(recorded === undefined ? {} : { timings: recorded }),
 		};
 	}
 

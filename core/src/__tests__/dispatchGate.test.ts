@@ -4,6 +4,7 @@ import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch } from "../dispatch";
 import type { CommentQuery, LiteralQuery } from "../indexReads";
 import type { LexiconService } from "../service";
+import { Timings } from "../timings";
 import type { TransactionManager } from "../transactions";
 import { GateBusy, WorkspaceGate } from "../workspaceGate";
 import { TREE_FIRST } from "./dispatchTiers";
@@ -83,6 +84,15 @@ describe("gating daemon mutations", () => {
 	it("refuses a refactor call when the daemon has no journal", async () => {
 		const dispatch = createDispatch(tracingService([]));
 		expect(await rethrown(dispatch("refactorStart", {}))).toThrow(/without refactor support/);
+	});
+
+	it("times each method with the lengths of the text it was sent, never the text", async () => {
+		const timings = new Timings(fakeClock());
+		const service = asService({ parseFacts: async () => ({ ok: false, reason: "unowned" }) });
+		await createDispatch(service, undefined, timings)("parseFacts", { module: "a.ts", text: "const a = 1;" });
+
+		const [call] = timings.recorded().calls;
+		expect(call).toMatchObject({ stage: "parseFacts", sizes: { text: 12 } });
 	});
 
 	it("rejects an unknown method rather than answering nothing", async () => {

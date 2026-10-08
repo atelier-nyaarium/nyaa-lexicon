@@ -15,6 +15,7 @@ import {
 	ProviderSupervisor,
 	ProviderUnavailableError,
 } from "../supervisor";
+import { Timings } from "../timings";
 import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
@@ -199,6 +200,21 @@ describe("asking through the supervisor", () => {
 			text: "export class Cart {}\n",
 		});
 		expect(facts.declarations.map((d) => d.name)).toEqual(["Cart"]);
+	}, 30_000);
+
+	it("times each answer as its provider's method, with the lengths of the text it was sent", async () => {
+		const timings = new Timings(fakeClock());
+		supervisor = new ProviderSupervisor(undefined, timings);
+		await supervisor.start({ command: [process.execPath, "run", REFERENCE], timeoutMs: 15_000 }, tmpdir());
+		await supervisor.ask("a.ref", "parseFile", {
+			module: "a.ref",
+			contentHash: "h1",
+			text: "export class Cart {}\n",
+		});
+
+		const parses = timings.recorded().calls.filter((call) => call.stage.endsWith(".parseFile"));
+		expect(parses).toHaveLength(1);
+		expect(parses[0]?.sizes).toEqual({ text: 21 });
 	}, 30_000);
 
 	it("refuses a module nobody claims rather than guessing a provider", async () => {
