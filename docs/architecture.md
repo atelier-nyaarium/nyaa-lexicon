@@ -83,8 +83,9 @@ Two rules hold the design together:
   Traversal, cycle finding and ranking are application code. No recursive CTEs.
 - **The index is always derivable.** A schema mismatch or an unreadable file is a rebuild, never
   data loss, so no migration path has to be carried forever. The one exception is the knowledge
-  layer: notes cannot be regenerated from source, so they are salvaged across a rebuild with their
-  subjects, links and proposals. Every salvaged row is normalized to a closed value and placed
+  layer: notes and stated relations cannot be regenerated from source, so they are salvaged across
+  a rebuild with their subjects, links and proposals; computed relations are never stored, and
+  relation feedback and discovery's tables start empty. Every salvaged row is normalized to a closed value and placed
   through the identity owner's one placement method; a row it cannot read or place is a count in
   the daemon log, never a merge. A new schema's first open copies the newest readable older index
   forward (`core/src/indexSeed.ts`) and migrates the copy.
@@ -474,6 +475,11 @@ order, which bounds what a scan of any length leaves waiting. The hold is taken 
 or it would deadlock the scan's per-file holds. A scan that fails releases nothing and stops the
 watcher: a batch would prune against roots a failed discovery never filled, and that index waits for
 a restart.
+
+Relation discovery (`core/src/relationWork.ts`) runs beside batches in slices: git history read
+outside the gate, the scoring under a bounded shared read, the write under a short exclusive hold,
+so a batch or a step defers a slice rather than waiting behind it. `core/src/relationDiscovery.ts`
+is the only writer of its snapshot and queue; `docs/knowledge-layer.md` has the rules.
 
 Batches are applied one at a time on one promise tail, and the hourly knowledge sweep is queued on
 the same tail under the same gate, so a sweep never runs beside a batch mid-parse and a sweep
