@@ -417,6 +417,42 @@ describe("move edits", () => {
 		}
 	});
 
+	it("lands an existing import in the mode its file resolves import declarations with", () => {
+		const target = 'import { existing } from "#src";\n';
+		const body = "export function moved() { return sibling; }\n";
+		const response = move(
+			workspace({
+				"tsconfig.json": JSON.stringify({
+					compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext" },
+				}),
+				"package.json": JSON.stringify({
+					type: "module",
+					imports: { "#src": { import: "./source.js", require: "./other.cjs" } },
+				}),
+				"source.ts": "export const sibling = 1;\nexport const existing = 2;\n",
+				"other.cts": "export const existing = 3;\n",
+				"target.ts": target,
+			}),
+			{
+				module: "target.ts",
+				text: target,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.ts",
+				role: { insertion: { text: body } },
+				importSites: [],
+				dependencies: [sibling("sibling")],
+				sites: [],
+			},
+		);
+		if (response.status !== "ready") throw new Error("move was refused");
+		expect(applyEdits(target, response.edits)).toEqual({
+			text: `import { existing, sibling } from "#src";\n\n${body}`,
+		});
+	});
+
 	it("folds an aliased name into an existing import for its origin specifier", () => {
 		const target = 'import { existing } from "pkg";\n';
 		const body = "export function moved() { return $local; }\n";

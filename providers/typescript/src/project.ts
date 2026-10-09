@@ -5,7 +5,13 @@
 // and none of them are things a syntax tree can answer.
 
 import path from "node:path";
-import { hashContent, type ImportResolution, normalizeModulePath, type ReadPolicy } from "@nyaa-lexicon/protocol";
+import {
+	hashContent,
+	type ImportResolution,
+	normalizeModulePath,
+	type ReadPolicy,
+	type ResolutionMode,
+} from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { configuredSurfaceCandidates, isDeclarationModule, surfaceGlobMatches } from "./bundle.js";
 import { claimsExtension } from "./file-types.js";
@@ -25,7 +31,19 @@ export interface LoadedProject extends CompilerSetup {
 	configFiles: string[];
 	/** Referenced project paths. */
 	references: string[];
+	/** Each referenced project's settings, in reference order. */
+	referenced: ts.CompilerOptions[];
+	groups: SettingsGroups;
 	diagnostics: { severity: "error" | "warning"; message: string; path?: string }[];
+}
+
+/** Projects whose binding, typing and resolution settings match share a group, and one Program. */
+export interface SettingsGroups {
+	/** The root project's group. */
+	root: string;
+	settings: ReadonlyMap<string, ts.CompilerOptions>;
+	/** Each referenced project file's group, by absolute path. */
+	byFile: ReadonlyMap<string, string>;
 }
 
 /** Defaults for a workspace with no tsconfig, so an unconfigured repo still answers. */
@@ -34,6 +52,11 @@ const FALLBACK: ts.CompilerOptions = {
 	module: ts.ModuleKind.ESNext,
 	moduleResolution: ts.ModuleResolutionKind.Bundler,
 	allowJs: true,
+};
+
+const MODE_KINDS: Record<ResolutionMode, ts.ResolutionMode> = {
+	import: ts.ModuleKind.ESNext,
+	require: ts.ModuleKind.CommonJS,
 };
 
 /** Options that change no binding, type or resolution. */
@@ -51,7 +74,6 @@ const INERT_OPTIONS = new Set([
 	"disableSourceOfProjectReferenceRedirect",
 	"emitBOM",
 	"emitDeclarationOnly",
-	"emitDecoratorMetadata",
 	"explainFiles",
 	"extendedDiagnostics",
 	"forceConsistentCasingInFileNames",
@@ -62,7 +84,6 @@ const INERT_OPTIONS = new Set([
 	"inlineSourceMap",
 	"inlineSources",
 	"isolatedDeclarations",
-	"isolatedModules",
 	"listEmittedFiles",
 	"listFiles",
 	"locale",
@@ -82,7 +103,6 @@ const INERT_OPTIONS = new Set([
 	"outDir",
 	"outFile",
 	"plugins",
-	"preserveConstEnums",
 	"preserveWatchOutput",
 	"pretty",
 	"removeComments",
@@ -157,7 +177,16 @@ function resolutionHost(system: ts.System): ts.ModuleResolutionHost {
 export function loadProject(workspaceRoot: string, system: ts.System = ts.sys): LoadedProject {
 	const configPath = ts.findConfigFile(workspaceRoot, system.fileExists, "tsconfig.json");
 	if (configPath === undefined) {
-		return { options: FALLBACK, system, files: [], configFiles: [], references: [], diagnostics: [] };
+		return {
+			options: FALLBACK,
+			system,
+			files: [],
+			configFiles: [],
+			references: [],
+			referenced: [],
+			groups: settingsGroups(FALLBACK, [], system),
+			diagnostics: [],
+		};
 	}
 
 	const config = parseConfig(configPath, system);
@@ -168,6 +197,8 @@ export function loadProject(workspaceRoot: string, system: ts.System = ts.sys): 
 			files: [],
 			configFiles: [configPath],
 			references: [],
+			referenced: [],
+			groups: settingsGroups(FALLBACK, [], system),
 			diagnostics: [{ severity: "error", message: messageOf(config.error), path: configPath }],
 		};
 	}
@@ -180,14 +211,16 @@ export function loadProject(workspaceRoot: string, system: ts.System = ts.sys): 
 		severity: "error",
 		message: messageOf(error),
 	}));
+	const projects: Array<{ files: string[]; options: ts.CompilerOptions }> = [];
 
 	// A solution-style tsconfig lists no files of its own, only references. Stopping here would
 	// answer "this monorepo contains nothing", which is the shape most real projects have.
 	for (const reference of references) {
-		const referenced = loadReferenced(reference, system);
-		files.push(...referenced.files);
-		configFiles.push(...referenced.configFiles);
-		diagnostics.push(...referenced.diagnostics);
+		const project = loadReferenced(reference, system);
+		files.push(...project.files);
+		if (project.options !== undefined) projects.push({ files: project.files, options: project.options });
+		configFiles.push(...project.configFiles);
+		diagnostics.push(...project.diagnostics);
 	}
 
 	// Reported rather than thrown: one bad config entry should not make the whole project
@@ -198,15 +231,64 @@ export function loadProject(workspaceRoot: string, system: ts.System = ts.sys): 
 		files: dedupe(files),
 		configFiles: dedupe(configFiles),
 		references,
+		referenced: projects.map((project) => project.options),
+		groups: settingsGroups(parsed.options, projects, system),
 		diagnostics,
 	};
+}
+
+/** The root's group first; a file two projects claim compiles with the first. */
+function settingsGroups(
+	root: ts.CompilerOptions,
+	projects: ReadonlyArray<{ files: readonly string[]; options: ts.CompilerOptions }>,
+	system: ts.System,
+): SettingsGroups {
+	const settings = new Map<string, ts.CompilerOptions>();
+	const keyOf = (options: ts.CompilerOptions) => {
+		const key = settingsKey(options, system);
+		if (!settings.has(key)) settings.set(key, options);
+		return key;
+	};
+	const rootKey = keyOf(root);
+	const byFile = new Map<string, string>();
+	for (const project of projects) {
+		const key = keyOf(project.options);
+		for (const file of project.files) {
+			const absolute = path.resolve(file);
+			if (!byFile.has(absolute)) byFile.set(absolute, key);
+		}
+	}
+	return { root: rootKey, settings, byFile };
+}
+
+/** Settings, with the config's own path read only as the automatic type packages it finds. */
+function settingsKey(options: ts.CompilerOptions, system: ts.System): string {
+	const settings = relevantSettings(options).filter(([name]) => name !== "configFilePath");
+	const config = (options as { configFilePath?: unknown }).configFilePath;
+	const directory = typeof config === "string" ? path.dirname(config) : system.getCurrentDirectory();
+	const inferred = path.join(directory, "__inferred type names__.ts");
+	const types =
+		options.types === undefined
+			? (ts.getEffectiveTypeRoots(options, system) ?? []).filter((root) => system.directoryExists(root))
+			: options.types.map(
+					(name) =>
+						ts.resolveTypeReferenceDirective(name, inferred, options, resolutionHost(system))
+							.resolvedTypeReferenceDirective?.resolvedFileName ?? null,
+				);
+	return JSON.stringify([settings, types]);
+}
+
+function relevantSettings(options: ts.CompilerOptions): Array<[string, unknown]> {
+	return Object.entries(options)
+		.filter(([name]) => !INERT_OPTIONS.has(name))
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
 }
 
 /** One referenced project. Its own references are not followed: one level is what a solution is. */
 function loadReferenced(
 	referencePath: string,
 	system: ts.System,
-): Pick<LoadedProject, "files" | "configFiles" | "diagnostics"> {
+): Pick<LoadedProject, "files" | "configFiles" | "diagnostics"> & { options?: ts.CompilerOptions } {
 	const configPath = system.directoryExists(referencePath)
 		? path.join(referencePath, "tsconfig.json")
 		: referencePath;
@@ -225,6 +307,7 @@ function loadReferenced(
 
 	return {
 		files: config.parsed.fileNames,
+		options: config.parsed.options,
 		configFiles: config.configFiles,
 		diagnostics: config.parsed.errors.map((error) => ({ severity: "error" as const, message: messageOf(error) })),
 	};
@@ -257,9 +340,7 @@ export function projectFingerprint(
 	root: string,
 	loaded: LoadedProject,
 ): { fingerprint: string; packageFiles: string[] } {
-	const options = Object.entries(loaded.options)
-		.filter(([name]) => !INERT_OPTIONS.has(name))
-		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	const options = relevantSettings(loaded.options);
 	const packageFiles = [
 		...new Set([...packageFilesOver(root, loaded.files, loaded.system), ...resolutionPackages(root, loaded)]),
 	].sort();
@@ -269,7 +350,38 @@ export function projectFingerprint(
 	]);
 	const references = [...loaded.references].sort();
 	const ambient = globalDeclarations(root, loaded.files, loaded.system);
-	return { fingerprint: hashContent(JSON.stringify({ options, references, ambient, packages })), packageFiles };
+	const referenced = loaded.referenced.map(relevantSettings);
+	return {
+		fingerprint: hashContent(JSON.stringify({ options, references, referenced, ambient, packages })),
+		packageFiles,
+	};
+}
+
+/** The protocol's name for a TypeScript resolution mode. */
+export function modeName(mode: ts.ResolutionMode): ResolutionMode | undefined {
+	if (mode === ts.ModuleKind.ESNext) return "import";
+	return mode === ts.ModuleKind.CommonJS ? "require" : undefined;
+}
+
+/** The mode TypeScript resolves an import declaration written in `fileName` with. */
+export function importDeclarationMode(fileName: string, setup: CompilerSetup): ResolutionMode | undefined {
+	const host = resolutionHost(setup.system);
+	const impliedNodeFormat = ts.getImpliedNodeFormatForFile(fileName, undefined, host, setup.options);
+	const languageVersion = ts.ScriptTarget.ESNext;
+	const probe = ts.createSourceFile(fileName, 'import "m";', { languageVersion, impliedNodeFormat }, true);
+	const statement = probe.statements[0];
+	if (statement === undefined || !ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
+		return undefined;
+	return modeName(ts.getModeForUsageLocation(probe, statement.moduleSpecifier, setup.options));
+}
+
+/** The settings group `fileName` compiles in: its referenced project's, else the root's. */
+export function groupOf(fileName: string, loaded: LoadedProject): string {
+	return loaded.groups.byFile.get(path.resolve(fileName)) ?? loaded.groups.root;
+}
+
+export function optionsForFile(fileName: string, loaded: LoadedProject): ts.CompilerOptions {
+	return loaded.groups.settings.get(groupOf(fileName, loaded)) ?? loaded.options;
 }
 
 /** Program `.d.ts` files whose declarations reach every file unimported. */
@@ -383,19 +495,14 @@ export function runsAsEsm(fileName: string, setup: CompilerSetup): boolean {
 /** Module format when TypeScript can name one from the project and file. */
 export function runtimeOf(fileName: string, setup: CompilerSetup): "esm" | "cjs" | undefined {
 	const kind = setup.options.module;
+	if (kind === ts.ModuleKind.AMD || kind === ts.ModuleKind.UMD || kind === ts.ModuleKind.System) return undefined;
 	if (/\.m[tj]s$/.test(fileName)) return "esm";
 	if (/\.c[tj]s$/.test(fileName)) return "cjs";
 	if (kind === undefined || kind === ts.ModuleKind.Preserve) return undefined;
 	if (kind >= ts.ModuleKind.Node16 && kind <= ts.ModuleKind.NodeNext) {
 		return runsAsEsm(fileName, setup) ? "esm" : "cjs";
 	}
-	if (
-		kind === ts.ModuleKind.CommonJS ||
-		kind === ts.ModuleKind.AMD ||
-		kind === ts.ModuleKind.UMD ||
-		kind === ts.ModuleKind.System
-	)
-		return "cjs";
+	if (kind === ts.ModuleKind.CommonJS) return "cjs";
 	if (kind >= ts.ModuleKind.ES2015 && kind <= ts.ModuleKind.ESNext) return "esm";
 	return undefined;
 }
@@ -426,6 +533,7 @@ export function resolveSpecifier(
 	setup: CompilerSetup,
 	surfaceGlobs: string[] = [],
 	lookupSurface: (module: string, fileName: string) => boolean = () => false,
+	resolutionMode?: ResolutionMode,
 ): ImportResolution {
 	const containing = path.join(workspaceRoot, fromModule);
 	const resolved = ts.resolveModuleName(
@@ -433,6 +541,9 @@ export function resolveSpecifier(
 		containing,
 		setup.options,
 		resolutionHost(setup.system),
+		undefined,
+		undefined,
+		resolutionMode === undefined ? undefined : MODE_KINDS[resolutionMode],
 	).resolvedModule;
 
 	if (resolved === undefined) {
@@ -481,8 +592,12 @@ export type SpecifierRenderer = (
 /** How a relative specifier ends: the runtime extension (`./a.js`), the source one (`./a.ts`), or none. */
 export type ExtensionStyle = "runtime" | "source" | "none";
 
-/** The workspace module a specifier lands on, when it lands on one. */
-export type ModuleResolver = (fromModule: string, specifier: string) => string | undefined;
+/** The workspace module a specifier lands on, when it lands on one; an import declaration's mode by default. */
+export type ModuleResolver = (
+	fromModule: string,
+	specifier: string,
+	resolutionMode?: ResolutionMode,
+) => string | undefined;
 
 /** A resolution's module, a package's surface included. */
 export function landingOf(resolution: ImportResolution): string | undefined {
@@ -720,7 +835,8 @@ function resolvesToTarget(
 	setup: CompilerSetup,
 	lookupSurface: (module: string, fileName: string) => boolean,
 ): boolean {
-	return landingOf(resolveSpecifier(root, fromModule, specifier, setup, [], lookupSurface)) === targetModule;
+	const mode = importDeclarationMode(path.join(root, fromModule), setup);
+	return landingOf(resolveSpecifier(root, fromModule, specifier, setup, [], lookupSurface, mode)) === targetModule;
 }
 
 function dedupeCandidates(candidates: RenderCandidate[]): RenderCandidate[] {

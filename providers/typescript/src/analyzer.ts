@@ -34,7 +34,7 @@ import { aliasEdgeSpan } from "./imports.js";
 import type { TypeScriptProject, TypeScriptStore, TypeScriptValue } from "./module.js";
 import { makeMoveEdits } from "./move.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";
-import { overlaidSystem, runsAsEsm, runtimeOf, toModule } from "./project.js";
+import { groupOf, optionsForFile, overlaidSystem, runsAsEsm, runtimeOf, toModule } from "./project.js";
 import {
 	contextualPropertySymbol,
 	destructuredElement,
@@ -78,15 +78,15 @@ interface SourceFailure {
 type SourceContextResult = SourceContext | SourceFailure;
 
 class ProgramGenerationStats {
-	private last: ts.Program | undefined;
+	private readonly seen = new WeakSet<ts.Program>();
 	private generations = 0;
 	private firstProgramMs: number | undefined;
 	private firstProgramWorkspaceFiles = 0;
 
-	/** A new Program object is a rebuild. */
+	/** A new Program object is a rebuild; each settings group builds its own. */
 	observe(program: ts.Program | undefined, elapsedMs: number, workspaceFiles: () => number): void {
-		if (program === undefined || program === this.last) return;
-		this.last = program;
+		if (program === undefined || this.seen.has(program)) return;
+		this.seen.add(program);
 		this.generations += 1;
 		if (this.firstProgramMs === undefined) {
 			this.firstProgramMs = elapsedMs;
@@ -130,10 +130,9 @@ export interface Overlay {
 //  Class
 
 export class TypeScriptAnalyzer {
-	private readonly service: ts.LanguageService;
-
 	runtime(module: string): "esm" | "cjs" | undefined {
-		return runtimeOf(this.fileName(module), this.project.loaded);
+		const fileName = this.fileName(module);
+		return runtimeOf(fileName, { ...this.project.loaded, options: optionsForFile(fileName, this.project.loaded) });
 	}
 	private readonly programCounters = new ProgramGenerationStats();
 
@@ -144,40 +143,57 @@ export class TypeScriptAnalyzer {
 		private readonly overlay?: Overlay,
 		private readonly registry: ts.DocumentRegistry = ts.createDocumentRegistry(),
 	) {
-		const root = project.root;
-		const compiler = project.loaded;
-		const directories =
-			overlay === undefined ? compiler.system : overlaidSystem(root, overlay.files, compiler.system);
+		project.languageServices.set(this, new Map());
+	}
 
+	/** One service per settings group, made when a file in the group is first read. */
+	private makeService(group: string): ts.LanguageService {
+		const { root, loaded } = this.project;
+		const { overlay, store } = this;
+		const options = loaded.groups.settings.get(group) ?? loaded.options;
+		const directories = overlay === undefined ? loaded.system : overlaidSystem(root, overlay.files, loaded.system);
+		const inGroup = (file: string) => groupOf(file, this.project.loaded) === group;
 		const host: ts.LanguageServiceHost = {
-			getCompilationSettings: () => compiler.options,
+			getCompilationSettings: () => options,
 			getCurrentDirectory: () => root,
-			getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+			getDefaultLibFileName: (settings) => ts.getDefaultLibFilePath(settings),
 			getProjectVersion: () => `${store.generation}${overlay === undefined ? "" : `:${overlay.tag}`}`,
-			getScriptFileNames: () => [
-				...new Set([
-					...project.roots,
-					...store.get("root").map((module) => this.fileName(module)),
-					...this.overlaidRoots(),
-				]),
-			],
+			getScriptFileNames: () =>
+				[
+					...new Set([
+						...this.project.roots,
+						...store.get("root").map((module) => this.fileName(module)),
+						...this.overlaidRoots(),
+					]),
+				].filter(inGroup),
 			getScriptKind: (fileName) => scriptKindOf(fileName),
 			getScriptSnapshot: (fileName) => {
 				const text = this.hostText(fileName);
 				return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
 			},
 			getScriptVersion: (fileName) => this.scriptVersion(fileName),
-			fileExists: (fileName) => this.hostText(fileName) !== undefined || compiler.system.fileExists(fileName),
-			readFile: (fileName) => this.hostText(fileName) ?? compiler.system.readFile(fileName),
-			readDirectory: compiler.system.readDirectory,
+			fileExists: (fileName) => this.hostText(fileName) !== undefined || loaded.system.fileExists(fileName),
+			readFile: (fileName) => this.hostText(fileName) ?? loaded.system.readFile(fileName),
+			readDirectory: loaded.system.readDirectory,
 			directoryExists: directories.directoryExists,
-			getDirectories: compiler.system.getDirectories,
-			...(compiler.system.realpath ? { realpath: compiler.system.realpath } : {}),
-			useCaseSensitiveFileNames: () => compiler.system.useCaseSensitiveFileNames,
+			getDirectories: loaded.system.getDirectories,
+			...(loaded.system.realpath ? { realpath: loaded.system.realpath } : {}),
+			useCaseSensitiveFileNames: () => loaded.system.useCaseSensitiveFileNames,
 		};
-		host.resolveModuleNames = (names, containingFile) =>
-			names.map((name) => ts.resolveModuleName(name, containingFile, compiler.options, host).resolvedModule);
-		this.service = ts.createLanguageService(host, registry);
+		// Each occurrence in the mode TypeScript gives it, so `exports` conditions apply per import form.
+		host.resolveModuleNameLiterals = (literals, containingFile, redirected, settings, containingSource) =>
+			literals.map((literal) =>
+				ts.resolveModuleName(
+					literal.text,
+					containingFile,
+					settings,
+					host,
+					undefined,
+					redirected,
+					ts.getModeForUsageLocation(containingSource, literal, settings),
+				),
+			);
+		return ts.createLanguageService(host, this.registry);
 	}
 
 	/** A view of `overlay` over this one's store, sharing its parsed documents. */
@@ -228,7 +244,13 @@ export class TypeScriptAnalyzer {
 		if (isSourceFailure(context)) return extractFile(module, source);
 		const version = this.scriptVersion(context.source.fileName);
 		return this.memo(`extract:${module}:${version}`, () =>
-			extractFile(module, context.source, context.checker, undefined, this.project.loaded.options),
+			extractFile(
+				module,
+				context.source,
+				context.checker,
+				undefined,
+				optionsForFile(context.source.fileName, this.project.loaded),
+			),
 		);
 	}
 
@@ -352,7 +374,11 @@ export class TypeScriptAnalyzer {
 			if (!isSourceFailure(context)) checker = context.checker;
 		}
 
-		const esm = runsAsEsm(this.fileName(params.module), this.project.loaded);
+		const fileName = this.fileName(params.module);
+		const esm = runsAsEsm(fileName, {
+			...this.project.loaded,
+			options: optionsForFile(fileName, this.project.loaded),
+		});
 		return { source, checker, esm };
 	}
 
@@ -362,8 +388,9 @@ export class TypeScriptAnalyzer {
 		firstProgramMs: number | undefined;
 		programGenerations: number;
 	} {
-		const program = this.program();
-		return this.programCounters.snapshot(program?.getRootFileNames().length ?? 0);
+		const programs = this.rootGroups().map((group) => this.groupProgram(group));
+		const rootFiles = programs.reduce((sum, program) => sum + (program?.getRootFileNames().length ?? 0), 0);
+		return this.programCounters.snapshot(rootFiles);
 	}
 
 	/** No program built yet, so the next read pays the whole build. */
@@ -371,13 +398,14 @@ export class TypeScriptAnalyzer {
 		return this.programCounters.snapshot(0).programGenerations === 0;
 	}
 
-	/** Builds the program ahead of any read. */
+	/** Builds every group's program ahead of any read. */
 	warm(): void {
-		this.program();
+		for (const group of this.rootGroups()) this.groupProgram(group);
 	}
 
 	dispose(): void {
-		this.service.dispose();
+		for (const service of this.project.languageServices.get(this)?.values() ?? []) service.dispose();
+		this.project.languageServices.delete(this);
 	}
 
 	private typeOfSymbolId(symbolId: string): TypeInfo {
@@ -632,7 +660,7 @@ export class TypeScriptAnalyzer {
 		}
 		if (this.hostText(fileName) === undefined) return sourceFailure("ParseError", "the file does not exist");
 
-		const program = this.program();
+		const program = this.program(fileName);
 		if (program === undefined) return sourceFailure("ParseError", "the Program could not be created");
 		const source = program.getSourceFile(fileName);
 		if (source !== undefined) return { source, checker: program.getTypeChecker(), program };
@@ -646,7 +674,11 @@ export class TypeScriptAnalyzer {
 	}
 
 	private fallbackProgram(fileName: string): ts.Program | undefined {
-		const options: ts.CompilerOptions = { ...this.project.loaded.options, allowJs: true, noResolve: true };
+		const options: ts.CompilerOptions = {
+			...optionsForFile(fileName, this.project.loaded),
+			allowJs: true,
+			noResolve: true,
+		};
 		const host = ts.createCompilerHost(options, true);
 		const { system } = this.project.loaded;
 		host.readFile = (name) => this.hostText(name);
@@ -661,10 +693,14 @@ export class TypeScriptAnalyzer {
 		return ts.createProgram([fileName], options, host);
 	}
 
-	private program(): ts.Program | undefined {
+	private program(fileName: string): ts.Program | undefined {
+		return this.groupProgram(groupOf(fileName, this.project.loaded));
+	}
+
+	private groupProgram(group: string): ts.Program | undefined {
 		this.store.get("root");
 		const started = Date.now();
-		const program = this.service.getProgram();
+		const program = this.serviceFor(group).getProgram();
 		this.programCounters.observe(
 			program,
 			Date.now() - started,
@@ -675,6 +711,23 @@ export class TypeScriptAnalyzer {
 					.length ?? 0,
 		);
 		return program;
+	}
+
+	/** Groups holding a root file, each one Program. */
+	private rootGroups(): string[] {
+		const roots = [...this.project.roots, ...this.store.get("root").map((module) => this.fileName(module))];
+		return [...new Set(roots.map((file) => groupOf(file, this.project.loaded)))];
+	}
+
+	private serviceFor(group: string): ts.LanguageService {
+		const services = this.project.languageServices.get(this);
+		if (services === undefined) throw new Error("the analyzer is disposed");
+		let service = services.get(group);
+		if (service === undefined) {
+			service = this.makeService(group);
+			services.set(group, service);
+		}
+		return service;
 	}
 
 	private mapDeclarations(nodes: readonly ts.Declaration[]): MappedDeclaration[] {

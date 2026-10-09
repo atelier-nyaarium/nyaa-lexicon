@@ -9,6 +9,7 @@ import path from "node:path";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
 import { coordinatesOf } from "../coordinates.js";
 import type { TextEdit } from "../edits.js";
+import { unjudgedLoadCycle } from "../loadCycles.js";
 import type { MoveEditsRequest, MoveEditsResponse } from "../move.js";
 import type { CommentSpan, FileFacts } from "../project.js";
 import {
@@ -261,6 +262,7 @@ export const referenceHandlers: ProviderHandlers = {
 
 	// The point of the whole file: a tier it does not do says so, with a reason, in the value.
 	resolveImport: () => notImplementedImport("the reference provider does not resolve imports"),
+	judgeLoadCycle: unjudgedLoadCycle,
 	bind: () => notImplementedBinding("the reference provider does not bind references"),
 	typeOf: () => notImplementedType("the reference provider does not infer types"),
 	// Refused whole, not "ready with zero edits", because rename is not implemented here.

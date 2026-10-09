@@ -146,7 +146,10 @@ describe("wiring a provider", () => {
 		} as unknown as ProviderMethods;
 
 		const handlers = handlersFor(provider);
-		expect(Object.keys(handlers).sort()).toEqual([...PROVIDER_METHODS].sort());
+		expect(Object.keys(handlers).sort()).toEqual(
+			PROVIDER_METHODS.filter((method) => method !== "judgeLoadCycle").sort(),
+		);
+		expect(handlers.judgeLoadCycle).toBeUndefined();
 		expect(handlers.shutdown({})).toEqual({});
 		expect(stopped).toBe(1);
 	});

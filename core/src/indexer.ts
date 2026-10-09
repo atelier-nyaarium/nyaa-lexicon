@@ -17,6 +17,7 @@ import type {
 	ModuleAdmission,
 	ModuleDeclarations,
 	ModuleStatus,
+	ResolutionMode,
 } from "@nyaa-lexicon/protocol";
 import { defined, hashContent } from "@nyaa-lexicon/protocol";
 import type { Clock, TimerHandle } from "./clock.js";
@@ -45,7 +46,7 @@ import {
 	type SourceReader,
 	unreadableReason,
 } from "./sourceRead.js";
-import type { FileNote, IndexStore, SurfaceChange } from "./store.js";
+import { type FileNote, type IndexStore, resolutionKey, type SurfaceChange } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
 import type { WatchScope } from "./watcher.js";
@@ -184,7 +185,11 @@ export class WorkspaceIndexer {
 		private readonly workspaceRoot: string,
 		private readonly caches: IndexCaches,
 		/** Resolution belongs to the import resolver; the indexer only follows where it points. */
-		private readonly resolve: (fromModule: string, specifier: string) => Promise<ImportResolution>,
+		private readonly resolve: (
+			fromModule: string,
+			specifier: string,
+			mode: ResolutionMode | undefined,
+		) => Promise<ImportResolution>,
 		private readonly clock: Clock,
 		/** The service's one gate. Every road this indexer drives itself takes it, one file at a time. */
 		private readonly gate: WorkspaceGate,
@@ -525,21 +530,24 @@ export class WorkspaceIndexer {
 	/** Stats each module `module` imports that `stats` has not looked at, before a later parse can read it. */
 	private async noteReached(module: string, stats: Map<string, string | null>): Promise<void> {
 		for (const statement of this.store.importsIn(module)) {
-			const landed = await this.resolve(module, statement.specifier).catch(() => null);
+			const landed = await this.resolve(module, statement.specifier, statement.resolutionMode).catch(() => null);
 			const target = landed === null ? null : importTarget(landed);
 			if (target !== null && !stats.has(target.module)) stats.set(target.module, this.fileStat(target.module));
 		}
 	}
 
-	/** Where each of a write's specifiers lands, resolved once each; null when the resolver cannot say. */
+	/** Where each of a write's specifiers lands per mode, resolved once each; null when the resolver cannot say. */
 	private async resolutions(
 		module: string,
 		imports: readonly Import[],
 	): Promise<Map<string, ImportResolution | null>> {
 		const resolved = new Map<string, ImportResolution | null>();
 		for (const statement of imports) {
-			if (resolved.has(statement.specifier)) continue;
-			resolved.set(statement.specifier, await this.resolve(module, statement.specifier).catch(() => null));
+			for (const { resolutionMode } of statement.edges) {
+				const key = resolutionKey(statement.specifier, resolutionMode);
+				if (resolved.has(key)) continue;
+				resolved.set(key, await this.resolve(module, statement.specifier, resolutionMode).catch(() => null));
+			}
 		}
 		return resolved;
 	}
@@ -1078,7 +1086,9 @@ export class WorkspaceIndexer {
 			const found: string[] = [];
 			for (const module of frontier) {
 				for (const statement of this.store.importsIn(module)) {
-					const landed = await this.resolve(module, statement.specifier).catch(() => null);
+					const landed = await this.resolve(module, statement.specifier, statement.resolutionMode).catch(
+						() => null,
+					);
 					const target = landed === null ? null : importTarget(landed);
 					if (target === null || this.scopeOrThrow().denies(target.module)) continue;
 					const depth = this.scopeOrThrow().surface(target.module)
@@ -1422,8 +1432,7 @@ export class WorkspaceIndexer {
 		const unread: string[] = [];
 		for (const module of [...this.importsWritten]) {
 			this.importsWritten.delete(module);
-			const listed = this.store.importsIn(module).map((statement) => statement.specifier);
-			if (!(await this.readImports(index, module, listed))) unread.push(module);
+			if (!(await this.readImports(index, module, this.store.importsIn(module)))) unread.push(module);
 		}
 		for (const module of unread) this.importsWritten.add(module);
 		const importers = new Set<string>();
@@ -1438,11 +1447,11 @@ export class WorkspaceIndexer {
 	private async readWhole(index: ImporterIndex): Promise<void> {
 		// Cleared before the read: a module written while it runs is read again next time.
 		this.importsWritten.clear();
-		const specifiers = new Map<string, string[]>();
-		for (const { module, specifier } of this.store.importEdges()) {
+		const specifiers = new Map<string, Array<{ specifier: string; resolutionMode?: ResolutionMode }>>();
+		for (const { module, ...occurrence } of this.store.importEdges()) {
 			const listed = specifiers.get(module);
-			if (listed === undefined) specifiers.set(module, [specifier]);
-			else listed.push(specifier);
+			if (listed === undefined) specifiers.set(module, [occurrence]);
+			else listed.push(occurrence);
 		}
 		for (const [module, listed] of specifiers) {
 			if (!(await this.readImports(index, module, listed))) this.importsWritten.add(module);
@@ -1453,12 +1462,19 @@ export class WorkspaceIndexer {
 	 * Replaces one module's entries with where its specifiers land now, through the cached resolver.
 	 * A resolver fault is no answer, so the module keeps what it held and answers false.
 	 */
-	private async readImports(index: ImporterIndex, module: string, specifiers: readonly string[]): Promise<boolean> {
+	private async readImports(
+		index: ImporterIndex,
+		module: string,
+		occurrences: ReadonlyArray<{ specifier: string; resolutionMode?: ResolutionMode | undefined }>,
+	): Promise<boolean> {
 		const targets = new Set<string>();
-		for (const specifier of new Set(specifiers)) {
+		const distinct = new Map(
+			occurrences.map((each) => [resolutionKey(each.specifier, each.resolutionMode), each] as const),
+		);
+		for (const { specifier, resolutionMode } of distinct.values()) {
 			let landed: ImportResolution;
 			try {
-				landed = await this.resolve(module, specifier);
+				landed = await this.resolve(module, specifier, resolutionMode);
 			} catch {
 				return false;
 			}

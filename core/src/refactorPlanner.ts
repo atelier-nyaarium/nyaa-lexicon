@@ -83,7 +83,7 @@ import { type ModuleTiers, mentionsOf, type ResolvedRoutes, resolveRoutes, start
 import { proveRename, type RenameCandidate } from "./renameValidation.js";
 import { writableText } from "./sourceRead.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
-import type { IndexStore, StoredDeclaration, StoredImport } from "./store.js";
+import { type IndexStore, resolutionKey, type StoredDeclaration, type StoredImport } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
 
 export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } from "@nyaa-lexicon/protocol";
@@ -1418,11 +1418,15 @@ export class RefactorPlanner {
 
 	/** Relied edges whose live landing differs from the stored one, or could not be checked. */
 	async landingsMoved(relied: readonly StoredImport[]): Promise<RenameBlocker[]> {
-		const bySpecifier = new Map(relied.map((edge) => [`${edge.module}\0${edge.specifier}`, edge] as const));
+		const bySpecifier = new Map(
+			relied.map(
+				(edge) => [`${edge.module}\0${resolutionKey(edge.specifier, edge.resolutionMode)}`, edge] as const,
+			),
+		);
 		const checked = await Promise.all(
 			[...bySpecifier.values()].map(async (edge) => {
 				try {
-					const live = await this.imports.resolveLive(edge.module, edge.specifier);
+					const live = await this.imports.resolveLive(edge.module, edge.specifier, edge.resolutionMode);
 					const landing = live.status === "resolved" ? live.landing : null;
 					const same =
 						landing === null || edge.landing === null

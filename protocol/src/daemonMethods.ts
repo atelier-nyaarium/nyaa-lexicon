@@ -27,8 +27,12 @@ import {
 	InsertOutcomeSchema,
 	InsertPreviewSchema,
 	LiteralsResultSchema,
+	ModuleCycleSchema,
+	ModuleCyclesRequestSchema,
 	ModuleDeclarationsSchema,
 	ModuleFactsResultSchema,
+	ModuleProblemsRequestSchema,
+	ModuleProblemsResponseSchema,
 	ModuleStatusSchema,
 	MostReferencedResultSchema,
 	MoveOutcomeSchema,
@@ -572,6 +576,20 @@ export const DAEMON_METHODS = {
 	},
 	/** Largest reference cycles first. */
 	cycles: { request: Paged, response: z.array(CycleSchema), lifecycle: "query", mutates: false, budget: "read" },
+	moduleCycles: {
+		request: ModuleCyclesRequestSchema,
+		response: z.array(ModuleCycleSchema),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	moduleProblems: {
+		request: ModuleProblemsRequestSchema,
+		response: ModuleProblemsResponseSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
 	/** Symbols by incoming references. */
 	mostReferenced: {
 		request: Paged,

@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { coordinatesOf, PROTOCOL_VERSION, type ProjectModel, parseSymbolId } from "@nyaa-lexicon/protocol";
+import {
+	coordinatesOf,
+	type FileFacts,
+	PROTOCOL_VERSION,
+	type ProjectModel,
+	parseSymbolId,
+} from "@nyaa-lexicon/protocol";
 import type { TypeScriptAnalyzer } from "../analyzer.js";
 import { TypeScriptProvider, warmingHandlers } from "../main.js";
 import { harness } from "./harness.js";
@@ -420,6 +426,66 @@ describe("checker-backed analysis", () => {
 		}
 		expect(lands()).toMatchObject({ status: "resolved", landing: { module: "two/value.ts" } });
 		provider.shutdown();
+	});
+
+	it("moves the fingerprint for a referenced project's settings, never for a file it gains", () => {
+		const project = (compilerOptions: object) =>
+			JSON.stringify({
+				compilerOptions: { module: "CommonJS", composite: true, ...compilerOptions },
+				include: ["src/**/*.ts"],
+			});
+		const root = workspace({
+			"tsconfig.json": JSON.stringify({ files: [], references: [{ path: "./pkg" }] }),
+			"pkg/tsconfig.json": project({}),
+			"pkg/src/a.ts": "export const a = 1;\n",
+		});
+		const provider = harness();
+		provider.initialize(root);
+		const discover = () => (provider.handlers.discoverProject({ workspaceRoot: root }) as ProjectModel).fingerprint;
+		let fingerprint = discover();
+		const edits: [string, string, boolean][] = [
+			["pkg/src/fresh.ts", "export const fresh = 1;\n", false],
+			["pkg/tsconfig.json", project({ outDir: "out" }), false],
+			["pkg/tsconfig.json", project({ outDir: "out", strict: false }), true],
+		];
+		for (const [file, text, moves] of edits) {
+			writeFileSync(path.join(root, file), text);
+			const next = discover();
+			expect(next !== fingerprint, `${file} ${text}`).toBe(moves);
+			fingerprint = next;
+			if (file === "pkg/src/fresh.ts") {
+				const facts = provider.parseFile({ module: file, contentHash: "fresh", text }) as FileFacts;
+				expect(facts.runtime).toBe("cjs");
+			}
+		}
+		provider.shutdown();
+	});
+
+	it("compiles referenced projects whose settings read alike in one Program, and others apart", () => {
+		for (const [strict, firstProgramFiles] of [
+			[true, 2],
+			[false, 1],
+		] as const) {
+			const files = {
+				"tsconfig.json": JSON.stringify({ files: [], references: [{ path: "./one" }, { path: "./two" }] }),
+				"one/tsconfig.json": JSON.stringify({
+					compilerOptions: { strict: true, composite: true, outDir: "out" },
+					include: ["src/**/*.ts"],
+				}),
+				"two/tsconfig.json": JSON.stringify({
+					compilerOptions: { strict, composite: true, outDir: "dist" },
+					include: ["src/**/*.ts"],
+				}),
+				"one/src/a.ts": "export const a = 1;\n",
+				"two/src/b.ts": "export const b = 2;\n",
+			};
+			const provider = harness();
+			provider.initialize(workspace(files));
+			for (const module of ["one/src/a.ts", "two/src/b.ts"] as const)
+				provider.parseFile({ module, contentHash: module, text: files[module] });
+			expect(provider.programStats().workspaceFiles, `strict ${strict}`).toBe(firstProgramFiles);
+			provider.shutdown();
+		}
 	});
 
 	it("moves the project fingerprint when a package.json resolution reads or probes changes, through a link too", () => {

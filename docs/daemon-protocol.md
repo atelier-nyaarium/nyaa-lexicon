@@ -643,6 +643,17 @@ A found answer is `{ found: true, symbolId, via, contentHash }`, `via` being `re
 `indexStatus.generation` changes on stored fact or knowledge writes and daemon restarts. Equal
 values mean the indexed facts and knowledge have not changed.
 
+### Load-order cycles
+
+`cycles` reports symbol reference cycles. `moduleCycles` reports candidate module load cycles and
+asks the owning provider for an on-demand judgment. A verdict is `bad`, `fine` or `unknown`;
+unknown never produces a warning. `moduleProblems({ module })` returns hazards whose reader is in
+that module. Provider evidence carries source hashes and occurrence landings, checked against
+admitted facts before publishing or serving a cached answer, so a judgment stands until its own
+evidence moves and an unrelated write leaves it alone. `crossingCount` counts the value reads, bound
+or not, through runtime edges inside a component, and `crossings` lists the first 20. A component
+with none is left out unless `includeUnread` asks for it.
+
 `indexStatus.providers` lists each running provider as `{ id, language, phase, label?, pending }`.
 `phase` is `starting` (spawned, initialize unanswered), `initializing` (the provider said it is
 warming), `ready`, `restarting` (died, respawning) or `down` (dead past the respawn cap). `label` is

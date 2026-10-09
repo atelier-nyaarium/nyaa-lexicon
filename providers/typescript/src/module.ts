@@ -46,6 +46,8 @@ export interface TypeScriptProject {
 	warming: Promise<void> | undefined;
 	/** Declaration ids by name position, keyed by module and script version. */
 	readonly declarationIds: Map<string, Map<string, string[]>>;
+	/** Each analyzer's language services, by settings group. */
+	readonly languageServices: Map<object, Map<string, ts.LanguageService>>;
 }
 
 export type TypeScriptStore = ModuleStore<TypeScriptValue, TypeScriptProject, string>;
@@ -59,6 +61,7 @@ export function createTypeScriptProject(root: string, loaded: LoadedProject, fin
 		analyzer: undefined,
 		warming: undefined,
 		declarationIds: new Map(),
+		languageServices: new Map(),
 	};
 }
 

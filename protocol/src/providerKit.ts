@@ -3,7 +3,7 @@
 import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
-import type { METHOD_SCHEMAS, ProviderMethod } from "./methods.js";
+import type { METHOD_SCHEMAS, NOTIFICATION_SCHEMAS, ProviderMethod } from "./methods.js";
 import { type ModuleValue, type StoreProvider, storeHandlersFor } from "./moduleStore.js";
 import type { ProjectModel } from "./project.js";
 import { type ReadPolicy, readPolicy } from "./readPolicy.js";
@@ -28,6 +28,9 @@ export interface ProviderMethods {
 	discoverProject(workspaceRoot: string, scope?: string[]): Response<"discoverProject">;
 	parseFile(params: Request<"parseFile">): Response<"parseFile">;
 	resolveImport(params: Request<"resolveImport">): Response<"resolveImport">;
+	judgeLoadCycle?(params: Request<"judgeLoadCycle">): Response<"judgeLoadCycle">;
+	/** Drops the state a `judgeLoadCycle` partial token holds. */
+	releaseLoadCycle?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCycle"]>): void;
 	bind(params: Request<"bind">): Response<"bind">;
 	typeOf(params: Request<"typeOf">): Response<"typeOf">;
 	renameEdits(params: Request<"renameEdits">): Response<"renameEdits">;
@@ -82,6 +85,8 @@ export function handlersFor<V extends ModuleValue, P, E>(
 	provider: ProviderMethods | StoreProvider<V, P, E>,
 ): ProviderHandlers & ProviderNotificationHandlers {
 	if ("store" in provider) return storeHandlersFor(provider);
+	const judgeLoadCycle = provider.judgeLoadCycle;
+	const releaseLoadCycle = provider.releaseLoadCycle;
 	const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 		initialize: (params) =>
 			provider.initialize(params.workspaceRoot, readPolicy(params.workspaceRoot, params.deny)),
@@ -91,6 +96,12 @@ export function handlersFor<V extends ModuleValue, P, E>(
 		// Reads other files from disk, so it holds no view of several proposed texts.
 		probeBatch: () => ({ status: "unsupported" }),
 		resolveImport: (params) => provider.resolveImport(params),
+		...(judgeLoadCycle === undefined
+			? {}
+			: { judgeLoadCycle: (params: Request<"judgeLoadCycle">) => judgeLoadCycle.call(provider, params) }),
+		...(releaseLoadCycle === undefined
+			? {}
+			: { releaseLoadCycle: (params: { partial: string }) => releaseLoadCycle.call(provider, params) }),
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),

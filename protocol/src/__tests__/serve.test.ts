@@ -110,6 +110,18 @@ describe("a notification", () => {
 		ignoring.daemon.dispose();
 	});
 
+	it("answers an unimplemented load-cycle method as unknown", async () => {
+		const oldProvider = pair({ parseFile: () => ({ declarations: [] }) } as unknown as ProviderHandlers);
+		await expect(
+			oldProvider.daemon.sendRequest("judgeLoadCycle", {
+				members: [{ module: "src/a.ts", contentHash: "h" }],
+				entries: ["src/a.ts"],
+			}),
+		).resolves.toMatchObject({ verdict: "unknown", unknowns: [{ reason: "provider" }] });
+		oldProvider.provider.dispose();
+		oldProvider.daemon.dispose();
+	});
+
 	it("reaches a provider that answers it, and refuses a verdict its schema does not admit", async () => {
 		const settled: string[] = [];
 		const answering = { parseFile: () => ({ declarations: [] }) } as unknown as ProviderHandlers;
@@ -206,6 +218,64 @@ describe("a notification", () => {
 		]);
 		handled.provider.dispose();
 		handled.daemon.dispose();
+	});
+});
+
+describe("load-cycle slices use separate queue turns", () => {
+	it("serves a parse between a partial judgment and its continuation", async () => {
+		const seen: string[] = [];
+		const toProvider = new PassThrough();
+		const toDaemon = new PassThrough();
+		const providerConnection = createMessageConnection(
+			new StreamMessageReader(toProvider),
+			new StreamMessageWriter(toDaemon),
+		);
+		const daemon = createMessageConnection(new StreamMessageReader(toDaemon), new StreamMessageWriter(toProvider));
+		const wired = {
+			provider: providerConnection,
+			daemon,
+		};
+		serveProvider(providerConnection, {
+			parseFile: () => {
+				seen.push("parse");
+				return { declarations: [] };
+			},
+			judgeLoadCycle: (params: {
+				members: Array<{ module: string; contentHash: string }>;
+				entries: string[];
+				partial?: string;
+			}) => {
+				seen.push(params.partial === undefined ? "slice-1" : "slice-2");
+				return params.partial === undefined
+					? { partial: "held" }
+					: {
+							verdict: "unknown",
+							bad: [],
+							unknowns: [{ reason: "notReady" }],
+							evidence: params.members.map((member) => ({ ...member, landings: [] })),
+							settings: [],
+						};
+			},
+		} as unknown as ProviderHandlers);
+		providerConnection.listen();
+		daemon.listen();
+		const member = { module: "src/a.ts", contentHash: "h" };
+		expect(
+			await wired.daemon.sendRequest<unknown>("judgeLoadCycle", { members: [member], entries: [member.module] }),
+		).toEqual({ partial: "held" });
+		expect(
+			await wired.daemon.sendRequest<unknown>("parseFile", { module: member.module, contentHash: "h", text: "" }),
+		).toEqual({ declarations: [] });
+		expect(
+			await wired.daemon.sendRequest<unknown>("judgeLoadCycle", {
+				members: [member],
+				entries: [member.module],
+				partial: "held",
+			}),
+		).toMatchObject({ verdict: "unknown" });
+		expect(seen).toEqual(["slice-1", "parse", "slice-2"]);
+		wired.provider.dispose();
+		wired.daemon.dispose();
 	});
 });
 

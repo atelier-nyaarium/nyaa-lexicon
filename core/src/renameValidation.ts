@@ -18,7 +18,7 @@ import { rowKey } from "./exposureDiff.js";
 import type { ProviderProbe } from "./providerProbe.js";
 import type { RenameBlocker } from "./refusalSlots.js";
 import { bindingsMoved, proofUnavailable } from "./refusals.js";
-import type { IndexStore, StoredReference } from "./store.js";
+import { type IndexStore, resolutionKey, type StoredReference } from "./store.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -182,7 +182,7 @@ async function answersOf(
 			const resolutions = new Map(
 				response.landings
 					.filter((each) => each.module === module)
-					.map((each) => [each.specifier, each.resolution] as const),
+					.map((each) => [resolutionKey(each.specifier, each.resolutionMode), each.resolution] as const),
 			);
 			answered.push({ providerId, facts: only, resolutions });
 		}

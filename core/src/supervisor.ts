@@ -605,6 +605,17 @@ export class ProviderSupervisor implements ProviderPort {
 			.catch(() => {});
 	}
 
+	/** Only the process that issued the token holds its state. */
+	releaseJudgment(providerId: string, incarnation: number, partial: string): void {
+		const provider = this.providers.get(providerId);
+		if (provider === undefined || provider.incarnation !== incarnation) return;
+		const params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCycle"]> = { partial };
+		provider.queue
+			.run(() => provider.connection.sendNotification("releaseLoadCycle" satisfies ProviderNotification, params))
+			// A dead provider holds no judgment.
+			.catch(() => {});
+	}
+
 	/** Which process answers for this provider now; null when none does. */
 	incarnationOf(providerId: string): number | null {
 		return this.providers.get(providerId)?.incarnation ?? null;

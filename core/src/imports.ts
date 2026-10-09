@@ -15,12 +15,13 @@ import {
 	type MoveImportSite,
 	moduleOf,
 	type Range,
+	type ResolutionMode,
 } from "@nyaa-lexicon/protocol";
 import { type EffectiveExport, type ScopeLanding, selects } from "./exportProjection.js";
 import { DEFAULT_REFERENCE_LIMIT } from "./indexReads.js";
 import { type Paged, pageProbed, pageScanned, wire } from "./paging.js";
 import { compileSearchRegex } from "./search.js";
-import type { IndexStore, StoredImport } from "./store.js";
+import { type IndexStore, resolutionKey, type StoredImport } from "./store.js";
 
 ////////////////////////////////
 //  Constants & Helpers
@@ -54,7 +55,12 @@ function siteOf(statement: StoredImport, range: Range): MoveImportSite {
 //  Interfaces & Types
 
 /** The one provider capability this needs. Its supplier owns caching and surface globs; `fresh` skips its cache. */
-export type ResolveSpecifier = (fromModule: string, specifier: string, fresh?: boolean) => Promise<ImportResolution>;
+export type ResolveSpecifier = (
+	fromModule: string,
+	specifier: string,
+	mode: ResolutionMode | undefined,
+	fresh?: boolean,
+) => Promise<ImportResolution>;
 
 /** Only the rows a resolver takes for planning; a store or a stamping context both satisfy it. */
 export interface ImportReads {
@@ -100,7 +106,7 @@ export class ImportResolver {
 		const found: Array<{ module: string; site: MoveImportSite }> = [];
 		for (const statement of reads.importsNamed(name)) {
 			if (statement.range === undefined || statement.module === declaringModule) continue;
-			if (!landsOn(await resolve(statement.module, statement.specifier))) continue;
+			if (!landsOn(await resolve(statement.module, statement.specifier, statement.resolutionMode))) continue;
 			found.push({ module: statement.module, site: siteOf(statement, statement.range) });
 		}
 		// The names it is exported under, any of which a re-export's selector may forward.
@@ -183,7 +189,11 @@ export class ImportResolver {
 			let read = 0;
 			for (const statement of scanned) {
 				read++;
-				const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
+				const landed = await this.resolveImport(
+					statement.module,
+					statement.specifier,
+					statement.resolutionMode,
+				).catch(() => null);
 				if (landed !== null && importTarget(landed)?.module === target) matched.push(statement);
 				if (matched.length > limit) break;
 			}
@@ -197,7 +207,11 @@ export class ImportResolver {
 		let read = 0;
 		for (const statement of scanned) {
 			read++;
-			const landed = await this.resolveImport(statement.module, statement.specifier).catch(() => null);
+			const landed = await this.resolveImport(
+				statement.module,
+				statement.specifier,
+				statement.resolutionMode,
+			).catch(() => null);
 			if (landed !== null) {
 				const module = importTarget(landed)?.module;
 				if (module !== undefined && expression.test(module)) matched.push(statement);
@@ -212,25 +226,29 @@ export class ImportResolver {
 	 *
 	 * Cached because it is the one hot question here: the indexer asks it for every import it writes.
 	 */
-	resolveImport(fromModule: string, specifier: string): Promise<ImportResolution> {
-		return this.resolve(fromModule, specifier);
+	resolveImport(fromModule: string, specifier: string, mode: ResolutionMode | undefined): Promise<ImportResolution> {
+		return this.resolve(fromModule, specifier, mode);
 	}
 
 	/** Where a specifier lands now, asked of the provider past every cache. */
-	resolveLive(fromModule: string, specifier: string): Promise<ImportResolution> {
-		return this.resolve(fromModule, specifier, true);
+	resolveLive(fromModule: string, specifier: string, mode: ResolutionMode | undefined): Promise<ImportResolution> {
+		return this.resolve(fromModule, specifier, mode, true);
 	}
 
-	/** One provider round trip per distinct specifier, since a plan revisits them. */
-	private resolutionCache(): (fromModule: string, specifier: string) => Promise<Landing | null> {
+	/** One provider round trip per distinct specifier and mode, since a plan revisits them. */
+	private resolutionCache(): (
+		fromModule: string,
+		specifier: string,
+		mode: ResolutionMode | undefined,
+	) => Promise<Landing | null> {
 		const seen = new Map<string, Promise<Landing | null>>();
 
-		return (fromModule, specifier) => {
+		return (fromModule, specifier, mode) => {
 			// Escaped, never raw: a raw NUL makes the whole file binary to git and invisible to grep.
-			const key = `${fromModule}\0${specifier}`;
+			const key = `${fromModule}\0${resolutionKey(specifier, mode)}`;
 			let answer = seen.get(key);
 			if (answer === undefined) {
-				answer = this.resolveImport(fromModule, specifier)
+				answer = this.resolveImport(fromModule, specifier, mode)
 					.then((r) => (r.status === "resolved" ? r.landing : null))
 					.catch(() => null);
 				seen.set(key, answer);

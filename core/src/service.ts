@@ -19,6 +19,7 @@ import {
 	type OverviewResult,
 	type ParseFactsResult,
 	parseSymbolId,
+	type ResolutionMode,
 	type SharedLiteralsResult,
 	type StoredImport,
 	type SymbolAtReply,
@@ -57,6 +58,7 @@ import {
 	type SymbolSummary,
 	type TypeHierarchy,
 } from "./indexReads.js";
+import { LoadCycleRead } from "./loadCycles.js";
 import { NoteLedger } from "./notes.js";
 import { PaintReads } from "./paintFacts.js";
 import type { ProviderPort } from "./providerPort.js";
@@ -72,7 +74,7 @@ import { holdsWord } from "./renameRoutes.js";
 import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
 import type { SourceReader } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
-import type { IndexStore, StoredComment, StoredDeclaration } from "./store.js";
+import { type IndexStore, resolutionKey, type StoredComment, type StoredDeclaration } from "./store.js";
 import { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
@@ -110,18 +112,23 @@ export class LexiconService {
 	) {
 		this.gate = new WorkspaceGate(clock);
 		this.reads = new IndexReadModel(store);
+		this.loadCycles = new LoadCycleRead(store, supervisor, clock, this.gate);
 		// Caching and surface globs are workspace decisions, so they are answered here.
-		this.imports = new ImportResolver(store, async (fromModule, specifier, fresh) => {
+		this.imports = new ImportResolver(store, async (fromModule, specifier, mode, fresh) => {
 			const surfaceGlobs = (await this.currentScope()).bundles;
 			const ask = () =>
 				this.supervisor.ask(fromModule, "resolveImport", {
 					fromModule,
 					specifier,
 					...(surfaceGlobs.length === 0 ? {} : { surfaceGlobs }),
+					...(mode === undefined ? {} : { resolutionMode: mode }),
 				});
 			if (fresh === true) return ask();
 			const configKey = surfaceGlobs.join("\u0000");
-			return this.caches.resolutions.through(`resolveImport ${fromModule} ${specifier} ${configKey}`, ask);
+			return this.caches.resolutions.through(
+				`resolveImport ${fromModule} ${resolutionKey(specifier, mode)} ${configKey}`,
+				ask,
+			);
 		});
 		this.notes = new NoteLedger(store, this.clock);
 		this.relations = new RelationLedger(store, this.clock);
@@ -133,7 +140,7 @@ export class LexiconService {
 			readSource,
 			workspaceRoot,
 			this.caches,
-			(from, specifier) => this.imports.resolveImport(from, specifier),
+			(from, specifier, mode) => this.imports.resolveImport(from, specifier, mode),
 			this.clock,
 			this.gate,
 		);
@@ -179,6 +186,8 @@ export class LexiconService {
 
 	/** Public so a read-only caller can take this and reach nothing else. */
 	readonly reads: IndexReadModel;
+
+	readonly loadCycles: LoadCycleRead;
 
 	readonly imports: ImportResolver;
 
@@ -297,7 +306,9 @@ export class LexiconService {
 			const closure = new Set([module]);
 			for (const statement of this.store.importsIn(module)) {
 				if (closure.size > 32) break;
-				const landed = await this.resolveImport(module, statement.specifier).catch(() => null);
+				const landed = await this.resolveImport(module, statement.specifier, statement.resolutionMode).catch(
+					() => null,
+				);
 				if (landed?.status === "resolved" && landed.landing.kind === "module")
 					closure.add(landed.landing.module);
 			}
@@ -559,6 +570,14 @@ export class LexiconService {
 		return this.reads.cycles(limit);
 	}
 
+	moduleCycles(...args: Parameters<LoadCycleRead["moduleCycles"]>): ReturnType<LoadCycleRead["moduleCycles"]> {
+		return this.loadCycles.moduleCycles(...args);
+	}
+
+	moduleProblems(...args: Parameters<LoadCycleRead["moduleProblems"]>): ReturnType<LoadCycleRead["moduleProblems"]> {
+		return this.loadCycles.moduleProblems(...args);
+	}
+
 	typeHierarchy(symbolId: string, maxDepth = 16): TypeHierarchy {
 		return this.reads.typeHierarchy(symbolId, maxDepth);
 	}
@@ -592,7 +611,9 @@ export class LexiconService {
 	}
 
 	private async namespaceTarget(statement: StoredImport): Promise<NamespaceTarget | null> {
-		return namespaceTargetOf(await this.resolveImport(statement.module, statement.specifier).catch(() => null));
+		return namespaceTargetOf(
+			await this.resolveImport(statement.module, statement.specifier, statement.resolutionMode).catch(() => null),
+		);
 	}
 
 	mostReferenced(limit = 20): MostReferencedResult {
@@ -602,8 +623,8 @@ export class LexiconService {
 	////////////////////////////////
 	//  Imports, answered by ImportResolver
 
-	resolveImport(fromModule: string, specifier: string): Promise<ImportResolution> {
-		return this.imports.resolveImport(fromModule, specifier);
+	resolveImport(fromModule: string, specifier: string, mode?: ResolutionMode): Promise<ImportResolution> {
+		return this.imports.resolveImport(fromModule, specifier, mode);
 	}
 
 	findImports(...args: Parameters<ImportResolver["findImports"]>): ReturnType<ImportResolver["findImports"]> {

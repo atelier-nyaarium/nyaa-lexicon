@@ -5,8 +5,19 @@
 
 import { z } from "zod";
 import { ImportEditsRequestSchema, ImportEditsResponseSchema } from "./importEdits.js";
+import {
+	JudgeLoadCycleAnswerSchema,
+	JudgeLoadCycleRequestSchema,
+	ReleaseLoadCycleNotificationSchema,
+} from "./loadCycles.js";
 import { ArrangeEditsRequestSchema, MoveEditsRequestSchema, MoveEditsResponseSchema } from "./move.js";
-import { FileFactsSchema, ImportResolutionSchema, IndexDepthSchema, ProjectModelSchema } from "./project.js";
+import {
+	FileFactsSchema,
+	ImportResolutionSchema,
+	IndexDepthSchema,
+	ProjectModelSchema,
+	ResolutionModeSchema,
+} from "./project.js";
 import { RenameEditsRequestSchema, RenameEditsResponseSchema } from "./rename.js";
 import { RangeSchema, ReferenceRoleSchema } from "./symbols.js";
 import { BindingSchema, TypeInfoSchema, UnknownReasonSchema } from "./values.js";
@@ -172,8 +183,8 @@ export type ProbeBatchRequest = z.infer<typeof ProbeBatchRequestSchema>;
 
 /**
  * Ready holds exactly one FileFacts per answer module, at its proposed or admitted hash, and one
- * resolution per distinct module and specifier in them, all derived under the whole view. Core
- * checks the correspondence, which no schema can.
+ * resolution per distinct module, specifier and resolution mode in them, all derived under the whole
+ * view. Core checks the correspondence, which no schema can.
  */
 export const ProbeBatchResponseSchema = z
 	.discriminatedUnion("status", [
@@ -184,6 +195,7 @@ export const ProbeBatchResponseSchema = z
 				z.object({
 					module: z.string().min(1),
 					specifier: z.string().min(1),
+					resolutionMode: ResolutionModeSchema.optional(),
 					resolution: ImportResolutionSchema,
 				}),
 			),
@@ -200,6 +212,7 @@ export const ResolveImportRequestSchema = z
 		specifier: z.string().min(1),
 		/** Explicit bundle declarations can resolve runtime paths the language alone cannot. */
 		surfaceGlobs: z.array(z.string().min(1)).optional(),
+		resolutionMode: ResolutionModeSchema.optional(),
 	})
 	.meta({ id: "ResolveImportRequest" });
 
@@ -281,6 +294,7 @@ export const PROVIDER_METHODS = [
 	"probeFile",
 	"probeBatch",
 	"resolveImport",
+	"judgeLoadCycle",
 	"bind",
 	"typeOf",
 	"renameEdits",
@@ -302,6 +316,7 @@ export const METHOD_SCHEMAS = {
 	/** Proposed texts read as one view; the provider answers, then holds what it held before. */
 	probeBatch: { request: ProbeBatchRequestSchema, response: ProbeBatchResponseSchema },
 	resolveImport: { request: ResolveImportRequestSchema, response: ImportResolutionSchema },
+	judgeLoadCycle: { request: JudgeLoadCycleRequestSchema, response: JudgeLoadCycleAnswerSchema },
 	bind: { request: BindRequestSchema, response: BindingSchema },
 	typeOf: { request: TypeOfRequestSchema, response: TypeInfoSchema },
 	renameEdits: { request: RenameEditsRequestSchema, response: RenameEditsResponseSchema },
@@ -317,7 +332,7 @@ export const METHOD_SCHEMAS = {
  * Told, never asked: no answer, so an older provider that ignores one keeps working. A provider
  * holding workspace state beyond one parse handles them; any other ignores them.
  */
-export const PROVIDER_NOTIFICATIONS = ["forgetModule", "releaseModule", "moduleAdmission"] as const;
+export const PROVIDER_NOTIFICATIONS = ["forgetModule", "releaseModule", "moduleAdmission", "releaseLoadCycle"] as const;
 
 export type ProviderNotification = (typeof PROVIDER_NOTIFICATIONS)[number];
 
@@ -325,6 +340,7 @@ export const NOTIFICATION_SCHEMAS = {
 	forgetModule: ForgetModuleNotificationSchema,
 	releaseModule: ReleaseModuleNotificationSchema,
 	moduleAdmission: ModuleAdmissionNotificationSchema,
+	releaseLoadCycle: ReleaseLoadCycleNotificationSchema,
 } as const satisfies Record<ProviderNotification, z.ZodType>;
 
 /** Told by a provider, never asked of one: an older core ignores them. */

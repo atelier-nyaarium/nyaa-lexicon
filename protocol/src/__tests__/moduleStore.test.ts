@@ -62,6 +62,7 @@ function toy(
 	onParse?: (value: Toy) => void,
 	fingerprint?: () => string,
 	probeBatch?: StoreProvider<Toy, null, string>["probeBatch"],
+	judgeLoadCycle?: StoreProvider<Toy, null, string>["judgeLoadCycle"],
 ) {
 	const provider: StoreProvider<Toy, null, string> = {
 		store,
@@ -82,6 +83,7 @@ function toy(
 		arrangeEdits: () => ({}) as never,
 		importEdits: () => ({}) as never,
 		...(probeBatch === undefined ? {} : { probeBatch }),
+		...(judgeLoadCycle === undefined ? {} : { judgeLoadCycle }),
 	};
 	const handlers = handlersFor(provider);
 	handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
@@ -244,6 +246,49 @@ afterEach(() => {
 //  Tests
 
 describe("the module store against the rules as plain data", () => {
+	it("answers an unimplemented load-cycle judgment as unknown", () => {
+		const root = workspace({});
+		const handlers = toy(moduleStore<Toy, null, string>({ read, entries }), root);
+		const answer = handlers.judgeLoadCycle?.({
+			members: [{ module: "a.toy", contentHash: "h" }],
+			entries: ["a.toy"],
+		});
+
+		expect(answer).toMatchObject({
+			verdict: "unknown",
+			unknowns: [{ reason: "provider" }],
+			evidence: [{ module: "a.toy", contentHash: "h", landings: [] }],
+		});
+	});
+
+	it("invokes a provider load-cycle hook", () => {
+		const root = workspace({});
+		let called = false;
+		const handlers = toy(
+			moduleStore<Toy, null, string>({ read, entries }),
+			root,
+			undefined,
+			undefined,
+			undefined,
+			(params) => {
+				called = true;
+				return {
+					verdict: "unknown",
+					bad: [],
+					unknowns: [{ reason: "notReady" }],
+					evidence: params.members.map((member) => ({ ...member, landings: [] })),
+					settings: [],
+				};
+			},
+		);
+		const answer = handlers.judgeLoadCycle?.({
+			members: [{ module: "a.toy", contentHash: "h" }],
+			entries: ["a.toy"],
+		});
+		expect(called).toBe(true);
+		expect(answer).toMatchObject({ unknowns: [{ reason: "notReady" }] });
+	});
+
 	it("agrees on every visible text, withheld mark, load and index over random histories", () => {
 		for (let seed = 1; seed <= 300; seed++) {
 			const next = random(seed);

@@ -1358,6 +1358,7 @@ describe("imports", () => {
 						kind: "sideEffect",
 						span: rangeForText('import "./polyfill";', 'import "./polyfill";'),
 						bindsLocally: false,
+						elided: false,
 						loads: "static",
 						certainty: { status: "known" },
 						order: 0,

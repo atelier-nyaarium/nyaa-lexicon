@@ -24,6 +24,9 @@ const STAGED = [
 	"refactorMoveCommitted",
 	"refactorStepOutcome",
 	"refactorStepCancel",
+	// Short reads around each provider slice, never across one.
+	"moduleCycles",
+	"moduleProblems",
 ];
 
 /** The background upgrade ungated, then the answer shared. */

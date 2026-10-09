@@ -5,6 +5,7 @@ import path from "node:path";
 import {
 	composeSymbolId,
 	type Declaration,
+	defined,
 	type FileFacts,
 	type ProbeBatchResponse,
 	type Range,
@@ -13,7 +14,7 @@ import {
 import type { ProviderProbe } from "../providerProbe";
 import { proveRename, type RenameCandidate } from "../renameValidation";
 import { IndexStore } from "../store";
-import { direct, forwarding, landed, named } from "./importEdges";
+import { direct, forward, forwarding, landed, named } from "./importEdges";
 
 ////////////////////////////////
 //  Helpers
@@ -191,6 +192,49 @@ describe("proving a rename before it writes", () => {
 
 		expect(blockers).toEqual([]);
 		expect(store.declarationsIn("d.ts").map((row) => row.name)).toEqual(["N"]);
+	});
+
+	it("lands a mode-carrying import through the overlay by its own mode alone", async () => {
+		const [declaring, using] = facts("Mm", [use("Mm", at(2, 0, 2), null, at(0, 9))]) as [FileFacts, FileFacts];
+		const forwarded = forward("./d", "Mm", at(3, 9, 2));
+		const reexporting: FileFacts = {
+			...using,
+			imports: [...using.imports, ...forwarded.imports].map((statement) => ({
+				...statement,
+				edges: statement.edges.map((edge) => ({ ...edge, resolutionMode: "import" as const })),
+			})),
+			exports: forwarded.exports,
+		};
+		const candidate: RenameCandidate = {
+			...RENAME,
+			projected: [
+				...RENAME.projected,
+				{
+					landing: { kind: "module", module: "use.ts" },
+					rows: [{ name: "Mm", origin: { kind: "symbol", symbolId: N }, certainty: { status: "known" } }],
+				},
+			],
+		};
+		const proved = async (resolutionMode?: "import" | "require") => {
+			const landing = {
+				module: "use.ts",
+				specifier: "./d",
+				...defined({ resolutionMode }),
+				resolution: landed("d.ts"),
+			};
+			const answer: ProbeBatchResponse = {
+				status: "ready",
+				facts: [declaring, reexporting],
+				landings: [landing],
+			};
+			return (await proveRename(store, probing(answer), candidate)).map(({ sites }) => sites);
+		};
+
+		expect({ same: await proved("import"), other: await proved("require"), none: await proved() }).toEqual({
+			same: [],
+			other: [[{ module: "use.ts", line: 1 }]],
+			none: [[{ module: "use.ts", line: 1 }]],
+		});
 	});
 
 	it("matches a compound assignment's read and write by role, refusing a captured read", async () => {

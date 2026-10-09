@@ -223,6 +223,8 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect(await ask("sharedLiterals", { minimumFiles: 2, exclude: { hide: ["*.json"] } })).toEqual([]);
 	},
 	cycles: () => ask("cycles", { limit: 5 }),
+	moduleCycles: async () => expect(await ask("moduleCycles", { limit: 5 })).toEqual([]),
+	moduleProblems: async () => expect(await ask("moduleProblems", { module: "cart.ref" })).toEqual([]),
 	mostReferenced: () => ask("mostReferenced", { limit: 5 }),
 	hubs: () => ask("hubs", { limit: 5 }),
 	cacheStats: () => ask("cacheStats", {}),

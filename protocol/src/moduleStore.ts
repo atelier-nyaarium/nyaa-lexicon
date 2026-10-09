@@ -4,7 +4,14 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { z } from "zod";
 import { hashContent } from "./hash.js";
-import type { METHOD_SCHEMAS, ModuleAdmission, ProviderMethod, ProviderPhase } from "./methods.js";
+import { unjudgedLoadCycle } from "./loadCycles.js";
+import type {
+	METHOD_SCHEMAS,
+	ModuleAdmission,
+	NOTIFICATION_SCHEMAS,
+	ProviderMethod,
+	ProviderPhase,
+} from "./methods.js";
 import type { IndexDepth } from "./project.js";
 import { OPEN_READ_POLICY, type ReadPolicy, readPolicy } from "./readPolicy.js";
 import { type ProviderEvents, type ProviderHandlers, type ProviderNotificationHandlers, whenServed } from "./serve.js";
@@ -124,6 +131,9 @@ export interface StoreProvider<V extends ModuleValue, P, E> {
 	moveEdits(params: Request<"moveEdits">): Maybe<Response<"moveEdits">>;
 	arrangeEdits(params: Request<"arrangeEdits">): Maybe<Response<"arrangeEdits">>;
 	importEdits(params: Request<"importEdits">): Maybe<Response<"importEdits">>;
+	judgeLoadCycle?(params: Request<"judgeLoadCycle">): Maybe<Response<"judgeLoadCycle">>;
+	/** Drops the state a `judgeLoadCycle` partial token holds. */
+	releaseLoadCycle?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCycle"]>): void;
 	/** Facts and landings with every proposed text in the store's view; absent answers unsupported. */
 	probeBatch?(params: Request<"probeBatch">): Maybe<Response<"probeBatch">>;
 	shutdown?(): void;
@@ -782,6 +792,8 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 			return ready(() => kit.transientAll(params.files, "full", () => probe(params)));
 		},
 		resolveImport: (params: Request<"resolveImport">) => ready(() => provider.resolveImport(params)),
+		judgeLoadCycle: (params: Request<"judgeLoadCycle">) =>
+			provider.judgeLoadCycle?.call(provider, params) ?? unjudgedLoadCycle(params),
 		bind: (params: Request<"bind">) => ready(() => provider.bind(params)),
 		typeOf: (params: Request<"typeOf">) => ready(() => provider.typeOf(params)),
 		renameEdits: (params: Request<"renameEdits">) =>
@@ -795,6 +807,7 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 		moduleAdmission: (verdict: ModuleAdmission) => kit.settle(verdict),
 		forgetModule: (params: { module: string }) => kit.forget(params.module),
 		releaseModule: (params: { module: string }) => kit.release(params.module),
+		releaseLoadCycle: (params: { partial: string }) => provider.releaseLoadCycle?.call(provider, params),
 		shutdown: () => {
 			provider.shutdown?.();
 			kit.reset(kit.root);

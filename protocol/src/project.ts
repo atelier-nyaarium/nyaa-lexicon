@@ -16,6 +16,11 @@ export const IndexDepthSchema = z.enum(["full", "surface", "outline"]).meta({ id
 
 export type IndexDepth = z.infer<typeof IndexDepthSchema>;
 
+/** The module system the runtime resolves one occurrence of a specifier with. */
+export const ResolutionModeSchema = z.enum(["import", "require"]).meta({ id: "ResolutionMode" });
+
+export type ResolutionMode = z.infer<typeof ResolutionModeSchema>;
+
 /**
  * Where a specifier lands: a module, a scope inside declarations, or a package spanning files.
  *
@@ -151,6 +156,7 @@ export const ImportEdgeSchema = z
 		loads: z.enum(["static", "deferred"]).optional(),
 		/** Whether TypeScript emit removes this import edge. */
 		elided: z.boolean().optional(),
+		resolutionMode: ResolutionModeSchema.optional(),
 		kind: ImportKindSchema,
 		/**
 		 * The edge as written: `x as y`, `*`, a default or namespace clause, an injection or

@@ -12,6 +12,7 @@ import {
 	type ProviderWords,
 	type Range,
 	type Reference,
+	type ResolutionMode,
 	type StoredComment,
 	type StoredDeclaration,
 	type StoredReference,
@@ -119,6 +120,7 @@ function inside(inner: Range, outer: Range): boolean {
 /** An imported name's written spans: the source name, the local alias, or both. */
 interface ImportedSpan {
 	specifier: string;
+	resolutionMode?: ResolutionMode | undefined;
 	name?: string | undefined;
 	range?: Range | undefined;
 	localRange?: Range | undefined;
@@ -253,7 +255,7 @@ export class PaintReads {
 		// A default import writes no source name.
 		const name = under.name ?? (under.kind === "default" ? "default" : undefined);
 		if (name === undefined) return null;
-		const landing = this.store.importLanding(module, under.specifier);
+		const landing = this.store.importLanding(module, under.specifier, under.resolutionMode);
 		if (landing === null) return null;
 		if (landing.kind === "module") return this.store.exportedSymbol(landing.module, name);
 		// A scope answers only when one member carries the name.

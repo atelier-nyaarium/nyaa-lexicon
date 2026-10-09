@@ -18,6 +18,7 @@ import {
 	type ProbeBatchResponse,
 	type ProjectModel,
 	parseSymbolId,
+	type ResolutionMode,
 	runProviderOnStdio,
 	serveProvider,
 } from "@nyaa-lexicon/protocol";
@@ -37,10 +38,12 @@ import {
 } from "./module.js";
 import { isValidTargetModule } from "./move.js";
 import {
+	importDeclarationMode,
 	type LoadedProject,
 	landingOf,
 	loadProject,
 	type ModuleResolver,
+	optionsForFile,
 	overlaidSystem,
 	projectFingerprint,
 	readableSystem,
@@ -287,6 +290,7 @@ export class TypeScriptProvider {
 		const project = kept ?? createTypeScriptProject(root, projectLoaded, fingerprint);
 		if (kept !== undefined) {
 			kept.loaded.files = projectLoaded.files;
+			kept.loaded.groups = projectLoaded.groups;
 			kept.roots.clear();
 			for (const file of projectLoaded.files) kept.roots.add(path.resolve(file));
 		}
@@ -318,7 +322,11 @@ export class TypeScriptProvider {
 
 		// Outline parses skip binding and type analysis.
 		if (params.depth === "outline") {
-			const runtime = runtimeOf(path.resolve(this.store.project.root, params.module), this.store.project.loaded);
+			const fileName = path.resolve(this.store.project.root, params.module);
+			const runtime = runtimeOf(fileName, {
+				...this.store.project.loaded,
+				options: optionsForFile(fileName, this.store.project.loaded),
+			});
 			const source = ts.createSourceFile(
 				params.module,
 				params.text,
@@ -349,14 +357,19 @@ export class TypeScriptProvider {
 		fromModule: string;
 		specifier: string;
 		surfaceGlobs?: string[] | undefined;
+		resolutionMode?: ResolutionMode | undefined;
 	}): ImportResolution {
 		const resolution = resolveSpecifier(
 			this.store.root,
 			params.fromModule,
 			params.specifier,
-			this.store.project.loaded,
+			{
+				...this.store.project.loaded,
+				options: optionsForFile(path.resolve(this.store.root, params.fromModule), this.store.project.loaded),
+			},
 			params.surfaceGlobs,
 			(module) => this.runtimeSurface(module),
+			params.resolutionMode,
 		);
 		return this.unwithheld(resolution, (module) => this.store.withheld(module));
 	}
@@ -384,20 +397,42 @@ export class TypeScriptProvider {
 				const read = { module, contentHash: held.contentHash, text: held.text };
 				facts.push(analyzer.held(module)?.surface === true ? surfaceFacts(read) : fullFacts(analyzer, read));
 			}
-			const setup = { ...project.loaded, system: overlaidSystem(project.root, files, project.loaded.system) };
+			const setup = {
+				...project.loaded,
+				system: overlaidSystem(project.root, files, project.loaded.system),
+			};
 			const surface = (module: string) =>
 				!isDeclarationModule(module) &&
 				(files.has(module) ? analyzer.held(module)?.surface === true : this.runtimeSurface(module));
-			const landings = facts.flatMap((answered) =>
-				[...new Set(answered.imports.map((statement) => statement.specifier))].map((specifier) => ({
+			const landings = facts.flatMap((answered) => {
+				const occurrences = new Map<string, { specifier: string; resolutionMode?: ResolutionMode }>();
+				for (const statement of answered.imports) {
+					for (const { resolutionMode } of statement.edges) {
+						const occurrence = {
+							specifier: statement.specifier,
+							...(resolutionMode === undefined ? {} : { resolutionMode }),
+						};
+						occurrences.set(JSON.stringify([statement.specifier, resolutionMode ?? null]), occurrence);
+					}
+				}
+				const options = optionsForFile(path.resolve(project.root, answered.module), project.loaded);
+				return [...occurrences.values()].map((occurrence) => ({
 					module: answered.module,
-					specifier,
+					...occurrence,
 					resolution: this.unwithheld(
-						resolveSpecifier(project.root, answered.module, specifier, setup, [], surface),
+						resolveSpecifier(
+							project.root,
+							answered.module,
+							occurrence.specifier,
+							{ ...setup, options },
+							[],
+							surface,
+							occurrence.resolutionMode,
+						),
 						(module) => !files.has(module) && this.store.withheld(module),
 					),
-				})),
-			);
+				}));
+			});
 			return { status: "ready", facts, landings };
 		} finally {
 			analyzer.dispose();
@@ -504,9 +539,23 @@ export class TypeScriptProvider {
 		const surface = (module: string) => this.runtimeSurface(module);
 		return {
 			render: (fromModule, targetModule, preferredSpecifier, style) =>
-				renderSpecifier(this.store.root, fromModule, targetModule, setup, preferredSpecifier, surface, style),
-			resolve: (fromModule, specifier) =>
-				landingOf(resolveSpecifier(this.store.root, fromModule, specifier, setup, [], surface)),
+				renderSpecifier(
+					this.store.root,
+					fromModule,
+					targetModule,
+					{ ...setup, options: optionsForFile(path.resolve(this.store.root, fromModule), setup) },
+					preferredSpecifier,
+					surface,
+					style,
+				),
+			resolve: (fromModule, specifier, resolutionMode) => {
+				const fileName = path.resolve(this.store.root, fromModule);
+				const fileSetup = { ...setup, options: optionsForFile(fileName, setup) };
+				const mode = resolutionMode ?? importDeclarationMode(fileName, fileSetup);
+				return landingOf(
+					resolveSpecifier(this.store.root, fromModule, specifier, fileSetup, [], surface, mode),
+				);
+			},
 		};
 	}
 

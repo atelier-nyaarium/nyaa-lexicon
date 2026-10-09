@@ -158,7 +158,11 @@ export type Compatibility =
 // 6.8.0: move and arrange requests may promote private dependencies in place.
 // 6.9.0: optional module runtime and import load facts.
 // 6.10.0: arrange placements and anchors name standalone comments by fact id; placed spans carry fact ids.
-export const PROTOCOL_VERSION = "6.10.0" as const;
+// 6.11.0: `moduleCycles` and `moduleProblems` report modeled load-order hazards. An import edge, a
+// `resolveImport` request and a `probeBatch` landing may carry `resolutionMode`, the module system
+// resolving that occurrence. The `releaseLoadCycle` provider notification drops a partial judgment;
+// an older provider ignores it.
+export const PROTOCOL_VERSION = "6.11.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 6;

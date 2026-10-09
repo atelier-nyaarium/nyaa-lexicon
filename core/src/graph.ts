@@ -4,7 +4,7 @@
 // here. Every answer is bounded by what BINDING reached, which is why each one carries that caveat
 // rather than reading as a fact about the code.
 
-import type { Cycle } from "@nyaa-lexicon/protocol";
+import type { Cycle, WorkMeter } from "@nyaa-lexicon/protocol";
 
 export type { Cycle } from "@nyaa-lexicon/protocol";
 
@@ -28,11 +28,14 @@ export interface Edge {
  *
  * A single symbol is only a cycle when it genuinely references itself, so ordinary recursion is
  * reported and a symbol merely sitting alone is not.
+ *
+ * `meter` counts each edge and member read, so a test bounds the work as linear.
  */
-export function findCycles(edges: Edge[]): Cycle[] {
+export function findCycles(edges: Edge[], meter?: WorkMeter): Cycle[] {
 	const out = new Map<string, string[]>();
 	const selfLoops = new Set<string>();
 	for (const edge of edges) {
+		if (meter !== undefined) meter.steps++;
 		if (edge.from === edge.to) selfLoops.add(edge.from);
 		const list = out.get(edge.from);
 		if (list === undefined) out.set(edge.from, [edge.to]);
@@ -65,6 +68,7 @@ export function findCycles(edges: Edge[]): Cycle[] {
 			if (frame.next < neighbours.length) {
 				const neighbour = neighbours[frame.next] as string;
 				frame.next++;
+				if (meter !== undefined) meter.steps++;
 				if (!index.has(neighbour)) {
 					index.set(neighbour, counter);
 					low.set(neighbour, counter);
@@ -91,6 +95,7 @@ export function findCycles(edges: Edge[]): Cycle[] {
 					if (popped === undefined) break;
 					onStack.delete(popped);
 					members.push(popped);
+					if (meter !== undefined) meter.steps++;
 					if (popped === frame.node) break;
 				}
 				if (members.length > 1 || (members.length === 1 && selfLoops.has(members[0] as string))) {

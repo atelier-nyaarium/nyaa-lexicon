@@ -43,6 +43,7 @@ import {
 	type Reference,
 	type ReferenceOrigin,
 	type ReferenceRole,
+	type ResolutionMode,
 	referenceFactId,
 	SCHEMA_VERSION,
 	type ScanCounts,
@@ -167,7 +168,7 @@ export interface ReplaceFileInput {
 	digests?: PatternDigest[];
 	generated?: GeneratedVerdict | null;
 	role?: FileRole | undefined;
-	/** Where each specifier landed, as the provider resolved it. */
+	/** Where each specifier landed, as the provider resolved it, keyed by `resolutionKey`. */
 	resolutions?: ReadonlyMap<string, ImportResolution | null>;
 	/** Absent when the provider does not report exports, which is unknown coverage. */
 	exports?: Export[] | undefined;
@@ -1009,6 +1010,11 @@ function namesOf(entries: readonly SurfaceEntry[]): string[] {
 	return [...new Set(entries.flatMap((entry) => (entry.name === null ? [] : [entry.name])))].sort();
 }
 
+/** A `resolutions` key: one per specifier and resolution mode. */
+export function resolutionKey(specifier: string, mode: ResolutionMode | undefined): string {
+	return mode === undefined ? specifier : `${specifier}\u0000${mode}`;
+}
+
 /** A resolved specifier's landing; null when it is external or unresolved. */
 function landingOf(resolution: ImportResolution | null): Landing | null {
 	return resolution?.status === "resolved" ? resolution.landing : null;
@@ -1537,9 +1543,9 @@ export class IndexStore {
 			);
 			// One row per edge, a side effect and a wildcard included: the edge is real when it names nothing.
 			for (const statement of imports) {
-				const resolution = resolutions.get(statement.specifier) ?? null;
-				const landing = landingOf(resolution);
 				for (const edge of statement.edges) {
+					const resolution = resolutions.get(resolutionKey(statement.specifier, edge.resolutionMode)) ?? null;
+					const landing = landingOf(resolution);
 					importRow.run(
 						importFactId(module, statement.specifier, edge),
 						module,
@@ -2193,11 +2199,53 @@ export class IndexStore {
 		return rows.map((row) => row.module);
 	}
 
-	/** Each module's distinct import specifiers, for asking where each lands. */
-	importEdges(): Array<{ module: string; specifier: string }> {
-		return this.db
-			.prepare("SELECT DISTINCT module, specifier FROM imports ORDER BY module, specifier")
-			.all() as Array<{ module: string; specifier: string }>;
+	/** Every import edge that states a load and lands on a module, in one read. */
+	loadEdges(): Array<{
+		module: string;
+		target: string;
+		span: Range;
+		loads: "static" | "deferred";
+		elided?: boolean;
+		typeOnly: boolean;
+	}> {
+		const rows = this.db
+			.prepare(
+				`SELECT module, target, loads, elided, typeOnly, spanStartLine, spanStartChar, spanEndLine, spanEndChar
+				 FROM imports WHERE target IS NOT NULL AND loads IS NOT NULL ORDER BY module`,
+			)
+			.all() as Array<{
+			module: string;
+			target: string;
+			loads: "static" | "deferred";
+			elided: number | null;
+			typeOnly: number;
+			spanStartLine: number;
+			spanStartChar: number;
+			spanEndLine: number;
+			spanEndChar: number;
+		}>;
+		return rows.map((row) => ({
+			module: row.module,
+			target: row.target,
+			span: {
+				start: { line: row.spanStartLine, character: row.spanStartChar },
+				end: { line: row.spanEndLine, character: row.spanEndChar },
+			},
+			loads: row.loads,
+			...(row.elided === null ? {} : { elided: row.elided === 1 }),
+			typeOnly: row.typeOnly === 1,
+		}));
+	}
+
+	/** Each module's distinct import specifiers and modes, for asking where each lands. */
+	importEdges(): Array<{ module: string; specifier: string; resolutionMode?: ResolutionMode }> {
+		const rows = this.db
+			.prepare(
+				`SELECT DISTINCT module, specifier, json_extract(edge, '$.resolutionMode') AS resolutionMode
+				 FROM imports ORDER BY module, specifier`,
+			)
+			.all() as Array<{ module: string; specifier: string; resolutionMode: ResolutionMode | null }>;
+		return rows.map(({ resolutionMode, ...row }) => (resolutionMode === null ? row : { ...row, resolutionMode }));
 	}
 
 	/** Everything a file contributed, gone. Used when a file is deleted rather than changed. */
@@ -2288,6 +2336,81 @@ export class IndexStore {
 			| { runtime: "esm" | "cjs" | null }
 			| undefined;
 		return row?.runtime ?? null;
+	}
+
+	/** Each module's runtime, null where none was reported, in one read. */
+	runtimesOf(modules: readonly string[]): Map<string, "esm" | "cjs" | null> {
+		const rows = this.db
+			.prepare("SELECT module, runtime FROM files WHERE module IN (SELECT value FROM json_each(?))")
+			.all(JSON.stringify(modules)) as Array<{ module: string; runtime: "esm" | "cjs" | null }>;
+		return new Map(rows.map((row) => [row.module, row.runtime]));
+	}
+
+	/**
+	 * How many uses in `modules` each import edge carries, bound or not, by module and edge span, in
+	 * one read. Roles in `skip` are left out.
+	 */
+	importUseCounts(
+		modules: readonly string[],
+		skip: readonly ReferenceRole[],
+	): Array<{ module: string; origin: Range; count: number }> {
+		const rows = this.db
+			.prepare(
+				`SELECT module, originStartLine, originStartChar, originEndLine, originEndChar, COUNT(*) AS count
+				 FROM refs r WHERE r.module IN (SELECT value FROM json_each(?)) AND r.originKind = 'import' AND ${useSql("r")}
+				 AND r.role NOT IN (SELECT value FROM json_each(?))
+				 GROUP BY module, originStartLine, originStartChar, originEndLine, originEndChar
+				 ORDER BY module, originStartLine, originStartChar`,
+			)
+			.all(JSON.stringify(modules), JSON.stringify(skip)) as Array<{
+			module: string;
+			originStartLine: number;
+			originStartChar: number;
+			originEndLine: number;
+			originEndChar: number;
+			count: number;
+		}>;
+		return rows.map((row) => ({
+			module: row.module,
+			origin: {
+				start: { line: row.originStartLine, character: row.originStartChar },
+				end: { line: row.originEndLine, character: row.originEndChar },
+			},
+			count: row.count,
+		}));
+	}
+
+	/** The first `limit` uses in `module` through the import edge spanning `origin`, roles in `skip` aside. */
+	importUsesThrough(
+		module: string,
+		origin: Range,
+		skip: readonly ReferenceRole[],
+		limit: number,
+	): Array<{ name: string; range: Range }> {
+		const rows = this.db
+			.prepare(
+				`SELECT name, startLine, startChar, endLine, endChar FROM refs r
+				 WHERE r.module = ? AND r.originKind = 'import' AND ${useSql("r")}
+				 AND r.originStartLine = ? AND r.originStartChar = ? AND r.originEndLine = ? AND r.originEndChar = ?
+				 AND r.role NOT IN (SELECT value FROM json_each(?))
+				 ORDER BY startLine, startChar LIMIT ?`,
+			)
+			.all(
+				module,
+				origin.start.line,
+				origin.start.character,
+				origin.end.line,
+				origin.end.character,
+				JSON.stringify(skip),
+				limit,
+			) as Array<{ name: string; startLine: number; startChar: number; endLine: number; endChar: number }>;
+		return rows.map((row) => ({
+			name: row.name,
+			range: {
+				start: { line: row.startLine, character: row.startChar },
+				end: { line: row.endLine, character: row.endChar },
+			},
+		}));
 	}
 
 	/** Null means no role was reported. */
@@ -2769,11 +2892,14 @@ export class IndexStore {
 			.all(name) as Array<{ module: string; originSymbolId: string | null }>;
 	}
 
-	/** Where `specifier` landed from `module` when it was written; null when unknown. */
-	importLanding(module: string, specifier: string): Landing | null {
+	/** Where `specifier` landed from `module` in `mode` when it was written; null when unknown. */
+	importLanding(module: string, specifier: string, mode: ResolutionMode | undefined): Landing | null {
 		const row = this.db
-			.prepare("SELECT landing FROM imports WHERE module = ? AND specifier = ? AND landing IS NOT NULL LIMIT 1")
-			.get(module, specifier) as { landing: string } | undefined;
+			.prepare(
+				`SELECT landing FROM imports WHERE module = ? AND specifier = ?
+				 AND json_extract(edge, '$.resolutionMode') IS ? AND landing IS NOT NULL LIMIT 1`,
+			)
+			.get(module, specifier, mode ?? null) as { landing: string } | undefined;
 		return row === undefined ? null : (JSON.parse(row.landing) as Landing);
 	}
 

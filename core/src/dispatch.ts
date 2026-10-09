@@ -328,6 +328,8 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		findDocs: read(({ limit, exclude, ...query }) => service.findDocs(query, limit, exclude)),
 		sharedLiterals: read((params) => service.sharedLiterals(params.minimumFiles, params.limit, params.exclude)),
 		cycles: read((params) => service.cycles(params.limit)),
+		moduleCycles: staged((params, gate) => service.moduleCycles(params, gate)),
+		moduleProblems: staged((params, gate) => service.moduleProblems(params, gate)),
 		mostReferenced: read((params) => service.mostReferenced(params.limit)),
 		hubs: read((params) => service.mostReferenced(params.limit)),
 		cacheStats: status(() => service.cacheStats()),

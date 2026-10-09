@@ -616,6 +616,15 @@ export type SharedLiteralsResult = z.infer<typeof SharedLiteralsResultSchema>;
 /** Members, in no meaningful order. A cycle has no first element. */
 export const CycleSchema = z.object({ members: z.array(z.string()) }).meta({ id: "Cycle" });
 
+export {
+	LoadCycleHazardSchema,
+	LoadCycleUnknownSchema,
+	ModuleCycleSchema,
+	ModuleCyclesRequestSchema,
+	ModuleProblemsRequestSchema,
+	ModuleProblemsResponseSchema,
+} from "./loadCycles.js";
+
 export type Cycle = z.infer<typeof CycleSchema>;
 
 export const CacheStatsSchema = z

@@ -10,10 +10,13 @@ import {
 	type ProviderTiers,
 	type ProviderWords,
 	type Range,
+	unjudgedLoadCycle,
 } from "@nyaa-lexicon/protocol";
+import { DeadlineError } from "../deadline";
 import { settleDeclaredTiers } from "../declaredTiers";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort";
 import { type HeadReader, type ProviderClaims, routeModule, routingContextOf } from "../routing";
+import { ProviderUnavailableError } from "../supervisor";
 import { fakeClasses, fakeImports } from "./fakeGrammar";
 
 ////////////////////////////////
@@ -49,6 +52,8 @@ export interface FakeOptions {
 	forgotten?: string[];
 	/** Each module the index told its former owner to release. */
 	released?: Array<{ module: string; providerId: string }>;
+	/** Each partial judgment the index told its provider to drop. */
+	releasedJudgments?: Array<{ providerId: string; partial: string }>;
 	/** Each verdict DELIVERED, with the provider it named, in order. */
 	admissions?: Array<{ providerId: string; verdict: ModuleAdmission }>;
 	/** Which spawn answers now. A test advances it to restart a provider under the same id. */
@@ -144,6 +149,8 @@ function defaultAnswer<K extends ProviderMethod>(
 			return parseFake(params as MethodRequest<"parseFile">) as MethodResponse<K>;
 		case "resolveImport":
 			return resolveFake(params as MethodRequest<"resolveImport">) as MethodResponse<K>;
+		case "judgeLoadCycle":
+			return unjudgedLoadCycle(params as MethodRequest<"judgeLoadCycle">) as MethodResponse<K>;
 		case "discoverProject":
 			return { files: discover(), externalRoots: [], configFiles: [], diagnostics: [] } as MethodResponse<K>;
 		default:
@@ -181,7 +188,7 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		method: K,
 		params: unknown,
 	): Promise<MethodResponse<K>> {
-		if (failure.providerDown) throw new Error("provider is not running");
+		if (failure.providerDown) throw new ProviderUnavailableError("provider exited");
 		if (failure.queue !== undefined && failure.queue > 0) {
 			failure.queue--;
 			await new Promise<void>((resolve) => setTimeout(resolve, failure.timeoutMs ?? 0));
@@ -203,7 +210,7 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		return Promise.race([
 			work,
 			new Promise<MethodResponse<K>>((_, reject) =>
-				setTimeout(() => reject(new Error("provider request timed out")), failure.timeoutMs),
+				setTimeout(() => reject(new DeadlineError("provider request timed out")), failure.timeoutMs),
 			),
 		]);
 	}
@@ -244,6 +251,9 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		},
 		release: (module, providerId) => {
 			options.released?.push({ module, providerId });
+		},
+		releaseJudgment: (providerId, given, partial) => {
+			if (given === incarnation.current) options.releasedJudgments?.push({ providerId, partial });
 		},
 		incarnationOf: () => incarnation.current,
 		respawnedFrom: (listener) => {

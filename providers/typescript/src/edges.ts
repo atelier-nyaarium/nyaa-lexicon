@@ -11,6 +11,7 @@ import {
 	type Meaning,
 	parseSymbolId,
 	type Range,
+	type ResolutionMode,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { boundNames } from "./declarations.js";
@@ -26,6 +27,7 @@ import {
 	requireOf,
 	TYPE_ONLY,
 } from "./imports.js";
+import { modeName } from "./project.js";
 import { rangeOf } from "./ranges.js";
 
 ////////////////////////////////
@@ -64,6 +66,19 @@ interface Scope {
 	declared(nodes: readonly ts.Node[], exported: string): Resolved[];
 }
 
+/** The checker's own answers to what emit keeps, from its internal emit resolver. */
+interface EmitResolver {
+	markLinkedReferences(node: ts.Node): void;
+	isReferencedAliasDeclaration(node: ts.Node): boolean;
+	isValueAliasDeclaration(node: ts.Node): boolean;
+}
+
+/** Functions module evaluation calls: immediately invoked, or by name from the top level. */
+interface TopCalls {
+	iifes: Set<ts.Node>;
+	named: Set<ts.Symbol>;
+}
+
 ////////////////////////////////
 //  Constants
 
@@ -92,37 +107,63 @@ export function moduleEdges(source: ts.SourceFile, reads: EdgeReads): ModuleEdge
 function importDrafts(source: ts.SourceFile, reads: EdgeReads): { all: DraftImport[]; topLevel: DraftImport[] } {
 	const all: DraftImport[] = [];
 	const topLevel: DraftImport[] = [];
-	const add = (draft: DraftImport | undefined, top: boolean, loads?: "static" | "deferred") => {
+	let topCalls: TopCalls | undefined;
+	let resolver: { held: EmitResolver | undefined } | undefined;
+	const emit = () => {
+		resolver ??= { held: reads.checker === undefined ? undefined : emitResolver(source, reads.checker) };
+		return resolver.held;
+	};
+	const add = (
+		draft: DraftImport | undefined,
+		top: boolean,
+		loads: "static" | "deferred",
+		specifier: ts.Node | undefined,
+	) => {
 		if (draft === undefined) return;
-		if (loads !== undefined) for (const edge of draft.edges) edge.loads = loads;
+		const mode = resolutionModeOf(source, specifier, reads.compilerOptions);
+		for (const edge of draft.edges) {
+			edge.loads = loads;
+			if (mode !== undefined) edge.resolutionMode = mode;
+		}
 		all.push(draft);
 		if (top) topLevel.push(draft);
 	};
 	if (reads.reExportsOnly === true) {
 		for (const statement of source.statements) {
-			if (ts.isExportDeclaration(statement)) add(importOf(statement, source), true, "static");
+			if (ts.isExportDeclaration(statement))
+				add(importOf(statement, source), true, "static", statement.moduleSpecifier);
 		}
 		return { all, topLevel };
 	}
-	const requires = reads.javascript ? reads.checker : undefined;
+	const requires = reads.checker;
 	const visit = (node: ts.Node): void => {
 		if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) {
 			const imported = importOf(node, source);
-			if (ts.isImportDeclaration(node)) markElided(imported, node, source, reads);
-			add(imported, node.parent === source, "static");
+			if (imported === undefined) return;
+			// A declaration file never runs.
+			if (source.isDeclarationFile) elideAll(imported, true);
+			else if (ts.isImportDeclaration(node)) markElided(imported, node, source, reads, emit);
+			else if (ts.isExportDeclaration(node)) markReExportElided(imported, node, reads, emit);
+			else markImportEqualsElided(imported, node, reads, emit);
+			add(imported, node.parent === source, "static", moduleSpecifierOf(node));
 			return;
 		}
 		if (ts.isCallExpression(node) && isDynamicImport(node)) {
 			const topLevelAwait =
 				ts.isAwaitExpression(node.parent) && node.parent.expression === node && !insideFunction(node);
-			add(dynamicImportOf(node, source), false, topLevelAwait ? "static" : "deferred");
+			add(dynamicImportOf(node, source), false, topLevelAwait ? "static" : "deferred", node.arguments[0]);
 		} else if (ts.isCallExpression(node) && requires !== undefined) {
 			const draft = requireOf(node, source, requires);
-			add(
-				draft,
-				draft?.edges.some((edge) => edge.bindsLocally) === true,
-				insideFunction(node) ? "deferred" : "static",
-			);
+			if (draft !== undefined) {
+				for (const edge of draft.edges) edge.elided = false;
+				topCalls ??= callsAtModuleTop(source, requires);
+				add(
+					draft,
+					draft.edges.some((edge) => edge.bindsLocally),
+					requireLoads(node, requires, topCalls),
+					node.arguments[0],
+				);
+			}
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -130,54 +171,156 @@ function importDrafts(source: ts.SourceFile, reads: EdgeReads): { all: DraftImpo
 	return { all, topLevel };
 }
 
+/** `visitImportDeclaration`: each binding emit keeps; with none left, the statement goes too. */
 function markElided(
-	draft: DraftImport | undefined,
+	draft: DraftImport,
 	node: ts.ImportDeclaration,
 	source: ts.SourceFile,
 	reads: EdgeReads,
+	emit: () => EmitResolver | undefined,
 ): void {
-	if (draft === undefined) return;
 	const options = reads.compilerOptions;
-	if (
-		options === undefined ||
-		options.verbatimModuleSyntax === true ||
-		options.preserveValueImports === true ||
-		scriptIsJavaScript(source)
-	)
-		return;
-	const bindings = node.importClause?.namedBindings;
-	const names: ts.Identifier[] = [];
-	if (node.importClause?.name !== undefined) names.push(node.importClause.name);
-	if (bindings !== undefined && ts.isNamespaceImport(bindings)) names.push(bindings.name);
-	if (bindings !== undefined && ts.isNamedImports(bindings))
-		names.push(...bindings.elements.map((element) => element.name));
-	if (names.length === 0) return;
-	const checker = reads.checker;
-	const hasValueUse =
-		checker !== undefined &&
-		names.some((name) => {
-			const symbol = checker.getSymbolAtLocation(name);
-			if (symbol === undefined) return false;
-			let used = false;
-			const visit = (item: ts.Node) => {
-				if (used) return;
-				if (
-					ts.isIdentifier(item) &&
-					item !== name &&
-					checker.getSymbolAtLocation(item) === symbol &&
-					!ts.isPartOfTypeNode(item)
-				)
-					used = true;
-				ts.forEachChild(item, visit);
-			};
-			visit(source);
-			return used;
-		});
-	if (!hasValueUse) for (const edge of draft.edges) edge.elided = true;
+	const clause = node.importClause;
+	if (clause === undefined) {
+		elideAll(draft, false);
+	} else if (options === undefined) {
+		for (const edge of draft.edges) if (edge.typeOnly === true) edge.elided = true;
+	} else if (options.verbatimModuleSyntax === true) {
+		// A statement with no runtime binding left still emits, as `import {} from`.
+		elideAll(draft, clause.isTypeOnly);
+	} else if (draft.edges.every((edge) => edge.kind === "sideEffect")) {
+		elideAll(draft, true);
+	} else if (scriptIsJavaScript(source)) {
+		for (const edge of draft.edges) edge.elided = edge.typeOnly === true;
+	} else {
+		const resolver = emit();
+		const bindings = clause.namedBindings;
+		const aliases: ts.Node[] = [];
+		if (clause.name !== undefined) aliases.push(clause);
+		if (bindings !== undefined && ts.isNamespaceImport(bindings)) aliases.push(bindings);
+		if (bindings !== undefined && ts.isNamedImports(bindings)) aliases.push(...bindings.elements);
+		for (const [index, alias] of aliases.entries()) {
+			const edge = draft.edges[index];
+			if (edge === undefined) continue;
+			if (edge.typeOnly === true) edge.elided = true;
+			else if (resolver !== undefined) edge.elided = !resolver.isReferencedAliasDeclaration(alias);
+		}
+	}
+}
+
+/** `visitImportEqualsDeclaration` for an external module reference. */
+function markImportEqualsElided(
+	draft: DraftImport,
+	node: ts.ImportEqualsDeclaration,
+	reads: EdgeReads,
+	emit: () => EmitResolver | undefined,
+): void {
+	const options = reads.compilerOptions;
+	if (node.isTypeOnly) elideAll(draft, true);
+	else if (options?.verbatimModuleSyntax === true) elideAll(draft, false);
+	else if (options !== undefined) {
+		const resolver = emit();
+		if (resolver !== undefined) elideAll(draft, !resolver.isReferencedAliasDeclaration(node));
+	}
+}
+
+/** `visitExportDeclaration`: each specifier naming no runtime value goes, then an empty statement. */
+function markReExportElided(
+	draft: DraftImport,
+	node: ts.ExportDeclaration,
+	reads: EdgeReads,
+	emit: () => EmitResolver | undefined,
+): void {
+	const options = reads.compilerOptions;
+	const clause = node.exportClause;
+	if (node.isTypeOnly) {
+		elideAll(draft, true);
+	} else if (clause === undefined || !ts.isNamedExports(clause) || options?.verbatimModuleSyntax === true) {
+		elideAll(draft, false);
+	} else if (options !== undefined && clause.elements.length === 0) {
+		elideAll(draft, true);
+	} else if (options !== undefined) {
+		const resolver = emit();
+		for (const [index, element] of clause.elements.entries()) {
+			const edge = draft.edges[index];
+			if (edge === undefined) continue;
+			if (element.isTypeOnly) edge.elided = true;
+			else if (resolver !== undefined) edge.elided = !resolver.isValueAliasDeclaration(element);
+		}
+	}
+}
+
+function elideAll(draft: DraftImport, elided: boolean): void {
+	for (const edge of draft.edges) edge.elided = elided;
+}
+
+function moduleSpecifierOf(
+	node: ts.ImportDeclaration | ts.ExportDeclaration | ts.ImportEqualsDeclaration,
+): ts.Expression | undefined {
+	if (!ts.isImportEqualsDeclaration(node)) return node.moduleSpecifier;
+	return ts.isExternalModuleReference(node.moduleReference) ? node.moduleReference.expression : undefined;
+}
+
+/** Static when evaluation reaches the call: no function, an IIFE, or a top-level call by name. */
+function requireLoads(node: ts.CallExpression, checker: ts.TypeChecker, calls: TopCalls): "static" | "deferred" {
+	const fn = ts.findAncestor(node.parent, ts.isFunctionLike);
+	if (fn === undefined || calls.iifes.has(fn)) return "static";
+	const name = calledName(fn);
+	const symbol = name === undefined ? undefined : checker.getSymbolAtLocation(name);
+	return symbol !== undefined && calls.named.has(symbol) ? "static" : "deferred";
+}
+
+/** The name a call reaches a function by: its declaration's, or the variable it initializes. */
+function calledName(fn: ts.SignatureDeclaration): ts.Identifier | undefined {
+	if (ts.isFunctionDeclaration(fn)) return fn.name;
+	if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return undefined;
+	const holder = fn.parent;
+	return ts.isVariableDeclaration(holder) && holder.initializer === fn && ts.isIdentifier(holder.name)
+		? holder.name
+		: undefined;
+}
+
+/** One walk per file, never entering a function body. */
+function callsAtModuleTop(source: ts.SourceFile, checker: ts.TypeChecker): TopCalls {
+	const calls: TopCalls = { iifes: new Set(), named: new Set() };
+	const visit = (item: ts.Node): void => {
+		if (ts.isFunctionLike(item)) return;
+		if (ts.isCallExpression(item)) {
+			const expression = unwrapParens(item.expression);
+			if (ts.isFunctionExpression(expression) || ts.isArrowFunction(expression)) calls.iifes.add(expression);
+			else if (ts.isIdentifier(expression)) {
+				const symbol = checker.getSymbolAtLocation(expression);
+				if (symbol !== undefined) calls.named.add(symbol);
+			}
+		}
+		ts.forEachChild(item, visit);
+	};
+	visit(source);
+	return calls;
+}
+
+function unwrapParens(node: ts.Node): ts.Node {
+	let current = node;
+	while (ts.isParenthesizedExpression(current)) current = current.expression;
+	return current;
 }
 
 function scriptIsJavaScript(source: ts.SourceFile): boolean {
-	return /\.jsx?$/.test(source.fileName);
+	return /\.[cm]?jsx?$/.test(source.fileName);
+}
+
+/** TypeScript's module system for resolving this occurrence, when the settings make one matter. */
+function resolutionModeOf(
+	source: ts.SourceFile,
+	specifier: ts.Node | undefined,
+	options: ts.CompilerOptions | undefined,
+): ResolutionMode | undefined {
+	if (options === undefined || specifier === undefined || !ts.isStringLiteralLike(specifier)) return undefined;
+	return modeName(ts.getModeForUsageLocation(source, specifier, options));
+}
+
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+	return ts.canHaveModifiers(node) && (ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) ?? false);
 }
 
 function insideFunction(node: ts.Node): boolean {
@@ -427,6 +570,56 @@ function exportAssignmentRows(statement: ts.ExportAssignment, source: ts.SourceF
 		...(identifier === undefined ? {} : { sourceRange: rangeOf(identifier, source) }),
 	};
 	return rows(resolved, fields, false);
+}
+
+////////////////////////////////
+//  Elision
+
+/** The checker's emit resolver, with this file's import aliases marked as noCheck emit marks them. */
+function emitResolver(source: ts.SourceFile, checker: ts.TypeChecker): EmitResolver | undefined {
+	// Internal to the checker, so an absent hook leaves every edge it would decide undecided.
+	const hook = (
+		checker as unknown as { getEmitResolver?: (file: ts.SourceFile, token: undefined, skip: boolean) => unknown }
+	).getEmitResolver;
+	const resolver = hook?.(source, undefined, true) as EmitResolver | undefined;
+	if (typeof resolver?.isReferencedAliasDeclaration !== "function") return undefined;
+	const names = importedNames(source.statements);
+	if (names.size === 0 || scriptIsJavaScript(source)) return resolver;
+	const visit = (node: ts.Node): void => {
+		if (ts.isImportDeclaration(node)) return;
+		if (ts.isImportEqualsDeclaration(node) && !hasModifier(node, ts.SyntaxKind.ExportKeyword)) return;
+		if (reaches(node, names)) resolver.markLinkedReferences(node);
+		ts.forEachChild(node, visit);
+	};
+	ts.forEachChild(source, visit);
+	return resolver;
+}
+
+/** Every name an import or `import =` binds, in any namespace. */
+function importedNames(statements: readonly ts.Statement[], names = new Set<string>()): Set<string> {
+	for (const statement of statements) {
+		if (ts.isImportEqualsDeclaration(statement)) names.add(statement.name.text);
+		if (ts.isImportDeclaration(statement)) {
+			const clause = statement.importClause;
+			const bindings = clause?.namedBindings;
+			if (clause?.name !== undefined) names.add(clause.name.text);
+			if (bindings !== undefined && ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+			if (bindings !== undefined && ts.isNamedImports(bindings))
+				for (const element of bindings.elements) names.add(element.name.text);
+		}
+		let body = ts.isModuleDeclaration(statement) ? statement.body : undefined;
+		while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
+		if (body !== undefined && ts.isModuleBlock(body)) importedNames(body.statements, names);
+	}
+	return names;
+}
+
+/** An identifier or a member read marks only through a name it starts with; every other node may. */
+function reaches(node: ts.Node, names: ReadonlySet<string>): boolean {
+	if (ts.isIdentifier(node)) return names.has(node.text);
+	if (ts.isPropertyAccessExpression(node)) return ts.isIdentifier(node.expression) && names.has(node.expression.text);
+	if (ts.isQualifiedName(node)) return ts.isIdentifier(node.left) && names.has(node.left.text);
+	return true;
 }
 
 ////////////////////////////////

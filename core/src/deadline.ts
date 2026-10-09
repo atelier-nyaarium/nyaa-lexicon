@@ -4,6 +4,12 @@
 import type { Clock, TimerHandle } from "./clock.js";
 
 ////////////////////////////////
+//  Interfaces & Types
+
+/** A budget ran out, as opposed to the work failing. */
+export class DeadlineError extends Error {}
+
+////////////////////////////////
 //  Functions & Helpers
 
 /**
@@ -22,7 +28,7 @@ export function withTimeout<T>(
 		const expire = () => {
 			const more = extend();
 			if (typeof more === "number") timer = clock.setTimer(expire, more);
-			else reject(more ?? new Error(`${what} timed out after ${ms}ms`));
+			else reject(more ?? new DeadlineError(`${what} timed out after ${ms}ms`));
 		};
 		timer = clock.setTimer(expire, ms);
 	});

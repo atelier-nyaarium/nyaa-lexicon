@@ -7,6 +7,7 @@ import { createMessageConnection, StreamMessageReader, StreamMessageWriter } fro
 import type { z } from "zod";
 import { defined } from "./defined.js";
 import type { ImportEditsResponse } from "./importEdits.js";
+import { unjudgedLoadCycle } from "./loadCycles.js";
 import type {
 	METHOD_SCHEMAS,
 	ProbeBatchResponse,
@@ -28,16 +29,21 @@ import type { Binding, TypeInfo } from "./values.js";
 type Connection = ReturnType<typeof createMessageConnection>;
 
 /**
- * Every method, always. A capability a provider lacks answers Unknown through the value types.
- *
- * Required keys are the enforcement: a method added to PROVIDER_METHODS fails to compile in every
- * provider until it is answered, which is the guarantee the frozen list was written to give.
+ * Every method, with a default for the additive load-cycle request.
  */
-export type ProviderHandlers = {
+type ProviderHandlersByMethod = {
 	[M in ProviderMethod]: (
 		params: z.infer<(typeof METHOD_SCHEMAS)[M]["request"]>,
 	) => z.infer<(typeof METHOD_SCHEMAS)[M]["response"]>;
 };
+
+export type ProviderHandlers = Omit<ProviderHandlersByMethod, "judgeLoadCycle"> & {
+	judgeLoadCycle?: ProviderHandlersByMethod["judgeLoadCycle"];
+};
+
+function defaultLoadCycleAnswer(params: unknown): unknown {
+	return unjudgedLoadCycle(params as z.infer<(typeof METHOD_SCHEMAS)["judgeLoadCycle"]["request"]>);
+}
 
 /** Optional, unlike methods: a notification a provider does not handle is ignored. */
 export type ProviderNotificationHandlers = {
@@ -137,11 +143,13 @@ export function serveProvider(
 	for (const method of PROVIDER_METHODS) {
 		// The handler map is keyed per method, so the loop erases the pairing the caller already
 		// satisfied. Each response is still validated against its schema by whoever reads it.
-		const handler = handlers[method] as (params: unknown) => unknown;
+		const handler = (handlers[method] ?? (method === "judgeLoadCycle" ? defaultLoadCycleAnswer : undefined)) as
+			| ((params: unknown) => unknown)
+			| undefined;
 		connection.onRequest(method, (params: unknown) =>
 			inTurn(async () => {
 				refuseUnrepresentable(params);
-				const answer = await handler(params);
+				const answer = await handler?.(params);
 				// One id per declaration, settled at the wire for every provider.
 				if (method === "probeBatch" && isReadyBatch(answer)) {
 					return { ...answer, facts: answer.facts.map((facts) => withOccurrences(facts)) };

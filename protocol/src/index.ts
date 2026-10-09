@@ -381,6 +381,24 @@ export {
 	ImportRefusalSchema,
 } from "./importEdits.js";
 export {
+	type JudgeLoadCycleAnswer,
+	JudgeLoadCycleAnswerSchema,
+	type JudgeLoadCycleRequest,
+	JudgeLoadCycleRequestSchema,
+	LoadCycleEvidenceSchema,
+	type LoadCycleHazard,
+	LoadCycleHazardSchema,
+	LoadCycleMemberSchema,
+	LoadCycleUnknownSchema,
+	type ModuleCycle,
+	ModuleCycleSchema,
+	ModuleCyclesRequestSchema,
+	ModuleProblemsRequestSchema,
+	ModuleProblemsResponseSchema,
+	ReleaseLoadCycleNotificationSchema,
+	unjudgedLoadCycle,
+} from "./loadCycles.js";
+export {
 	type MermaidStatement,
 	type MermaidToken,
 	mermaidClick,
@@ -561,6 +579,8 @@ export {
 	MeaningSchema,
 	type ProjectModel,
 	ProjectModelSchema,
+	type ResolutionMode,
+	ResolutionModeSchema,
 	type ScopeContribution,
 	ScopeContributionSchema,
 	type Selector,

@@ -37,6 +37,13 @@ describe("finding cycles", () => {
 		expect(findCycles(edges(["a", "b"]))).toEqual([]);
 	});
 
+	it("reads each edge and member a bounded number of times across many self-loops", () => {
+		const loops = edges(...Array.from({ length: 2_000 }, (_, i): [string, string] => [`n${i}`, `n${i}`]));
+		const meter = { steps: 0 };
+		expect(findCycles(loops, meter)).toHaveLength(2_000);
+		expect(meter.steps).toBeLessThanOrEqual(3 * loops.length);
+	});
+
 	it("separates two independent loops", () => {
 		const found = findCycles(edges(["a", "b"], ["b", "a"], ["x", "y"], ["y", "x"]));
 		expect(membersOf(found)).toEqual([
