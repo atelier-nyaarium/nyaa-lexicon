@@ -264,7 +264,7 @@ describe("a reversal that could not put a move back says so", () => {
 		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
 		const onward = "lexicon reference c.ref Cart#";
-		store.subjects.rebind([{ from: MOVED, to: onward }], "batchExactMatch", 11);
+		store.journalWrite(() => store.subjects.rebind([{ from: MOVED, to: onward }], "batchExactMatch", 11));
 		await holdOldAddress();
 
 		const outcome = transactions.undo();
@@ -278,7 +278,7 @@ describe("a reversal that could not put a move back says so", () => {
 		plant();
 		record(CART);
 		const transactions = journalMove([{ from: CART, to: MOVED }]);
-		store.subjects.delete(store.subjects.forAddress(MOVED)?.subjectId as string);
+		store.noteWrite(() => store.subjects.delete(store.subjects.forAddress(MOVED)?.subjectId as string));
 
 		const outcome = transactions.undo();
 
@@ -417,7 +417,7 @@ describe("a store from before the table", () => {
 			rebind: { entries: [{ from: CART, to: MOVED }], evidence: "journalMove", applied: applied(subjectId) },
 		});
 		if (!begun.ok) throw new Error(begun.reason);
-		store.subjects.rebind([{ from: CART, to: MOVED }], "journalMove", 9);
+		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: MOVED }], "journalMove", 9));
 		transactions.completeStep(begun.stepNo, "reindexed");
 		store.close();
 		const raw = new DatabaseSync(file);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { Database } from "../database";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -18,20 +18,19 @@ const SHOP = "lexicon reference a.ref Shop#";
 const STORE = "lexicon reference a.ref Store#";
 const at = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 8 } });
 
-function bare(): { db: DatabaseSync; subjects: KnowledgeSubjects } {
-	const db = new DatabaseSync(":memory:");
+function bare(): { db: Database; subjects: KnowledgeSubjects } {
+	const db = Database.open(":memory:");
 	db.exec(KNOWLEDGE_SCHEMA);
 	return { db, subjects: new KnowledgeSubjects(db) };
 }
 
-function hold(db: DatabaseSync, subjectId: string, symbolId: string): void {
+function hold(db: Database, subjectId: string, symbolId: string): void {
 	db.prepare(
 		"INSERT INTO knowledge_subjects (subjectId, currentSymbolId, state, boundAt, evidence) VALUES (?, ?, 'bound', 1, 'sameLocator')",
 	).run(subjectId, symbolId);
 }
 
-const count = (db: DatabaseSync) =>
-	(db.prepare("SELECT COUNT(*) AS n FROM knowledge_subjects").get() as { n: number }).n;
+const count = (db: Database) => (db.prepare("SELECT COUNT(*) AS n FROM knowledge_subjects").get() as { n: number }).n;
 
 ////////////////////////////////
 //  Tests
@@ -199,12 +198,14 @@ describe("a rebuild across a compatibility key", () => {
 		note(service, SHOP, "The shop.");
 		const shop = store.subjects.forAddress(SHOP)?.subjectId as string;
 		// The shop's subject moves on and a new one takes its old address, as a refactor then a write do.
-		store.subjects.rebind([{ from: SHOP, to: STORE }], "journalMove", 5);
-		store.subjects.mint(SHOP, 6);
+		store.journalWrite(() => {
+			store.subjects.rebind([{ from: SHOP, to: STORE }], "journalMove", 5);
+			store.subjects.mint(SHOP, 6);
+		});
 		store.close();
 
 		// Only the subject row is lost; the note it keyed still names the address another now holds.
-		const db = new DatabaseSync(file);
+		const db = Database.open(file);
 		db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(shop);
 		db.close();
 
@@ -239,11 +240,11 @@ describe("a rebuild across a compatibility key", () => {
 		});
 		note(service, SHOP, "The shop.");
 		const shop = store.subjects.forAddress(SHOP)?.subjectId as string;
-		store.subjects.rebind([{ from: SHOP, to: STORE }], "journalMove", 5);
+		store.journalWrite(() => store.subjects.rebind([{ from: SHOP, to: STORE }], "journalMove", 5));
 		note(service, STORE, "Because.");
 		store.close();
 
-		const db = new DatabaseSync(file);
+		const db = Database.open(file);
 		db.prepare("DELETE FROM knowledge_subjects WHERE subjectId = ?").run(shop);
 		db.close();
 

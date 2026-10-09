@@ -6,14 +6,15 @@ import { hashContent } from "@nyaa-lexicon/protocol";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import type { IndexOutcome } from "../indexer";
 import type { FileEvent } from "../invalidation";
-import { holdBatches, type LiveIndex, serializeBatches, startLiveIndex } from "../liveIndex";
+import { holdBatches, type LiveIndex, LOST_RETRY_MS, serializeBatches, startLiveIndex } from "../liveIndex";
 import type { MethodRequest, ProviderPort } from "../providerPort";
 import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
-import { IndexStore } from "../store";
+import { BatchFailed, IndexStore } from "../store";
 import { fakeClock } from "./fakeClock";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { busyAtBegin, failingCommit } from "./storeFailures";
 
 ////////////////////////////////
 //  Helpers
@@ -300,5 +301,143 @@ describe("watching under the warm scan", () => {
 		clock.advance(DEBOUNCE_MS);
 		await live.settled();
 		expect(applied).toEqual([]);
+	});
+});
+
+describe("work whose writes the store lost", () => {
+	it("applies a lost batch again after a backoff, so the edit lands once the store takes writes", async () => {
+		put("a.fake", OLD);
+		const service = serviceOver(fakeSupervisor());
+		await service.indexFile("a.fake");
+		// Edited before watching, so only the injected event and its retry carry it.
+		put("a.fake", NEW);
+		const clock = fakeClock();
+		const errors: unknown[] = [];
+		live = startLiveIndex({
+			service,
+			workspaceRoot: root,
+			clock,
+			debounceMs: DEBOUNCE_MS,
+			onError: (error) => errors.push(error),
+		});
+		await live.warmed;
+
+		failingCommit(store).arm();
+		live.inject("a.fake");
+		clock.advance(DEBOUNCE_MS);
+		await live.settled();
+		const lost = store.contentHashOf("a.fake");
+		clock.advance(LOST_RETRY_MS);
+		await live.settled();
+
+		expect({
+			errors: errors.map((error) => error instanceof BatchFailed),
+			lost: lost === hashContent(OLD),
+			repaired: store.contentHashOf("a.fake") === hashContent(NEW),
+		}).toEqual({ errors: [true], lost: true, repaired: true });
+	});
+
+	it("runs a warm scan again whose writes were lost, and keeps watching", async () => {
+		put("a.fake", OLD);
+		const service = serviceOver(fakeSupervisor());
+		await service.currentScope();
+		failingCommit(store).arm();
+		const clock = fakeClock();
+		const errors: unknown[] = [];
+		live = startLiveIndex({
+			service,
+			workspaceRoot: root,
+			clock,
+			debounceMs: DEBOUNCE_MS,
+			warm: async () => {
+				await service.warmupWorkspace();
+			},
+			onError: (error) => errors.push(error),
+		});
+		await live.warmed;
+		const warmed = store.contentHashOf("a.fake") === hashContent(OLD);
+
+		put("a.fake", NEW);
+		live.inject("a.fake");
+		clock.advance(DEBOUNCE_MS);
+		await live.settled();
+
+		expect({
+			errors: errors.map((error) => error instanceof BatchFailed),
+			warmed,
+			watched: store.contentHashOf("a.fake") === hashContent(NEW),
+		}).toEqual({ errors: [true], warmed: true, watched: true });
+	});
+
+	/** A live index over `service`, its batches failing into `errors`, on a test clock. */
+	async function watching(service: LexiconService, errors: unknown[] = []) {
+		const clock = fakeClock();
+		live = startLiveIndex({
+			service,
+			workspaceRoot: root,
+			clock,
+			debounceMs: DEBOUNCE_MS,
+			onError: (error) => errors.push(error),
+		});
+		await live.warmed;
+		const settle = async (ms: number) => {
+			clock.advance(ms);
+			await live?.settled();
+		};
+		return settle;
+	}
+
+	it("retries a lost delete as the disk stands, so a file that came back since stays indexed", async () => {
+		put("m.fake", OLD);
+		const service = serviceOver(fakeSupervisor());
+		await service.indexFile("m.fake");
+		const settle = await watching(service);
+
+		rmSync(path.join(root, "m.fake"));
+		failingCommit(store).arm();
+		live?.inject("m.fake");
+		await settle(DEBOUNCE_MS);
+		put("m.fake", NEW);
+		live?.inject("m.fake");
+		await settle(DEBOUNCE_MS);
+		await settle(LOST_RETRY_MS);
+
+		expect(store.contentHashOf("m.fake")).toBe(hashContent(NEW));
+	});
+
+	it("retries a lost create as the disk stands, so a file deleted since is not indexed", async () => {
+		const service = serviceOver(fakeSupervisor());
+		await service.currentScope();
+		const settle = await watching(service);
+
+		put("n.fake", NEW);
+		failingCommit(store).arm();
+		live?.inject("n.fake");
+		await settle(DEBOUNCE_MS);
+		rmSync(path.join(root, "n.fake"));
+		await settle(LOST_RETRY_MS);
+
+		expect(store.contentHashOf("n.fake")).toBeNull();
+	});
+
+	it("applies again a batch whose writes could not begin for another's lock, faulting no file", async () => {
+		put("a.fake", OLD);
+		const service = serviceOver(fakeSupervisor());
+		await service.indexFile("a.fake");
+		put("a.fake", NEW);
+		const errors: unknown[] = [];
+		const settle = await watching(service, errors);
+
+		busyAtBegin(store);
+		live?.inject("a.fake");
+		await settle(DEBOUNCE_MS);
+		const failures = store.parseFailures();
+		await settle(LOST_RETRY_MS);
+
+		expect({
+			lost: errors.map((error) => error instanceof BatchFailed),
+			failures,
+			repaired: store.contentHashOf("a.fake") === hashContent(NEW),
+		}).toEqual({ lost: [true], failures: [], repaired: true });
 	});
 });

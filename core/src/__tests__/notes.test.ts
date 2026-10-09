@@ -176,7 +176,7 @@ describe("a note's refs over time", () => {
 	it("follow their target through a rename, reading at its new address in either link form", () => {
 		saved(service.writeNote(note({ text: `${HOLDS}\n\nAlso [the cart](<ref://a.ref:Cart>).` })));
 		plant("a.ref", [{ symbolId: TROLLEY, name: "Trolley", digest: "c1" }]);
-		store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9);
+		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9));
 
 		expect(service.readNote(BASKET)).toMatchObject({
 			text: "Holds a [Cart](ref://a.ref:Trolley) per shopper.\n\nAlso [the cart](<ref://a.ref:Trolley>).",
@@ -247,7 +247,7 @@ describe("whose words an agent may replace", () => {
 			{ symbolId: TROLLEY, name: "Trolley", digest: "c1" },
 			{ symbolId: CART, name: "Cart", digest: "other" },
 		]);
-		store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9);
+		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9));
 
 		expect(service.readNote(BASKET)?.proposal?.text).toBe("Wraps a [Cart](ref://a.ref:Trolley).");
 		expect(saved(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON))).toMatchObject({

@@ -1,6 +1,6 @@
 // Journal operations derive from this registry.
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "./database.js";
 import { EVIDENCE_IN, STATE_IN } from "./subjects.js";
 
 ////////////////////////////////
@@ -229,7 +229,7 @@ export const JOURNAL_DDL = Object.values(JOURNAL_TABLES)
 //  Functions & Helpers
 
 /** Update triggers compare every table column. */
-export function installRevisionTriggers(db: DatabaseSync): void {
+export function installRevisionTriggers(db: Database): void {
 	for (const table of JOURNAL_TABLE_NAMES) {
 		const entry: JournalTable = JOURNAL_TABLES[table];
 		if (!entry.revision) continue;

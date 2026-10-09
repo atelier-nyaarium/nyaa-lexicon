@@ -775,10 +775,12 @@ describe("carrying knowledge across a rename", () => {
 		if (wrote.outcome === "refused") throw new Error(`note not written: ${wrote.reason}`);
 
 		const map = service.renameIdMap(cart, "Basket", ctx());
-		const rebound = store.subjects.rebind(
-			[...map].map(([from, to]) => ({ from, to })),
-			"journalRename",
-			Date.now(),
+		const rebound = store.journalWrite(() =>
+			store.subjects.rebind(
+				[...map].map(([from, to]) => ({ from, to })),
+				"journalRename",
+				Date.now(),
+			),
 		);
 		const newId = map.get(cart) as string;
 
@@ -799,7 +801,9 @@ describe("carrying knowledge across a rename", () => {
 		service.writeNote({ symbolId: cart, text: "The old one.", expectedRevision: 0 });
 		service.writeNote({ symbolId: basket, text: "The one that stays.", expectedRevision: 0 });
 
-		const rebound = store.subjects.rebind([{ from: cart, to: basket }], "journalRename", Date.now());
+		const rebound = store.journalWrite(() =>
+			store.subjects.rebind([{ from: cart, to: basket }], "journalRename", Date.now()),
+		);
 
 		expect(rebound.subjects).toBe(0);
 		expect(service.readNote(basket)?.text).toBe("The one that stays.");

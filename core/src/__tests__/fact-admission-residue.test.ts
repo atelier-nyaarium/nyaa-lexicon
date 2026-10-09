@@ -19,7 +19,7 @@ describe("one module admits a provider's facts", () => {
 		const write = declarationNamed(source, "replaceFile");
 		expect(write, "the store's write path is replaceFile").toBeDefined();
 
-		const transaction = callsTo(write as ts.Node, "inTransaction", "this")[0];
+		const transaction = callsTo(write as ts.Node, "indexWrite", "this")[0];
 		const admission = callsTo(write as ts.Node, "admitFacts")[0];
 		expect(transaction).toBeDefined();
 		expect(

@@ -456,6 +456,55 @@ one hold for a walk would starve every reader for its length. The gate is not re
 self-driven road reached from inside a hold deadlocks on its first file, which is why a symbol
 answer upgrades its tree before taking the gate rather than inside it.
 
+A pass's index writes reach disk in batches (`IndexStore.pass`). Each file's write is a savepoint
+in one open transaction. The batch commits every `BATCH_WRITES` writes, at every pass's end, so a
+pass that returns is durable even while another pass runs, and before any write that must be durable
+on return: a note, a relation, the journal, a refactor blob, the subject sweep, a speculation. An
+index write outside any pass is durable on return too. A timer on the store's clock commits the
+batch `BATCH_MS` after it opened, so a stalled parse never keeps the write lock; due inside a write,
+the commit waits for that write to end. The per-file holds stay as above. The store's own connection
+reads whole files between holds, and another connection reads only committed batches, so no read
+sees half of one. Batches commit in order, so a crash loses only the open one; its files keep their
+old hashes, and the next scan parses them again.
+
+A batch is lost when its commit fails, when it cannot begin for the store failing, or when a write
+meets the store failing (busy, locked, full, I/O, corrupt and the like, read from SQLite's result
+code), whether or not SQLite ended the transaction itself. The lost batch rolls back, the error that
+lost it is thrown to the write that met it, and the passes running then write no more index rows
+(failure rows, rebind debt, the project fingerprint and the scan summary included) and throw
+`BatchFailed` when they end, so no later batch lands ahead of the lost one. A pass carries which pass
+it is across its awaits, so a pass starting after the loss begins a new batch, and an index write
+under a pass that has ended throws at once rather than land in a batch no running pass owns. The
+indexer ends a pass at its first refused write and records no file's fault or provider outage for
+it. An error in what one write asked, such as a CHECK refusing a provider's answer, rolls back that
+write alone, so one bad file never costs a pass. Every rollback leaves the transaction depth whole
+even when the rollback statement itself fails because SQLite already ended the transaction.
+
+A provider hears a parse admitted only once the batch holding its write commits (`whenCommitted`),
+and hears it refused if that batch is lost, so the provider's cross-file state holds only what the
+index committed.
+
+After a loss, the committed store is the truth. The indexer arms a recovery on a backoff from
+`LOST_RETRY_MS`: the pump reads every move the store still holds pending and owes its dependents
+again, then pays the owed rebinds and the outline backlog, which it reads from the store each turn.
+A lost settlement or payment therefore costs a parse again, never a stale binding. The live index
+applies a lost watcher batch, and runs a lost warm scan, again on the same backoff; it keeps a lost
+batch's paths, not its events, and reads each from disk at the retry, so a delete lost before the
+file came back forgets nothing.
+
+The facts and scope generations carry an in-memory epoch. A rollback that took back a stored
+generation moves it past every epoch used before, so a number a cache keyed on before the rollback
+never names other facts after it; one that took back none leaves it, so a pinned plan still holds.
+A speculation reads under an epoch of its own and leaves the current one as it found it, so a plan
+pinned before a rename's proof still holds after it.
+
+Every connection waits `BUSY_MS` on another's lock, and the store begins each write transaction
+`IMMEDIATE`: SQLite never waits for a transaction that read first and then asks to write, so a
+deferred one would fail at once against another process holding the lock. A best-effort write, the
+seen stamp `list_project_stores` leaves, tries once instead. Knowledge rows (notes, relations,
+subjects) refuse a write outside a store transaction, and inside an index write accept only a
+subject's resolution, which the next parse redoes.
+
 `LexiconService` builds the gate and exposes it. The dispatcher and the live index read
 `service.gate` rather than being handed one, and neither takes an option for it, so a second gate is
 unspellable: two of them order nothing against each other, and the one that ordered nothing was the

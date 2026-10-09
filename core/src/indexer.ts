@@ -46,7 +46,14 @@ import {
 	type SourceReader,
 	unreadableReason,
 } from "./sourceRead.js";
-import { type FileNote, type IndexStore, resolutionKey, type SurfaceChange } from "./store.js";
+import {
+	BatchFailed,
+	type FileNote,
+	type IndexStore,
+	lostRetryMs,
+	resolutionKey,
+	type SurfaceChange,
+} from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
 import type { WatchScope } from "./watcher.js";
@@ -87,6 +94,9 @@ export interface Doing {
 
 /** How many parses beyond its own files a batch makes before a status names them. */
 const REPARSES_NAMED = 10;
+
+/** Why a provider hears a parse refused that the index wrote, then lost with its batch. */
+const LOST_BATCH_REASON = "the index lost the batch holding this parse; it is parsed again";
 
 /** Of overlapping works, the one a status names first: each holds or waits out those after it. */
 const ACTIVITY_ORDER: ReadonlyArray<IndexActivity["kind"]> = ["refactor", "batch", "scan", "rebind", "upgrade"];
@@ -260,6 +270,11 @@ export class WorkspaceIndexer {
 	/** The armed retry for `resolvePending`, and the wait the next one takes. */
 	private resolveRetry: TimerHandle | null = null;
 	private resolveRetryMs = RESOLVE_RETRY_MS;
+	/** Set when a batch was lost: the pump reads again what the committed store still owes. */
+	private recovering = false;
+	/** The armed wait before that recovery, and the losses in a row that set its length. */
+	private recovery: TimerHandle | null = null;
+	private losses = 0;
 	/** Who imports each module, by where each import landed, for one resolution generation. */
 	private importers: ImporterIndex | null = null;
 	/** Modules whose import rows were written since the index last read them. */
@@ -505,17 +520,27 @@ export class WorkspaceIndexer {
 				);
 			}
 			// Any other store failure committed nothing either, and the provider is holding this parse.
-			// Answered rather than rethrown, so the fault is recorded before the provider is told.
-			const outcome = this.faultOutcome(module, error);
+			// Answered rather than rethrown, so the fault is recorded before the provider is told; a lost
+			// batch records none and ends the pass once the provider is told.
+			const lost = this.store.lostBatch();
+			const outcome = lost === null ? this.faultOutcome(module, error) : undefined;
 			this.publish(answered, {
 				module,
 				contentHash: readHash,
 				outcome: { status: "refused", reason: indexerFault(error) },
 			});
+			if (outcome === undefined) throw lost;
 			return outcome;
 		}
-		// Committed, so the provider is told what the index holds rather than what it is about to.
-		this.publish(answered, { module, contentHash: readHash, outcome: { status: "admitted" } });
+		// Told once the batch holding the write commits, or refused if that batch is lost, so the provider
+		// believes only what the index committed.
+		this.store.whenCommitted((committed) =>
+			this.publish(answered, {
+				module,
+				contentHash: readHash,
+				outcome: committed ? { status: "admitted" } : { status: "refused", reason: LOST_BATCH_REASON },
+			}),
+		);
 		this.importsWritten.add(module);
 		this.settleProjections();
 		// The provider answers again, so what its outage held back is tried again.
@@ -589,7 +614,7 @@ export class WorkspaceIndexer {
 	 * flooding it would only trade a readable progress order for the same wall clock.
 	 */
 	async indexWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		return this.during(this.scanning(), () => this.scanWorkspace("full", onProgress));
+		return this.during(this.scanning(), () => this.pass(() => this.scanWorkspace("full", onProgress)));
 	}
 
 	/** Runs `work` as `doing`, which a status answer names while it runs. */
@@ -625,7 +650,7 @@ export class WorkspaceIndexer {
 
 	/** Stores declarations and imports before full facts. */
 	async warmupWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		return this.during(this.scanning(), () => this.scanWorkspace("outline", onProgress));
+		return this.during(this.scanning(), () => this.pass(() => this.scanWorkspace("outline", onProgress)));
 	}
 
 	private async scanWorkspace(
@@ -851,12 +876,18 @@ export class WorkspaceIndexer {
 
 	private ensurePumping(): void {
 		if (this.pumping !== null) return;
-		const run = this.pump().finally(() => {
-			this.pumping = null;
-			// Restart if work arrived before completion.
-			if (this.orders.length > 0 || this.unasked.size > 0 || this.rebindQueued || this.upgradeWanted)
+		// The pump is its own pass, never part of the one that happened to start it.
+		const run = this.store
+			.detached(() => this.pump())
+			.finally(() => {
+				this.pumping = null;
+				// Restart if work arrived before completion; background work waits out a lost batch's backoff.
+				const background = this.unasked.size > 0 || this.rebindQueued || this.upgradeWanted || this.recovering;
+				if (this.orders.length === 0 && (!background || this.recovery !== null)) return;
 				this.ensurePumping();
-		});
+				// Awaited, so a caller waiting on this run waits for the work it found still to do.
+				return this.pumping;
+			});
 		// Whoever awaits the run hears its fault; a run nobody awaits must not surface as unhandled.
 		run.catch(() => {});
 		this.pumping = run;
@@ -867,19 +898,63 @@ export class WorkspaceIndexer {
 	 * wrote, then owed rebinds, then the store's outline backlog, one file per turn.
 	 *
 	 * A fault no parse caught, such as a store closed under the run, ends it and rejects it, and
-	 * nothing restarts it: what is owed stays in the store for the next start.
+	 * nothing restarts it: what is owed stays in the store for the next start. A lost batch keeps what
+	 * the run still meant to do, for the recovery it arms.
 	 */
 	private async pump(): Promise<void> {
 		try {
 			this.startRun();
-			await this.pumpTurns();
+			await this.pass(() => this.pumpTurns());
 		} catch (error) {
-			this.upgradeWanted = false;
-			this.unasked.clear();
-			this.rebindQueued = false;
+			if (!(error instanceof BatchFailed)) {
+				this.upgradeWanted = false;
+				this.unasked.clear();
+				this.rebindQueued = false;
+				this.recovering = false;
+			}
 			for (const order of this.orders.splice(0)) order.reject(error);
 			throw error;
 		}
+	}
+
+	/** An index pass; a lost batch arms the recovery that reads again what the committed store owes. */
+	private async pass<T>(work: () => Promise<T>): Promise<T> {
+		try {
+			const result = await this.store.pass(work);
+			this.losses = 0;
+			return result;
+		} catch (error) {
+			if (error instanceof BatchFailed) this.recoverLater();
+			throw error;
+		}
+	}
+
+	/** Arms one recovery, on a backoff that doubles with each loss in a row. */
+	private recoverLater(): void {
+		if (this.recovery !== null) return;
+		this.recovery = this.clock.setTimer(
+			() => {
+				this.recovery = null;
+				this.recovering = true;
+				this.ensurePumping();
+			},
+			lostRetryMs(this.losses++),
+		);
+	}
+
+	/**
+	 * The committed store is what a lost batch left. Every move it still holds owes its dependents
+	 * again, since a lost settlement or payment took the debt for them; owed rebinds and the outline
+	 * backlog are read from it each turn already. A module held back for a failure the store no
+	 * longer records is let back into the backlog.
+	 */
+	private async recover(): Promise<void> {
+		this.recovering = false;
+		for (const module of this.upgradeFailed) {
+			if (this.store.parseFailureOf(module) === null) this.upgradeFailed.delete(module);
+		}
+		const moves = await this.alone(async () => this.pendingMoves(null));
+		await this.oweDependents(moves, new Map());
 	}
 
 	/** Each run tries every payable debt once; a provider or daemon that restarted since a parse failed is asked again. */
@@ -897,6 +972,10 @@ export class WorkspaceIndexer {
 
 	private async pumpTurns(): Promise<void> {
 		while (true) {
+			if (this.recovering) {
+				await this.during({ kind: "rebind" }, () => this.recover());
+				continue;
+			}
 			const order = this.orders.shift();
 			if (order !== undefined) {
 				try {
@@ -1062,7 +1141,8 @@ export class WorkspaceIndexer {
 
 	private faultOutcome(module: string, error: unknown): IndexOutcome {
 		const failure = error instanceof Error ? error.message : String(error);
-		// Recorded under its own wording, so the file shows among the failures without being blamed.
+		// Recorded under its own wording, so the file shows among the failures without being blamed. An
+		// index write, so after a lost batch it refuses and the pass ends: a loss is no file's fault.
 		this.store.recordFailure(module, indexerFault(error));
 		this.upgradeFailed.add(module);
 		return this.outcome(module, "fault", failure);
@@ -1653,7 +1733,11 @@ export class WorkspaceIndexer {
 	 * indexed above stays fully written, and what is left is re-read by the next daemon's warm scan,
 	 * since its stored hash no longer matches.
 	 */
-	async applyBatch(events: FileEvent[], shouldAbandon?: () => boolean): Promise<IndexOutcome[]> {
+	applyBatch(events: FileEvent[], shouldAbandon?: () => boolean): Promise<IndexOutcome[]> {
+		return this.pass(() => this.applyEvents(events, shouldAbandon));
+	}
+
+	private async applyEvents(events: FileEvent[], shouldAbandon?: () => boolean): Promise<IndexOutcome[]> {
 		const progress = { done: 0, total: events.length };
 		const doing: Doing = { kind: "batch", counts: () => progress };
 		// Many parses beyond the batch's own files are named and counted, so a long hold reads as what it is.

@@ -11,7 +11,6 @@
 
 import { existsSync, lstatSync, readdirSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import {
 	canonicalRoot,
 	currentHost,
@@ -24,6 +23,7 @@ import {
 } from "@nyaa-lexicon/client";
 import { type DaemonLock, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { claimLock, type HolderAlive, holderIdentity, mintToken, readLock, releaseLock } from "./daemonLock.js";
+import { Database } from "./database.js";
 import { lastSeenOf, newestIndexedAt, readSeenStamp, stampSeen } from "./lastSeen.js";
 import { forgetProject, readRegistry } from "./projectRegistry.js";
 
@@ -107,9 +107,9 @@ const NO_METADATA: IndexMetadata = { workspaceRoot: null, lastIndexedAt: null, l
 /** The workspace an index was built from. Null when it is too old to carry the key, never a guess. */
 function indexMetadata(indexFile: string): IndexMetadata {
 	if (!existsSync(indexFile)) return NO_METADATA;
-	let db: DatabaseSync | null = null;
+	let db: Database | null = null;
 	try {
-		db = new DatabaseSync(indexFile, { readOnly: true });
+		db = Database.open(indexFile, { readOnly: true });
 		let workspaceRoot: string | null = null;
 		try {
 			const row = db.prepare("SELECT value FROM meta WHERE key = ?").get("workspaceRoot") as
@@ -129,15 +129,16 @@ function indexMetadata(indexFile: string): IndexMetadata {
 }
 
 /** What the store holds afterwards, or null when a live delete claims it, its index is not there,
- * or it is too old to carry the key. Re-reads the lock and the file fresh before opening either. */
+ * it is too old to carry the key, or a writer holds it now: a stamp is best effort, so it tries once.
+ * Re-reads the lock and the file fresh before opening either. */
 export function stampIndex(directory: string, isAlive: HolderAlive, now: number): number | null {
 	const lock = readLock(storePaths(directory).lockFile);
 	if (lock !== null && lock.role === "delete" && isAlive(lock)) return null;
 	const indexFile = storedIndex(directory);
 	if (indexFile === null) return null;
-	let db: DatabaseSync | null = null;
+	let db: Database | null = null;
 	try {
-		db = new DatabaseSync(indexFile);
+		db = Database.open(indexFile, undefined, 0);
 		return stampSeen(db, now);
 	} catch {
 		return null;

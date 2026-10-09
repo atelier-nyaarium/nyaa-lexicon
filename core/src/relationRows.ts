@@ -1,6 +1,6 @@
 // This module owns relation row storage; relation meaning belongs to the ledger.
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Statements } from "./database.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -138,7 +138,7 @@ export function decayed(count: number, elapsed: number): number {
 }
 
 /** The only insert into the stated relations table. */
-export function insertRelation(db: DatabaseSync, subjectId: string, otherId: string, row: StatedColumns): void {
+export function insertRelation(db: Statements, subjectId: string, otherId: string, row: StatedColumns): void {
 	db.prepare(
 		`INSERT OR REPLACE INTO symbol_relations (subjectId, otherId, recordedAs, otherAs, provenance, status,
 		 revision, why, author, authoredAt, judgedBy, judgedAt, reason, digest, otherDigest)
@@ -176,7 +176,7 @@ function viaOf(text: string): string[] {
 
 export class RelationRows {
 	constructor(
-		private readonly db: DatabaseSync,
+		private readonly db: Statements,
 		private readonly recordKnowledgeWrite: (changed: boolean) => void,
 	) {}
 

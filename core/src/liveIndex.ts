@@ -9,8 +9,9 @@ import type { Clock, TimerHandle } from "./clock.js";
 import type { IndexOutcome } from "./indexer.js";
 import { coalesce, type FileEvent } from "./invalidation.js";
 import type { LexiconService } from "./service.js";
+import { BatchFailed, lostRetryMs } from "./store.js";
 import type { SweepReport } from "./subjects.js";
-import { watchWorkspace } from "./watcher.js";
+import { readEvent, watchWorkspace } from "./watcher.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -40,6 +41,8 @@ export interface LiveIndexOptions {
 /** An idle workspace has no scans, so orphans age and are deleted on this timer. */
 export const KNOWLEDGE_SWEEP_EVERY_MS = 60 * 60 * 1000;
 
+export { LOST_RETRY_MS } from "./store.js";
+
 export interface LiveIndex {
 	stop: () => void;
 	/** Feeds an event as if the filesystem reported it. The seam the tests drive. */
@@ -63,24 +66,65 @@ export interface HeldBatches {
  * Watch a workspace and fold every change back into the index.
  *
  * A failed batch is reported and dropped rather than rethrown: an unhandled rejection inside the
- * watcher callback would take the whole daemon down over one unreadable file.
+ * watcher callback would take the whole daemon down over one unreadable file. One whose writes the
+ * store lost is applied again on a backoff, and so is a warm scan, so the session repairs itself once
+ * the store takes writes again.
  */
 export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
+	let stopped = false;
+	let timer: TimerHandle | null = null;
+	let retry: TimerHandle | null = null;
+	const lost = new Set<string>();
+	let losses = 0;
+
+	// Paths, not events: each is read from disk at the retry, so a file that came back or went since
+	// is taken as it is now, never as the lost event saw it.
+	const retryLost = (events: FileEvent[]) => {
+		for (const event of events) lost.add(event.module);
+		if (retry !== null || stopped) return;
+		retry = options.clock.setTimer(() => {
+			retry = null;
+			const again = [...lost].map((module) => readEvent(options.workspaceRoot, module));
+			lost.clear();
+			if (!stopped) queue.push(again);
+		}, lostRetryMs(losses++));
+	};
+
 	// Skipped before the gate is even asked for, so a batch that arrives after the daemon was asked
 	// to stop never queues behind its teardown.
-	const apply = (events: Parameters<LexiconService["applyBatch"]>[0]) => {
-		if (options.stopping?.() === true) return Promise.resolve<IndexOutcome[]>([]);
-		return options.service.gate.exclusive(() => options.service.applyBatch(events, options.stopping));
+	const apply = async (events: Parameters<LexiconService["applyBatch"]>[0]) => {
+		if (options.stopping?.() === true) return [];
+		try {
+			const outcomes = await options.service.gate.exclusive(() =>
+				options.service.applyBatch(events, options.stopping),
+			);
+			losses = 0;
+			return outcomes;
+		} catch (error) {
+			if (error instanceof BatchFailed) retryLost(events);
+			throw error;
+		}
+	};
+
+	const warmKept = async (warm: () => Promise<void>) => {
+		for (let tries = 0; ; tries++) {
+			try {
+				return await warm();
+			} catch (error) {
+				if (!(error instanceof BatchFailed) || stopped) throw error;
+				options.onError?.(error);
+				await options.clock.sleep(lostRetryMs(tries));
+			}
+		}
 	};
 
 	const queue = serializeBatches(apply, options.onApplied, options.onError);
 
-	let stopped = false;
-	let timer: TimerHandle | null = null;
 	const stop = () => {
 		if (stopped) return;
 		stopped = true;
 		if (timer !== null) options.clock.clearTimer(timer);
+		if (retry !== null) options.clock.clearTimer(retry);
 		watcher.stop();
 	};
 
@@ -95,7 +139,7 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 		clock: options.clock,
 	});
 	// Watching first, then the scan, so its every read is under the watcher.
-	const warmed = held.until(options.warm?.());
+	const warmed = held.until(options.warm === undefined ? undefined : warmKept(options.warm));
 
 	// Queued behind any batch in flight and under the same gate, so a sweep never overlaps a batch;
 	// re-armed after each run, so it never overlaps itself.

@@ -2,9 +2,9 @@
 // carries over while the older file stays as the install that wrote it left it.
 
 import { existsSync, renameSync, rmSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { indexFiles, storePaths } from "@nyaa-lexicon/client";
 import { SCHEMA_VERSION } from "@nyaa-lexicon/protocol";
+import { Database } from "./database.js";
 
 ////////////////////////////////
 //  Constants
@@ -22,7 +22,7 @@ function unreadable(error: unknown): boolean {
 }
 
 function copyInto(source: string, staging: string): void {
-	const db = new DatabaseSync(source, { readOnly: true });
+	const db = Database.open(source, { readOnly: true });
 	try {
 		db.exec(`VACUUM INTO '${staging.replaceAll("'", "''")}'`);
 	} finally {

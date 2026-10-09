@@ -3,7 +3,7 @@
 // One meta key beside the workspace root, read as the later of the stamp and the newest indexing,
 // since indexing a file is seeing the workspace. A write only ever moves it forward.
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "./database.js";
 
 ////////////////////////////////
 //  Constants
@@ -14,7 +14,7 @@ const SEEN_KEY = "lastSeenAt";
 //  Functions & Helpers
 
 /** Null when the table or the key is absent, or the value is not a time. */
-export function readSeenStamp(db: DatabaseSync): number | null {
+export function readSeenStamp(db: Database): number | null {
 	try {
 		const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(SEEN_KEY) as { value: string } | undefined;
 		if (row === undefined) return null;
@@ -26,7 +26,7 @@ export function readSeenStamp(db: DatabaseSync): number | null {
 }
 
 /** Null when no file has been indexed, or the store predates per-file times. */
-export function newestIndexedAt(db: DatabaseSync): number | null {
+export function newestIndexedAt(db: Database): number | null {
 	try {
 		const row = db.prepare("SELECT indexedAt FROM files ORDER BY indexedAt DESC LIMIT 1").get() as
 			| { indexedAt: number }
@@ -50,7 +50,7 @@ export function lastSeenOf(stamp: number | null, lastIndexedAt: number | null): 
  * share one immediate transaction, so a second writer cannot slip an earlier time in behind a
  * later one. Answers what is held afterwards.
  */
-export function stampSeen(db: DatabaseSync, now: number): number {
+export function stampSeen(db: Database, now: number): number {
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		const stamp = readSeenStamp(db);

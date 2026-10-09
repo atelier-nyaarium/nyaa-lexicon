@@ -45,11 +45,13 @@ const SELF_GATING = [
  * A method of one of these names takes no hold itself, so a call inside one is already held and a
  * call outside one is not. `renameSymbol` and `writeRenameEdits` are here because the refactor
  * executor holds the gate around them from another file, where containment cannot see it.
- * `reindexOwed` is a step's and a restore's reindex, and `recoverSteps` a recovery's.
+ * `reindexOwed` is a step's and a restore's reindex, and `recoverSteps` a recovery's. `applyEvents`
+ * is `applyBatch`'s body, run as one index pass.
  */
 const CALLER_HELD = new Set([
 	"indexFile",
 	"applyBatch",
+	"applyEvents",
 	"renameSymbol",
 	"writeRenameEdits",
 	"reindexOwed",

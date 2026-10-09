@@ -110,7 +110,7 @@ describe("a subject whose address stopped resolving", () => {
 
 		// An orphan under a failing module was judged before the module failed: it reads as stranded.
 		const subject = store.subjects.forAddress(CART);
-		store.subjects.orphan(subject?.subjectId as string, 20, "none");
+		store.noteWrite(() => store.subjects.orphan(subject?.subjectId as string, 20, "none"));
 		expect(refusedAt(CART)).toContain("no longer resolves");
 	});
 
@@ -118,7 +118,7 @@ describe("a subject whose address stopped resolving", () => {
 		const local = "lexicon reference a.ref local0";
 		plant("a.ref", local, "x");
 		// A local takes no note, so its subject is claimed directly.
-		store.subjects.claim(local, Date.now());
+		store.noteWrite(() => store.subjects.claim(local, Date.now()));
 		plant("b.ref", "lexicon reference b.ref local0", "x");
 		strand();
 
@@ -132,7 +132,7 @@ describe("an address a subject vacated", () => {
 		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
-		store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9);
+		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9));
 		strand();
 
 		const reason = refusedAt(CART);
@@ -150,9 +150,9 @@ describe("an address a subject vacated", () => {
 		const b = "lexicon reference b.ref Cart#";
 		const c = "lexicon reference c.ref Cart#";
 		plant("b.ref", b);
-		store.subjects.rebind([{ from: CART, to: b }], "journalMove", 9);
+		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: b }], "journalMove", 9));
 		plant("c.ref", c);
-		store.subjects.rebind([{ from: b, to: c }], "journalMove", 10);
+		store.journalWrite(() => store.subjects.rebind([{ from: b, to: c }], "journalMove", 10));
 		// The first module keeps another declaration, so its shortlist is what an unminted id shows.
 		store.replaceFile({
 			module: "a.ref",

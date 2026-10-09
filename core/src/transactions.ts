@@ -18,7 +18,6 @@ import {
 	rmSync,
 	type Stats,
 } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
 import {
 	ADVISORY_ISSUE_KINDS,
 	type StepOutcome as ClientStepOutcome,
@@ -42,6 +41,7 @@ import {
 	type TransactionStatus,
 } from "@nyaa-lexicon/protocol";
 import { systemClock } from "./clock.js";
+import type { Database } from "./database.js";
 import { CLIENT_STEPS_KEPT, SETTLEMENTS_KEPT } from "./journalSchema.js";
 import type {
 	CommittedTransaction,
@@ -1322,7 +1322,7 @@ export class TransactionManager {
 	}
 
 	private writeKnownState(
-		db: DatabaseSync,
+		db: Database,
 		transactionId: string,
 		module: string,
 		existed: boolean,
@@ -1610,7 +1610,7 @@ export class TransactionManager {
 	}
 
 	/** Settles the transaction and removes rows atomically. */
-	private drop(db: DatabaseSync, transactionId: string, outcome: "committed" | "reverted"): void {
+	private drop(db: Database, transactionId: string, outcome: "committed" | "reverted"): void {
 		const origin =
 			(
 				db.prepare("SELECT origin FROM refactor_transactions WHERE id = ?").get(transactionId) as

@@ -347,6 +347,21 @@ describe("the stamp's own re-check right before it writes", () => {
 
 		expect(stampIndex(directory, NOBODY_ALIVE, NOW)).toBe(NOW);
 	});
+
+	it("gives up at once on a store a daemon is writing, rather than wait on its lock", async () => {
+		seedStore(workDir);
+		const directory = workspacePaths(host, workDir).dir;
+		const { store } = IndexStore.open(storePaths(directory).index, null, workDir);
+		const attempt = await store.pass(async () => {
+			store.replaceFile({ module: "held.ref", contentHash: "h", declarations: [], references: [] });
+			const started = performance.now();
+			const stamped = stampIndex(directory, NOBODY_ALIVE, NOW);
+			return { stamped, waited: performance.now() - started < 500 };
+		});
+		store.close();
+
+		expect(attempt).toEqual({ stamped: null, waited: true });
+	});
 });
 
 describe("pruning orphans", () => {

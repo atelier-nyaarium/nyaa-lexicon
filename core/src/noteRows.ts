@@ -1,7 +1,7 @@
 // Note rows: the notes table, its links and pending proposals, read and written by subject. Rows
 // only; what a note means and whether a write stands lives in the note ledger.
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Statements } from "./database.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -51,7 +51,7 @@ export const MODULE_TARGET = "module:";
 //  Functions & Helpers
 
 /** The only insert into the notes table. `replace` overwrites a standing row. */
-export function insertNote(db: DatabaseSync, subjectId: string, note: NoteColumns, replace: boolean): void {
+export function insertNote(db: Statements, subjectId: string, note: NoteColumns, replace: boolean): void {
 	db.prepare(
 		`INSERT ${replace ? "OR REPLACE " : ""}INTO symbol_notes (subjectId, recordedAs, revision, text, author,
 		 authoredAt, editedBy, editedAt, confirmedBy, confirmedAt, sourceDigest, doubtBy, doubtReason, doubtAt)
@@ -79,7 +79,7 @@ export function insertNote(db: DatabaseSync, subjectId: string, note: NoteColumn
 
 export class NoteRows {
 	constructor(
-		private readonly db: DatabaseSync,
+		private readonly db: Statements,
 		private readonly recordKnowledgeWrite: (changed: boolean) => void,
 	) {}
 

@@ -316,7 +316,7 @@ describe("aging", () => {
 	});
 
 	it("sweeps nothing from the timer before a prune has decided presence", () => {
-		const bound = store.subjects.mint(CART, clock.now());
+		const bound = store.noteWrite(() => store.subjects.mint(CART, clock.now()));
 
 		expect(service.sweepKnowledge()).toMatchObject({ examined: 0, orphaned: 0 });
 		expect(store.subjects.byId(bound.subjectId)).toMatchObject({ state: "bound" });
@@ -358,11 +358,13 @@ describe("aging", () => {
 
 describe("the cursor", () => {
 	function plantOrphans(dates: number[]): string[] {
-		return dates.map((at, index) => {
-			const minted = store.subjects.mint(`lexicon fake gone.fake Gone${index}#`, at);
-			store.subjects.orphan(minted.subjectId, at, "none");
-			return minted.subjectId;
-		});
+		return store.noteWrite(() =>
+			dates.map((at, index) => {
+				const minted = store.subjects.mint(`lexicon fake gone.fake Gone${index}#`, at);
+				store.subjects.orphan(minted.subjectId, at, "none");
+				return minted.subjectId;
+			}),
+		);
 	}
 
 	it("stops at the cap, says so, and the next sweep resumes past the key", () => {
@@ -393,9 +395,11 @@ describe("the cursor", () => {
 
 	it("exempts a subject whose module is present and failing, orphans a malformed and a local address, and rebinds neither", () => {
 		const t0 = clock.now();
-		const dead = store.subjects.mint(CART, t0);
-		const malformed = store.subjects.mint("lexicon", t0);
-		const local = store.subjects.mint("lexicon fake gone.fake local0", t0);
+		const { dead, malformed, local } = store.noteWrite(() => ({
+			dead: store.subjects.mint(CART, t0),
+			malformed: store.subjects.mint("lexicon", t0),
+			local: store.subjects.mint("lexicon fake gone.fake local0", t0),
+		}));
 		const failing: SweepPass = {
 			presence: (module) => (module === "cart.fake" ? "presentFailing" : "absent"),
 			newModules: new Set(["cart.fake"]),

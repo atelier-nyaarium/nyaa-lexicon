@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { Database } from "../database";
 import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
@@ -97,10 +97,8 @@ describe("a subject and its address", () => {
 		record(CART);
 		record("lexicon reference b.ref Basket#", "A basket.");
 
-		const rebound = store.subjects.rebind(
-			[{ from: CART, to: "lexicon reference b.ref Basket#" }],
-			"journalMove",
-			9,
+		const rebound = store.journalWrite(() =>
+			store.subjects.rebind([{ from: CART, to: "lexicon reference b.ref Basket#" }], "journalMove", 9),
 		);
 
 		expect(rebound.subjects).toBe(0);
@@ -113,8 +111,8 @@ describe("a subject and its address", () => {
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
 
-		const first = store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9);
-		const again = store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 10);
+		const first = store.journalWrite(() => store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9));
+		const again = store.journalWrite(() => store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 10));
 
 		expect(first).toMatchObject({ subjects: 1 });
 		expect(first.applied).toMatchObject([{ from: CART, to: moved, priorFrom: null, priorEvidence: "sameLocator" }]);
@@ -129,7 +127,7 @@ describe("a subject and its address", () => {
 		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
-		store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9);
+		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 9));
 		plant("a.ref", CART);
 
 		record(CART, "A newer cart.");
@@ -140,12 +138,12 @@ describe("a subject and its address", () => {
 
 	it("mints a distinct subject at a reused address in the same millisecond as the first", () => {
 		plant();
-		const first = store.subjects.mint(CART, 7);
+		const first = store.noteWrite(() => store.subjects.mint(CART, 7));
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
-		store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 7);
+		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: moved }], "journalMove", 7));
 
-		const second = store.subjects.mint(CART, 7);
+		const second = store.noteWrite(() => store.subjects.mint(CART, 7));
 
 		expect(second.subjectId).not.toBe(first.subjectId);
 		expect(store.subjects.forAddress(moved)?.subjectId).toBe(first.subjectId);
@@ -156,7 +154,7 @@ describe("a subject and its address", () => {
 		record(CART);
 		const subject = store.subjects.forAddress(CART) as NonNullable<ReturnType<typeof store.subjects.forAddress>>;
 
-		store.subjects.orphan(subject.subjectId, 20, "none");
+		store.noteWrite(() => store.subjects.orphan(subject.subjectId, 20, "none"));
 		expect(store.subjects.forAddress(CART)).toMatchObject({ state: "orphaned", orphanedAt: 20 });
 		expect(store.subjects.orphanedCount()).toBe(1);
 
@@ -168,7 +166,7 @@ describe("a subject and its address", () => {
 		});
 		expect(noteAt(CART)).toBe("Retains checkout state.");
 
-		store.subjects.delete(subject.subjectId);
+		store.noteWrite(() => store.subjects.delete(subject.subjectId));
 		expect(store.subjects.forAddress(CART)).toBeNull();
 		expect(noteAt(CART)).toBeNull();
 	});
@@ -177,7 +175,7 @@ describe("a subject and its address", () => {
 		plant();
 		record(CART);
 		const subject = store.subjects.forAddress(CART);
-		store.subjects.orphan(subject?.subjectId as string, 20, "none");
+		store.noteWrite(() => store.subjects.orphan(subject?.subjectId as string, 20, "none"));
 
 		plant();
 
@@ -225,7 +223,9 @@ describe("a subject and its address", () => {
 		const moved = "lexicon reference moved.ref Cart#";
 		plant("moved.ref", moved);
 
-		const rebound = store.subjects.rebind([{ from: twins[0] as string, to: moved }], "journalMove", 9);
+		const rebound = store.journalWrite(() =>
+			store.subjects.rebind([{ from: twins[0] as string, to: moved }], "journalMove", 9),
+		);
 
 		expect(rebound.subjects).toBe(1);
 		const ids = twins.map(
@@ -331,9 +331,9 @@ describe("a rebuild", () => {
 		plant();
 		record(CART);
 		const subject = store.subjects.forAddress(CART);
-		store.subjects.orphan(subject?.subjectId as string, 20, "none");
+		store.noteWrite(() => store.subjects.orphan(subject?.subjectId as string, 20, "none"));
 		store.close();
-		const db = new DatabaseSync(file);
+		const db = Database.open(file);
 		db.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
 		db.close();
 
@@ -351,7 +351,7 @@ describe("a rebuild", () => {
 		plant();
 		record(CART);
 		store.close();
-		const db = new DatabaseSync(file);
+		const db = Database.open(file);
 		db.exec("DELETE FROM knowledge_subjects");
 		db.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
 		db.close();
@@ -534,7 +534,7 @@ describe("a rebind a step journaled", () => {
 
 describe("a knowledge row's key", () => {
 	it("is refused an update on every table, so identity moves only by address", () => {
-		const db = new DatabaseSync(":memory:");
+		const db = Database.open(":memory:");
 		db.exec(KNOWLEDGE_SCHEMA);
 		db.prepare(
 			"INSERT INTO knowledge_subjects (subjectId, currentSymbolId, state, boundAt, evidence) VALUES ('s1', ?, 'bound', 1, 'none')",
@@ -552,7 +552,7 @@ describe("a knowledge row's key", () => {
 
 describe("a salvaged subject row", () => {
 	it("normalizes to closed values only, so a row from another version restores as the schema allows", () => {
-		const db = new DatabaseSync(":memory:");
+		const db = Database.open(":memory:");
 		db.exec(KNOWLEDGE_SCHEMA);
 		const salvaged = normalizeSalvaged(
 			{

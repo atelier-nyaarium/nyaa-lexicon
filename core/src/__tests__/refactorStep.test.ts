@@ -134,10 +134,11 @@ describe("the addresses a step re-mints", () => {
 	const from = "lexicon reference src/a.ts Cart#";
 	const to = "lexicon reference src/b.ts Cart#";
 	const rebind = () => ({ entries: [{ from, to }], evidence: "journalMove" as const });
+	const mint = (address: string) => store.noteWrite(() => store.subjects.mint(address, 1));
 
 	it("are rebound once every reindex succeeded, and reported through finish", async () => {
 		transactions.start();
-		store.subjects.mint(from, 1);
+		mint(from);
 		let reported: unknown;
 		const outcome = await run({
 			rebind,
@@ -155,7 +156,7 @@ describe("the addresses a step re-mints", () => {
 	// The journal is the evidence; the index catching up is a separate matter the issue names.
 	it("are rebound even when a reindex failed, and the step says the facts are stale", async () => {
 		transactions.start();
-		store.subjects.mint(from, 1);
+		mint(from);
 		failReindexOf = "src/a.ts";
 		const outcome = await run({ rebind });
 
@@ -167,8 +168,8 @@ describe("the addresses a step re-mints", () => {
 
 	it("keep their knowledge where another subject holds the new address, and the step says so", async () => {
 		transactions.start();
-		const moving = store.subjects.mint(from, 1);
-		store.subjects.mint(to, 1);
+		const moving = mint(from);
+		mint(to);
 		const outcome = await run({ rebind });
 
 		expect(outcome.issues.map((issue) => issue.kind)).toEqual(["KnowledgeKept"]);
@@ -178,7 +179,7 @@ describe("the addresses a step re-mints", () => {
 	// A fix command may change a declaration after the plan; its knowledge then has nowhere to go.
 	it("keep their knowledge where the reindexed step declares no new address, and the step says so", async () => {
 		transactions.start();
-		store.subjects.mint(from, 1);
+		mint(from);
 		undeclared.add(to);
 		const outcome = await run({ rebind });
 

@@ -4,8 +4,8 @@
 // "who uses this" has no cheap answer in memory, and an index on the target column turns it into
 // the same read as "what is this".
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import {
 	type AllList,
 	type ContentCounts,
@@ -58,8 +58,9 @@ import {
 	type StoredReference,
 } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
-import { type Clock, systemClock } from "./clock.js";
+import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
+import { Database } from "./database.js";
 import {
 	type EffectiveExport,
 	type ScopeLanding,
@@ -218,6 +219,47 @@ interface SurfaceEntry {
 //  Constants
 
 export { SCHEMA_VERSION };
+
+/** Index writes one batch commits at most; a crash loses no more, and the next scan parses them again. */
+export const BATCH_WRITES = 256;
+
+/** The longest a batch stays open: a timer commits it then, idle or not, as does a write past it. */
+export const BATCH_MS = 1_000;
+
+/** Stored generations stay below this; a new epoch lifts every generation past all read before it. */
+const EPOCH_SPAN = 2 ** 32;
+
+/** The one knowledge write an index write makes: a subject's resolution, which the next parse redoes. */
+const RESOLUTION_UPDATE = /^\s*UPDATE\s+knowledge_subjects\b/i;
+
+/** A pass's batch was lost, so index writes the pass reported done were rolled back. */
+export class BatchFailed extends Error {
+	constructor(cause: unknown) {
+		super(`an index batch was lost: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+		this.name = "BatchFailed";
+	}
+}
+
+/** The first retry of work a lost batch took; each loss in a row doubles it, up to five minutes. */
+export const LOST_RETRY_MS = 5_000;
+
+export const lostRetryMs = (losses: number): number => Math.min(LOST_RETRY_MS * 2 ** losses, 5 * 60 * 1000);
+
+/**
+ * SQLite's primary codes for the store failing rather than one write's statement: busy, locked, no
+ * memory, read-only, interrupted, I/O, corrupt, full, can't open, protocol, not a database.
+ */
+const STORE_FAILURES = new Set([5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 26]);
+
+const storeFailed = (error: unknown): boolean => {
+	const code = (error as { errcode?: unknown } | null)?.errcode;
+	return typeof code === "number" && STORE_FAILURES.has(code & 0xff);
+};
+
+/** One running pass, and the batch loss it ran into once one did. */
+interface PassState {
+	lost: BatchFailed | null;
+}
 
 /** Added in place, so IF NOT EXISTS. */
 const NOTES_TABLE = `
@@ -696,7 +738,7 @@ type SalvagedKnowledge = Record<string, Array<Record<string, unknown>>>;
  * An unreadable knowledge table salvages empty. An unreadable JOURNAL table throws: its rows describe
  * files already on disk, and dropping them strands a half-applied refactor.
  */
-function salvageKnowledge(db: DatabaseSync): SalvagedKnowledge {
+function salvageKnowledge(db: Database): SalvagedKnowledge {
 	const exists = new Set(
 		(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(
 			(row) => row.name,
@@ -733,7 +775,7 @@ interface RestoreReport {
 
 /** The salvaged knowledge put back: subjects as they were, every other row through the one placement. */
 function restoreKnowledge(
-	db: DatabaseSync,
+	db: Database,
 	salvaged: SalvagedKnowledge,
 	now: number,
 	seededAt: number | null,
@@ -804,7 +846,7 @@ function restoreKnowledge(
  * longer has is fine; a row losing its whole transaction is not. A column added later must allow
  * NULL or carry a default, or every older row fails the open.
  */
-function restoreByColumn(db: DatabaseSync, table: string, rows: Array<Record<string, unknown>>): void {
+function restoreByColumn(db: Database, table: string, rows: Array<Record<string, unknown>>): void {
 	if (rows.length === 0) return;
 
 	const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
@@ -826,7 +868,7 @@ function restoreByColumn(db: DatabaseSync, table: string, rows: Array<Record<str
  * in the step's plan; this is the last read of that shape. Returns how many entries the schema
  * refused.
  */
-function liftAppliedRebinds(db: DatabaseSync): number {
+function liftAppliedRebinds(db: Database): number {
 	const steps = db
 		.prepare(
 			`SELECT s.transactionId, s.stepNo, s.plan FROM refactor_steps s
@@ -919,7 +961,7 @@ function liftedMove(entry: unknown): LiftedMove | null {
 }
 
 /** Null when the table is absent, which is the case on an index written before it existed. */
-function readMeta(db: DatabaseSync, key: string): string | null {
+function readMeta(db: Database, key: string): string | null {
 	try {
 		const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
 		return row?.value ?? null;
@@ -928,12 +970,12 @@ function readMeta(db: DatabaseSync, key: string): string | null {
 	}
 }
 
-function writeMeta(db: DatabaseSync, key: string, value: string): void {
+function writeMeta(db: Database, key: string, value: string): void {
 	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
 }
 
 /** The persisted cursor, or the start when none is held or the held one has no recognisable shape. */
-function readSweepCursor(db: DatabaseSync): SweepCursor {
+function readSweepCursor(db: Database): SweepCursor {
 	const raw = readMeta(db, SWEEP_CURSOR_KEY);
 	if (raw === null) return SWEEP_START;
 	try {
@@ -980,11 +1022,11 @@ function sweepReportOf(value: unknown): SweepReport | null {
 	};
 }
 
-function tableExists(db: DatabaseSync, name: string): boolean {
+function tableExists(db: Database, name: string): boolean {
 	return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 }
 
-function columnExists(db: DatabaseSync, table: string, column: string): boolean {
+function columnExists(db: Database, table: string, column: string): boolean {
 	const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
 	return columns.some((row) => row.name === column);
 }
@@ -1078,14 +1120,39 @@ export class IndexStore {
 	private transactionDepth = 0;
 	private speculating = false;
 	private pendingKnowledgeWrite = false;
+	/** Each running pass; while any does, the index writes it makes share open transactions. */
+	private readonly running = new Set<PassState>();
+	/** The pass a write runs under, carried across its awaits, so a loss refuses only the passes it hit. */
+	private readonly passOf = new AsyncLocalStorage<PassState>();
+	/**
+	 * The open transaction batched writes share, until it commits: the generation advances before it,
+	 * and who waits to hear whether it landed.
+	 */
+	private batch: {
+		since: number;
+		writes: number;
+		advances: number;
+		timer: TimerHandle;
+		landed: Array<(committed: boolean) => void>;
+	} | null = null;
+	/** Stored generation advances so far, so a rollback moves the epoch only when it took one back. */
+	private advances = 0;
+	/** Index writes open, inside which knowledge rows take only a subject's resolution. */
+	private indexWrites = 0;
+	/** Generations read outside a speculation carry it; a rollback moves it past every epoch used. */
+	private epoch = 0;
+	private nextEpoch = 1;
+	/** Each speculation's own, so what it reads never matches a generation read outside it. */
+	private speculationEpoch = 0;
 
 	private constructor(
-		private readonly db: DatabaseSync,
+		private readonly db: Database,
 		private readonly clock: Clock,
 	) {
-		this.subjects = new KnowledgeSubjects(db, (changed) => this.recordKnowledgeWrite(changed));
-		this.notes = new NoteRows(db, (changed) => this.recordKnowledgeWrite(changed));
-		this.relations = new RelationRows(db, (changed) => this.recordKnowledgeWrite(changed));
+		const knowledge = db.checkedWrites((sql) => this.checkKnowledgeWrite(sql));
+		this.subjects = new KnowledgeSubjects(knowledge, (changed) => this.recordKnowledgeWrite(changed));
+		this.notes = new NoteRows(knowledge, (changed) => this.recordKnowledgeWrite(changed));
+		this.relations = new RelationRows(knowledge, (changed) => this.recordKnowledgeWrite(changed));
 		this.newestStamp = this.newestIndexedAt() ?? 0;
 	}
 
@@ -1105,27 +1172,200 @@ export class IndexStore {
 		return this.newestStamp;
 	}
 
-	/** node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. Under a
-	 * speculation it is a savepoint, which the speculation's rollback discards with everything else. */
-	private inTransaction<T>(work: () => T): T {
-		const savepoint = this.speculating ? `nested${this.transactionDepth}` : null;
-		this.db.exec(savepoint === null ? "BEGIN" : `SAVEPOINT ${savepoint}`);
-		this.transactionDepth++;
+	/**
+	 * Runs an index pass whose writes commit together, every `BATCH_WRITES` writes or `BATCH_MS`,
+	 * rather than one transaction each. Its end commits whatever is batched, so a pass that returns is
+	 * durable. A pass running when a batch is lost writes nothing more and throws `BatchFailed` at its
+	 * end; one starting later begins a new batch.
+	 */
+	async pass<T>(work: () => Promise<T>): Promise<T> {
+		const state: PassState = { lost: null };
+		this.running.add(state);
 		try {
-			const result = work();
-			this.db.exec(savepoint === null ? "COMMIT" : `RELEASE ${savepoint}`);
-			this.transactionDepth--;
-			if (this.transactionDepth === 0 && this.pendingKnowledgeWrite) {
-				this.knowledgeTurns++;
-				this.pendingKnowledgeWrite = false;
-			}
-			return result;
+			return await this.passOf.run(state, work);
+		} finally {
+			this.endPass(state);
+		}
+	}
+
+	/** Commits what is batched, then throws the loss this pass ran into, if it ran into one. */
+	private endPass(state: PassState): void {
+		try {
+			this.commitBatch();
+		} catch {
+			// A failed commit is a loss this pass, still running, ran into.
+		} finally {
+			this.running.delete(state);
+		}
+		if (state.lost !== null) throw state.lost;
+	}
+
+	/** The batch loss the pass this runs under ran into, or null. */
+	lostBatch(): BatchFailed | null {
+		return this.passOf.getStore()?.lost ?? null;
+	}
+
+	/** Runs `work` as no pass's, as background work does that a pass started but does not own. */
+	detached<T>(work: () => T): T {
+		return this.passOf.exit(work);
+	}
+
+	/** An index write: during a pass it joins the pass's batch. */
+	private indexWrite<T>(work: () => T): T {
+		this.indexWrites++;
+		try {
+			return this.inTransaction(work, true);
+		} finally {
+			this.indexWrites--;
+		}
+	}
+
+	/**
+	 * Makes every batched write so far durable, and visible to other connections. Never inside an
+	 * open write, whose savepoint the commit would end. A failed commit loses the batch.
+	 */
+	private commitBatch(): void {
+		const batch = this.batch;
+		if (batch === null || this.transactionDepth > 0) return;
+		try {
+			this.db.exec("COMMIT");
 		} catch (error) {
-			this.db.exec(savepoint === null ? "ROLLBACK" : `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
-			this.transactionDepth--;
-			if (this.transactionDepth === 0) this.pendingKnowledgeWrite = false;
+			this.loseBatch(error);
 			throw error;
 		}
+		this.batch = null;
+		this.clock.clearTimer(batch.timer);
+		for (const landed of batch.landed) landed(true);
+	}
+
+	/**
+	 * Rolls the open batch back, and refuses the running passes' index writes until they end, so no
+	 * later batch lands ahead of the lost one; the next scan parses those files again. With no batch
+	 * open, as when one could not begin, it refuses them all the same.
+	 */
+	private loseBatch(error: unknown): void {
+		const lost = new BatchFailed(error);
+		for (const state of this.running) state.lost ??= lost;
+		const batch = this.batch;
+		this.batch = null;
+		this.quietly("ROLLBACK");
+		if (batch === null) return;
+		this.clock.clearTimer(batch.timer);
+		if (this.advances !== batch.advances) this.epoch = this.nextEpoch++;
+		for (const landed of batch.landed) landed(false);
+	}
+
+	/**
+	 * Calls `landed` with true once the write just made is committed, at once when no batch holds it,
+	 * or with false when its batch is lost instead.
+	 */
+	whenCommitted(landed: (committed: boolean) => void): void {
+		if (this.batch === null) landed(true);
+		else this.batch.landed.push(landed);
+	}
+
+	/** Runs a rollback, false where SQLite already ended what it would end. */
+	private quietly(sql: string): boolean {
+		try {
+			this.db.exec(sql);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Closes one write's depth, counting a knowledge change only once its outermost write landed. */
+	private endWrite(landed: boolean): void {
+		this.transactionDepth--;
+		if (this.transactionDepth > 0) return;
+		if (landed && this.pendingKnowledgeWrite) this.knowledgeTurns++;
+		this.pendingKnowledgeWrite = false;
+	}
+
+	/**
+	 * The batch timer's commit, so a stalled pass never keeps the write lock. Firing inside a write it
+	 * commits nothing, and that write's own bound check commits once it ends.
+	 */
+	private commitDueBatch(): void {
+		try {
+			this.commitBatch();
+		} catch {
+			// No caller to take it; the pass throws it when it ends.
+		}
+	}
+
+	/**
+	 * node:sqlite has no transaction helper, so one wrapper owns the begin/commit/rollback. Under a
+	 * speculation it is a savepoint, which the speculation's rollback discards with everything else.
+	 * An index write during a pass joins the pass's open batch as a savepoint; any other write first
+	 * commits that batch, so it is durable on return and lands after everything batched before it.
+	 */
+	private inTransaction<T>(work: () => T, batched = false): T {
+		const pass = this.passOf.getStore();
+		if (batched && !this.speculating && pass !== undefined) return this.inBatch(pass, work);
+		if (!this.speculating) this.commitBatch();
+		const savepoint = this.speculating ? `nested${this.transactionDepth}` : null;
+		const advances = this.advances;
+		this.db.exec(savepoint === null ? "BEGIN IMMEDIATE" : `SAVEPOINT ${savepoint}`);
+		this.transactionDepth++;
+		let result: T;
+		try {
+			result = work();
+			this.db.exec(savepoint === null ? "COMMIT" : `RELEASE ${savepoint}`);
+		} catch (error) {
+			this.endWrite(false);
+			// Fails where SQLite already ended the transaction; the error that ended it is the one thrown.
+			this.quietly(savepoint === null ? "ROLLBACK" : `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
+			if (savepoint === null && this.advances !== advances) this.epoch = this.nextEpoch++;
+			throw error;
+		}
+		this.endWrite(true);
+		return result;
+	}
+
+	/**
+	 * One write inside the open batch. An error in what the write asked, such as a constraint refusing
+	 * a provider's answer, rolls back that write alone, so one file never costs a pass; the store
+	 * failing, as a full disk or another process's lock does, loses the batch, whether or not SQLite
+	 * ended the transaction, and whether or not the batch had begun.
+	 */
+	private inBatch<T>(pass: PassState, work: () => T): T {
+		// A write outliving its pass would land in a batch no running pass owns.
+		if (!this.running.has(pass)) throw new Error("an index write ran under a pass that had already ended");
+		if (pass.lost !== null) throw pass.lost;
+		if (this.batch === null) {
+			try {
+				this.db.exec("BEGIN IMMEDIATE");
+			} catch (error) {
+				if (storeFailed(error)) this.loseBatch(error);
+				throw error;
+			}
+			this.batch = {
+				since: this.clock.now(),
+				writes: 0,
+				advances: this.advances,
+				timer: this.clock.setTimer(() => this.commitDueBatch(), BATCH_MS),
+				landed: [],
+			};
+		}
+		const batch = this.batch;
+		const advances = this.advances;
+		this.db.exec("SAVEPOINT batched");
+		this.transactionDepth++;
+		let result: T;
+		try {
+			result = work();
+			this.db.exec("RELEASE batched");
+		} catch (error) {
+			this.endWrite(false);
+			if (storeFailed(error) || !this.quietly("ROLLBACK TO batched; RELEASE batched")) this.loseBatch(error);
+			else if (this.advances !== advances) this.epoch = this.nextEpoch++;
+			throw error;
+		}
+		this.endWrite(true);
+		batch.writes++;
+		if (batch.writes >= BATCH_WRITES || this.clock.now() - batch.since >= BATCH_MS) this.commitBatch();
+		return result;
 	}
 
 	/**
@@ -1145,19 +1385,33 @@ export class IndexStore {
 	 */
 	private speculate<T>(work: () => T): T {
 		if (this.transactionDepth > 0) throw new Error("a speculation cannot open inside a transaction");
-		this.db.exec("BEGIN");
+		this.commitBatch();
+		this.db.exec("BEGIN IMMEDIATE");
 		this.transactionDepth++;
 		this.speculating = true;
+		this.speculationEpoch = this.nextEpoch++;
 		try {
 			const result = work();
 			if (result instanceof Promise) throw new Error("a speculation must finish synchronously");
 			return result;
 		} finally {
-			this.db.exec("ROLLBACK");
+			this.quietly("ROLLBACK");
 			this.transactionDepth--;
 			this.speculating = false;
 			this.pendingKnowledgeWrite = false;
 		}
+	}
+
+	/** Refuses a knowledge write outside a store transaction, and any but a resolution inside an index write. */
+	private checkKnowledgeWrite(sql: string): void {
+		if (this.transactionDepth === 0) throw new Error(`a knowledge write ran outside a store transaction: ${sql}`);
+		if (this.indexWrites > 0 && !RESOLUTION_UPDATE.test(sql))
+			throw new Error(`an index write changes no knowledge but a subject's resolution: ${sql}`);
+	}
+
+	/** A stored generation in the current epoch, so a number read before a rollback never names other facts. */
+	private generation(stored: number): number {
+		return (this.speculating ? this.speculationEpoch : this.epoch) * EPOCH_SPAN + stored;
 	}
 
 	private recordKnowledgeWrite(changed: boolean): void {
@@ -1180,7 +1434,7 @@ export class IndexStore {
 		workspaceRoot?: string,
 		clock: Clock = systemClock,
 	): { store: IndexStore; rebuilt: boolean; reason?: string; unplaced?: number; dropped?: number } {
-		const db = new DatabaseSync(file);
+		const db = Database.open(file);
 		db.exec("PRAGMA journal_mode = WAL");
 
 		let rebuilt = false;
@@ -1226,7 +1480,7 @@ export class IndexStore {
 
 			// One transaction over drop, create and restore. Crashing between them would otherwise
 			// leave a store with no journal and a workspace with a half-applied refactor in it.
-			db.exec("BEGIN");
+			db.exec("BEGIN IMMEDIATE");
 			try {
 				for (const view of views) db.exec(`DROP VIEW IF EXISTS "${view.name}"`);
 				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
@@ -1243,7 +1497,7 @@ export class IndexStore {
 			rebuilt = version !== 0;
 		} else if (liftRebinds) {
 			// Table and lift in one commit, or a crash between them reads as a store that already lifted.
-			db.exec("BEGIN");
+			db.exec("BEGIN IMMEDIATE");
 			try {
 				db.exec(JOURNAL_TABLES.refactor_rebinds.ddl);
 				dropped += liftAppliedRebinds(db);
@@ -1282,7 +1536,7 @@ export class IndexStore {
 		}
 		// Once, in place, keeping every note someone wrote.
 		if (columnExists(db, "symbol_notes", "summary")) {
-			db.exec("BEGIN");
+			db.exec("BEGIN IMMEDIATE");
 			try {
 				joinNoteFields(db, seededAt);
 				db.exec("COMMIT");
@@ -1336,7 +1590,7 @@ export class IndexStore {
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {
-			db.exec("BEGIN");
+			db.exec("BEGIN IMMEDIATE");
 			try {
 				if (readMeta(db, NOTES_SINCE_KEY) === null) writeMeta(db, NOTES_SINCE_KEY, String(clock.now()));
 				db.exec(NOTES_TABLE);
@@ -1424,7 +1678,7 @@ export class IndexStore {
 		const through = originEdges(imports);
 		const surface = surfaceOf(declarations);
 		const surfaceDigest = hashContent(surface.map((entry) => entry.key).join("\n"));
-		return this.inTransaction(() => {
+		return this.indexWrite(() => {
 			const change = this.surfaceChange(module, surface, surfaceDigest);
 			const scopesBefore = this.scopeKeysOf(module);
 			const before = this.db.prepare("SELECT allList FROM files WHERE module = ?").get(module) as
@@ -1805,7 +2059,7 @@ export class IndexStore {
 			`DELETE FROM surface_moves
 			 WHERE module = ? AND gained = ? AND lost = ? AND boundInto = ? AND heldBefore = ? AND scopes = ?`,
 		);
-		this.inTransaction(() => {
+		this.indexWrite(() => {
 			for (const module of owed) owe.run(module);
 			for (const [module, change] of moves) {
 				acknowledge.run(
@@ -1846,6 +2100,7 @@ export class IndexStore {
 		const before = new Set(scopesBefore);
 		const after = new Set(this.scopeKeysOf(module));
 		const touched = [...new Set([...before, ...after])].sort();
+		this.advances++;
 		this.db
 			.prepare(
 				`INSERT INTO meta (key, value) VALUES ('factsGeneration', '1')
@@ -1877,7 +2132,7 @@ export class IndexStore {
 		const row = this.db.prepare("SELECT value FROM meta WHERE key = 'factsGeneration'").get() as
 			| { value: string }
 			| undefined;
-		return row === undefined ? 0 : Number(row.value);
+		return this.generation(row === undefined ? 0 : Number(row.value));
 	}
 
 	/** Advanced by every write a contributor to the scope makes. */
@@ -1885,7 +2140,7 @@ export class IndexStore {
 		const row = this.db.prepare("SELECT generation FROM scope_generations WHERE scopeKey = ?").get(key) as
 			| { generation: number }
 			| undefined;
-		return row?.generation ?? 0;
+		return this.generation(row?.generation ?? 0);
 	}
 
 	fileOf(module: string): { exportsKnown: boolean; allList: AllList | null } | null {
@@ -1983,7 +2238,7 @@ export class IndexStore {
 	 * names gained and lost, and owes a projection to every module forwarding from it.
 	 */
 	commitProjection(module: string, rows: readonly EffectiveExport[]): boolean {
-		return this.inTransaction(() => {
+		return this.indexWrite(() => {
 			const previous = this.effectiveExportsOf(module);
 			const before = new Set(previous.map(canonical));
 			const after = new Set(rows.map(canonical));
@@ -2073,13 +2328,12 @@ export class IndexStore {
 
 	/** Holds a debt until `providerId` answers again, or `blockedIn` restarts, or the module's own parse lands. */
 	blockRebind(module: string, providerId: string, blockedFor: "outage" | "refusal", blockedIn: string): void {
-		this.db
-			.prepare(
-				`INSERT INTO rebind_owed (module, blockedBy, blockedFor, blockedIn) VALUES (?, ?, ?, ?)
-				 ON CONFLICT (module) DO UPDATE SET blockedBy = excluded.blockedBy, blockedFor = excluded.blockedFor,
-				 blockedIn = excluded.blockedIn`,
-			)
-			.run(module, providerId, blockedFor, blockedIn);
+		const block = this.db.prepare(
+			`INSERT INTO rebind_owed (module, blockedBy, blockedFor, blockedIn) VALUES (?, ?, ?, ?)
+			 ON CONFLICT (module) DO UPDATE SET blockedBy = excluded.blockedBy, blockedFor = excluded.blockedFor,
+			 blockedIn = excluded.blockedIn`,
+		);
+		this.indexWrite(() => block.run(module, providerId, blockedFor, blockedIn));
 	}
 
 	/** Debts held back by a failed parse, with who failed them and in which process. */
@@ -2103,21 +2357,21 @@ export class IndexStore {
 	/** Makes these held debts payable again. */
 	unblockRebinds(modules: readonly string[]): void {
 		const unblock = this.db.prepare(`${UNBLOCK} WHERE module = ?`);
-		this.inTransaction(() => {
+		this.indexWrite(() => {
 			for (const module of modules) unblock.run(module);
 		});
 	}
 
 	/** Makes the debts one provider's outage held payable again, answering how many. */
 	unblockOutages(providerId: string): number {
-		return Number(
-			this.db.prepare(`${UNBLOCK} WHERE blockedBy = ? AND blockedFor = 'outage'`).run(providerId).changes,
-		);
+		const unblock = this.db.prepare(`${UNBLOCK} WHERE blockedBy = ? AND blockedFor = 'outage'`);
+		return this.indexWrite(() => Number(unblock.run(providerId).changes));
 	}
 
 	/** Settles a debt nothing can pay: the module holds no facts to parse again. */
 	clearRebind(module: string): void {
-		this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
+		const clear = this.db.prepare("DELETE FROM rebind_owed WHERE module = ?");
+		this.indexWrite(() => clear.run(module));
 	}
 
 	/** Modules with an import that landed on, or reaches through, one of `targets` when written, by target. */
@@ -2257,7 +2511,7 @@ export class IndexStore {
 
 	/** Everything a file contributed, gone. Used when a file is deleted rather than changed. */
 	forgetFile(module: string): boolean {
-		return this.inTransaction(() => {
+		return this.indexWrite(() => {
 			// Read while the rows it asks about still exist.
 			const lost = namesOf(this.surfaceHeld(module));
 			const boundInto = this.boundInto(module);
@@ -2310,7 +2564,8 @@ export class IndexStore {
 
 	/** Fills a row written before content was recorded. A recorded class is never overwritten here. */
 	recordContent(module: string, content: FileContent): void {
-		this.db.prepare("UPDATE files SET content = ? WHERE module = ? AND content IS NULL").run(content, module);
+		const record = this.db.prepare("UPDATE files SET content = ? WHERE module = ? AND content IS NULL");
+		this.indexWrite(() => record.run(content, module));
 	}
 
 	/** Recorded module owners. */
@@ -2491,13 +2746,15 @@ export class IndexStore {
 
 	/** Remembers a parse failure so coverage can name it after this process is gone. */
 	recordFailure(module: string, reason: string): void {
-		this.db
-			.prepare("INSERT OR REPLACE INTO parse_failures (module, reason, failedAt) VALUES (?, ?, ?)")
-			.run(module, reason, this.clock.now());
+		const record = this.db.prepare(
+			"INSERT OR REPLACE INTO parse_failures (module, reason, failedAt) VALUES (?, ?, ?)",
+		);
+		this.indexWrite(() => record.run(module, reason, this.clock.now()));
 	}
 
 	clearFailure(module: string): void {
-		this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module);
+		const clear = this.db.prepare("DELETE FROM parse_failures WHERE module = ?");
+		this.indexWrite(() => clear.run(module));
 	}
 
 	parseFailureCount(): number {
@@ -2525,13 +2782,16 @@ export class IndexStore {
 		return readMeta(this.db, `${PROJECT_FINGERPRINT_KEY}:${providerId}`);
 	}
 
+	/** An index write, so it never lands while a batch holding the parses under it is lost. */
 	recordProjectFingerprint(providerId: string, fingerprint: string): void {
-		writeMeta(this.db, `${PROJECT_FINGERPRINT_KEY}:${providerId}`, fingerprint);
+		this.indexWrite(() => writeMeta(this.db, `${PROJECT_FINGERPRINT_KEY}:${providerId}`, fingerprint));
 	}
 
-	/** Persists scan counts used to explain coverage gaps. */
+	/** Persists scan counts used to explain coverage gaps; an index write, as the fingerprint is. */
 	writeScanSummary(summary: ScanCounts): void {
-		writeMeta(this.db, SCAN_SUMMARY_KEY, JSON.stringify({ ...summary, at: this.clock.now() }));
+		this.indexWrite(() =>
+			writeMeta(this.db, SCAN_SUMMARY_KEY, JSON.stringify({ ...summary, at: this.clock.now() })),
+		);
 	}
 
 	/** One bounded sweep, one transaction, resuming from the cursor the last one persisted. */
@@ -2576,22 +2836,24 @@ export class IndexStore {
 	// residue test holds as the single owner of the concept.
 
 	/** Runs a journal read in a store-owned transaction. */
-	journalRead<T>(work: (db: DatabaseSync) => T): T {
+	journalRead<T>(work: (db: Database) => T): T {
 		return this.inTransaction(() => work(this.db));
 	}
 
 	/** Runs a journal write in a store-owned transaction. */
-	journalWrite<T>(work: (db: DatabaseSync) => T): T {
+	journalWrite<T>(work: (db: Database) => T): T {
 		return this.inTransaction(() => work(this.db));
 	}
 
 	/** Legacy fixture access. Production code uses journalRead or journalWrite. */
-	journal<T>(work: (db: DatabaseSync) => T): T {
+	journal<T>(work: (db: Database) => T): T {
 		return this.journalRead(work);
 	}
 
 	/** Content addressed, so re-snapshotting an unchanged file costs a lookup and no bytes. */
 	putBlob(hash: string, bytes: Uint8Array): void {
+		// Durable on return, as journal rows naming it will be.
+		this.commitBatch();
 		this.db.prepare("INSERT OR IGNORE INTO refactor_blobs (hash, bytes) VALUES (?, ?)").run(hash, bytes);
 	}
 
@@ -2604,6 +2866,7 @@ export class IndexStore {
 
 	/** Prunes unreferenced blobs after settlement. */
 	pruneBlobs(): number {
+		this.commitBatch();
 		const result = this.db.prepare(`DELETE FROM refactor_blobs WHERE hash NOT IN (${keptBlobs()})`).run();
 		return Number(result.changes);
 	}
@@ -3330,7 +3593,7 @@ export class IndexStore {
 		});
 		if (stale.length === 0) return 0;
 		const update = this.db.prepare("UPDATE files SET generated = ?, generatedReason = ? WHERE module = ?");
-		this.inTransaction(() => {
+		this.indexWrite(() => {
 			for (const row of stale) update.run(row.status, row.reason, row.module);
 		});
 		return stale.length;
@@ -3347,7 +3610,11 @@ export class IndexStore {
 	}
 
 	close(): void {
-		this.db.close();
+		try {
+			this.commitBatch();
+		} finally {
+			this.db.close();
+		}
 	}
 }
 

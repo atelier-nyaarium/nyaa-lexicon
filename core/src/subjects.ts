@@ -1,8 +1,8 @@
 // Knowledge is about a subject; a symbol id is its current address. The one owner of the subjects
 // table: rows keyed by a subject never change key, and the store reads through the views below.
 
-import type { DatabaseSync } from "node:sqlite";
 import { hashContent, moduleOf, sameNameAndKind } from "@nyaa-lexicon/protocol";
+import type { Statements } from "./database.js";
 import { insertNote } from "./noteRows.js";
 import type { PatternCoverage } from "./patternDigest.js";
 
@@ -374,7 +374,7 @@ const INSERT_SUBJECT = `INSERT INTO knowledge_subjects
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 /** The digest the index holds at an address, so a subject minted between scans still carries one. */
-function digestAt(db: DatabaseSync, symbolId: string): { digest: string; coverage: PatternCoverage } | null {
+function digestAt(db: Statements, symbolId: string): { digest: string; coverage: PatternCoverage } | null {
 	const row = db.prepare("SELECT patternDigest, patternCoverage FROM symbols WHERE symbolId = ?").get(symbolId) as
 		| { patternDigest: string | null; patternCoverage: PatternCoverage | null }
 		| undefined;
@@ -408,7 +408,7 @@ function untouchedSeed(row: Record<string, unknown>, seededAt: number | null): b
  * In the caller's transaction, once. Untouched seeds go; every other note and proposal becomes one
  * text.
  */
-export function joinNoteFields(db: DatabaseSync, seededAt: number | null): void {
+export function joinNoteFields(db: Statements, seededAt: number | null): void {
 	// A rename rewrites any view over the table; none may survive it.
 	for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
 	// A store interrupted between creating these may lack one; it reads as empty.
@@ -622,7 +622,7 @@ export function normalizeSalvaged(
 }
 
 /** Salvaged subject rows put back as they were; every other row finds its subject through `placeRow`. */
-export function restoreSubjects(db: DatabaseSync, subjects: readonly SalvagedSubject[]): void {
+export function restoreSubjects(db: Statements, subjects: readonly SalvagedSubject[]): void {
 	const insert = db.prepare(INSERT_SUBJECT);
 	for (const row of subjects) {
 		insert.run(
@@ -645,7 +645,7 @@ export function restoreSubjects(db: DatabaseSync, subjects: readonly SalvagedSub
 /** Takes the store's handle: every statement here runs inside whatever transaction the store holds. */
 export class KnowledgeSubjects {
 	constructor(
-		private readonly db: DatabaseSync,
+		private readonly db: Statements,
 		private readonly recordKnowledgeWrite: (changed: boolean) => void = () => {},
 	) {}
 
