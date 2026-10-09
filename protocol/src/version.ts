@@ -166,7 +166,9 @@ export type Compatibility =
 // initialize, names excluded at any depth and output names excluded at the root or beside a marker,
 // which core never roots or follows into. No 6.x client is served.
 // 7.1.0: `indexRoots` tells the kit core's roots, which `admission()` reads. A load-cycle target
-// matches a described symbol by `symbolId` when the hazard names one.
+// matches a described symbol by `symbolId` when the hazard names one. `prepareLoadCyclePreview` and
+// `releaseLoadCyclePreview` retain a proposed overlay; `judgeLoadCycle.preview` scopes its slices.
+// `previewArrange.loadCycles` carries completed cycle results when available.
 export const PROTOCOL_VERSION = "7.1.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */

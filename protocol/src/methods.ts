@@ -9,7 +9,9 @@ import { ImportEditsRequestSchema, ImportEditsResponseSchema } from "./importEdi
 import {
 	JudgeLoadCycleAnswerSchema,
 	JudgeLoadCycleRequestSchema,
+	PrepareLoadCyclePreviewRequestSchema,
 	ReleaseLoadCycleNotificationSchema,
+	ReleaseLoadCyclePreviewNotificationSchema,
 } from "./loadCycles.js";
 import { ArrangeEditsRequestSchema, MoveEditsRequestSchema, MoveEditsResponseSchema } from "./move.js";
 import {
@@ -212,6 +214,33 @@ export const ProbeBatchResponseSchema = z
 
 export type ProbeBatchResponse = z.infer<typeof ProbeBatchResponseSchema>;
 
+export const PrepareLoadCyclePreviewResponseSchema = z
+	.discriminatedUnion("status", [
+		z.object({
+			status: z.literal("ready"),
+			preview: z.string().min(1),
+			facts: z.array(FileFactsSchema),
+			landings: z.array(
+				z.object({
+					module: z.string().min(1),
+					specifier: z.string().min(1),
+					resolutionMode: ResolutionModeSchema.optional(),
+					resolution: ImportResolutionSchema,
+				}),
+			),
+			settings: z.array(z.object({ project: z.string().min(1), fingerprint: z.string().min(1) })),
+		}),
+		z.object({ status: z.literal("unsupported"), detail: z.string().optional() }),
+		z.object({
+			status: z.literal("unknown"),
+			reason: z.enum(["provider", "timeout", "outage", "refused", "budget", "notReady", "evidence", "model"]),
+		}),
+	])
+	.meta({ id: "PrepareLoadCyclePreviewResponse" });
+
+export type PrepareLoadCyclePreviewRequest = z.infer<typeof PrepareLoadCyclePreviewRequestSchema>;
+export type PrepareLoadCyclePreviewResponse = z.infer<typeof PrepareLoadCyclePreviewResponseSchema>;
+
 export const ResolveImportRequestSchema = z
 	.object({
 		fromModule: z.string().min(1),
@@ -304,6 +333,7 @@ export const PROVIDER_METHODS = [
 	"parseFile",
 	"probeFile",
 	"probeBatch",
+	"prepareLoadCyclePreview",
 	"resolveImport",
 	"judgeLoadCycle",
 	"bind",
@@ -326,6 +356,10 @@ export const METHOD_SCHEMAS = {
 	probeFile: { request: ParseFileRequestSchema, response: FileFactsSchema },
 	/** Proposed texts read as one view; the provider answers, then holds what it held before. */
 	probeBatch: { request: ProbeBatchRequestSchema, response: ProbeBatchResponseSchema },
+	prepareLoadCyclePreview: {
+		request: PrepareLoadCyclePreviewRequestSchema,
+		response: PrepareLoadCyclePreviewResponseSchema,
+	},
 	resolveImport: { request: ResolveImportRequestSchema, response: ImportResolutionSchema },
 	judgeLoadCycle: { request: JudgeLoadCycleRequestSchema, response: JudgeLoadCycleAnswerSchema },
 	bind: { request: BindRequestSchema, response: BindingSchema },
@@ -348,6 +382,7 @@ export const PROVIDER_NOTIFICATIONS = [
 	"releaseModule",
 	"moduleAdmission",
 	"releaseLoadCycle",
+	"releaseLoadCyclePreview",
 	"indexRoots",
 ] as const;
 
@@ -359,6 +394,7 @@ export const NOTIFICATION_SCHEMAS = {
 	indexRoots: IndexRootsNotificationSchema,
 	moduleAdmission: ModuleAdmissionNotificationSchema,
 	releaseLoadCycle: ReleaseLoadCycleNotificationSchema,
+	releaseLoadCyclePreview: ReleaseLoadCyclePreviewNotificationSchema,
 } as const satisfies Record<ProviderNotification, z.ZodType>;
 
 /** Told by a provider, never asked of one: an older core ignores them. */

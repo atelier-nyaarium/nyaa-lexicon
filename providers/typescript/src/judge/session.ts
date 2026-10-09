@@ -10,6 +10,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { TypeScriptProject } from "../module.js";
 import { BudgetExceeded, type Finding, HOLD_MS, MAX_ENTRIES, SLICE_MS, type UnknownNote } from "./model.js";
+import { preparedPreview } from "./preview.js";
 import { PinnedProgram, type Resolve } from "./program.js";
 import { Walker } from "./walker.js";
 import { scanWrites, type Writes } from "./writes.js";
@@ -24,6 +25,7 @@ type Settings = Answered["settings"];
 /** A judgment between slices: its work, and when it last ran. */
 export interface JudgeSession {
 	readonly key: string;
+	readonly preview?: string;
 	readonly work: Generator<undefined, Answered, undefined>;
 	lastSlice: number;
 }
@@ -54,6 +56,7 @@ function unknownAnswer(
 	module?: string,
 ): Answered {
 	return {
+		...(request.preview === undefined ? {} : { preview: request.preview }),
 		verdict: "unknown",
 		bad: [],
 		unknowns: [{ ...(module === undefined ? {} : { module }), reason }],
@@ -174,6 +177,7 @@ function* judgeWork(
 	).slice(0, LISTED);
 	const unknowns = distinct(notes).slice(0, LISTED);
 	return {
+		...(request.preview === undefined ? {} : { preview: request.preview }),
 		verdict: bad.length > 0 ? "bad" : unknowns.length > 0 ? "unknown" : "fine",
 		bad,
 		unknowns,
@@ -200,7 +204,7 @@ function slice(
 			if (performance.now() >= deadline) {
 				session.lastSlice = Date.now();
 				sessions.set(token, session);
-				return { partial: token };
+				return { ...(session.preview === undefined ? {} : { preview: session.preview }), partial: token };
 			}
 		}
 	} catch (error) {
@@ -225,30 +229,37 @@ export function judgeLoadCycle(
 	const sessions = project.judgments;
 	const now = Date.now();
 	for (const [token, held] of sessions) if (now - held.lastSlice > HOLD_MS) sessions.delete(token);
-	const settings = [{ project: host.providerId, fingerprint: project.fingerprint }];
-	const key = JSON.stringify([request.members, request.entries]);
+	const prepared = request.preview === undefined ? undefined : preparedPreview(project, request.preview, now);
+	if (request.preview !== undefined && prepared === undefined) return unknownAnswer(request, "evidence", []);
+	const settings = prepared?.settings ?? [{ project: host.providerId, fingerprint: project.fingerprint }];
+	const key = JSON.stringify([request.preview ?? null, request.members, request.entries]);
 	if (request.partial !== undefined) {
 		const held = sessions.get(request.partial);
 		if (held === undefined || held.key !== key) return unknownAnswer(request, "budget", settings);
 		return slice(sessions, request.partial, held, host.sliceMs ?? SLICE_MS);
 	}
 	if (request.entries.length > MAX_ENTRIES) return unknownAnswer(request, "budget", settings);
-	const analyzer = project.analyzer;
+	const analyzer = prepared?.analyzer ?? project.analyzer;
 	const first = request.members[0]?.module;
 	if (analyzer === undefined || analyzer.cold() || first === undefined)
 		return unknownAnswer(request, "notReady", settings);
-	const program = analyzer.programOf(first);
+	const program = prepared?.programs.get(analyzer.groupOf(first)) ?? analyzer.programOf(first);
 	if (program === undefined) return unknownAnswer(request, "notReady", settings);
 	const pinned = new PinnedProgram({
 		root: project.root,
 		loaded: project.loaded,
 		program,
-		resolve: host.resolve,
-		surface: host.surface,
+		resolve: prepared?.host.resolve ?? host.resolve,
+		surface: prepared?.host.surface ?? host.surface,
 		group: (module) => analyzer.groupOf(module),
 	});
-	const work = judgeWork(pinned, request, settings, project.writes, host.admission);
-	const session: JudgeSession = { key, work, lastSlice: now };
+	const work = judgeWork(pinned, request, settings, project.writes, prepared?.host.admission ?? host.admission);
+	const session: JudgeSession = {
+		key,
+		...(request.preview === undefined ? {} : { preview: request.preview }),
+		work,
+		lastSlice: now,
+	};
 	return slice(sessions, randomUUID(), session, host.sliceMs ?? SLICE_MS);
 }
 

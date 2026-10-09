@@ -626,6 +626,17 @@ export class ProviderSupervisor implements ProviderPort {
 			.catch(() => {});
 	}
 
+	releaseLoadCyclePreview(providerId: string, incarnation: number, preview: string): void {
+		const provider = this.providers.get(providerId);
+		if (provider === undefined || provider.incarnation !== incarnation) return;
+		const params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCyclePreview"]> = { preview };
+		provider.queue
+			.run(() =>
+				provider.connection.sendNotification("releaseLoadCyclePreview" satisfies ProviderNotification, params),
+			)
+			.catch(() => {});
+	}
+
 	/** Which process answers for this provider now; null when none does. */
 	incarnationOf(providerId: string): number | null {
 		return this.providers.get(providerId)?.incarnation ?? null;

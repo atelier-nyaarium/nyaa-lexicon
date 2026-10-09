@@ -37,8 +37,9 @@ type ProviderHandlersByMethod = {
 	) => z.infer<(typeof METHOD_SCHEMAS)[M]["response"]>;
 };
 
-export type ProviderHandlers = Omit<ProviderHandlersByMethod, "judgeLoadCycle"> & {
+export type ProviderHandlers = Omit<ProviderHandlersByMethod, "judgeLoadCycle" | "prepareLoadCyclePreview"> & {
 	judgeLoadCycle?: ProviderHandlersByMethod["judgeLoadCycle"];
+	prepareLoadCyclePreview?: ProviderHandlersByMethod["prepareLoadCyclePreview"];
 };
 
 function defaultLoadCycleAnswer(params: unknown): unknown {
@@ -143,9 +144,12 @@ export function serveProvider(
 	for (const method of PROVIDER_METHODS) {
 		// The handler map is keyed per method, so the loop erases the pairing the caller already
 		// satisfied. Each response is still validated against its schema by whoever reads it.
-		const handler = (handlers[method] ?? (method === "judgeLoadCycle" ? defaultLoadCycleAnswer : undefined)) as
-			| ((params: unknown) => unknown)
-			| undefined;
+		const handler = (handlers[method] ??
+			(method === "judgeLoadCycle"
+				? defaultLoadCycleAnswer
+				: method === "prepareLoadCyclePreview"
+					? () => ({ status: "unsupported" })
+					: undefined)) as ((params: unknown) => unknown) | undefined;
 		connection.onRequest(method, (params: unknown) =>
 			inTurn(async () => {
 				refuseUnrepresentable(params);

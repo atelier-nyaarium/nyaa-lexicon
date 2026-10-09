@@ -76,6 +76,8 @@ const IMPORTS_IN_READERS: Record<string, string> = {
 	"paintFacts.ts": "finds the imported name under a cursor, not a plan",
 	"renameRoutes.ts": "a rename's other wildcards in one module; `reads` is the plan's context",
 	"loadCycles.ts": "validates a judgment's occurrence landings against admitted imports, not a plan",
+	"loadCyclePreview.ts":
+		"validates judge evidence against imports in the speculative candidate view before publication",
 };
 
 const ROOT = path.resolve(import.meta.dirname, "..");

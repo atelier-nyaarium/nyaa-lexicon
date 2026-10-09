@@ -46,6 +46,7 @@ export const LoadCycleUnknownSchema = z
 export const LoadCycleMemberSchema = z.object({ module: z.string().min(1), contentHash: z.string().min(1) });
 export const JudgeLoadCycleRequestSchema = z
 	.object({
+		preview: z.string().min(1).optional(),
 		members: z.array(LoadCycleMemberSchema).min(1),
 		entries: z.array(z.string().min(1)).min(1).max(32),
 		partial: z.string().min(1).optional(),
@@ -61,13 +62,14 @@ export const LoadCycleEvidenceSchema = z.object({
 export const JudgeLoadCycleAnswerSchema = z
 	.union([
 		z.object({
+			preview: z.string().min(1).optional(),
 			verdict: z.enum(["bad", "fine", "unknown"]),
 			bad: z.array(LoadCycleHazardSchema),
 			unknowns: z.array(LoadCycleUnknownSchema),
 			evidence: z.array(LoadCycleEvidenceSchema),
 			settings: z.array(z.object({ project: z.string().min(1), fingerprint: z.string().min(1) })),
 		}),
-		z.object({ partial: z.string().min(1) }),
+		z.object({ preview: z.string().min(1).optional(), partial: z.string().min(1) }),
 	])
 	.meta({ id: "JudgeLoadCycleAnswer" });
 
@@ -79,9 +81,30 @@ export const ReleaseLoadCycleNotificationSchema = z
 	.object({ partial: z.string().min(1) })
 	.meta({ id: "ReleaseLoadCycleNotification" });
 
+export const PrepareLoadCyclePreviewRequestSchema = z
+	.object({
+		files: z
+			.array(
+				z.object({
+					module: z.string().min(1),
+					base: z.string().nullable(),
+					contentHash: z.string().min(1),
+					text: z.string(),
+				}),
+			)
+			.min(1),
+		answer: z.array(z.string().min(1)).min(1),
+	})
+	.meta({ id: "PrepareLoadCyclePreviewRequest" });
+
+export const ReleaseLoadCyclePreviewNotificationSchema = z
+	.object({ preview: z.string().min(1) })
+	.meta({ id: "ReleaseLoadCyclePreviewNotification" });
+
 /** What a provider that does not judge load cycles answers, and what core reads its silence as. */
 export function unjudgedLoadCycle(request: JudgeLoadCycleRequest): Extract<JudgeLoadCycleAnswer, { verdict: unknown }> {
 	return {
+		...(request.preview === undefined ? {} : { preview: request.preview }),
 		verdict: "unknown",
 		bad: [],
 		unknowns: [{ reason: "provider" }],

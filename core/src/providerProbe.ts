@@ -9,6 +9,8 @@ import type {
 	ImportEditsResponse,
 	MoveEditsRequest,
 	MoveEditsResponse,
+	PrepareLoadCyclePreviewRequest,
+	PrepareLoadCyclePreviewResponse,
 	ProbeBatchRequest,
 	ProbeBatchResponse,
 	ProviderTiers,
@@ -41,6 +43,10 @@ export interface ProviderProbe {
 	importEdits(module: string, request: ImportEditsRequest): Promise<ImportEditsResponse>;
 	/** Facts for `request.answer` with every proposed text as one view, asked of `module`'s owner. */
 	probeBatch(module: string, request: ProbeBatchRequest): Promise<ProbeBatchResponse>;
+	prepareLoadCyclePreview?(
+		providerId: string,
+		request: PrepareLoadCyclePreviewRequest,
+	): Promise<PrepareLoadCyclePreviewResponse>;
 }
 
 ////////////////////////////////
@@ -80,6 +86,8 @@ export function liveProbe(supervisor: ProviderPort): ProviderProbe {
 			}
 		},
 		probeBatch: (module, request) => supervisor.ask(module, "probeBatch", request),
+		prepareLoadCyclePreview: (providerId, request) =>
+			supervisor.askProvider(providerId, "prepareLoadCyclePreview", request),
 
 		async parseCandidate(module, text) {
 			try {

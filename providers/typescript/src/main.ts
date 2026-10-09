@@ -1,5 +1,6 @@
 // The TypeScript provider and its wire handlers.
 
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
 	type ArrangeEditsRequest,
@@ -16,6 +17,8 @@ import {
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
+	type PrepareLoadCyclePreviewRequest,
+	type PrepareLoadCyclePreviewResponse,
 	type ProbeBatchRequest,
 	type ProbeBatchResponse,
 	type ProjectModel,
@@ -31,6 +34,7 @@ import { isDeclarationModule } from "./bundle.js";
 import { extractTrivia } from "./comments.js";
 import { extractFile, LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
+import { releasePreview, retainPreview } from "./judge/preview.js";
 import { type JudgeHost, judgeLoadCycle, releaseLoadCycle } from "./judge/session.js";
 import {
 	createTypeScriptProject,
@@ -387,13 +391,109 @@ export class TypeScriptProvider {
 	probeBatch(params: ProbeBatchRequest): ProbeBatchResponse {
 		const project = this.currentProject();
 		if (project === undefined) return { status: "unsupported", detail: "no project has been discovered" };
-		const files = new Map(params.files.map(({ module, contentHash, text }) => [module, { contentHash, text }]));
+		const analyzer = this.overlayAnalyzer(params.files);
+		try {
+			return this.probeBatchWith(project, analyzer, params);
+		} finally {
+			analyzer.dispose();
+		}
+	}
+
+	prepareLoadCyclePreview(params: PrepareLoadCyclePreviewRequest): PrepareLoadCyclePreviewResponse {
+		const project = this.currentProject();
+		if (project === undefined) return { status: "unsupported", detail: "no project has been discovered" };
+		if (params.files.some((file) => hashContent(file.text) !== file.contentHash))
+			return { status: "unknown", reason: "evidence" };
+		if (
+			params.files.some(({ module, base }) => {
+				const held = this.store.text(module);
+				return held !== undefined && held.contentHash !== base;
+			})
+		)
+			return { status: "unknown", reason: "evidence" };
+		const files = params.files.map(({ module, contentHash, text }) => ({ module, contentHash, text }));
+		const probe = { files, answer: params.answer };
+		const analyzer = this.overlayAnalyzer(files);
+		try {
+			const answer = this.probeBatchWith(project, analyzer, probe);
+			if (answer.status !== "ready") {
+				analyzer.dispose();
+				return { status: "unsupported", detail: answer.detail };
+			}
+			const modules = [
+				...new Set([
+					...params.answer,
+					...project.loaded.files
+						.map((file) => toModule(project.root, file))
+						.filter((module): module is string => module !== null),
+				]),
+			];
+			const programs = analyzer.freezePrograms(modules);
+			const resolve = new Map(
+				answer.landings.map((landing) => [
+					JSON.stringify([landing.module, landing.specifier, landing.resolutionMode ?? null]),
+					landing.resolution.status === "resolved" ? landing.resolution.landing : null,
+				]),
+			);
+			const admission = new Map(modules.map((module) => [module, this.store.admission(module)]));
+			const surfaces = new Map(
+				modules.map((module) => [
+					module,
+					analyzer.held(module)?.surface ?? this.store.peek(module)?.surface === true,
+				]),
+			);
+			const token = randomUUID();
+			retainPreview(
+				project,
+				token,
+				{
+					analyzer,
+					programs,
+					fingerprint: project.fingerprint,
+					settings: [{ project: PROVIDER_ID, fingerprint: project.fingerprint }],
+					host: {
+						providerId: PROVIDER_ID,
+						resolve: (from, specifier, mode) =>
+							resolve.get(JSON.stringify([from, specifier, mode ?? null])) ?? null,
+						surface: (module) => surfaces.get(module) === true && !isDeclarationModule(module),
+						admission: (module) => admission.get(module) ?? { state: "outside" },
+					},
+				},
+				Date.now(),
+			);
+			return {
+				status: "ready",
+				preview: token,
+				facts: answer.facts,
+				landings: answer.landings,
+				settings: [{ project: PROVIDER_ID, fingerprint: project.fingerprint }],
+			};
+		} catch {
+			analyzer.dispose();
+			return { status: "unknown", reason: "model" };
+		}
+	}
+
+	releaseLoadCyclePreview(params: { preview: string }): void {
+		releasePreview(this.currentProject(), params.preview);
+	}
+
+	private overlayAnalyzer(files: ProbeBatchRequest["files"]): TypeScriptAnalyzer {
+		const heldFiles = [...files];
 		const overlay: Overlay = {
-			files,
-			tag: `probe:${hashContent(JSON.stringify(params.files.map(({ module, contentHash }) => [module, contentHash])))}:`,
+			files: new Map(heldFiles.map((file) => [file.module, { contentHash: file.contentHash, text: file.text }])),
+			tag: `probe:${hashContent(JSON.stringify(heldFiles.map(({ module, contentHash }) => [module, contentHash])))}:`,
 			memos: new Map(),
 		};
-		const analyzer = this.analyzed().overlaid(overlay);
+		return this.analyzed().overlaid(overlay);
+	}
+
+	private probeBatchWith(
+		project: TypeScriptProject,
+		analyzer: TypeScriptAnalyzer,
+		params: ProbeBatchRequest,
+	): ProbeBatchResponse {
+		const files = new Map(params.files.map(({ module, contentHash, text }) => [module, { contentHash, text }]));
 		try {
 			const facts: FileFacts[] = [];
 			for (const module of params.answer) {
@@ -440,8 +540,8 @@ export class TypeScriptProvider {
 				}));
 			});
 			return { status: "ready", facts, landings };
-		} finally {
-			analyzer.dispose();
+		} catch {
+			return { status: "unsupported", detail: "the overlay could not be analyzed" };
 		}
 	}
 
@@ -540,6 +640,7 @@ export class TypeScriptProvider {
 
 	shutdown() {
 		const project = this.currentProject();
+		if (project !== undefined) for (const token of project.previews.keys()) releasePreview(project, token);
 		project?.analyzer?.dispose();
 		if (project !== undefined) project.analyzer = undefined;
 		return {};

@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS, parseFactId } from "./factId.js";
-import { LoadCycleHazardSchema } from "./loadCycles.js";
+import { LoadCycleHazardSchema, ModuleCycleSchema as LoadCycleResultSchema } from "./loadCycles.js";
 import { ImportKindSchema, MoveAnchorSchema, MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
 import {
@@ -1295,6 +1295,7 @@ export const MovePreviewSchema = z
 			blockers: z.array(z.object({ module: z.string().optional(), reason: z.string() })),
 			/** Absent from a daemon before protocol 6.8.0, and when nothing was promoted. */
 			promoted: z.array(PromotedSchema).optional(),
+			loadCycles: z.array(LoadCycleResultSchema).optional(),
 		}),
 		z.object({
 			ok: z.literal(false),
@@ -1657,6 +1658,7 @@ export const ArrangePreviewSchema = z
 			),
 			/** As on a move preview. */
 			promoted: z.array(PromotedSchema).optional(),
+			loadCycles: z.array(LoadCycleResultSchema).optional(),
 		}),
 		z.object({
 			ok: z.literal(false),

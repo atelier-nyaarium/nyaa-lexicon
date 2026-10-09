@@ -21,7 +21,9 @@ import { landingKey } from "./exportProjection.js";
 import { spanKey } from "./factAdmission.js";
 import { FifoSemaphore } from "./fifoSemaphore.js";
 import { type Edge, findCycles } from "./graph.js";
+import { previewLoadCycles } from "./loadCyclePreview.js";
 import type { ProviderPort } from "./providerPort.js";
+import type { ProviderProbe } from "./providerProbe.js";
 import type { Gate } from "./stepRunners.js";
 import type { IndexStore } from "./store.js";
 import { ProviderUnavailableError } from "./supervisor.js";
@@ -38,7 +40,7 @@ type Members = JudgeLoadCycleRequest["members"];
 
 type LoadEdge = ReturnType<IndexStore["loadEdges"]>[number];
 
-type Cycle = {
+export type Cycle = {
 	key: string;
 	/** The facts generation of the view it was read from; a newer view supersedes an older one. */
 	generation: number;
@@ -53,7 +55,7 @@ type Cycle = {
 type Held = { generation: number; cycles: Cycle[]; byKey: Map<string, Cycle> };
 
 /** The candidate graph and what components read from it. */
-type Graph = {
+export type Graph = {
 	edges: Edge[];
 	/** By module and span. A kept type-only edge loads but carries no value. */
 	valueEdges: Map<string, Map<string, string>>;
@@ -119,7 +121,7 @@ function addTo(map: Map<string, Set<string>>, key: string, value: string): void 
 	else set.add(value);
 }
 
-function graphOf(rows: readonly LoadEdge[]): Graph {
+export function graphOf(rows: readonly LoadEdge[]): Graph {
 	const graph: Graph = { edges: [], valueEdges: new Map(), importers: new Map(), undecided: new Map() };
 	for (const edge of rows) {
 		if (!loadsAtRuntime(edge)) continue;
@@ -203,16 +205,42 @@ function assemble(
 	return { generation, cycles, byKey: new Map(cycles.map((cycle) => [cycle.key, cycle])) };
 }
 
-function componentsOf(graph: Graph): string[][] {
+export function componentsOf(graph: Graph): string[][] {
 	return findCycles(graph.edges).map(({ members }) => [...members].sort());
 }
 
 /** The whole view from one hold, so its graph, crossings and runtimes share a generation. */
-function buildIn(store: IndexStore): Held {
+export function buildIn(store: IndexStore): Held {
 	const generation = store.factsGeneration();
 	const graph = graphOf(store.loadEdges());
 	const components = componentsOf(graph);
 	return assemble(generation, components, graph, readDetail(store, components, graph));
+}
+
+export function previewComponents(store: IndexStore, facts: readonly import("./store.js").ReplaceFileInput[]): Cycle[] {
+	return withPreviewComponents(store, facts, (cycles) => cycles);
+}
+
+export function withPreviewComponents<T>(
+	store: IndexStore,
+	facts: readonly import("./store.js").ReplaceFileInput[],
+	read: (cycles: Cycle[]) => T,
+): T {
+	return store.readOverlaid(facts, () =>
+		read(
+			buildIn(store).cycles.map((cycle) => ({
+				...cycle,
+				modules: [...cycle.modules],
+				entries: [...cycle.entries],
+			})),
+		),
+	);
+}
+
+export function newCycleComponents(candidate: readonly Cycle[], baseline: readonly Cycle[]): Cycle[] {
+	return candidate.filter(
+		(cycle) => !baseline.some((before) => cycle.modules.every((module) => before.modules.includes(module))),
+	);
 }
 
 /** Membership, entries and uncertainty: what a judgment was asked about. */
@@ -242,6 +270,14 @@ export class LoadCycleRead {
 		private readonly clock: Clock,
 		private readonly gate: WorkspaceGate,
 	) {}
+
+	previewArrange(
+		files: readonly import("@nyaa-lexicon/protocol").ArrangeFile[],
+		probe: ProviderProbe,
+		gate: Gate,
+	): Promise<ModuleCycle[]> {
+		return previewLoadCycles(this.store, this.providers, probe, this.clock, gate, files);
+	}
 
 	async moduleCycles(raw: unknown, dispatchGate?: Gate): Promise<ModuleCycle[]> {
 		const query = ModuleCyclesRequestSchema.parse(raw);

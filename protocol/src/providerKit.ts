@@ -37,6 +37,8 @@ export interface ProviderMethods {
 	judgeLoadCycle?(params: Request<"judgeLoadCycle">): Response<"judgeLoadCycle">;
 	/** Drops the state a `judgeLoadCycle` partial token holds. */
 	releaseLoadCycle?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCycle"]>): void;
+	prepareLoadCyclePreview?(params: Request<"prepareLoadCyclePreview">): Response<"prepareLoadCyclePreview">;
+	releaseLoadCyclePreview?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCyclePreview"]>): void;
 	bind(params: Request<"bind">): Response<"bind">;
 	typeOf(params: Request<"typeOf">): Response<"typeOf">;
 	renameEdits(params: Request<"renameEdits">): Response<"renameEdits">;
@@ -92,6 +94,8 @@ export function handlersFor<V extends ModuleValue, P, E>(
 	if ("store" in provider) return storeHandlersFor(provider);
 	const judgeLoadCycle = provider.judgeLoadCycle;
 	const releaseLoadCycle = provider.releaseLoadCycle;
+	const prepareLoadCyclePreview = provider.prepareLoadCyclePreview;
+	const releaseLoadCyclePreview = provider.releaseLoadCyclePreview;
 	const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 		initialize: (params) =>
 			provider.initialize(params.workspaceRoot, readPolicy(params.workspaceRoot, params.deny)),
@@ -100,6 +104,8 @@ export function handlersFor<V extends ModuleValue, P, E>(
 		probeFile: (params) => provider.parseFile(params),
 		// Reads other files from disk, so it holds no view of several proposed texts.
 		probeBatch: () => ({ status: "unsupported" }),
+		prepareLoadCyclePreview: (params) =>
+			prepareLoadCyclePreview?.call(provider, params) ?? { status: "unsupported" },
 		resolveImport: (params) => provider.resolveImport(params),
 		...(judgeLoadCycle === undefined
 			? {}
@@ -107,6 +113,12 @@ export function handlersFor<V extends ModuleValue, P, E>(
 		...(releaseLoadCycle === undefined
 			? {}
 			: { releaseLoadCycle: (params: { partial: string }) => releaseLoadCycle.call(provider, params) }),
+		...(releaseLoadCyclePreview === undefined
+			? {}
+			: {
+					releaseLoadCyclePreview: (params: { preview: string }) =>
+						releaseLoadCyclePreview.call(provider, params),
+				}),
 		bind: (params) => provider.bind(params),
 		typeOf: (params) => provider.typeOf(params),
 		renameEdits: (params) => provider.renameEdits(params),

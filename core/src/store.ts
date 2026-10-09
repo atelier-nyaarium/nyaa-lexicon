@@ -2135,6 +2135,13 @@ export class IndexStore {
 		return this.generation(row === undefined ? 0 : Number(row.value));
 	}
 
+	factsRevision(): number {
+		const row = this.db.prepare("SELECT value FROM meta WHERE key = 'factsGeneration'").get() as
+			| { value: string }
+			| undefined;
+		return row === undefined ? 0 : Number(row.value);
+	}
+
 	/** Advanced by every write a contributor to the scope makes. */
 	scopeGeneration(key: string): number {
 		const row = this.db.prepare("SELECT generation FROM scope_generations WHERE scopeKey = ?").get(key) as

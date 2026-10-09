@@ -149,6 +149,8 @@ export interface StoreProvider<V extends ModuleValue, P, E> {
 	releaseLoadCycle?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCycle"]>): void;
 	/** Facts and landings with every proposed text in the store's view; absent answers unsupported. */
 	probeBatch?(params: Request<"probeBatch">): Maybe<Response<"probeBatch">>;
+	prepareLoadCyclePreview?(params: Request<"prepareLoadCyclePreview">): Maybe<Response<"prepareLoadCyclePreview">>;
+	releaseLoadCyclePreview?(params: z.infer<(typeof NOTIFICATION_SCHEMAS)["releaseLoadCyclePreview"]>): void;
 	shutdown?(): void;
 }
 
@@ -835,6 +837,8 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 			if (probe === undefined) return { status: "unsupported" as const };
 			return ready(() => kit.transientAll(params.files, "full", () => probe(params)));
 		},
+		prepareLoadCyclePreview: (params: Request<"prepareLoadCyclePreview">) =>
+			ready(() => provider.prepareLoadCyclePreview?.call(provider, params) ?? { status: "unsupported" }),
 		resolveImport: (params: Request<"resolveImport">) => ready(() => provider.resolveImport(params)),
 		judgeLoadCycle: (params: Request<"judgeLoadCycle">) =>
 			provider.judgeLoadCycle?.call(provider, params) ?? unjudgedLoadCycle(params),
@@ -853,6 +857,8 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 		releaseModule: (params: { module: string }) => kit.release(params.module),
 		indexRoots: (params: { roots: string[] }) => kit.setRoots(params.roots),
 		releaseLoadCycle: (params: { partial: string }) => provider.releaseLoadCycle?.call(provider, params),
+		releaseLoadCyclePreview: (params: { preview: string }) =>
+			provider.releaseLoadCyclePreview?.call(provider, params),
 		shutdown: () => {
 			provider.shutdown?.();
 			kit.reset(kit.root);

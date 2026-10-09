@@ -8,6 +8,7 @@ import {
 	type Descriptor,
 	type Diagnostic,
 	defined,
+	hashContent,
 	type Import,
 	type ImportEditsRequest,
 	type ImportEditsResponse,
@@ -125,6 +126,9 @@ export interface Overlay {
 	readonly tag: string;
 	/** This view's memos, which die with the probe. */
 	readonly memos: Map<string, unknown>;
+	backing?: Map<string, string>;
+	rootFiles?: string[];
+	frozen?: boolean;
 }
 
 ////////////////////////////////
@@ -158,27 +162,51 @@ export class TypeScriptAnalyzer {
 			getCompilationSettings: () => options,
 			getCurrentDirectory: () => root,
 			getDefaultLibFileName: (settings) => ts.getDefaultLibFilePath(settings),
-			getProjectVersion: () => `${store.generation}${overlay === undefined ? "" : `:${overlay.tag}`}`,
-			getScriptFileNames: () =>
-				[
-					...new Set([
-						...this.project.roots,
-						...store.get("root").map((module) => this.fileName(module)),
-						...this.overlaidRoots(),
-					]),
-				].filter(inGroup),
+			getProjectVersion: () =>
+				overlay?.frozen === true
+					? `${overlay.tag}:frozen`
+					: `${store.generation}${overlay === undefined ? "" : `:${overlay.tag}`}`,
+			getScriptFileNames: () => {
+				const roots =
+					overlay?.frozen === true
+						? (overlay.rootFiles ?? [])
+						: [
+								...new Set([
+									...this.project.roots,
+									...store.get("root").map((module) => this.fileName(module)),
+									...this.overlaidRoots(),
+								]),
+							];
+				return roots.filter(inGroup);
+			},
 			getScriptKind: (fileName) => scriptKindOf(fileName),
 			getScriptSnapshot: (fileName) => {
 				const text = this.hostText(fileName);
 				return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
 			},
 			getScriptVersion: (fileName) => this.scriptVersion(fileName),
-			fileExists: (fileName) => this.hostText(fileName) !== undefined || loaded.system.fileExists(fileName),
-			readFile: (fileName) => this.hostText(fileName) ?? loaded.system.readFile(fileName),
-			readDirectory: loaded.system.readDirectory,
-			directoryExists: directories.directoryExists,
-			getDirectories: loaded.system.getDirectories,
-			...(loaded.system.realpath ? { realpath: loaded.system.realpath } : {}),
+			fileExists: (fileName) =>
+				this.hostText(fileName) !== undefined ||
+				(overlay?.frozen !== true && loaded.system.fileExists(fileName)),
+			readFile: (fileName) =>
+				this.hostText(fileName) ?? (overlay?.frozen === true ? undefined : loaded.system.readFile(fileName)),
+			readDirectory:
+				overlay?.frozen === true
+					? (root, extensions) => frozenFiles(overlay, root, extensions)
+					: loaded.system.readDirectory,
+			directoryExists:
+				overlay?.frozen === true
+					? (directory) => frozenDirectory(overlay, directory)
+					: directories.directoryExists,
+			getDirectories:
+				overlay?.frozen === true
+					? (directory) => frozenDirectories(overlay, directory)
+					: loaded.system.getDirectories,
+			...(overlay?.frozen === true
+				? { realpath: (fileName: string) => path.resolve(fileName) }
+				: loaded.system.realpath
+					? { realpath: loaded.system.realpath }
+					: {}),
 			useCaseSensitiveFileNames: () => loaded.system.useCaseSensitiveFileNames,
 		};
 		// Each occurrence in the mode TypeScript gives it, so `exports` conditions apply per import form.
@@ -407,6 +435,30 @@ export class TypeScriptAnalyzer {
 	/** The Program of `module`'s settings group, as indexing reads it now. */
 	programOf(module: string): ts.Program | undefined {
 		return this.program(this.fileName(module));
+	}
+
+	freezePrograms(modules: readonly string[]): Map<string, ts.Program> {
+		const programs = new Map<string, ts.Program>();
+		const backing = new Map<string, string>();
+		for (const module of modules) {
+			const program = this.programOf(module);
+			if (program === undefined) continue;
+			const group = this.groupOf(module);
+			programs.set(group, program);
+			for (const source of program.getSourceFiles()) backing.set(path.resolve(source.fileName), source.text);
+		}
+		if (this.overlay !== undefined) {
+			this.overlay.backing = backing;
+			this.overlay.rootFiles = [
+				...new Set([
+					...this.project.roots,
+					...this.store.get("root").map((module) => this.fileName(module)),
+					...this.overlaidRoots(),
+				]),
+			];
+			this.overlay.frozen = true;
+		}
+		return programs;
 	}
 
 	/** The settings group `module` compiles in. */
@@ -814,11 +866,16 @@ export class TypeScriptAnalyzer {
 		const { system } = this.project.loaded;
 		const proposed = module === null ? undefined : this.overlay?.files.get(module);
 		if (proposed !== undefined) return proposed.text;
+		if (this.overlay?.frozen === true) return this.overlay.backing?.get(path.resolve(fileName));
 		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return system.readFile(fileName);
 		return this.store.text(module)?.text ?? system.readFile(fileName);
 	}
 
 	private scriptVersion(fileName: string): string {
+		if (this.overlay?.frozen === true) {
+			const text = this.overlay.backing?.get(path.resolve(fileName));
+			return text === undefined ? "frozen:missing" : `frozen:${hashContent(text)}`;
+		}
 		const module = this.toModule(fileName);
 		const proposed = module === null ? undefined : this.overlay?.files.get(module);
 		if (proposed !== undefined) return proposed.contentHash;
@@ -855,6 +912,35 @@ export class TypeScriptAnalyzer {
 /** Read as a surface, as the store reads a module from its text. */
 function isSurfaceText(module: string, text: string): boolean {
 	return module.split("/").includes("node_modules") || isLikelyBundle(module, text);
+}
+
+function frozenFiles(overlay: Overlay, root: string, extensions?: readonly string[]): string[] {
+	const absolute = path.resolve(root);
+	return [...(overlay.backing?.keys() ?? [])].filter((file) => {
+		const relative = path.relative(absolute, file);
+		return (
+			relative !== ".." &&
+			!relative.startsWith(`..${path.sep}`) &&
+			!path.isAbsolute(relative) &&
+			(extensions === undefined || extensions.some((extension) => file.endsWith(extension)))
+		);
+	});
+}
+
+function frozenDirectory(overlay: Overlay, directory: string): boolean {
+	return frozenFiles(overlay, directory).length > 0;
+}
+
+function frozenDirectories(overlay: Overlay, directory: string): string[] {
+	const root = path.resolve(directory);
+	const children = new Set<string>();
+	for (const file of overlay.backing?.keys() ?? []) {
+		const relative = path.relative(root, file);
+		if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+		const child = relative.split(path.sep)[0];
+		if (child !== undefined && child !== path.basename(file)) children.add(path.join(root, child));
+	}
+	return [...children];
 }
 
 /**

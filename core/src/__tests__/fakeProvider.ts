@@ -56,6 +56,7 @@ export interface FakeOptions {
 	indexedRoots?: Array<{ providerId: string; roots: string[] }>;
 	/** Each partial judgment the index told its provider to drop. */
 	releasedJudgments?: Array<{ providerId: string; partial: string }>;
+	releasedPreviews?: Array<{ providerId: string; preview: string }>;
 	/** Each verdict DELIVERED, with the provider it named, in order. */
 	admissions?: Array<{ providerId: string; verdict: ModuleAdmission }>;
 	/** Which spawn answers now. A test advances it to restart a provider under the same id. */
@@ -259,6 +260,9 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		},
 		releaseJudgment: (providerId, given, partial) => {
 			if (given === incarnation.current) options.releasedJudgments?.push({ providerId, partial });
+		},
+		releaseLoadCyclePreview: (providerId, given, preview) => {
+			if (given === incarnation.current) options.releasedPreviews?.push({ providerId, preview });
 		},
 		incarnationOf: () => incarnation.current,
 		respawnedFrom: (listener) => {

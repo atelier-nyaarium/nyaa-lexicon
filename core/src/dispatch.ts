@@ -272,10 +272,12 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 	 * does, so nothing is taken around it here; only the answer takes the gate. */
 	const upgradedRead = <M extends DaemonMethod>(
 		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
+		then?: (answered: ResponseOf<M>, gate: Gate) => Promise<ResponseOf<M>> | ResponseOf<M>,
 	): Handler<M> =>
 		staged(async (params, gate) => {
 			await gate.ahead(service.upgradeRemaining());
-			return gate.read(() => answer(params));
+			const answered = await gate.read(() => answer(params));
+			return then === undefined ? answered : then(answered, gate);
 		});
 
 	/** Git history read outside the gate, since a subprocess must never hold it; the answer under the shared gate. */
@@ -413,7 +415,18 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		// Upgrade outlines before preview reads.
 		previewMove: upgradedRead((params) => previewMove(service, params)),
-		previewArrange: upgradedRead((params) => previewArrange(service, params)),
+		previewArrange: upgradedRead(
+			(params) => previewArrange(service, params),
+			async (answered, gate) => {
+				if (!answered.ok) return answered;
+				try {
+					const loadCycles = await service.loadCycles.previewArrange(answered.files, service.probe, gate);
+					return { ...answered, ...(loadCycles.length === 0 ? {} : { loadCycles }) };
+				} catch {
+					return answered;
+				}
+			},
+		),
 		previewInsert: upgradedRead((params) => previewInsert(service, params)),
 		previewReplace: upgradedRead((params) => previewReplace(service, params)),
 		// A current file answers `current`, so the facts cache and status generation stay.

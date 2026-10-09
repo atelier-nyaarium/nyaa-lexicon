@@ -4,6 +4,7 @@ import ts from "typescript";
 import type { TypeScriptAnalyzer } from "./analyzer.js";
 import { isLikelyBundle } from "./bundle.js";
 import { scriptKindOf } from "./file-types.js";
+import type { PreparedLoadCycleContext } from "./judge/preview.js";
 import type { JudgeSession } from "./judge/session.js";
 import type { Writes } from "./judge/writes.js";
 import type { LoadedProject } from "./project.js";
@@ -52,6 +53,7 @@ export interface TypeScriptProject {
 	readonly languageServices: Map<object, Map<string, ts.LanguageService>>;
 	/** Load-cycle judgments between slices, by partial token. */
 	readonly judgments: Map<string, JudgeSession>;
+	readonly previews: Map<string, PreparedLoadCycleContext>;
 	/** What each Program assigns, scanned once for every judgment pinning it. */
 	readonly writes: WeakMap<ts.Program, Writes>;
 }
@@ -69,6 +71,7 @@ export function createTypeScriptProject(root: string, loaded: LoadedProject, fin
 		declarationIds: new Map(),
 		languageServices: new Map(),
 		judgments: new Map(),
+		previews: new Map(),
 		writes: new WeakMap(),
 	};
 }

@@ -393,7 +393,9 @@ export {
 	ModuleCyclesRequestSchema,
 	ModuleProblemsRequestSchema,
 	ModuleProblemsResponseSchema,
+	PrepareLoadCyclePreviewRequestSchema,
 	ReleaseLoadCycleNotificationSchema,
+	ReleaseLoadCyclePreviewNotificationSchema,
 	unjudgedLoadCycle,
 } from "./loadCycles.js";
 export {
@@ -422,6 +424,9 @@ export {
 	PROVIDER_EVENTS,
 	PROVIDER_METHODS,
 	PROVIDER_NOTIFICATIONS,
+	type PrepareLoadCyclePreviewRequest,
+	type PrepareLoadCyclePreviewResponse,
+	PrepareLoadCyclePreviewResponseSchema,
 	type ProbeBatchRequest,
 	ProbeBatchRequestSchema,
 	type ProbeBatchResponse,
