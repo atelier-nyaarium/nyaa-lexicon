@@ -51,6 +51,7 @@ export function makeArrangeEdits(request: ArrangeEditsRequest, facts: PythonMove
 		// The target's own import of a member leaves with the arrangement.
 		const collision = request.members.find(
 			(member) =>
+				!member.comment &&
 				member.removal === undefined &&
 				declaresName(facts, member.name, (binding) => importsMember(request.importSites, member, binding)),
 		);
@@ -68,6 +69,16 @@ export function makeArrangeEdits(request: ArrangeEditsRequest, facts: PythonMove
 	const removed: OffsetRange[] = [];
 	for (const member of request.members) {
 		if (member.removal === undefined) continue;
+		if (member.comment) {
+			const offsets = coordinates.offsetsForRange(member.removal);
+			if (offsets === undefined)
+				blocked.push(blockedSite(member.removal, "ParseError", "the removal range is outside the module"));
+			else {
+				edits.push({ range: member.removal, newText: "" });
+				removed.push(offsets);
+			}
+			continue;
+		}
 		const offsets = coordinates.offsetsForRange(member.removal);
 		if (offsets === undefined) {
 			blocked.push(blockedSite(member.removal, "ParseError", "the removal range is outside the module"));

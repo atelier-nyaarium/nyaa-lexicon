@@ -2,6 +2,7 @@
 // plan. Worked out once against the original texts, so the preview is what gets written.
 
 import {
+	type ArrangeAnchor,
 	type ArrangeEditsRequest,
 	type ArrangeImportSite,
 	type ArrangeMember,
@@ -11,15 +12,17 @@ import {
 	defined,
 	hashContent,
 	isWithin,
-	type MoveAnchor,
 	type MoveDependency,
 	type OffsetRange,
 	type Position,
 	type Promoted,
 	type Range,
+	type StoredComment,
 	type StoredLiteral,
 } from "@nyaa-lexicon/protocol";
 import { type Landing, layoutModule } from "./arrangeLayout.js";
+import { mergeRemovals } from "./arrangeText.js";
+import { attachComments } from "./commentAttach.js";
 import type { ImportResolver } from "./imports.js";
 import { promoteDependency, promotedFrom, unacknowledgedPromotions } from "./movePromotion.js";
 import type { ProviderProbe } from "./providerProbe.js";
@@ -29,6 +32,7 @@ import {
 	alreadyDeclaredIn,
 	anchorNotPlaced,
 	anchorNotTopLevel,
+	arrangeCommentRefused,
 	arrangeMisplaced,
 	arrangeNeedsTopLevel,
 	candidateDoesNotParse,
@@ -42,15 +46,6 @@ import {
 	type Refusal,
 	subjectRefused,
 } from "./refusals.js";
-import {
-	type BannerPlacement,
-	bannerPrefixes,
-	bannerRemovals,
-	eolOf,
-	mergeBannerRemovals,
-	NO_LEVEL,
-	sectionBanners,
-} from "./sectionBanners.js";
 import type { SourceWorkspace } from "./sourceWorkspace.js";
 import type { IndexStore, StoredReference } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
@@ -59,9 +54,10 @@ import type { RefactorIssue } from "./transactions.js";
 //  Interfaces & Types
 
 export interface ArrangePlacement {
-	symbolId: string;
-	/** A target declaration that stays, or an earlier placement; absent means the target's end. */
-	anchor?: MoveAnchor | undefined;
+	symbolId?: string | undefined;
+	factId?: string | undefined;
+	/** An unplaced declaration or an earlier placement. */
+	anchor?: ArrangeAnchor | undefined;
 }
 
 /** One placed declaration. */
@@ -84,6 +80,14 @@ export interface ArrangedMember {
 	exports: boolean;
 }
 
+export interface ArrangedComment {
+	factId: string;
+	module: string;
+	text: string;
+	range: Range;
+	incoming: boolean;
+}
+
 export type PlannedArrange =
 	| {
 			ok: true;
@@ -92,7 +96,8 @@ export type PlannedArrange =
 			fromModule: string;
 			/** In placement order. */
 			members: ArrangedMember[];
-			/** In document order, each slot's members in landing order. */
+			comments: ArrangedComment[];
+			/** In document order, each slot's items in landing order. */
 			slots: Array<{ landing: Landing; members: string[] }>;
 			/** What the incoming members use, for the target. */
 			dependencies: MoveDependency[];
@@ -115,8 +120,8 @@ export type ArrangedFiles =
 			issues: RefactorIssue[];
 			/** Every file went through `fixText` cleanly. */
 			formatted: boolean;
-			/** Each top-level declaration's span in the target's final text; a member by its id before the move. */
-			placed: Array<{ symbolId: string; range: Range }>;
+			/** Placed spans keyed by their original declaration or comment id. */
+			placed: Array<{ symbolId: string; range: Range } | { factId: string; range: Range }>;
 	  }
 	| {
 			ok: false;
@@ -148,6 +153,25 @@ function rangeOf(reference: StoredReference): Range {
 
 function holds(range: Range, at: Position): boolean {
 	return comparePositions(range.start, at) <= 0 && comparePositions(at, range.end) <= 0;
+}
+
+function wholeComment(text: string, comment: StoredComment): boolean {
+	const coordinates = coordinatesOf(text);
+	const first = coordinates.lineText(comment.range.start.line)?.slice(0, comment.range.start.character) ?? "";
+	const last = coordinates.lineText(comment.range.end.line)?.slice(comment.range.end.character) ?? "";
+	return first.trim() === "" && last.trim() === "";
+}
+
+function commentRemoval(text: string, range: Range): Range {
+	const coordinates = coordinatesOf(text);
+	const lineStart = (line: number) => coordinates.offsetAt({ line, character: 0 });
+	let start = lineStart(range.start.line) ?? 0;
+	let end = lineStart(range.end.line + 1) ?? text.length;
+	const before = coordinates.lineText(range.start.line - 1);
+	const after = coordinates.lineText(range.end.line + 1);
+	if (after !== undefined && after.trim() === "") end = lineStart(range.end.line + 2) ?? text.length;
+	else if (before !== undefined && before.trim() === "") start = lineStart(range.start.line - 1) ?? start;
+	return { start: coordinates.positionAt(start) as Range["start"], end: coordinates.positionAt(end) as Range["end"] };
 }
 
 /** Each indexed string literal inside `range`, as offsets into the text `range` slices. */
@@ -192,11 +216,44 @@ export class ArrangePlanner {
 		const bases = new Map<string, string | null>([[toModule, targetHash]]);
 
 		const members: ArrangedMember[] = [];
+		const comments: ArrangedComment[] = [];
 		let fromModule: string | undefined;
 		for (const placement of placements) {
-			const declaration = context.declaration(placement.symbolId);
-			if (declaration === null) return { ok: false, reason: subjectRefused(placement.symbolId, this.store) };
-			if (members.some((member) => member.symbolId === placement.symbolId)) {
+			if (placement.factId !== undefined) {
+				const fact = this.store.factById(placement.factId);
+				if (fact?.fact !== "comment") return { ok: false, reason: arrangeCommentRefused(placement.factId) };
+				const sourceRead = this.source.writable(fact.module);
+				if ("refused" in sourceRead || sourceRead.text === null) {
+					return { ok: false, reason: arrangeCommentRefused(placement.factId) };
+				}
+				const level = context.moduleLevel(fact.module);
+				if (
+					fact.form !== "standalone" ||
+					!(fact.anchorId === null || level.scopes.has(fact.anchorId)) ||
+					!wholeComment(sourceRead.text, fact)
+				)
+					return { ok: false, reason: arrangeCommentRefused(placement.factId) };
+				const incoming = fact.module !== toModule;
+				if (incoming) {
+					fromModule ??= fact.module;
+					if (fact.module !== fromModule) {
+						return { ok: false, reason: moveTogetherSplit(fact.raw, fact.module, fromModule) };
+					}
+				}
+				bases.set(fact.module, hashContent(sourceRead.text));
+				comments.push({
+					factId: fact.factId,
+					module: fact.module,
+					text: fact.raw,
+					range: fact.range,
+					incoming,
+				});
+				continue;
+			}
+			const symbolId = placement.symbolId as string;
+			const declaration = context.declaration(symbolId);
+			if (declaration === null) return { ok: false, reason: subjectRefused(symbolId, this.store) };
+			if (members.some((member) => member.symbolId === symbolId)) {
 				return { ok: false, reason: placedTwice(declaration.name) };
 			}
 			if (context.isLocal(declaration) || context.ancestorsOf(declaration).length > 0) {
@@ -209,22 +266,20 @@ export class ArrangePlanner {
 					return { ok: false, reason: moveTogetherSplit(declaration.name, declaration.module, fromModule) };
 				}
 			}
-			const source = this.source.symbolSourceRead({ symbolId: placement.symbolId });
+			const source = this.source.symbolSourceRead({ symbolId });
 			if (!source.found) return { ok: false, reason: source.reason };
 			bases.set(declaration.module, source.contentHash);
-			const rebased = incoming
-				? this.planner.rebaseIntoModule(placement.symbolId, placement.symbolId, toModule)
-				: null;
+			const rebased = incoming ? this.planner.rebaseIntoModule(symbolId, symbolId, toModule) : null;
 			members.push({
-				symbolId: placement.symbolId,
+				symbolId,
 				name: declaration.name,
 				module: declaration.module,
 				text: source.text,
 				literals: literalSpans(source.fileText, source.range, this.store.literalsIn(declaration.module)),
 				range: source.range,
-				closure: context.symbolIdsIn(declaration.module).filter((id) => isWithin(id, placement.symbolId)),
+				closure: context.symbolIdsIn(declaration.module).filter((id) => isWithin(id, symbolId)),
 				incoming,
-				landsAs: rebased ?? placement.symbolId,
+				landsAs: rebased ?? symbolId,
 				exports: false,
 			});
 		}
@@ -233,7 +288,7 @@ export class ArrangePlanner {
 		const collides = members.find((member) => member.incoming && held.has(member.landsAs));
 		if (collides !== undefined) return { ok: false, reason: alreadyDeclaredIn(collides.name, toModule) };
 
-		const slots = this.slotsFor(placements, members, toModule, context);
+		const slots = this.slotsFor(placements, members, comments, toModule, context);
 		if ("refused" in slots) return { ok: false, reason: slots.refused };
 
 		const incoming = members.filter((member) => member.incoming);
@@ -298,6 +353,7 @@ export class ArrangePlanner {
 			toModule,
 			fromModule: fromModule ?? toModule,
 			members,
+			comments,
 			slots: slots.map((slot) => ({ landing: slot.landing, members: slot.members })),
 			dependencies: [...dependencies.values()],
 			promoted: promotedFrom([...dependencies.values()]),
@@ -312,30 +368,43 @@ export class ArrangePlanner {
 	private slotsFor(
 		placements: readonly ArrangePlacement[],
 		members: readonly ArrangedMember[],
+		comments: readonly ArrangedComment[],
 		toModule: string,
 		context: ReadContext,
 	): Slot[] | { refused: Refusal } {
-		const siblings = context.heldBy(toModule, undefined).filter((each) => !context.isLocal(each));
-		const placed = new Set(members.map((member) => member.symbolId));
+		const siblings = context
+			.moduleLevel(toModule)
+			.declarations.filter((each) => !context.isLocal(each))
+			.sort((left, right) => comparePositions(left.range.start, right.range.start));
+		const placed = new Set([
+			...members.map((member) => member.symbolId),
+			...comments.map((comment) => comment.factId),
+		]);
+		const nameOf = (id: string) =>
+			members.find((member) => member.symbolId === id)?.name ??
+			comments.find((comment) => comment.factId === id)?.text ??
+			id;
 		const keyed = new Map<string, Slot>();
 		const slotOf = new Map<string, Slot>();
-		for (const [index, placement] of placements.entries()) {
-			const member = members[index] as ArrangedMember;
+		for (const placement of placements) {
+			const id = placement.symbolId ?? (placement.factId as string);
 			const anchor = placement.anchor;
-			const chained = anchor === undefined ? undefined : slotOf.get(anchor.symbolId);
+			const anchorId = anchor?.symbolId ?? anchor?.factId;
+			const chained = anchorId === undefined ? undefined : slotOf.get(anchorId);
 			let slot: Slot;
 			if (anchor === undefined) {
 				slot = keyed.get("end") ?? { landing: "end", rank: 2, members: [] };
 				keyed.set("end", slot);
-				slot.members.push(member.symbolId);
+				slot.members.push(id);
 			} else if (chained !== undefined) {
-				const at = chained.members.indexOf(anchor.symbolId);
-				chained.members.splice(anchor.side === "before" ? at : at + 1, 0, member.symbolId);
+				const at = chained.members.indexOf(anchorId as string);
+				chained.members.splice(anchor.side === "before" ? at : at + 1, 0, id);
 				slot = chained;
 			} else {
-				const label = context.declaration(anchor.symbolId)?.name ?? anchor.symbolId;
-				if (placed.has(anchor.symbolId)) return { refused: anchorNotPlaced(label, member.name, toModule) };
-				const at = siblings.findIndex((sibling) => sibling.symbolId === anchor.symbolId);
+				const label = context.declaration(anchorId as string)?.name ?? nameOf(anchorId as string);
+				if (placed.has(anchorId as string)) return { refused: anchorNotPlaced(label, nameOf(id), toModule) };
+				if (anchor.factId !== undefined) return { refused: anchorNotTopLevel(label, toModule) };
+				const at = siblings.findIndex((sibling) => sibling.symbolId === anchorId);
 				const sibling = siblings[at];
 				if (sibling === undefined) return { refused: anchorNotTopLevel(label, toModule) };
 				// A neighbor sharing the anchor's first or last line leaves no whole line between them.
@@ -345,17 +414,17 @@ export class ArrangePlanner {
 					? neighbor?.range.end.line === sibling.range.start.line
 					: neighbor?.range.start.line === sibling.range.end.line;
 				if (neighbor !== undefined && shared) return { refused: noInsertionPoint(neighbor.name) };
-				const key = `${anchor.side}\0${anchor.symbolId}`;
+				const key = `${anchor.side}\0${anchorId}`;
 				slot = keyed.get(key) ?? {
 					landing: { line: before ? sibling.range.start.line : sibling.range.end.line + 1 },
 					rank: before ? 1 : 0,
 					members: [],
 				};
 				keyed.set(key, slot);
-				if (before) slot.members.push(member.symbolId);
-				else slot.members.unshift(member.symbolId);
+				if (before) slot.members.push(id);
+				else slot.members.unshift(id);
 			}
-			slotOf.set(member.symbolId, slot);
+			slotOf.set(id, slot);
 		}
 		const line = (slot: Slot) => (slot.landing === "end" ? Number.POSITIVE_INFINITY : slot.landing.line);
 		return [...keyed.values()].sort((left, right) => line(left) - line(right) || left.rank - right.rank);
@@ -364,20 +433,6 @@ export class ArrangePlanner {
 	/** Every file the arrangement writes, with the hash it was planned over, formatted when `fixText` is set. */
 	async files(plan: Extract<PlannedArrange, { ok: true }>, context: ReadContext): Promise<ArrangedFiles> {
 		const { toModule, fromModule } = plan;
-		let sourceText = "";
-		let banners: BannerPlacement[] = [];
-		if (fromModule !== toModule) {
-			const sourceRead = this.source.writable(fromModule);
-			if ("refused" in sourceRead) return { ok: false, issues: [], reason: sourceRead.refused };
-			sourceText = sourceRead.text ?? "";
-			// Shallow facts hold no comments, so banners stay as they are.
-			if (context.hasFullFacts?.(fromModule) !== false)
-				banners = sectionBanners(
-					sourceText,
-					context.commentsIn?.(fromModule) ?? [],
-					context.moduleLevel?.(fromModule) ?? NO_LEVEL,
-				);
-		}
 		const others = [...plan.referencing.keys()].filter((module) => module !== toModule && module !== fromModule);
 		const modules = [toModule, ...(fromModule === toModule ? [] : [fromModule]), ...others];
 
@@ -392,28 +447,7 @@ export class ArrangePlanner {
 			}
 			const text = current.text ?? "";
 			const part = this.partOf(module, text, plan, context);
-			const incomingIds = new Set(
-				plan.members.filter((member) => member.incoming).map((member) => member.symbolId),
-			);
-			// A file the move creates gets its members' banners, in the order the members land.
-			const prefixes =
-				module === toModule && current.text === null
-					? bannerPrefixes(
-							sourceText,
-							eolOf(part.members.map((member) => member.insertion?.text ?? "").join("")),
-							banners,
-							part.members.map((member) => member.symbolId),
-						)
-					: new Map<string, string>();
-			const requestedPart = {
-				...part,
-				members: part.members.map((member) => {
-					const prefix = prefixes.get(member.symbolId);
-					return member.insertion === undefined || prefix === undefined
-						? member
-						: { ...member, insertion: { ...member.insertion, text: `${prefix}${member.insertion.text}` } };
-				}),
-			};
+			const requestedPart = part;
 			const answer = await this.probe.arrangeEdits(module, {
 				module,
 				text,
@@ -447,9 +481,7 @@ export class ArrangePlanner {
 					module,
 				});
 			}
-			const bannerEdits =
-				module === fromModule && fromModule !== toModule ? bannerRemovals(text, banners, incomingIds) : [];
-			const applied = applyEdits(text, mergeBannerRemovals([...answer.edits, ...bannerEdits]));
+			const applied = applyEdits(text, mergeRemovals(answer.edits));
 			if ("problem" in applied) {
 				return { ok: false, issues: [], reason: providerRefused(module, applied.problem) };
 			}
@@ -498,26 +530,55 @@ export class ArrangePlanner {
 
 		if (module === plan.toModule) {
 			const own = plan.members.filter((member) => !member.incoming);
+			const ownComments = plan.comments.filter((comment) => !comment.incoming);
+			const byId = new Map<
+				string,
+				{ text: string; literals?: OffsetRange[]; comment?: ArrangedComment; member?: ArrangedMember }
+			>();
+			for (const member of plan.members)
+				byId.set(member.symbolId, { text: member.text, literals: member.literals, member });
+			for (const comment of plan.comments) byId.set(comment.factId, { text: comment.text, comment });
 			const layout = layoutModule(
 				text,
-				new Map(own.map((member) => [member.symbolId, member.range])),
+				new Map(own.map((member) => [member.symbolId, member.range] as const)),
 				plan.slots.map((slot) => ({
 					landing: slot.landing,
 					members: slot.members.map((symbolId) => {
-						const { text, literals } = memberOf(symbolId);
-						return { symbolId, text, literals };
+						const item = byId.get(symbolId) as { text: string; literals?: OffsetRange[] };
+						return { symbolId, text: item.text, ...defined({ literals: item.literals }) };
 					}),
 				})),
 			);
 			const members = layout.order.map((symbolId): ArrangeMember => {
-				const member = memberOf(symbolId);
+				const item = byId.get(symbolId) as {
+					text: string;
+					literals?: OffsetRange[];
+					comment?: ArrangedComment;
+					member?: ArrangedMember;
+				};
+				const member = item.member;
 				const insertion = layout.insertions.get(symbolId) as { text: string; position: Position };
+				const removal =
+					item.comment !== undefined
+						? ownComments.some((comment) => comment.factId === symbolId)
+							? commentRemoval(text, item.comment.range)
+							: undefined
+						: layout.removals.get(symbolId);
+				if (item.comment !== undefined)
+					return {
+						symbolId,
+						name: item.comment.text,
+						comment: true,
+						...defined({ removal }),
+						insertion,
+						sites: [],
+					};
 				return {
 					symbolId,
-					name: member.name,
-					...defined({ removal: layout.removals.get(symbolId) }),
-					insertion: { ...insertion, ...(member.exports ? { exported: true } : {}) },
-					sites: member.incoming ? sites(symbolId) : [],
+					name: (member as ArrangedMember).name,
+					...defined({ removal }),
+					insertion: { ...insertion, ...((member as ArrangedMember).exports ? { exported: true } : {}) },
+					sites: (member as ArrangedMember).incoming ? sites(symbolId) : [],
 				};
 			});
 			return { members, importSites, dependencies: plan.dependencies };
@@ -525,16 +586,32 @@ export class ArrangePlanner {
 
 		if (module === plan.fromModule) {
 			const incoming = plan.members.filter((member) => member.incoming);
-			const layout = layoutModule(text, new Map(incoming.map((member) => [member.symbolId, member.range])), []);
+			const incomingComments = plan.comments.filter((comment) => comment.incoming);
+			const layout = layoutModule(
+				text,
+				new Map(incoming.map((member) => [member.symbolId, member.range] as const)),
+				[],
+			);
 			return {
-				members: incoming.map(
-					(member): ArrangeMember => ({
-						symbolId: member.symbolId,
-						name: member.name,
-						...defined({ removal: layout.removals.get(member.symbolId) }),
-						sites: [],
-					}),
-				),
+				members: [
+					...incoming.map(
+						(member): ArrangeMember => ({
+							symbolId: member.symbolId,
+							name: member.name,
+							...defined({ removal: layout.removals.get(member.symbolId) }),
+							sites: [],
+						}),
+					),
+					...incomingComments.map(
+						(comment): ArrangeMember => ({
+							symbolId: comment.factId,
+							name: comment.text,
+							comment: true,
+							removal: commentRemoval(text, comment.range),
+							sites: [],
+						}),
+					),
+				],
 				importSites,
 				// What stays behind and still calls a member imports it from the target.
 				dependencies: plan.usedAtSource.map(
@@ -563,8 +640,10 @@ export class ArrangePlanner {
 	private async located(
 		plan: Extract<PlannedArrange, { ok: true }>,
 		files: ReadonlyArray<{ module: string; text: string }>,
-	): Promise<{ placed: Array<{ symbolId: string; range: Range }> } | { refused: Refusal }> {
-		const placed: Array<{ symbolId: string; range: Range }> = [];
+	): Promise<
+		{ placed: Array<{ symbolId: string; range: Range } | { factId: string; range: Range }> } | { refused: Refusal }
+	> {
+		const placed: Array<{ symbolId: string; range: Range } | { factId: string; range: Range }> = [];
 		for (const module of plan.fromModule === plan.toModule ? [plan.toModule] : [plan.toModule, plan.fromModule]) {
 			const file = files.find((each) => each.module === module);
 			if (file === undefined) {
@@ -577,6 +656,9 @@ export class ArrangePlanner {
 						const held = context.declaration(symbolId);
 						if (held === null || context.isLocal(held) || context.ancestorsOf(held).length > 0) continue;
 						placed.push({ symbolId, range: held.range });
+					}
+					for (const comment of plan.comments.filter((item) => item.module === module)) {
+						placed.push({ factId: comment.factId, range: comment.range });
 					}
 				}
 				continue;
@@ -593,6 +675,24 @@ export class ArrangePlanner {
 				}
 			}
 			if (!landing) continue;
+			// Grouped as the index groups them, so a multi-line comment is one run here too.
+			const landed = attachComments(
+				parsed.facts.declarations,
+				parsed.facts.comments ?? [],
+				file.text,
+				parsed.facts.blankLines,
+			);
+			const used = new Set<number>();
+			for (const comment of plan.comments) {
+				const wanted = comment.text.replace(/\r\n/g, "\n");
+				const at = landed.findIndex(
+					(each, index) => !used.has(index) && each.raw.replace(/\r\n/g, "\n") === wanted,
+				);
+				const match = landed[at];
+				if (match === undefined) return { refused: arrangeMisplaced(comment.text, module) };
+				used.add(at);
+				placed.push({ factId: comment.factId, range: match.range });
+			}
 			const asMember = new Map(plan.members.map((member) => [member.landsAs, member.symbolId] as const));
 			for (const declaration of parsed.facts.declarations) {
 				if (declaration.containerId !== undefined) continue;

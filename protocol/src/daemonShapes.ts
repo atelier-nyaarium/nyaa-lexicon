@@ -1627,7 +1627,12 @@ export const ArrangePreviewSchema = z
 			/** Every file went through `fixText` cleanly. */
 			formatted: z.boolean(),
 			/** Each top-level declaration's span in the target's final text; a placed one by its id before the move. */
-			placed: z.array(z.object({ symbolId: z.string(), range: RangeSchema })),
+			placed: z.array(
+				z.union([
+					z.object({ symbolId: z.string(), factId: z.undefined().optional(), range: RangeSchema }),
+					z.object({ factId: z.string(), symbolId: z.undefined().optional(), range: RangeSchema }),
+				]),
+			),
 			/** As on a move preview. */
 			promoted: z.array(PromotedSchema).optional(),
 		}),

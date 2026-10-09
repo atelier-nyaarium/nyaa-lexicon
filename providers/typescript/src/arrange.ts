@@ -50,7 +50,10 @@ export function makeArrangeEdits(
 	if (target && request.exists) {
 		// Only arriving members lack a removal here.
 		const taken = request.members.find(
-			(member) => member.removal === undefined && targetDeclares(scope, member.name, request.fromModule),
+			(member) =>
+				!member.comment &&
+				member.removal === undefined &&
+				targetDeclares(scope, member.name, request.fromModule),
 		);
 		if (taken !== undefined) {
 			return {
@@ -66,6 +69,10 @@ export function makeArrangeEdits(
 	const leaving: Leaving[] = [];
 	for (const member of request.members) {
 		if (member.removal === undefined) continue;
+		if (member.comment) {
+			edits.push({ range: member.removal, newText: "" });
+			continue;
+		}
 		const removal = removalOf(scope, member.removal, member.name);
 		if ("blocked" in removal) blocked.push(removal.blocked);
 		else {

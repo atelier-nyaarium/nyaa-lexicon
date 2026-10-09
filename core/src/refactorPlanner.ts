@@ -34,6 +34,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { FileEdits } from "./applyEdits.js";
 import { separatedRemoval } from "./arrangeLayout.js";
+import { mergeRemovals } from "./arrangeText.js";
 import { landingKey, narrowed } from "./exportProjection.js";
 import type { ImportResolver } from "./imports.js";
 import { promoteDependency, promotedFrom, unacknowledgedPromotions } from "./movePromotion.js";
@@ -80,15 +81,6 @@ import {
 } from "./refusals.js";
 import { type ModuleTiers, mentionsOf, type ResolvedRoutes, resolveRoutes, startKey } from "./renameRoutes.js";
 import { proveRename, type RenameCandidate } from "./renameValidation.js";
-import {
-	type BannerPlacement,
-	bannerPrefixes,
-	bannerRemovals,
-	eolOf,
-	mergeBannerRemovals,
-	NO_LEVEL,
-	sectionBanners,
-} from "./sectionBanners.js";
 import { writableText } from "./sourceRead.js";
 import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
 import type { IndexStore, StoredDeclaration, StoredImport } from "./store.js";
@@ -890,19 +882,9 @@ export class RefactorPlanner {
 
 	/** Collects provider edits for `previewMove`. See `docs/daemon-protocol.md`. */
 	async moveEdits(plan: Extract<PlannedMove, { ok: true }>, context: ReadContext): Promise<MoveEditsOutcome> {
-		let sourceText = "";
-		let sourceBanners: BannerPlacement[] = [];
 		if (plan.fromModule !== plan.toModule) {
 			const sourceRead = this.source.writable(plan.fromModule);
 			if ("refused" in sourceRead) return { ok: false, issues: [], reason: sourceRead.refused };
-			sourceText = sourceRead.text ?? "";
-			// Shallow facts hold no comments, so banners stay as they are.
-			if (context.hasFullFacts?.(plan.fromModule) !== false)
-				sourceBanners = sectionBanners(
-					sourceText,
-					context.commentsIn?.(plan.fromModule) ?? [],
-					context.moduleLevel?.(plan.fromModule) ?? NO_LEVEL,
-				);
 		}
 		const requests = await this.moveRequests(plan, context);
 		const files: Array<{ module: string; text: string; edits: TextEdit[] }> = [];
@@ -918,31 +900,8 @@ export class RefactorPlanner {
 			}
 			bases.push({ module: request.module, hash: current.text === null ? null : hashContent(current.text) });
 			const before = current.text ?? "";
-			const bannerRemoval =
-				request.module === plan.fromModule && plan.fromModule !== plan.toModule
-					? bannerRemovals(before, sourceBanners, new Set([plan.symbolId]))
-					: [];
-			const bannerCopy =
-				request.module === plan.toModule && current.text === null
-					? (bannerPrefixes(sourceText, eolOf(request.role.insertion?.text ?? ""), sourceBanners, [
-							plan.symbolId,
-						]).get(plan.symbolId) ?? "")
-					: "";
-			const providerRequest =
-				bannerCopy !== "" && request.role.insertion !== undefined
-					? {
-							...request,
-							role: {
-								...request.role,
-								insertion: {
-									...request.role.insertion,
-									text: `${bannerCopy}${request.role.insertion.text}`,
-								},
-							},
-						}
-					: request;
 			const answer = await this.probe.moveEdits(request.module, {
-				...framed(wholeLines(providerRequest, before), before),
+				...framed(wholeLines(request, before), before),
 				text: before,
 				exists: current.text !== null,
 			});
@@ -967,9 +926,9 @@ export class RefactorPlanner {
 					module: request.module,
 				});
 			}
-			if (answer.edits.length === 0 && bannerRemoval.length === 0) continue;
+			if (answer.edits.length === 0) continue;
 
-			const edits = mergeBannerRemovals([...answer.edits, ...bannerRemoval]);
+			const edits = mergeRemovals(answer.edits);
 			const applied = applyEdits(before, edits);
 			if ("problem" in applied) {
 				return { ok: false, issues: [], reason: providerRefused(request.module, applied.problem) };

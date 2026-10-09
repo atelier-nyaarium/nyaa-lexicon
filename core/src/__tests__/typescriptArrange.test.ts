@@ -63,7 +63,7 @@ afterEach(() => {
 //  Tests
 
 describe("an arrangement with the TypeScript provider", () => {
-	it("moves a section banner to a new target and drops it from an emptied section", async () => {
+	it("leaves a section banner when its section moves", async () => {
 		const source =
 			"// licence\n\n////////////////////////////////\n// Values\n\nexport function moved() {\n\treturn 1;\n}\n";
 		writeFileSync(path.join(root, "src/source.ts"), source);
@@ -79,17 +79,18 @@ describe("an arrangement with the TypeScript provider", () => {
 				module: "src/new-target.ts",
 				base: null,
 				created: true,
-				text: "////////////////////////////////\n// Values\n\nexport function moved() {\n\treturn 1;\n}\n",
+				text: "export function moved() {\n\treturn 1;\n}\n",
 				result: expect.any(String),
 			},
 			{
 				module: "src/source.ts",
 				base: expect.any(String),
 				created: false,
-				text: "// licence\n\n",
+				text: "// licence\n\n////////////////////////////////\n// Values\n",
 				result: expect.any(String),
 			},
 		]);
+		expect(preview.files.find((file) => file.module === "src/source.ts")?.text).toContain("// Values");
 	});
 
 	it("re-points a barrel and an importer, leaves a same-named import from elsewhere, and places every target declaration", async () => {

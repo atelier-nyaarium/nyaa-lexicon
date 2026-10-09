@@ -37,7 +37,7 @@ export function makeArrangeEdits(request: ArrangeEditsRequest, store: GDScriptSt
 	const reorder = sameModule(request.fromModule, request.toModule);
 	if (request.exists && !reorder && sameModule(request.module, request.toModule)) {
 		const arrivals = request.members.flatMap((member) =>
-			member.insertion === undefined || member.removal !== undefined
+			member.comment || member.insertion === undefined || member.removal !== undefined
 				? []
 				: [{ name: member.name, text: member.insertion.text }],
 		);
@@ -54,12 +54,20 @@ export function makeArrangeEdits(request: ArrangeEditsRequest, store: GDScriptSt
 
 	const plan: MovePlan = { edits: [], blocked: [] };
 	for (const member of request.members) {
-		if (member.removal !== undefined) addRemoval(plan, coordinates, member.removal);
+		if (member.removal !== undefined) {
+			if (member.comment) plan.edits.push({ range: member.removal, newText: "" });
+			else addRemoval(plan, coordinates, member.removal);
+		}
 	}
 	addImportSiteBlocks(plan, coordinates, request.importSites);
 	for (const member of request.members) {
-		addSiteBlocks(plan, coordinates, member.sites, () =>
-			isClassNameMove(bindings, member.symbolId, member.name, request.toModule, member.insertion?.text),
+		addSiteBlocks(
+			plan,
+			coordinates,
+			member.sites,
+			() =>
+				!member.comment &&
+				isClassNameMove(bindings, member.symbolId, member.name, request.toModule, member.insertion?.text),
 		);
 	}
 	if (!reorder) {

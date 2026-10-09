@@ -444,6 +444,8 @@ export {
 	type StoreSpec,
 } from "./moduleStore.js";
 export {
+	type ArrangeAnchor,
+	ArrangeAnchorSchema,
 	type ArrangeEditsRequest,
 	ArrangeEditsRequestSchema,
 	type ArrangeImportSite,

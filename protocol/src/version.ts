@@ -157,7 +157,8 @@ export type Compatibility =
 // 6.7.0: `discoverProject` may carry core's workspace-relative file scope.
 // 6.8.0: move and arrange requests may promote private dependencies in place.
 // 6.9.0: optional module runtime and import load facts.
-export const PROTOCOL_VERSION = "6.9.0" as const;
+// 6.10.0: arrange placements and anchors name standalone comments by fact id; placed spans carry fact ids.
+export const PROTOCOL_VERSION = "6.10.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 6;

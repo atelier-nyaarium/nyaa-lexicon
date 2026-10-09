@@ -145,6 +145,20 @@ export const MoveAnchorSchema = z
 
 export type MoveAnchor = z.infer<typeof MoveAnchorSchema>;
 
+export const ArrangeAnchorSchema = z
+	.object({
+		symbolId: z.string().min(1).optional(),
+		factId: z.string().min(1).optional(),
+		side: z.enum(["before", "after"]),
+	})
+	.refine(
+		(anchor) => (anchor.symbolId === undefined) !== (anchor.factId === undefined),
+		"Set exactly one of symbolId or factId",
+	)
+	.meta({ id: "ArrangeAnchor" });
+
+export type ArrangeAnchor = z.infer<typeof ArrangeAnchorSchema>;
+
 /** What this module gets: text removed, text inserted, or neither for a plain referencing module. */
 export const MoveRoleSchema = z
 	.object({
@@ -316,6 +330,7 @@ export const ArrangeMemberSchema = z
 	.object({
 		symbolId: z.string().min(1),
 		name: z.string().min(1),
+		comment: z.boolean().optional(),
 		/** Its range, widened to whole lines and blank separators when it owns its lines; absent when it stays. */
 		removal: RangeSchema.optional(),
 		/** Framed by the core; insertions sharing a position land in member order as one edit. */

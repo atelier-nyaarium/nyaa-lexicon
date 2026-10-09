@@ -592,6 +592,12 @@ export function arrangeNeedsTopLevel(name: string): Refusal {
 	return mint(`${name} sits inside another declaration. An arrangement places top-level declarations only`);
 }
 
+export function arrangeCommentRefused(factId: string): Refusal {
+	return mint(
+		`comment ${factId} is unavailable or not standalone at module level. Refresh the outline and select a standalone comment`,
+	);
+}
+
 export function placedTwice(name: string): Refusal {
 	return mint(`${name} is placed twice. Place each declaration once`);
 }

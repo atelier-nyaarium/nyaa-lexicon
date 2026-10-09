@@ -8,6 +8,31 @@ import { checkCompatibility, isCompatibleProtocol, PROTOCOL_VERSION, parseVersio
 //  Tests
 
 describe("method table", () => {
+	it("names arrange declarations and comments with exactly one id", () => {
+		const request = DAEMON_METHODS.previewArrange.request;
+		const base = { toModule: "src/target.ts", placements: [{ symbolId: "symbol" }] };
+		expect(request.safeParse(base).success).toBe(true);
+		expect(
+			request.safeParse({ toModule: "src/target.ts", placements: [{ factId: "lexfact comment one" }] }).success,
+		).toBe(true);
+		expect(
+			request.safeParse({ toModule: "src/target.ts", placements: [{ symbolId: "symbol", factId: "comment" }] })
+				.success,
+		).toBe(false);
+		expect(
+			request.safeParse({
+				toModule: "src/target.ts",
+				placements: [{ anchor: { symbolId: "symbol", side: "before" } }],
+			}).success,
+		).toBe(false);
+		expect(
+			request.safeParse({
+				toModule: "src/target.ts",
+				placements: [{ symbolId: "symbol", anchor: { factId: "lexfact comment one", side: "after" } }],
+			}).success,
+		).toBe(true);
+	});
+
 	it("defaults missing revert drift for an older client", () => {
 		expect(DAEMON_METHODS.refactorRevert.request.parse({})).toEqual({ drifted: [] });
 		expect(

@@ -72,7 +72,7 @@ import {
 import { ImportEditsResponseSchema } from "./importEdits.js";
 import { ModuleExclusionSchema } from "./moduleExclusion.js";
 import { ModulePathSchema as ModulePath } from "./modulePath.js";
-import { MoveAnchorSchema } from "./move.js";
+import { ArrangeAnchorSchema, MoveAnchorSchema } from "./move.js";
 import {
 	ConfirmNoteRequestSchema,
 	DoubtNoteRequestSchema,
@@ -181,11 +181,16 @@ const RenameCommitted = Rename.extend({ bases: Bases, stepId: StepId.optional() 
 const MoveCommitted = MoveOne.extend({ bases: Bases, stepId: StepId.optional() }).meta({
 	id: "MoveCommittedRequest",
 });
-const ArrangePlacement = z.object({
-	symbolId: z.string().min(1),
-	/** A target declaration that stays, or an earlier placement; absent means the target's end. */
-	anchor: MoveAnchorSchema.optional(),
-});
+const ArrangePlacement = z
+	.object({
+		symbolId: z.string().min(1).optional(),
+		factId: z.string().min(1).optional(),
+		anchor: ArrangeAnchorSchema.optional(),
+	})
+	.refine(
+		(placement) => (placement.symbolId === undefined) !== (placement.factId === undefined),
+		"Set exactly one of symbolId or factId",
+	);
 const Arrange = z
 	.object({
 		toModule: ModulePath,
