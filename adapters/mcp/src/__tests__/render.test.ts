@@ -383,6 +383,47 @@ describe("answering a docs search with a place rather than a line", () => {
 	});
 });
 
+describe("describing a symbol in a load cycle", () => {
+	const at = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 4 } });
+
+	function described(loadCycle?: unknown): string {
+		return renderDescribe({
+			symbol: { symbolId: "id", name: "useB", kind: "function", module: "a.ts", visibility: "public" },
+			members: [],
+			referenceCount: 0,
+			graph: { fanOut: 0 },
+			hierarchy: { supertypes: [], subtypes: [], ancestors: [], unboundSupertypes: [] },
+			tier: "full",
+			...(loadCycle === undefined ? {} : { loadCycle }),
+		} as unknown as Parameters<typeof renderDescribe>[0]);
+	}
+
+	it("names each hazard's entry, load order, reading line, target and calls", () => {
+		const rendered = described({
+			verdict: "bad",
+			modules: ["a.ts", "b.ts"],
+			hazards: [
+				{
+					entry: "a.ts",
+					order: ["b.ts", "a.ts"],
+					reader: { module: "a.ts", range: at(2), name: "B" },
+					target: { module: "b.ts", name: "B", kind: "const" },
+					calls: [{ module: "a.ts", range: at(4), name: "init" }],
+				},
+			],
+		});
+
+		expect(rendered).toContain("## Load cycle");
+		expect(rendered).toContain("`a.ts:3` `B` reads `B` (const) in `b.ts`");
+		expect(rendered).toContain("Through `a.ts:5` `init`");
+	});
+
+	it("says a pending judgment is still running, and shows no section without one", () => {
+		expect(described({ verdict: "pending", modules: ["a.ts", "b.ts"] })).toContain("still running");
+		expect(described()).not.toContain("## Load cycle");
+	});
+});
+
 describe("describing a heading", () => {
 	function described(kind: string, extra: Record<string, unknown> = {}): string {
 		return renderDescribe({

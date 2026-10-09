@@ -157,6 +157,30 @@ function appendDependencies(lines: string[], summary: DescribeResult["graph"]): 
 > Counts use resolved indexed bindings.`);
 }
 
+/** Where a hazard's read or call sits, as a 1-based line an agent can open. */
+function siteOf(site: { module: string; range: { start: { line: number } }; name: string }): string {
+	return `${code(`${site.module}:${site.range.start.line + 1}`)} ${code(site.name)}`;
+}
+
+function appendLoadCycle(lines: string[], loadCycle: NonNullable<DescribeResult["loadCycle"]>): void {
+	lines.push(`
+## Load cycle
+
+Modules: ${loadCycle.modules.map(code).join(", ")}`);
+	if (loadCycle.verdict === "pending") {
+		lines.push(`
+> The cycle's load-order judgment is still running. Describe this symbol again for its answer.`);
+		return;
+	}
+	lines.push("");
+	for (const hazard of loadCycle.hazards) {
+		lines.push(
+			`- Loading ${code(hazard.entry)} first (${hazard.order.map(code).join(" -> ")}), ${siteOf(hazard.reader)} reads ${code(hazard.target.name)} (${hazard.target.kind}) in ${code(hazard.target.module)} before it is initialized.`,
+		);
+		if (hazard.calls.length > 0) lines.push(`  - Through ${hazard.calls.map(siteOf).join(" -> ")}`);
+	}
+}
+
 const ENTRY_HOW: Record<EntryHow, string> = {
 	main: "the runtime calls its main",
 	guardedMain: "runs under a run-as-program guard",
@@ -251,6 +275,7 @@ Used in ${result.referenceCount} place${result.referenceCount === 1 ? "" : "s"}.
 	if (result.referenceCount > 0) lines.push(`Call \`find_references\` for the list.`);
 	appendHierarchy(lines, result.hierarchy);
 	appendDependencies(lines, result.graph);
+	if (result.loadCycle !== undefined) appendLoadCycle(lines, result.loadCycle);
 	return lines.join("\n");
 }
 

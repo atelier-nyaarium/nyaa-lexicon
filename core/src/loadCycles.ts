@@ -287,6 +287,15 @@ export class LoadCycleRead {
 		return (current?.judgment.bad ?? []).filter((hazard) => hazard.reader.module === query.module);
 	}
 
+	/** The component holding `module` as of now, without judging it; null when it sits in none. */
+	async componentOf(
+		module: string,
+		dispatchGate?: Gate,
+	): Promise<{ modules: string[]; crossingCount: number } | null> {
+		const cycle = (await this.componentsNow(dispatchGate)).cycles.find((each) => each.modules.includes(module));
+		return cycle === undefined ? null : { modules: cycle.modules, crossingCount: cycle.crossingCount };
+	}
+
 	/**
 	 * Each judgment checked at publish time against the components as they are then, read again when
 	 * a write outdated them. One whose membership, entries or evidence moved reads as unknown, with

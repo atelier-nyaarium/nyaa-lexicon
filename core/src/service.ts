@@ -30,6 +30,7 @@ import { stageAll } from "./applyEdits.js";
 import { ArrangePlanner } from "./arrangePlanner.js";
 import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
+import { describedOf, loadCycleOf } from "./describeLoadCycle.js";
 import { bindsModule, type NamespaceTarget, namespaceTargetOf, sameTarget } from "./edges.js";
 import { describeScope, type FileScope, isExternalModule, readScopeConfig } from "./fileScope.js";
 import { runFix, runFixText } from "./fixOnWrite.js";
@@ -74,6 +75,7 @@ import { holdsWord } from "./renameRoutes.js";
 import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
 import type { SourceReader } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
+import type { Gate } from "./stepRunners.js";
 import { type IndexStore, resolutionKey, type StoredComment, type StoredDeclaration } from "./store.js";
 import { WorkspaceGate } from "./workspaceGate.js";
 
@@ -576,6 +578,21 @@ export class LexiconService {
 
 	moduleProblems(...args: Parameters<LoadCycleRead["moduleProblems"]>): ReturnType<LoadCycleRead["moduleProblems"]> {
 		return this.loadCycles.moduleProblems(...args);
+	}
+
+	/** `described` with its part in a load-order cycle, when it plays one; `gate` is the asking request's. */
+	async withLoadCycle(described: DescribeResult, gate: Gate): Promise<DescribeResult> {
+		const symbol = await gate.read(() =>
+			describedOf(described.symbol.symbolId, (symbolId) => this.reads.declarationOf(symbolId)),
+		);
+		if (symbol === null) return described;
+		const loadCycle = await loadCycleOf(
+			symbol,
+			await this.loadCycles.componentOf(symbol.module, gate),
+			() => this.loadCycles.moduleCycles({ module: symbol.module, limit: 1 }, gate),
+			this.clock,
+		);
+		return loadCycle === undefined ? described : { ...described, loadCycle };
 	}
 
 	typeHierarchy(symbolId: string, maxDepth = 16): TypeHierarchy {

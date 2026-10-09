@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS, parseFactId } from "./factId.js";
+import { LoadCycleHazardSchema } from "./loadCycles.js";
 import { ImportKindSchema, MoveAnchorSchema, MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
 import {
@@ -287,6 +288,23 @@ export const TypeHierarchySchema = z
 
 export type TypeHierarchy = z.infer<typeof TypeHierarchySchema>;
 
+/**
+ * A symbol's part in a load-order cycle's hazard: `bad` lists the hazards it reads in or is the
+ * target of; `pending` means its component's judgment was not ready within describe's short wait.
+ */
+export const DescribeLoadCycleSchema = z
+	.discriminatedUnion("verdict", [
+		z.object({
+			verdict: z.literal("bad"),
+			modules: z.array(z.string()),
+			hazards: z.array(LoadCycleHazardSchema).min(1),
+		}),
+		z.object({ verdict: z.literal("pending"), modules: z.array(z.string()) }),
+	])
+	.meta({ id: "DescribeLoadCycle" });
+
+export type DescribeLoadCycle = z.infer<typeof DescribeLoadCycleSchema>;
+
 export const DescribeResultSchema = z
 	.object({
 		symbol: SymbolSummarySchema,
@@ -304,6 +322,8 @@ export const DescribeResultSchema = z
 		hierarchy: TypeHierarchySchema,
 		/** Provider-reported file role. */
 		moduleRole: FileRoleSchema.optional(),
+		/** Present only when the symbol reads in, or is the target of, a hazard, or the judgment is pending. */
+		loadCycle: DescribeLoadCycleSchema.optional(),
 		tier: AnswerTierSchema,
 	})
 	.meta({ id: "DescribeResult" });

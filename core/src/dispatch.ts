@@ -259,10 +259,13 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 	const treeFirst = <M extends DaemonMethod>(
 		symbolOf: (params: RequestOf<M>) => string,
 		answer: (params: RequestOf<M>) => Promise<ResponseOf<M>> | ResponseOf<M>,
+		/** Runs after the answer, outside its hold, taking the gate for what it reads itself. */
+		then?: (answered: ResponseOf<M>, gate: Gate) => Promise<ResponseOf<M>>,
 	): Handler<M> =>
 		staged(async (params, gate) => {
 			await gate.ahead(service.ensureTreeFor(symbolOf(params)));
-			return gate.read(() => answer(params));
+			const answered = await gate.read(() => answer(params));
+			return then === undefined ? answered : then(answered, gate);
 		});
 
 	/** Complete reference facts first: the upgrade holds the gate per file as the background pass
@@ -294,6 +297,8 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		describe: treeFirst(
 			(params) => params.symbolId,
 			(params) => service.describe(params.symbolId),
+			// A load-order judgment is waited on only briefly, and never under the answer's hold.
+			(described, gate) => (described === null ? Promise.resolve(null) : service.withLoadCycle(described, gate)),
 		),
 		// The four below exist for the editor, which asks by position rather than by name and so
 		// needs the declarations of a file and the raw hierarchy rows the MCP tools render instead.

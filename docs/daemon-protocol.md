@@ -576,6 +576,11 @@ These reads let a client draw what surrounds one symbol without walking the stor
   `contains` and otherwise its kind.
 - **`describe`'s `graph.dependents`** counts the distinct top-level declarations holding a use; a
   use at module level counts its file.
+- **`describe`'s `loadCycle`** is present when the symbol reads in, or is the target of, a hazard of
+  a `bad` load-order component: `{ verdict: "bad", modules, hazards }`, those hazards only. A target
+  matches by its name at top level, or dotted through its containers. When the component's judgment
+  is not ready within a 300 ms wait it is `{ verdict: "pending", modules }`; the judgment runs on, and
+  the next `describe` reads it. `graph.cycle` stays until the next major.
 - **`scopeSymbols`** is the containment read Ask uses; `knowledge-layer.md` holds it.
 - **Notes:** `readNote`, `writeNote`, `confirmNote`, `doubtNote`, `resolveNoteProposal`,
   `noteBacklinks` and `searchRefs`; `knowledge-layer.md` holds them.
