@@ -11,6 +11,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { isDeclarationModule } from "./bundle.js";
+import { enumKind } from "./declarations.js";
 import { moduleEdges } from "./edges.js";
 import { LANGUAGE } from "./extract.js";
 import { fileRoleOf } from "./file-role.js";
@@ -602,7 +603,7 @@ function declarationKind(
 	if (ts.isClassDeclaration(node)) return { kind: "class", descriptor: "type" };
 	if (ts.isInterfaceDeclaration(node)) return { kind: "interface", descriptor: "type" };
 	if (ts.isTypeAliasDeclaration(node)) return { kind: "interface", descriptor: "type", languageKind: "typeAlias" };
-	if (ts.isEnumDeclaration(node)) return { kind: "enum", descriptor: "type" };
+	if (ts.isEnumDeclaration(node)) return enumKind(node);
 	if (ts.isModuleDeclaration(node)) {
 		return { kind: ts.isStringLiteral(node.name) ? "module" : "namespace", descriptor: "namespace" };
 	}

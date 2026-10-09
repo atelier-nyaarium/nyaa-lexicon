@@ -6,6 +6,7 @@ import {
 	type Binding,
 	type Declaration,
 	hashContent,
+	type Meaning,
 	type Range,
 	type ScopeContribution,
 } from "@nyaa-lexicon/protocol";
@@ -122,6 +123,8 @@ interface BindingOptions {
 	over?: IndexStore;
 	/** The scopes each module contributes to. */
 	scopes?: (module: string) => ScopeContribution[];
+	/** What each `reexport` in a file's text says it forwards, when it narrows. */
+	reExportMeaning?: (text: string) => Meaning | undefined;
 }
 
 /**
@@ -146,6 +149,7 @@ function bindingService(parses: string[] = [], options: BindingOptions = {}): Le
 		clock,
 		over = store,
 		scopes,
+		reExportMeaning,
 	} = options;
 	const declared = new Map<string, Declaration[]>();
 	const reExported = new Map<string, Array<{ name: string; specifier: string }>>();
@@ -191,9 +195,12 @@ function bindingService(parses: string[] = [], options: BindingOptions = {}): Le
 				const reExports = reExportsIn(request.text);
 				const parsed = parseFake(request);
 				const declarations = declares(request, providerId);
-				const forwards = reExports.map(({ name, specifier, range }, at) =>
-					forward(specifier, name, range, parsed.imports.length + at),
-				);
+				const meaning = reExportMeaning?.(request.text);
+				const forwards = reExports.map(({ name, specifier, range }, at) => {
+					const forwarded = forward(specifier, name, range, parsed.imports.length + at);
+					if (meaning === undefined) return forwarded;
+					return { ...forwarded, exports: forwarded.exports.map((each) => ({ ...each, meaning })) };
+				});
 				const facts = {
 					...parsed,
 					declarations,
@@ -661,6 +668,63 @@ describe("rebind debt", () => {
 		});
 	});
 
+	// A barrel the first scan writes before its source projects nothing yet; that move is write order, not
+	// an edit, and every module the scan parsed read the source from disk.
+	it("parses nothing again on a first scan whose barrels project only once their sources are written", async () => {
+		await gitInit(root);
+		put("a-plain.fake", 'import "./b-api.fake";\nuse Foo\n');
+		put("a-declaring.fake", 'import "./b-api.fake";\nexport class Own {}\nuse Foo\n');
+		put("b-api.fake", 'reexport Foo from "./c-src.fake"\n');
+		put("c-src.fake", "export class Foo {}\n");
+		const parses: string[] = [];
+		service = bindingService(parses);
+		await service.indexWorkspace();
+		await service.upgradeRemaining();
+
+		expect(parses.sort()).toEqual(["a-declaring.fake", "a-plain.fake", "b-api.fake", "c-src.fake"]);
+	});
+
+	// Who binds against a batch's moves is three reads, however many modules moved.
+	it("reads who binds against a batch's moves in one query each, however many modules moved", async () => {
+		await gitInit(root);
+		const modules = ["m1.fake", "m2.fake", "m3.fake", "m4.fake"];
+		for (const module of modules) put(module, "export class Base {}\n");
+		const reads = { landed: 0, scopes: 0, unbound: 0 };
+		const counted = new Proxy(store, {
+			get(target, property, receiver) {
+				const value = Reflect.get(target, property, receiver);
+				if (typeof value !== "function") return value;
+				const tally =
+					property === "importersLandedOn"
+						? "landed"
+						: property === "importersOfScopes"
+							? "scopes"
+							: property === "modulesWithUnbound"
+								? "unbound"
+								: null;
+				if (tally === null) return value.bind(target);
+				return (...args: unknown[]) => {
+					reads[tally]++;
+					return value.apply(target, args);
+				};
+			},
+		});
+		service = bindingService([], { over: counted });
+		await service.indexWorkspace();
+		await service.upgradeRemaining();
+
+		for (const module of modules) put(module, "export class Base {}\nexport class Foo {}\n");
+		const before = { ...reads };
+		await service.applyBatch(
+			modules.map((module) => ({ kind: "changed" as const, module, contentHash: `${module}-2` })),
+		);
+		expect({
+			landed: reads.landed - before.landed,
+			scopes: reads.scopes - before.scopes,
+			unbound: reads.unbound - before.unbound,
+		}).toEqual({ landed: 1, scopes: 1, unbound: 1 });
+	});
+
 	// A resolver fault is no answer about where an import lands, so the importer is asked again.
 	it("asks again, rather than forgetting, an importer whose resolution faulted", async () => {
 		await gitInit(root);
@@ -831,6 +895,54 @@ describe("what a surface carries", () => {
 			before: "lexicon fake a.fake Foo#",
 			after: "lexicon fake b.fake Foo#",
 		});
+	});
+
+	// What emit keeps in an importer reads whether a name is a value along the chain it comes through.
+	it("parses again a forwarder whose own projection moved with the re-export it reads, as a type-only one does", async () => {
+		await gitInit(root);
+		put("a.fake", "export class Foo {}\n");
+		put("api.fake", 'reexport Foo from "./a.fake"\n');
+		put("outer.fake", 'reexport Foo from "./api.fake"\n');
+		service = bindingService([], { reExportMeaning: (text) => (text.includes("typeonly") ? ["type"] : undefined) });
+		await service.indexWorkspace();
+
+		put("api.fake", 'reexport Foo from "./a.fake"\ntypeonly\n');
+		const outcomes = await service.applyBatch([{ kind: "changed", module: "api.fake", contentHash: "api-2" }]);
+		expect(parsedIn(outcomes)).toEqual(["api.fake", "outer.fake"]);
+	});
+
+	// Each forwarder's move stays pending until the run settles, so a cycle of them must not ping-pong.
+	it("settles a cycle of forwarders whose projections move together in a bounded run", async () => {
+		await gitInit(root);
+		put("a.fake", "export class Foo {}\n");
+		put("p.fake", 'import "./q.fake";\nreexport Foo from "./a.fake"\n');
+		put("q.fake", 'reexport Foo from "./p.fake"\n');
+		service = bindingService([], { reExportMeaning: (text) => (text.includes("typeonly") ? ["type"] : undefined) });
+		await service.indexWorkspace();
+
+		put("p.fake", 'import "./q.fake";\nreexport Foo from "./a.fake"\ntypeonly\n');
+		const parsed = parsedIn(await service.applyBatch([{ kind: "changed", module: "p.fake", contentHash: "p-2" }]));
+		expect({ modules: [...new Set(parsed)], bounded: parsed.length <= 3 }).toEqual({
+			modules: ["p.fake", "q.fake"],
+			bounded: true,
+		});
+	});
+
+	// An enum inlined at compile time loads nothing, so its flavour is part of what an importer reads.
+	it("parses again the importers of a declaration whose flavour changed", async () => {
+		await gitInit(root);
+		put("x.fake", "export class Foo {}\ninlined\n");
+		put("user.fake", 'import "./x.fake";\nuse Foo\n');
+		const declares = (request: MethodRequest<"parseFile">) =>
+			parseFake(request).declarations.map((each) =>
+				request.text.includes("inlined") ? { ...each, languageKind: "inlined" } : each,
+			);
+		service = bindingService([], { declares });
+		await service.indexWorkspace();
+
+		put("x.fake", "export class Foo {}\n");
+		const outcomes = await service.applyBatch([{ kind: "changed", module: "x.fake", contentHash: "x-2" }]);
+		expect(parsedIn(outcomes)).toEqual(["user.fake", "x.fake"]);
 	});
 
 	// Moving between scopes changes no declaration, so only the scope names who reads it.

@@ -38,7 +38,6 @@ import {
 } from "./module.js";
 import { isValidTargetModule } from "./move.js";
 import {
-	importDeclarationMode,
 	type LoadedProject,
 	landingOf,
 	loadProject,
@@ -51,6 +50,7 @@ import {
 	resolveSpecifier,
 	runtimeOf,
 	type SpecifierRenderer,
+	syntaxMode,
 	toModule,
 } from "./project.js";
 import { extractSurfaceFile } from "./surface.js";
@@ -283,7 +283,7 @@ export class TypeScriptProvider {
 			...loaded,
 			files: discovered.files.map((module) => path.resolve(root, module)),
 		};
-		const { fingerprint, packageFiles } = projectFingerprint(root, projectLoaded);
+		const { fingerprint, packageFiles, externalFiles } = projectFingerprint(root, projectLoaded);
 		// The warm analyzer stays while reading is unchanged.
 		const kept = previous?.root === root && previous.fingerprint === fingerprint ? previous : undefined;
 		if (kept === undefined) previous?.analyzer?.dispose();
@@ -297,6 +297,8 @@ export class TypeScriptProvider {
 		const configFiles = [
 			...discovered.configFiles,
 			...packageFiles.map((file) => toModule(root, file) ?? file),
+			// An upgraded dependency restates the project, as its fingerprint moves.
+			...externalFiles.map((file) => toModule(root, file) ?? file),
 			// Probed even when absent.
 			"tsconfig.json",
 		];
@@ -548,10 +550,10 @@ export class TypeScriptProvider {
 					surface,
 					style,
 				),
-			resolve: (fromModule, specifier, resolutionMode) => {
+			resolve: (fromModule, specifier, syntax) => {
 				const fileName = path.resolve(this.store.root, fromModule);
 				const fileSetup = { ...setup, options: optionsForFile(fileName, setup) };
-				const mode = resolutionMode ?? importDeclarationMode(fileName, fileSetup);
+				const mode = syntaxMode(fileName, fileSetup, syntax);
 				return landingOf(
 					resolveSpecifier(this.store.root, fromModule, specifier, fileSetup, [], surface, mode),
 				);

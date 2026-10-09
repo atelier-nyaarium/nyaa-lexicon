@@ -9,6 +9,7 @@ import type {
 	WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import type { ImportSyntax } from "./project.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -24,8 +25,8 @@ export type Quote = "'" | '"';
 /** What an existing import can take: named values, named types, or a default. */
 export type MergeSlot = "value" | "type" | "default";
 
-/** One key per module a specifier written here lands on; an unresolved one keys by its text. */
-export type LandingKey = (specifier: string) => string;
+/** One key per module a specifier written here in `syntax` lands on; an unresolved one keys by its text. */
+export type LandingKey = (specifier: string, syntax?: ImportSyntax) => string;
 
 ////////////////////////////////
 //  Rendering
@@ -145,6 +146,11 @@ export function mergeIndex(
 		}
 	}
 	return index;
+}
+
+/** The syntax an import of this clause or edge kind is written in. */
+export function syntaxOf(kind: string | undefined): ImportSyntax {
+	return kind === "require" ? "require" : "import";
 }
 
 export function mergeKey(slot: MergeSlot, landing: string): string {

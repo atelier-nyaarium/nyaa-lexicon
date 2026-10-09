@@ -201,6 +201,8 @@ interface SurfaceRow {
 	symbolId: string;
 	name: string;
 	kind: string;
+	/** A flavour can change what a binding to it loads, e.g. an enum inlined at compile time. */
+	languageKind: string | null;
 	visibility: string;
 	exported: boolean | null;
 }
@@ -987,9 +989,12 @@ function columnExists(db: DatabaseSync, table: string, column: string): boolean 
 	return columns.some((row) => row.name === column);
 }
 
-/** A declaration another module may bind to, keyed by its id, kind and exposure. */
+/** A declaration another module may bind to, keyed by its id, kind, flavour and exposure. */
 function declarationEntry(row: SurfaceRow): SurfaceEntry {
-	return { key: JSON.stringify([row.symbolId, row.kind, row.visibility, row.exported]), name: row.name };
+	return {
+		key: JSON.stringify([row.symbolId, row.kind, row.languageKind, row.visibility, row.exported]),
+		name: row.name,
+	};
 }
 
 /**
@@ -1001,7 +1006,11 @@ function surfaceOf(declarations: readonly Declaration[]): SurfaceEntry[] {
 	for (const d of declarations) {
 		if (d.visibility === "local") continue;
 		const { symbolId, name, kind, visibility } = d;
-		byId.set(symbolId, declarationEntry({ symbolId, name, kind, visibility, exported: d.exported ?? null }));
+		const languageKind = d.languageKind ?? null;
+		byId.set(
+			symbolId,
+			declarationEntry({ symbolId, name, kind, languageKind, visibility, exported: d.exported ?? null }),
+		);
 	}
 	return [...byId.values()].sort((left, right) => (left.key < right.key ? -1 : 1));
 }
@@ -1716,7 +1725,7 @@ export class IndexStore {
 	private surfaceHeld(module: string): SurfaceEntry[] {
 		const rows = this.db
 			.prepare(
-				"SELECT symbolId, name, kind, visibility, exported FROM symbols WHERE module = ? AND visibility <> 'local'",
+				"SELECT symbolId, name, kind, languageKind, visibility, exported FROM symbols WHERE module = ? AND visibility <> 'local'",
 			)
 			.all(module) as Array<Omit<SurfaceRow, "exported"> & { exported: number | null }>;
 		return rows.map((row) =>
@@ -2111,29 +2120,28 @@ export class IndexStore {
 		this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
 	}
 
-	/** Modules with an import that landed on, or reaches through, one of `targets` when written. */
-	importersLandedOn(targets: readonly string[]): string[] {
+	/** Modules with an import that landed on, or reaches through, one of `targets` when written, by target. */
+	importersLandedOn(targets: readonly string[]): Array<{ module: string; target: string }> {
 		if (targets.length === 0) return [];
-		const rows = this.db
+		const listed = JSON.stringify(targets);
+		return this.db
 			.prepare(
-				`SELECT DISTINCT module FROM imports
-				 WHERE target IN (SELECT value FROM json_each(?)) OR surfaceTarget IN (SELECT value FROM json_each(?))
+				`SELECT DISTINCT module, target FROM imports WHERE target IN (SELECT value FROM json_each(?))
+				 UNION SELECT DISTINCT module, surfaceTarget FROM imports WHERE surfaceTarget IN (SELECT value FROM json_each(?))
 				 ORDER BY module`,
 			)
-			.all(JSON.stringify(targets), JSON.stringify(targets)) as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+			.all(listed, listed) as Array<{ module: string; target: string }>;
 	}
 
-	/** Modules with an import landing on one of these scopes. */
-	importersOfScopes(keys: readonly string[]): string[] {
+	/** Modules with an import landing on one of these scopes, by scope. */
+	importersOfScopes(keys: readonly string[]): Array<{ module: string; scope: string }> {
 		if (keys.length === 0) return [];
-		const rows = this.db
+		return this.db
 			.prepare(
-				`SELECT DISTINCT module FROM imports
+				`SELECT DISTINCT module, targetScope AS scope FROM imports
 				 WHERE targetScope IN (SELECT value FROM json_each(?)) ORDER BY module`,
 			)
-			.all(JSON.stringify(keys)) as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+			.all(JSON.stringify(keys)) as Array<{ module: string; scope: string }>;
 	}
 
 	/** Import edges that landed on `landing` when written: a module by its path, a scope by its key. */
@@ -2186,17 +2194,16 @@ export class IndexStore {
 		return (rows as Array<{ module: string }>).map((row) => row.module);
 	}
 
-	/** Modules with an unbound reference spelled as one of `names`. */
-	modulesWithUnbound(names: readonly string[]): string[] {
+	/** Modules with an unbound reference spelled as one of `names`, by name. */
+	modulesWithUnbound(names: readonly string[]): Array<{ module: string; name: string }> {
 		if (names.length === 0) return [];
-		const rows = this.db
+		return this.db
 			.prepare(
 				// The unary plus keeps the planner on refs_name: unbound rows are many, one name's are few.
-				`SELECT DISTINCT module FROM refs
+				`SELECT DISTINCT module, name FROM refs
 				 WHERE name IN (SELECT value FROM json_each(?)) AND +targetId IS NULL ORDER BY module`,
 			)
-			.all(JSON.stringify(names)) as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+			.all(JSON.stringify(names)) as Array<{ module: string; name: string }>;
 	}
 
 	/** Every import edge that states a load and lands on a module, in one read. */

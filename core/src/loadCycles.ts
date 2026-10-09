@@ -39,6 +39,8 @@ type LoadEdge = ReturnType<IndexStore["loadEdges"]>[number];
 
 type Cycle = {
 	key: string;
+	/** The facts generation of the view it was read from; a newer view supersedes an older one. */
+	generation: number;
 	modules: string[];
 	entries: string[];
 	crossingCount: number;
@@ -66,7 +68,15 @@ type Judgment = {
 	unknowns: Unknown[];
 	expires: number;
 	/** What the provider was asked and answered; absent, the judgment is core's own and never cached. */
-	basis?: { provider: { id: string; incarnation: number }; members: Members; reply?: Answered };
+	basis?: Basis;
+};
+
+type Basis = {
+	provider: { id: string; incarnation: number };
+	members: Members;
+	/** The provider's project settings when asked; null when it recorded none. */
+	fingerprint: string | null;
+	reply?: Answered;
 };
 
 type Running = { cycle: Cycle; state: { superseded: boolean }; work: Promise<Judgment> };
@@ -83,8 +93,12 @@ const CROSSINGS_LISTED = 20;
 const HOLD_MS = 60_000;
 /** A judgment past a budget is retried no sooner, unless its evidence moves. */
 const RETRY_MS = 600_000;
-/** Uses that read no value. */
-const NOT_READS: readonly ReferenceRole[] = ["typeUse", "import", "export"];
+/** Uses that read no value at runtime. */
+const NOT_READS: readonly ReferenceRole[] = ["typeUse", "import", "export", "implements"];
+/** Two-read builds tried before one hold builds the whole view, so a view is never two generations. */
+const BUILD_ATTEMPTS = 2;
+/** Publish checks tried against a view a write keeps outdating before the answer reads as unknown. */
+const PUBLISH_ATTEMPTS = 3;
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -169,6 +183,7 @@ function assemble(
 		const { crossingCount, crossings } = detail.crossings[index]!;
 		return {
 			key: modules.join("\u0000"),
+			generation,
 			modules,
 			entries: reached.length === 0 ? modules : reached,
 			crossingCount,
@@ -181,6 +196,18 @@ function assemble(
 		};
 	});
 	return { generation, cycles, byKey: new Map(cycles.map((cycle) => [cycle.key, cycle])) };
+}
+
+function componentsOf(graph: Graph): string[][] {
+	return findCycles(graph.edges).map(({ members }) => [...members].sort());
+}
+
+/** The whole view from one hold, so its graph, crossings and runtimes share a generation. */
+function buildIn(store: IndexStore): Held {
+	const generation = store.factsGeneration();
+	const graph = graphOf(store.loadEdges());
+	const components = componentsOf(graph);
+	return assemble(generation, components, graph, readDetail(store, components, graph));
 }
 
 /** Membership, entries and uncertainty: what a judgment was asked about. */
@@ -221,16 +248,10 @@ export class LoadCycleRead {
 		const judged: Array<{ cycle: Cycle; judgment: Judgment }> = [];
 		for (const cycle of candidates) {
 			if (judged.length >= query.limit) break;
-			const judgment = await this.judge(cycle, dispatchGate);
+			const judgment = await this.judge(cycle);
 			if (shown(judgment)) judged.push({ cycle, judgment });
 		}
-		const current = await this.shortRead(dispatchGate, () =>
-			judged.map(({ cycle, judgment }) => ({
-				cycle,
-				judgment: this.valid(judgment) ? judgment : this.unknown(cycle, "evidence"),
-			})),
-		);
-		return current
+		return (await this.published(judged, dispatchGate))
 			.filter(({ judgment }) => shown(judgment))
 			.sort(
 				(a, b) =>
@@ -256,20 +277,51 @@ export class LoadCycleRead {
 			candidate.modules.includes(query.module),
 		);
 		if (cycle === undefined) return [];
-		const judgment = await this.judge(cycle, dispatchGate);
-		return this.shortRead(dispatchGate, () =>
-			(this.valid(judgment) ? judgment : this.unknown(cycle, "evidence")).bad.filter(
-				(hazard) => hazard.reader.module === query.module,
-			),
-		);
+		const [current] = await this.published([{ cycle, judgment: await this.judge(cycle) }], dispatchGate);
+		return (current?.judgment.bad ?? []).filter((hazard) => hazard.reader.module === query.module);
+	}
+
+	/**
+	 * Each judgment checked at publish time against the components as they are then, read again when
+	 * a write outdated them. One whose membership, entries or evidence moved reads as unknown, with
+	 * the component as it now stands; a component that dissolved, as the ones its members joined.
+	 */
+	private async published(
+		judged: ReadonlyArray<{ cycle: Cycle; judgment: Judgment }>,
+		dispatchGate?: Gate,
+	): Promise<Array<{ cycle: Cycle; judgment: Judgment }>> {
+		for (let attempt = 1; ; attempt++) {
+			const now = await this.componentsNow(dispatchGate);
+			const checked = await this.shortRead(dispatchGate, () => {
+				const fresh = this.store.factsGeneration() === now.generation;
+				if (!fresh && attempt < PUBLISH_ATTEMPTS) return null;
+				const answers = new Map<string, { cycle: Cycle; judgment: Judgment }>();
+				for (const { cycle, judgment } of judged) {
+					const view = now.byKey.get(cycle.key);
+					if (view === undefined) continue;
+					const held = fresh && this.valid(judgment, view);
+					answers.set(view.key, { cycle: view, judgment: held ? judgment : this.unknown(view, "evidence") });
+				}
+				for (const { cycle } of judged) {
+					if (now.byKey.has(cycle.key)) continue;
+					for (const joined of now.cycles) {
+						if (answers.has(joined.key) || !joined.modules.some((module) => cycle.modules.includes(module)))
+							continue;
+						answers.set(joined.key, { cycle: joined, judgment: this.unknown(joined, "evidence") });
+					}
+				}
+				return [...answers.values()];
+			});
+			if (checked !== null) return checked;
+		}
 	}
 
 	/**
 	 * The components as of now, built once per facts generation. Rows are read inside the gate and
-	 * the graph is built outside it; a write between the two reads builds once more.
+	 * the graph is built outside it; when writes keep landing between the two reads, one hold builds it.
 	 */
 	private async componentsNow(dispatchGate?: Gate): Promise<Held> {
-		for (let attempt = 0; ; attempt++) {
+		for (let attempt = 0; attempt < BUILD_ATTEMPTS; attempt++) {
 			const read = await this.shortRead(dispatchGate, () => {
 				const generation = this.store.factsGeneration();
 				const held = this.held;
@@ -277,26 +329,36 @@ export class LoadCycleRead {
 			});
 			if ("held" in read) return read.held;
 			const graph = graphOf(read.rows);
-			const components = findCycles(graph.edges).map(({ members }) => [...members].sort());
+			const components = componentsOf(graph);
 			const detail = await this.shortRead(dispatchGate, () => readDetail(this.store, components, graph));
-			if (detail.generation !== read.generation && attempt === 0) continue;
-			const built = assemble(read.generation, components, graph, detail);
-			if (this.held === null || this.held.generation <= built.generation) {
-				this.held = built;
-				for (const key of this.cache.keys()) if (!built.byKey.has(key)) this.cache.delete(key);
-			}
-			return built;
+			if (detail.generation === read.generation)
+				return this.keep(assemble(read.generation, components, graph, detail));
 		}
+		return this.keep(await this.shortRead(dispatchGate, () => buildIn(this.store)));
 	}
 
-	/** One judgment per component at a time; an ask for the same component joins it, a changed one replaces it. */
-	private judge(cycle: Cycle, dispatchGate?: Gate): Promise<Judgment> {
+	private keep(built: Held): Held {
+		if (this.held === null || this.held.generation <= built.generation) {
+			this.held = built;
+			for (const key of this.cache.keys()) if (!built.byKey.has(key)) this.cache.delete(key);
+		}
+		return built;
+	}
+
+	/**
+	 * One judgment per component at a time. An ask joins the running one unless it holds a newer view
+	 * of a changed component, which replaces it. The work reads through the service's own gate, so no
+	 * asker's wait budget can fail it for the others.
+	 */
+	private judge(cycle: Cycle): Promise<Judgment> {
 		const held = this.running.get(cycle.key);
-		if (held !== undefined && !held.state.superseded && sameComponent(held.cycle, cycle)) return held.work;
-		if (held !== undefined) held.state.superseded = true;
+		if (held !== undefined && !held.state.superseded) {
+			if (sameComponent(held.cycle, cycle) || held.cycle.generation >= cycle.generation) return held.work;
+			held.state.superseded = true;
+		}
 		const state = { superseded: false };
 		// Reserved before the cache check's await, so a concurrent asker never starts a second judgment.
-		const entry: Running = { cycle, state, work: this.judgeHeld(cycle, () => state.superseded, dispatchGate) };
+		const entry: Running = { cycle, state, work: this.judgeHeld(cycle, () => state.superseded) };
 		this.running.set(cycle.key, entry);
 		const release = () => {
 			if (this.running.get(cycle.key) === entry) this.running.delete(cycle.key);
@@ -305,20 +367,19 @@ export class LoadCycleRead {
 		return entry.work;
 	}
 
-	private async judgeHeld(cycle: Cycle, superseded: () => boolean, dispatchGate?: Gate): Promise<Judgment> {
+	private async judgeHeld(cycle: Cycle, superseded: () => boolean): Promise<Judgment> {
 		const cached = this.cache.get(cycle.key);
 		if (
 			cached !== undefined &&
 			cached.expires > this.clock.now() &&
-			(await this.shortRead(dispatchGate, () => this.valid(cached)))
+			(await this.shortRead(undefined, () => this.valid(cached, this.held?.byKey.get(cycle.key))))
 		)
 			return cached;
-		const judgment = await this.run(cycle, superseded, dispatchGate);
-		return this.shortRead(dispatchGate, () => {
-			if (!this.valid(judgment)) return this.unknown(cycle, "evidence");
-			if (judgment.basis !== undefined) this.cache.set(cycle.key, judgment);
-			return judgment;
-		});
+		const judgment = await this.run(cycle, superseded);
+		const [current] = await this.published([{ cycle, judgment }]);
+		if (current?.judgment !== judgment) return this.unknown(cycle, "evidence");
+		if (judgment.basis !== undefined) this.cache.set(cycle.key, judgment);
+		return judgment;
 	}
 
 	/**
@@ -326,8 +387,8 @@ export class LoadCycleRead {
 	 * first slice to the last. Stops when superseded or when a member moves, and tells the provider to
 	 * drop whatever partial state it still holds.
 	 */
-	private async run(cycle: Cycle, superseded: () => boolean, dispatchGate?: Gate): Promise<Judgment> {
-		const { owner, incarnation, members } = await this.shortRead(dispatchGate, () => {
+	private async run(cycle: Cycle, superseded: () => boolean): Promise<Judgment> {
+		const { owner, members } = await this.shortRead(undefined, () => {
 			const providerIds = new Set(cycle.modules.map((module) => this.store.writerOf(module)));
 			const [only] = providerIds;
 			const owner =
@@ -342,12 +403,10 @@ export class LoadCycleRead {
 					: null;
 			return {
 				owner,
-				incarnation: owner === null ? null : this.providers.incarnationOf(owner),
 				members: cycle.modules.map((module) => ({ module, contentHash: this.store.contentHashOf(module) })),
 			};
 		});
 		if (owner === null) return this.unknown(cycle, "provider");
-		if (incarnation === null) return this.unknown(cycle, "outage");
 		if (cycle.uncertainReason !== null) return this.unknown(cycle, cycle.uncertainReason);
 		if (cycle.entries.length > MAX_ENTRIES) return this.unknown(cycle, "budget");
 		const asked: Members = [];
@@ -355,13 +414,23 @@ export class LoadCycleRead {
 			if (member.contentHash === null) return this.unknown(cycle, "evidence");
 			asked.push({ module: member.module, contentHash: member.contentHash });
 		}
-		const basis = { provider: { id: owner, incarnation }, members: asked };
-		const failed = (reason: Unknown["reason"]): Judgment => ({ ...this.unknown(cycle, reason), basis });
 		const release = await this.slots(owner).acquire();
+		// Read after the wait: the process answering now is the one that will hold the partial state.
+		const incarnation = this.providers.incarnationOf(owner);
+		if (incarnation === null) {
+			release();
+			return this.unknown(cycle, "outage");
+		}
+		const basis: Basis = {
+			provider: { id: owner, incarnation },
+			members: asked,
+			fingerprint: await this.shortRead(undefined, () => this.store.projectFingerprint(owner)),
+		};
+		const failed = (reason: Unknown["reason"]): Judgment => ({ ...this.unknown(cycle, reason), basis });
 		let partial: string | undefined;
 		try {
 			for (let slice = 0; slice < MAX_SLICES; slice++) {
-				if (superseded() || !(await this.shortRead(dispatchGate, () => this.membersHold(asked))))
+				if (superseded() || !(await this.shortRead(undefined, () => this.membersHold(asked))))
 					return this.unknown(cycle, "evidence");
 				const request: JudgeLoadCycleRequest = {
 					members: asked,
@@ -402,15 +471,15 @@ export class LoadCycleRead {
 		}
 	}
 
-	/** Whether a judgment still describes the index: its component, its provider and its own evidence. */
-	private valid(judgment: Judgment): boolean {
-		const current = this.held?.byKey.get(judgment.cycle.key);
-		if (current === undefined || !sameComponent(current, judgment.cycle)) return false;
+	/** Whether a judgment still describes `view`, the component now: its provider, settings and evidence. */
+	private valid(judgment: Judgment, view: Cycle | undefined): boolean {
+		if (view === undefined || !sameComponent(view, judgment.cycle)) return false;
 		const { basis } = judgment;
 		if (basis === undefined) return true;
 		if (this.providers.incarnationOf(basis.provider.id) !== basis.provider.incarnation) return false;
+		if (this.store.projectFingerprint(basis.provider.id) !== basis.fingerprint) return false;
 		if (!this.membersHold(basis.members)) return false;
-		return basis.reply === undefined || this.answerHolds(current, basis.provider.id, basis.reply);
+		return basis.reply === undefined || this.answerHolds(view, basis.provider.id, basis.reply);
 	}
 
 	private membersHold(members: Members): boolean {

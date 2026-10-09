@@ -259,8 +259,10 @@ describe("module load cycles", () => {
 
 	it("lands and validates each occurrence of one specifier by its resolution mode", async () => {
 		writeFileSync(path.join(root, "a.fake"), "import\nrequire\n");
+		writeFileSync(path.join(root, "i.fake"), "import a\n");
 		store.replaceFile(file("i.fake", [{ target: "a.fake", elided: false }]));
 		const edge = { kind: "sideEffect" as const, bindsLocally: false, certainty: { status: "known" as const } };
+		const loading = { loads: "static" as const, elided: false };
 		const runs = async (requireLanding: string) => {
 			const asked: Array<string | undefined> = [];
 			const provider = fakeSupervisor({
@@ -273,31 +275,34 @@ describe("module load cycles", () => {
 						references: [],
 						literals: [],
 						diagnostics: [],
-						imports: [
-							{
-								specifier: "pkg",
-								edges: [
-									{
-										...edge,
-										span: RANGE,
-										order: 0,
-										loads: "static",
-										elided: false,
-										resolutionMode: "import",
-									},
-									{
-										...edge,
-										span: NEXT_LINE,
-										order: 1,
-										loads: "static",
-										elided: false,
-										resolutionMode: "require",
-									},
-								],
-							},
-						],
+						imports:
+							request.module === "i.fake"
+								? [{ specifier: "a.fake", edges: [{ ...edge, ...loading, span: RANGE, order: 0 }] }]
+								: [
+										{
+											specifier: "pkg",
+											edges: [
+												{
+													...edge,
+													...loading,
+													span: RANGE,
+													order: 0,
+													resolutionMode: "import",
+												},
+												{
+													...edge,
+													...loading,
+													span: NEXT_LINE,
+													order: 1,
+													resolutionMode: "require",
+												},
+											],
+										},
+									],
 					}),
 					resolveImport: (request) => {
+						if (request.specifier !== "pkg")
+							return { status: "resolved", landing: { kind: "module", module: request.specifier } };
 						asked.push(request.resolutionMode);
 						const module = request.resolutionMode === "require" ? "r.fake" : "i.fake";
 						return { status: "resolved", landing: { kind: "module", module } };
@@ -325,6 +330,8 @@ describe("module load cycles", () => {
 			});
 			const svc = service(provider);
 			await createDispatch(svc)("indexFile", { module: "a.fake" });
+			// The importer i.fake is parsed again in the background; the judgment reads it settled.
+			await svc.upgradeRemaining();
 			const landed = store.importsIn("a.fake").map((stored) => [stored.span.start.line, stored.landing]);
 			const [cycle] = await svc.moduleCycles({ includeUnread: true });
 			return { asked: asked.sort(), landed: landed.sort(), cycle: [cycle?.modules, cycle?.verdict] };
@@ -458,6 +465,7 @@ describe("module load cycles", () => {
 					binding: { status: "unbound", reason: "NotIndexed" },
 					origin: { kind: "import", span: RANGE },
 				},
+				{ ...crossing("Shape"), role: "implements" },
 				{
 					name: "Local",
 					range: RANGE,
@@ -489,24 +497,33 @@ describe("module load cycles", () => {
 		});
 	});
 
-	it("rejudges conclusive cache entries when a project fingerprint moves", async () => {
+	it("rejudges conclusive and failed cache entries when a project fingerprint moves", async () => {
 		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
-		let calls = 0;
+		store.replaceFile(file("r.fake", [{ target: "r.fake", elided: false }]));
+		const calls = { a: 0, r: 0 };
 		const provider = fakeSupervisor({
 			answers: {
 				judgeLoadCycle: (request) => {
-					calls++;
+					if (request.members[0]?.module === "r.fake") {
+						calls.r++;
+						throw new ResponseError(ErrorCodes.InternalError, "cannot judge");
+					}
+					calls.a++;
 					return judged(request, {
-						settings: [{ project: "fake", fingerprint: calls === 1 ? "fp" : "fp2" }],
+						settings: [{ project: "fake", fingerprint: calls.a === 1 ? "fp" : "fp2" }],
 					});
 				},
 			},
 		});
 		const svc = service(provider);
-		expect((await svc.moduleCycles({ module: "a.fake", includeUnread: true }))[0]?.verdict).toBe("fine");
+		const verdicts = async () => (await svc.moduleCycles({ includeUnread: true })).map((cycle) => cycle.verdict);
+		const before = await verdicts();
 		store.recordProjectFingerprint("fake", "fp2");
-		expect((await svc.moduleCycles({ module: "a.fake", includeUnread: true }))[0]?.verdict).toBe("fine");
-		expect(calls).toBe(2);
+		expect({ before, after: await verdicts(), calls }).toEqual({
+			before: ["fine", "unknown"],
+			after: ["fine", "unknown"],
+			calls: { a: 2, r: 2 },
+		});
 	});
 
 	it("starts one judgment for two simultaneous queries while a changed cache entry is checked", async () => {
@@ -682,5 +699,180 @@ describe("module load cycles", () => {
 			slices: ["a.fake+b.fake:start", "a.fake+b.fake:first", "a.fake:start"],
 			releasedJudgments: [{ providerId: "fake", partial: "second" }],
 		});
+	});
+
+	it("joins a run from a newer view when an ask still holds an older one", async () => {
+		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }], "a.fake", [crossing("X")]));
+		store.replaceFile(file("b.fake", [{ target: "c.fake", elided: false }], "b.fake", [crossing("X")]));
+		store.replaceFile(file("c.fake", [{ target: "b.fake", elided: false }]));
+		const { promise: aBlocked, resolve: releaseA } = Promise.withResolvers<void>();
+		const { promise: bBlocked, resolve: releaseB } = Promise.withResolvers<void>();
+		const { promise: aStarted, resolve: aEntered } = Promise.withResolvers<void>();
+		const { promise: bWaiting, resolve: bEntered } = Promise.withResolvers<void>();
+		let runs = 0;
+		const provider = fakeSupervisor({
+			answers: {
+				judgeLoadCycle: async (request) => {
+					if (request.members[0]?.module === "a.fake") {
+						aEntered();
+						await aBlocked;
+						return judged(request);
+					}
+					if (request.partial === undefined) {
+						runs++;
+						return { partial: "first" };
+					}
+					bEntered();
+					await bBlocked;
+					return judged(request);
+				},
+			},
+		});
+		const svc = service(provider);
+		// Reads b and c with both as entries, then waits on a, which sorts first.
+		const older = svc.moduleCycles({});
+		await aStarted;
+		store.replaceFile(file("outside.fake", [{ target: "b.fake", elided: false }]));
+		const newer = svc.moduleCycles({ module: "b.fake" });
+		await bWaiting;
+		releaseA();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		releaseB();
+		const bc = (answer: Awaited<typeof newer>) => answer.find((cycle) => cycle.modules.includes("b.fake"));
+		const [fromOlder, fromNewer] = (await Promise.all([older, newer])).map(bc);
+		expect({ runs, fromOlder: [fromOlder?.verdict, fromOlder?.entries], fromNewer: fromNewer?.verdict }).toEqual({
+			runs: 1,
+			fromOlder: ["fine", ["b.fake"]],
+			fromNewer: "fine",
+		});
+	});
+
+	it("publishes the entries a component holds when its judgment ends, not when it began", async () => {
+		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
+		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		store.replaceFile(file("outside1.fake", [{ target: "a.fake", elided: false }]));
+		const asked: string[][] = [];
+		const provider = fakeSupervisor({
+			answers: {
+				judgeLoadCycle: (request) => {
+					asked.push(request.entries);
+					if (asked.length === 1)
+						store.replaceFile(file("outside2.fake", [{ target: "b.fake", elided: false }]));
+					return judged(request);
+				},
+			},
+		});
+		const svc = service(provider);
+		const answers = [];
+		for (let ask = 0; ask < 2; ask++) {
+			const [cycle] = await svc.moduleCycles({});
+			answers.push([cycle?.verdict, cycle?.entries]);
+		}
+		expect({ answers, asked }).toEqual({
+			answers: [
+				["unknown", ["a.fake", "b.fake"]],
+				["fine", ["a.fake", "b.fake"]],
+			],
+			asked: [["a.fake"], ["a.fake", "b.fake"]],
+		});
+	});
+
+	it("never fails a judgment, or its other askers, for one asker's gate budget", async () => {
+		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
+		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		const { promise: sliceBlocked, resolve: releaseSlice } = Promise.withResolvers<void>();
+		const { promise: started, resolve: entered } = Promise.withResolvers<void>();
+		let slices = 0;
+		const provider = fakeSupervisor({
+			answers: {
+				judgeLoadCycle: async (request) => {
+					slices++;
+					if (slices > 1) return judged(request);
+					entered();
+					await sliceBlocked;
+					return { partial: "first" };
+				},
+			},
+		});
+		const svc = service(provider);
+		const dispatch = createDispatch(svc);
+		const budgeted = dispatch("moduleProblems", { module: "a.fake" }, { gateWaitMs: 5 });
+		await started;
+		const patient = dispatch("moduleProblems", { module: "b.fake" });
+		const { promise: writeHeld, resolve: releaseWrite } = Promise.withResolvers<void>();
+		const writing = svc.gate.exclusive(() => writeHeld);
+		releaseSlice();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		releaseWrite();
+		await writing;
+		const [, patientOutcome] = await Promise.allSettled([budgeted, patient]);
+		expect({ patient: patientOutcome.status, slices }).toEqual({ patient: "fulfilled", slices: 2 });
+	});
+
+	it("builds the view a query judges from one facts generation while writes land between its reads", async () => {
+		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
+		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		// The first two counting reads each land a write first: the cycle breaks, then closes again.
+		let writes = 0;
+		const writing = new Proxy(store, {
+			get(target, property, receiver) {
+				const value = Reflect.get(target, property, receiver);
+				if (typeof value !== "function") return value;
+				if (property !== "importUseCounts") return value.bind(target);
+				return (...args: Parameters<IndexStore["importUseCounts"]>) => {
+					if (writes < 2) {
+						writes++;
+						const targets = writes === 1 ? [] : [{ target: "a.fake", elided: false }];
+						target.replaceFile(file("b.fake", targets, `b${writes}`));
+					}
+					return target.importUseCounts(...args);
+				};
+			},
+		});
+		let judgments = 0;
+		const provider = fakeSupervisor({
+			answers: {
+				judgeLoadCycle: (request) => {
+					judgments++;
+					return judged(request);
+				},
+			},
+		});
+		const svc = new LexiconService(writing, provider, sourceReader(root), root);
+		const cycles = await svc.moduleCycles({ includeUnread: true });
+		expect({ cycles: cycles.map((cycle) => [cycle.modules, cycle.verdict]), judgments }).toEqual({
+			cycles: [[["a.fake", "b.fake"], "fine"]],
+			judgments: 1,
+		});
+	});
+
+	it("asks the process that answers after a slot wait, and holds the answer for that process", async () => {
+		const blockers = ["m0.fake", "m1.fake", "m2.fake", "m3.fake"];
+		for (const module of [...blockers, "late.fake"])
+			store.replaceFile(file(module, [{ target: module, elided: false }], module, [crossing("X")]));
+		const incarnation = { current: 1 };
+		const { promise: blocked, resolve: release } = Promise.withResolvers<void>();
+		let entered = 0;
+		const provider = fakeSupervisor({
+			incarnation,
+			answers: {
+				judgeLoadCycle: async (request) => {
+					if (request.members[0]?.module !== "late.fake") {
+						entered++;
+						await blocked;
+					}
+					return judged(request);
+				},
+			},
+		});
+		const svc = service(provider);
+		const held = blockers.map((module) => svc.moduleProblems({ module }));
+		while (entered < blockers.length) await new Promise((resolve) => setTimeout(resolve, 1));
+		const late = svc.moduleCycles({ module: "late.fake" });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		incarnation.current++;
+		release();
+		await Promise.all(held);
+		expect((await late)[0]?.verdict).toBe("fine");
 	});
 });

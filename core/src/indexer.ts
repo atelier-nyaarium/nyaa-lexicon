@@ -96,6 +96,17 @@ function settledDepth(depth: IndexDepth | undefined): IndexDepth | undefined {
 	return depth === "outline" ? "full" : depth;
 }
 
+/** Each row's module under the key it was read by. */
+function grouped<T extends { module: string }>(rows: readonly T[], keyOf: (row: T) => string): Map<string, string[]> {
+	const by = new Map<string, string[]>();
+	for (const row of rows) {
+		const list = by.get(keyOf(row));
+		if (list === undefined) by.set(keyOf(row), [row.module]);
+		else list.push(row.module);
+	}
+	return by;
+}
+
 /** A synchronous scope read reached before any admission ever ran. A caller ordering bug, not a user's. */
 export class ScopeNotComputedError extends Error {
 	constructor() {
@@ -696,6 +707,8 @@ export class WorkspaceIndexer {
 			);
 			// An outage is a file value, not a workspace refusal, but the summary cannot claim a full outline.
 			const outaged = outcomes.some((outcome) => outcome.cause === "providerDown");
+			// Read before the sweep clears it.
+			const newInPass = new Set(this.newInPass);
 			// One hold: nothing may read an index half pruned of what this pass no longer reaches.
 			outcomes.push(
 				...(await this.alone(async () => {
@@ -720,10 +733,12 @@ export class WorkspaceIndexer {
 			for (const [at, outcome] of outcomes.entries())
 				if (outcome.action !== "skipped") order.set(outcome.module, at);
 			// A provider reads from disk a module it holds no parse of, so only a module that held a surface
-			// before, or whose file changed after the scan first looked at it, since a provider may have read
-			// it for an earlier dependent, can have left a module this scan wrote earlier reading a stale one.
+			// before this pass, or whose file changed after the scan first looked at it, since a provider may
+			// have read it for an earlier dependent, can have left a module this scan wrote earlier reading a
+			// stale one. A projection that moved only because the pass wrote its sources after it is neither.
 			const stale = (module: string, change: SurfaceChange) =>
-				change.heldBefore || (firstStats.has(module) && this.fileStat(module) !== firstStats.get(module));
+				(change.heldBefore && !newInPass.has(module)) ||
+				(firstStats.has(module) && this.fileStat(module) !== firstStats.get(module));
 			const unwritten = this.store.indexedFiles().some((module) => !order.has(module));
 			if (unwritten || [...moves].some(([module, change]) => stale(module, change)))
 				await this.oweDependents(moves, order, stale);
@@ -1317,7 +1332,14 @@ export class WorkspaceIndexer {
 		const answered = new Map<string, SurfaceChange>();
 		const owed: string[] = [];
 		let budget = REBIND_CAP;
-		let moves = this.pendingMoves(outcomes.map((outcome) => outcome.module));
+		// A move stays pending until the run settles, so a module parsed again would report it again.
+		const asked = new Map<string, string>();
+		const unasked = (found: ReadonlyMap<string, SurfaceChange>) => {
+			const left = new Map([...found].filter(([module, change]) => asked.get(module) !== JSON.stringify(change)));
+			for (const [module, change] of left) asked.set(module, JSON.stringify(change));
+			return left;
+		};
+		let moves = unasked(this.pendingMoves(outcomes.map((outcome) => outcome.module)));
 		while (moves.size > 0) {
 			const { modules, unbound, complete } = await this.dependentsOf(moves);
 			if (complete) for (const [module, change] of moves) answered.set(module, change);
@@ -1345,7 +1367,7 @@ export class WorkspaceIndexer {
 				if (UNREAD.has(outcome.cause)) this.holdRebind(module, outcome);
 				hop.push(module);
 			}
-			moves = this.pendingMoves(hop);
+			moves = unasked(this.pendingMoves(hop));
 		}
 		this.settle(answered, owed);
 		return rebound;
@@ -1389,36 +1411,54 @@ export class WorkspaceIndexer {
 	 * Who binds against these moved surfaces: modules importing one, now or when they were written,
 	 * and modules bound into what one held. `unbound` holds the rest with an unresolved use of a name
 	 * one gained or lost, which only may bind now. Each in module order. Incomplete when a resolver
-	 * fault left an importer unread.
+	 * fault left an importer unread. A module is never its own dependent, and only that: one whose
+	 * projection moved with another's still reads that other's surface.
 	 */
 	private async dependentsOf(
 		moves: ReadonlyMap<string, SurfaceChange>,
 	): Promise<{ modules: string[]; unbound: string[]; complete: boolean }> {
 		if (moves.size === 0) return { modules: [], unbound: [], complete: true };
-		const { importers, complete } = await this.importersOf(moves.keys());
+		const { importersOf, complete } = await this.importIndex();
+		const changes = [...moves.values()];
 		// The import index answers where specifiers land now; a module that went, or that a specifier
 		// stopped landing on, is still named by the import written against it.
-		for (const module of this.store.importersLandedOn([...moves.keys()])) importers.add(module);
+		const landedOn = grouped(this.store.importersLandedOn([...moves.keys()]), (row) => row.target);
 		// A scope it joined or left is read by every import landing on that scope.
-		const scopes = [...moves.values()].flatMap((change) => change.scopes);
-		for (const module of this.store.importersOfScopes(scopes)) importers.add(module);
-		const names = new Set<string>();
-		for (const change of moves.values()) {
-			for (const module of change.boundInto) importers.add(module);
-			for (const name of [...change.gained, ...change.lost]) names.add(name);
+		const scopeReaders = grouped(
+			this.store.importersOfScopes(changes.flatMap((change) => change.scopes)),
+			(row) => row.scope,
+		);
+		const unboundUsers = grouped(
+			this.store.modulesWithUnbound(changes.flatMap((change) => [...change.gained, ...change.lost])),
+			(row) => row.name,
+		);
+		const importers = new Set<string>();
+		const unbound = new Set<string>();
+		for (const [moved, change] of moves) {
+			const reached = new Set([
+				...importersOf(moved),
+				...(landedOn.get(moved) ?? []),
+				...change.scopes.flatMap((scope) => scopeReaders.get(scope) ?? []),
+				...change.boundInto,
+			]);
+			reached.delete(moved);
+			for (const module of reached) importers.add(module);
+			for (const name of [...change.gained, ...change.lost])
+				for (const module of unboundUsers.get(name) ?? []) if (module !== moved) unbound.add(module);
 		}
-		const unbound = this.store
-			.modulesWithUnbound([...names])
-			.filter((module) => !moves.has(module) && !importers.has(module));
-		return { modules: [...importers].filter((module) => !moves.has(module)).sort(), unbound, complete };
+		return {
+			modules: [...importers].sort(),
+			unbound: [...unbound].filter((module) => !importers.has(module)).sort(),
+			complete,
+		};
 	}
 
 	/**
-	 * Modules importing any of `targets`. The index is read whole once per resolution generation,
-	 * then each written module's own rows alone, so a run of writes costs their imports, not the
-	 * workspace's each time. A module whose resolution faulted is read again next time.
+	 * Who imports a module, by where specifiers land now. The index is read whole once per resolution
+	 * generation, then each written module's own rows alone, so a run of writes costs their imports,
+	 * not the workspace's each time. A module whose resolution faulted is read again next time.
 	 */
-	private async importersOf(targets: Iterable<string>): Promise<{ importers: Set<string>; complete: boolean }> {
+	private async importIndex(): Promise<{ importersOf: (target: string) => ReadonlySet<string>; complete: boolean }> {
 		const generation = this.caches.resolutions.stats().generation;
 		let index = this.importers;
 		if (index?.generation !== generation) {
@@ -1435,12 +1475,14 @@ export class WorkspaceIndexer {
 			if (!(await this.readImports(index, module, this.store.importsIn(module)))) unread.push(module);
 		}
 		for (const module of unread) this.importsWritten.add(module);
-		const importers = new Set<string>();
-		for (const target of targets) for (const module of index.byTarget.get(target) ?? []) importers.add(module);
+		const read = index;
 		// Resolutions turned over, or another road replaced the index, while this read ran: what it
 		// found answers an older generation.
 		const current = this.importers === index && this.caches.resolutions.stats().generation === generation;
-		return { importers, complete: unread.length === 0 && current };
+		return {
+			importersOf: (target) => read.byTarget.get(target) ?? new Set(),
+			complete: unread.length === 0 && current,
+		};
 	}
 
 	/** Reads every module's import rows into a fresh index; one the resolver faulted on is read again. */

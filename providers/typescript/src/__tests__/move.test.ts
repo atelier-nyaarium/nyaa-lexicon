@@ -453,6 +453,39 @@ describe("move edits", () => {
 		});
 	});
 
+	it("lands one specifier apart as an import and as a require in the same module", () => {
+		const target = 'import { existing } from "#src";\nimport moved = require("#src");\n';
+		const response = move(
+			workspace({
+				"tsconfig.json": JSON.stringify({
+					compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext" },
+				}),
+				"package.json": JSON.stringify({
+					type: "module",
+					imports: { "#src": { import: "./source.js", require: "./other.cjs" } },
+				}),
+				"source.ts": "export function moved() { return 1; }\nexport const existing = 2;\n",
+				"other.cts": "export = function moved() { return 3; };\n",
+				"target.mts": target,
+			}),
+			{
+				module: "target.mts",
+				text: target,
+				exists: true,
+				symbolId: "lexicon typescript source.ts moved.",
+				name: "moved",
+				fromModule: "source.ts",
+				toModule: "target.mts",
+				role: { insertion: { text: BODY } },
+				importSites: [],
+				dependencies: [],
+				sites: [],
+			},
+		);
+		// The require binds other.cts's `moved`, which the move does not take with it.
+		expect(response).toMatchObject({ status: "refused", reason: "TargetCollision" });
+	});
+
 	it("folds an aliased name into an existing import for its origin specifier", () => {
 		const target = 'import { existing } from "pkg";\n';
 		const body = "export function moved() { return $local; }\n";

@@ -43,6 +43,7 @@ import {
 	type Quote,
 	renderImport,
 	standaloneImports,
+	syntaxOf,
 } from "./move-imports.js";
 import { settleBlankLines } from "./move-layout.js";
 import {
@@ -218,12 +219,13 @@ export function moduleScope(
 		.filter((site): site is ImportSiteNode => site !== undefined);
 	const quote: Quote = statements[0]?.literal.getText(source).startsWith("'") === true ? "'" : '"';
 	const landings = new Map<string, string>();
-	const landingKey: LandingKey = (specifier) => {
-		let key = landings.get(specifier);
+	const landingKey: LandingKey = (specifier, syntax = "import") => {
+		const occurrence = `${syntax}\0${specifier}`;
+		let key = landings.get(occurrence);
 		if (key === undefined) {
-			const landing = resolveModule(module, specifier);
+			const landing = resolveModule(module, specifier, syntax);
 			key = landing === undefined ? `\0${specifier}` : landing;
-			landings.set(specifier, key);
+			landings.set(occurrence, key);
 		}
 		return key;
 	};
@@ -260,7 +262,7 @@ export function targetDeclares(scope: ModuleScope, name: string, fromModule: str
 		(binding) =>
 			binding.specifier !== undefined &&
 			(binding.imported ?? name) === name &&
-			sameModulePath(scope.landingKey(binding.specifier), fromModule),
+			sameModulePath(scope.landingKey(binding.specifier, syntaxOf(binding.form)), fromModule),
 	);
 }
 
@@ -345,7 +347,7 @@ export function planImports<S extends MoveImportSite>(
 	const index = mergeIndex(source, coordinates, edits, landingKey, excluded, meter);
 	const joins = (planned: PlannedImport) => {
 		if (meter !== undefined) meter.steps++;
-		return joinTarget(index, planned, landingKey(planned.specifier));
+		return joinTarget(index, planned, landingKey(planned.specifier, syntaxOf(planned.clause)));
 	};
 	for (const rewrite of rewrites) {
 		blocked.push(...rewrite.blocked);

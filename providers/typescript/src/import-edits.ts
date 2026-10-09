@@ -14,7 +14,7 @@ import ts from "typescript";
 import { scriptKindOf } from "./file-types.js";
 import { moduleScope, parseDiagnostics, placeImports } from "./move.js";
 import { bindsPlanned, moduleBindings, typeOnlyNames } from "./move-dependencies.js";
-import { joinTarget, mergeIndex, type PlannedImport } from "./move-imports.js";
+import { joinTarget, mergeIndex, type PlannedImport, syntaxOf } from "./move-imports.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";
 
 ////////////////////////////////
@@ -122,7 +122,8 @@ export function makeImportEdits(
 	const edits: TextEdit[] = [];
 	const blocked: MoveBlockedSite[] = [];
 	const index = mergeIndex(source, scope.coordinates, edits, scope.landingKey, new Set());
-	const joins = (each: PlannedImport) => joinTarget(index, each, scope.landingKey(each.specifier));
+	const joins = (each: PlannedImport) =>
+		joinTarget(index, each, scope.landingKey(each.specifier, syntaxOf(each.clause)));
 	placeImports(scope, joins, [planned], [], edits, blocked);
 	const [first] = blocked;
 	if (first !== undefined) return refused(refusalOf(first.reason), first.detail ?? first.reason);

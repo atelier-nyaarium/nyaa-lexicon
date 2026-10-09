@@ -5,6 +5,7 @@ import path from "node:path";
 import type { FileFacts } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { extractFile } from "../extract.js";
+import { extractSurfaceFile } from "../surface.js";
 import { harness } from "./harness.js";
 
 const roots: string[] = [];
@@ -466,14 +467,23 @@ describe("Stage A load facts", () => {
 		}
 	});
 
-	it("keeps const, let and var as the declaration language kind", () => {
-		const facts = parse({ "src/a.ts": "const a = 1; let b = 2; var c = 3;" }, "src/a.ts");
-		expect(
-			Object.fromEntries(facts.declarations.map((declaration) => [declaration.name, declaration.languageKind])),
-		).toEqual({
-			a: "const",
-			b: "let",
-			c: "var",
+	it("keeps const, let, var and const enums as the declaration language kind, at every depth", () => {
+		const text =
+			"const a = 1; let b = 2; var c = 3;\nexport const enum K { A }\nexport enum E { B }\nexport namespace N { export const enum Inner { C } }";
+		const kinds = (declarations: FileFacts["declarations"]) =>
+			Object.fromEntries(declarations.map((declaration) => [declaration.name, declaration.languageKind ?? null]));
+		const expected = { a: "const", b: "let", c: "var", K: "constEnum", A: null, E: null, B: null, N: null };
+		expect(kinds(parse({ "src/a.ts": text }, "src/a.ts").declarations)).toEqual({
+			...expected,
+			Inner: "constEnum",
+			C: null,
 		});
+		const outline = ts.createSourceFile("src/a.ts", text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+		expect(kinds(extractFile("src/a.ts", outline).declarations)).toMatchObject({ K: "constEnum", E: null });
+		const surface = extractSurfaceFile(
+			"types/k.d.ts",
+			"export declare const enum K { A = 1 }\nexport declare enum E { B = 2 }",
+		);
+		expect(kinds(surface.declarations)).toMatchObject({ K: "constEnum", E: null });
 	});
 });

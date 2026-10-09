@@ -264,18 +264,23 @@ function settingsGroups(
 /** Settings, with the config's own path read only as the automatic type packages it finds. */
 function settingsKey(options: ts.CompilerOptions, system: ts.System): string {
 	const settings = relevantSettings(options).filter(([name]) => name !== "configFilePath");
+	const types = automaticTypes(options, system).map((resolved) => resolved?.resolvedFileName ?? null);
+	return JSON.stringify([settings, types]);
+}
+
+/** Each type package a Program with `options` includes unasked, as it resolves. */
+function automaticTypes(
+	options: ts.CompilerOptions,
+	system: ts.System,
+): Array<ts.ResolvedTypeReferenceDirective | undefined> {
+	const host = resolutionHost(system);
 	const config = (options as { configFilePath?: unknown }).configFilePath;
 	const directory = typeof config === "string" ? path.dirname(config) : system.getCurrentDirectory();
+	// Resolved from where a Program resolves them.
 	const inferred = path.join(directory, "__inferred type names__.ts");
-	const types =
-		options.types === undefined
-			? (ts.getEffectiveTypeRoots(options, system) ?? []).filter((root) => system.directoryExists(root))
-			: options.types.map(
-					(name) =>
-						ts.resolveTypeReferenceDirective(name, inferred, options, resolutionHost(system))
-							.resolvedTypeReferenceDirective?.resolvedFileName ?? null,
-				);
-	return JSON.stringify([settings, types]);
+	return ts
+		.getAutomaticTypeDirectiveNames(options, host)
+		.map((name) => ts.resolveTypeReferenceDirective(name, inferred, options, host).resolvedTypeReferenceDirective);
 }
 
 function relevantSettings(options: ts.CompilerOptions): Array<[string, unknown]> {
@@ -333,28 +338,58 @@ function parseConfig(
 
 /**
  * What facts depend on beyond file text: the options that shape binding, types and resolution,
- * the project references, the declaration files that declare globals, and the resolution fields of
- * each package.json over the files.
+ * the project references and settings groups, the declaration files that declare globals, the
+ * resolution fields of each package.json over the files, and each declaration file outside the
+ * index that resolution lands on, by its package's version and its text.
  */
 export function projectFingerprint(
 	root: string,
 	loaded: LoadedProject,
-): { fingerprint: string; packageFiles: string[] } {
+): { fingerprint: string; packageFiles: string[]; externalFiles: string[] } {
+	const { system } = loaded;
 	const options = relevantSettings(loaded.options);
-	const packageFiles = [
-		...new Set([...packageFilesOver(root, loaded.files, loaded.system), ...resolutionPackages(root, loaded)]),
-	].sort();
-	const packages = packageFiles.map((file) => [
-		toPosix(path.relative(root, file)),
-		packageFields(file, loaded.system),
-	]);
+	const reads = resolutionReads(root, loaded);
+	const packageFiles = [...new Set([...packageFilesOver(root, loaded.files, system), ...reads.packages])].sort();
+	const packages = packageFiles.map((file) => [toPosix(path.relative(root, file)), packageFields(file, system)]);
 	const references = [...loaded.references].sort();
-	const ambient = globalDeclarations(root, loaded.files, loaded.system);
+	const ambient = globalDeclarations(root, loaded.files, system);
 	const referenced = loaded.referenced.map(relevantSettings);
+	const groups = [...loaded.groups.settings.keys()].sort();
+	const landings = [...reads.external].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	const external = landings.map(([file, version]) => [
+		shownPath(root, file),
+		version,
+		hashContent(system.readFile(file) ?? ""),
+	]);
+	const externalFiles = [...new Set(landings.flatMap(([file]) => [file, ...packageManifestOf(file, system)]))].sort();
 	return {
-		fingerprint: hashContent(JSON.stringify({ options, references, referenced, ambient, packages })),
+		fingerprint: hashContent(
+			JSON.stringify({ options, references, referenced, groups, ambient, packages, external }),
+		),
 		packageFiles,
+		externalFiles,
 	};
+}
+
+/** Workspace-relative inside the root, else absolute; POSIX either way. */
+function shownPath(root: string, file: string): string {
+	const relative = path.relative(root, file);
+	return toPosix(relative.startsWith("..") || path.isAbsolute(relative) ? path.resolve(file) : relative);
+}
+
+/** Outside what the index holds: beyond the root, or in a dependency. */
+function outsideIndex(root: string, file: string): boolean {
+	const relative = path.relative(root, path.resolve(file));
+	return relative.startsWith("..") || path.isAbsolute(relative) || relative.split(path.sep).includes("node_modules");
+}
+
+/** The package.json of the package holding `file`, when one sits beneath its node_modules. */
+function packageManifestOf(file: string, system: ts.System): string[] {
+	for (let directory = path.dirname(file); ; directory = path.dirname(directory)) {
+		if (path.basename(directory) === "node_modules" || path.dirname(directory) === directory) return [];
+		const manifest = path.join(directory, "package.json");
+		if (system.fileExists(manifest)) return [manifest];
+	}
 }
 
 /** The protocol's name for a TypeScript resolution mode. */
@@ -363,16 +398,24 @@ export function modeName(mode: ts.ResolutionMode): ResolutionMode | undefined {
 	return mode === ts.ModuleKind.CommonJS ? "require" : undefined;
 }
 
-/** The mode TypeScript resolves an import declaration written in `fileName` with. */
-export function importDeclarationMode(fileName: string, setup: CompilerSetup): ResolutionMode | undefined {
+/** The mode TypeScript resolves an import written in `fileName` with, in `syntax`. */
+export function syntaxMode(fileName: string, setup: CompilerSetup, syntax: ImportSyntax): ResolutionMode | undefined {
 	const host = resolutionHost(setup.system);
 	const impliedNodeFormat = ts.getImpliedNodeFormatForFile(fileName, undefined, host, setup.options);
 	const languageVersion = ts.ScriptTarget.ESNext;
-	const probe = ts.createSourceFile(fileName, 'import "m";', { languageVersion, impliedNodeFormat }, true);
+	const text = syntax === "require" ? 'import m = require("m");' : 'import "m";';
+	const probe = ts.createSourceFile(fileName, text, { languageVersion, impliedNodeFormat }, true);
 	const statement = probe.statements[0];
-	if (statement === undefined || !ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
-		return undefined;
-	return modeName(ts.getModeForUsageLocation(probe, statement.moduleSpecifier, setup.options));
+	const literal =
+		statement === undefined
+			? undefined
+			: ts.isImportDeclaration(statement)
+				? statement.moduleSpecifier
+				: ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)
+					? statement.moduleReference.expression
+					: undefined;
+	if (literal === undefined || !ts.isStringLiteral(literal)) return undefined;
+	return modeName(ts.getModeForUsageLocation(probe, literal, setup.options));
 }
 
 /** The settings group `fileName` compiles in: its referenced project's, else the root's. */
@@ -420,11 +463,15 @@ function packageFilesOver(root: string, files: readonly string[], system: ts.Sys
 }
 
 /**
- * Workspace package.json files that resolving the project's imports reads, through `paths` or a
- * linked workspace package: each specifier resolved once, recording what the host reads.
+ * What resolving the project's imports and automatic types reads: the workspace package.json files,
+ * through `paths` or a linked workspace package, and each file landed on outside the index with its
+ * package's version. Each specifier resolves once per mode, in its file's settings.
  */
-function resolutionPackages(root: string, loaded: LoadedProject): string[] {
-	const { system, options } = loaded;
+function resolutionReads(
+	root: string,
+	loaded: LoadedProject,
+): { packages: string[]; external: Map<string, string | null> } {
+	const { system } = loaded;
 	// Probed, found or not: creating one moves resolution as much as editing one.
 	const probed = new Set<string>();
 	const host: ts.ModuleResolutionHost = {
@@ -438,13 +485,32 @@ function resolutionPackages(root: string, loaded: LoadedProject): string[] {
 			return system.readFile(fileName);
 		},
 	};
+	const external = new Map<string, string | null>();
+	const land = (resolved: ts.ResolvedModuleFull | ts.ResolvedTypeReferenceDirective | undefined) => {
+		const file = resolved?.resolvedFileName;
+		if (resolved === undefined || file === undefined || !outsideIndex(root, file)) return;
+		const id = resolved.packageId;
+		external.set(path.resolve(file), id === undefined ? null : `${id.name}@${id.version}`);
+	};
 	const canonical = (fileName: string) => (system.useCaseSensitiveFileNames ? fileName : fileName.toLowerCase());
-	const cache = ts.createModuleResolutionCache(root, canonical, options);
+	const caches = new Map<string, ts.ModuleResolutionCache>();
+	for (const [group, options] of loaded.groups.settings) {
+		caches.set(group, ts.createModuleResolutionCache(root, canonical, options));
+		for (const resolved of automaticTypes(options, system)) land(resolved);
+	}
 	for (const file of loaded.files) {
 		const text = system.readFile(file);
 		if (text === undefined) continue;
+		const group = groupOf(file, loaded);
+		const options = optionsForFile(file, loaded);
 		for (const imported of ts.preProcessFile(text, true, true).importedFiles) {
-			ts.resolveModuleName(imported.fileName, file, options, host, cache);
+			// Both modes, since a scan cannot tell an import from a require.
+			for (const mode of [ts.ModuleKind.ESNext, ts.ModuleKind.CommonJS] as const) {
+				const cache = caches.get(group);
+				land(
+					ts.resolveModuleName(imported.fileName, file, options, host, cache, undefined, mode).resolvedModule,
+				);
+			}
 		}
 	}
 	// Through links, so a linked package or a root opened through a link still counts.
@@ -457,7 +523,7 @@ function resolutionPackages(root: string, loaded: LoadedProject): string[] {
 		const inside = !relative.startsWith("..") && !path.isAbsolute(relative);
 		if (inside && !relative.split(path.sep).includes("node_modules")) found.add(path.join(root, relative));
 	}
-	return [...found];
+	return { packages: [...found], external };
 }
 
 function packageFields(file: string, system: ts.System): unknown {
@@ -592,12 +658,11 @@ export type SpecifierRenderer = (
 /** How a relative specifier ends: the runtime extension (`./a.js`), the source one (`./a.ts`), or none. */
 export type ExtensionStyle = "runtime" | "source" | "none";
 
-/** The workspace module a specifier lands on, when it lands on one; an import declaration's mode by default. */
-export type ModuleResolver = (
-	fromModule: string,
-	specifier: string,
-	resolutionMode?: ResolutionMode,
-) => string | undefined;
+/** How an import is written: a declaration, or `import x = require()`; each resolves in its own mode. */
+export type ImportSyntax = "import" | "require";
+
+/** The workspace module a specifier written in `syntax` lands on, when it lands on one. */
+export type ModuleResolver = (fromModule: string, specifier: string, syntax: ImportSyntax) => string | undefined;
 
 /** A resolution's module, a package's surface included. */
 export function landingOf(resolution: ImportResolution): string | undefined {
@@ -835,7 +900,7 @@ function resolvesToTarget(
 	setup: CompilerSetup,
 	lookupSurface: (module: string, fileName: string) => boolean,
 ): boolean {
-	const mode = importDeclarationMode(path.join(root, fromModule), setup);
+	const mode = syntaxMode(path.join(root, fromModule), setup, "import");
 	return landingOf(resolveSpecifier(root, fromModule, specifier, setup, [], lookupSurface, mode)) === targetModule;
 }
 

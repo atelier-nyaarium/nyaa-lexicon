@@ -12,7 +12,7 @@ import ts from "typescript";
 import { EXPORT_EQUALS } from "./extract.js";
 import { scriptKindOf } from "./file-types.js";
 import { importOf } from "./imports.js";
-import { append, blockedSite, type LandingKey, type PlannedImport } from "./move-imports.js";
+import { append, blockedSite, type LandingKey, type PlannedImport, syntaxOf } from "./move-imports.js";
 import type { SpecifierRenderer } from "./project.js";
 import { isDeclarationName, isQualifiedReference, meaningAt } from "./references.js";
 
@@ -212,8 +212,9 @@ export function importForDependency(
 
 /** The existing import brings in what the plan would, usable wherever the plan is. */
 export function bindsPlanned(binding: ModuleBinding, planned: PlannedImport, landingKey: LandingKey): boolean {
-	if (binding.specifier === undefined || landingKey(binding.specifier) !== landingKey(planned.specifier))
-		return false;
+	if (binding.specifier === undefined) return false;
+	const landing = landingKey(binding.specifier, syntaxOf(binding.form));
+	if (landing !== landingKey(planned.specifier, syntaxOf(planned.clause))) return false;
 	if (binding.typeOnly && !planned.typeOnly) return false;
 	if (binding.form !== planned.clause) return false;
 	return planned.clause !== "named" || binding.imported === planned.importedName;

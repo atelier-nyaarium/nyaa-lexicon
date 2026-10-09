@@ -461,6 +461,61 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
+	it("rereads a dependency's declarations once they change on disk", () => {
+		const root = workspace({
+			"tsconfig.json": JSON.stringify({ compilerOptions: { module: "CommonJS" } }),
+			"a.ts": 'import { dep } from "dep";\nexport const x = dep;\n',
+			"node_modules/dep/package.json": JSON.stringify({ name: "dep", types: "index.d.ts" }),
+			"node_modules/dep/index.d.ts": "export declare const dep: number;\n",
+		});
+		const provider = harness();
+		provider.initialize(root);
+		const typeOfX = (text: string) => {
+			provider.parseFile({ module: "a.ts", contentHash: text, text });
+			return provider.typeOf({ symbolId: "lexicon typescript a.ts x." });
+		};
+		expect(typeOfX('import { dep } from "dep";\nexport const x = dep;\n')).toMatchObject({ display: "number" });
+		writeFileSync(path.join(root, "node_modules/dep/index.d.ts"), "export declare const dep: boolean;\n");
+		expect(typeOfX('import { dep } from "dep";\nexport const x = dep; // read\n')).toMatchObject({
+			display: "boolean",
+		});
+		provider.shutdown();
+	});
+
+	it("restates the project, dropping its old Programs, when a dependency or type package it reads moves", () => {
+		const root = workspace({
+			"tsconfig.json": JSON.stringify({ compilerOptions: { module: "CommonJS", types: ["*"] } }),
+			"a.ts": 'import { dep } from "dep";\nexport const x = dep;\n',
+			"node_modules/dep/package.json": JSON.stringify({ name: "dep", version: "1.0.0", types: "index.d.ts" }),
+			"node_modules/dep/index.d.ts": "export declare const dep: number;\n",
+		});
+		const provider = harness();
+		provider.initialize(root);
+		const discover = () => provider.handlers.discoverProject({ workspaceRoot: root }) as ProjectModel;
+		const first = discover();
+		expect(first.configFiles).toEqual(
+			expect.arrayContaining(["node_modules/dep/index.d.ts", "node_modules/dep/package.json"]),
+		);
+		const edits: Array<[string, string]> = [
+			["node_modules/dep/package.json", JSON.stringify({ name: "dep", version: "2.0.0", types: "index.d.ts" })],
+			["node_modules/@types/extra/index.d.ts", "declare const extra: number;\n"],
+		];
+		let fingerprint = first.fingerprint;
+		for (const [file, text] of edits) {
+			const source = 'import { dep } from "dep";\nexport const x = dep;\n';
+			provider.parseFile({ module: "a.ts", contentHash: file, text: source });
+			const held = provider.provider.store.project;
+			expect(held.languageServices.size, file).toBe(1);
+			mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+			writeFileSync(path.join(root, file), text);
+			const next = discover().fingerprint;
+			expect(next, file).not.toBe(fingerprint);
+			expect(held.languageServices.size, file).toBe(0);
+			fingerprint = next;
+		}
+		provider.shutdown();
+	});
+
 	it("compiles referenced projects whose settings read alike in one Program, and others apart", () => {
 		for (const [strict, firstProgramFiles] of [
 			[true, 2],

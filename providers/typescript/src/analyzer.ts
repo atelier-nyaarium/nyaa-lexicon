@@ -811,7 +811,10 @@ export class TypeScriptAnalyzer {
 		const module = this.toModule(fileName);
 		const proposed = module === null ? undefined : this.overlay?.files.get(module);
 		if (proposed !== undefined) return proposed.contentHash;
-		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return "0";
+		const { system } = this.project.loaded;
+		// Read from disk, so an upgraded package's declarations read again.
+		if (module === null || this.isExternal(fileName) || !claimsExtension(module))
+			return `disk:${system.getModifiedTime?.(fileName)?.getTime() ?? 0}:${system.getFileSize?.(fileName) ?? 0}`;
 		const held = this.store.text(module);
 		if (held !== undefined) return held.contentHash;
 		// Disk timestamps version type reads.

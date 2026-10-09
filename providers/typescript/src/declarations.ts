@@ -47,7 +47,7 @@ export function classify(node: ts.Node): Classified | null {
 	if (ts.isClassDeclaration(node)) return { kind: "class", descriptor: "type" };
 	if (ts.isInterfaceDeclaration(node)) return { kind: "interface", descriptor: "type" };
 	if (ts.isTypeAliasDeclaration(node)) return { kind: "interface", descriptor: "type", languageKind: "typeAlias" };
-	if (ts.isEnumDeclaration(node)) return { kind: "enum", descriptor: "type" };
+	if (ts.isEnumDeclaration(node)) return enumKind(node);
 	if (ts.isModuleDeclaration(node)) {
 		return { kind: ts.isStringLiteral(node.name) ? "module" : "namespace", descriptor: "namespace" };
 	}
@@ -63,6 +63,12 @@ export function classify(node: ts.Node): Classified | null {
 	if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node)) return { kind: "property", descriptor: "term" };
 	if (ts.isEnumMember(node)) return { kind: "constant", descriptor: "term" };
 	return null;
+}
+
+/** A const enum is inlined where used, so its importers' emit hangs on the keyword. */
+export function enumKind(node: ts.EnumDeclaration): { kind: "enum"; descriptor: "type"; languageKind?: string } {
+	const constant = ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ConstKeyword) === true;
+	return { kind: "enum", descriptor: "type", ...(constant ? { languageKind: "constEnum" } : {}) };
 }
 
 export function anonymousDefaultExportOf(node: ts.Node): Classified | undefined {
