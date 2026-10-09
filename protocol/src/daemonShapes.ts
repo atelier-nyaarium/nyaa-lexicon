@@ -256,7 +256,7 @@ export const AttachedCommentSchema = z
 
 export type AttachedComment = z.infer<typeof AttachedCommentSchema>;
 
-/** Fan-in, fan-out and cycle membership, bounded by what binding reached. */
+/** Fan-in and fan-out, bounded by what binding reached. */
 export const GraphSummarySchema = z
 	.object({
 		symbolId: z.string(),
@@ -266,8 +266,6 @@ export const GraphSummarySchema = z
 		viaMembers: z.number().optional(),
 		/** Distinct top-level declarations holding a use; a use at module level counts its file. */
 		dependents: z.number().optional(),
-		/** Present only when this symbol sits in a cycle. */
-		cycle: z.array(z.string()).optional(),
 	})
 	.meta({ id: "GraphSummary" });
 
@@ -633,9 +631,6 @@ export const SharedLiteralsResultSchema = z.array(SharedLiteralSchema).meta({ id
 
 export type SharedLiteralsResult = z.infer<typeof SharedLiteralsResultSchema>;
 
-/** Members, in no meaningful order. A cycle has no first element. */
-export const CycleSchema = z.object({ members: z.array(z.string()) }).meta({ id: "Cycle" });
-
 export {
 	LoadCycleHazardSchema,
 	LoadCycleUnknownSchema,
@@ -644,8 +639,6 @@ export {
 	ModuleProblemsRequestSchema,
 	ModuleProblemsResponseSchema,
 } from "./loadCycles.js";
-
-export type Cycle = z.infer<typeof CycleSchema>;
 
 export const CacheStatsSchema = z
 	.object({ hits: z.number(), misses: z.number(), entries: z.number(), generation: z.number() })

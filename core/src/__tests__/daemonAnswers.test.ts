@@ -222,7 +222,6 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 		expect(kept).toEqual([expect.objectContaining({ value: "warning", files: 2, excluded: true })]);
 		expect(await ask("sharedLiterals", { minimumFiles: 2, exclude: { hide: ["*.json"] } })).toEqual([]);
 	},
-	cycles: () => ask("cycles", { limit: 5 }),
 	moduleCycles: async () => expect(await ask("moduleCycles", { limit: 5 })).toEqual([]),
 	moduleProblems: async () => expect(await ask("moduleProblems", { module: "cart.ref" })).toEqual([]),
 	mostReferenced: () => ask("mostReferenced", { limit: 5 }),
@@ -909,16 +908,13 @@ describe("populated answers parse back to themselves", () => {
 		});
 	}, 60_000);
 
-	it("reads the hierarchy, the hubs, the cycle and a repeated name", async () => {
+	it("reads the hierarchy, the hubs and a repeated name", async () => {
 		expect((await ask("typeHierarchy", { symbolId: base })).subtypes.map((s) => s.symbolId)).toEqual([derived]);
 		expect((await ask("typeHierarchy", { symbolId: derived })).supertypes.map((s) => s.symbolId)).toEqual([base]);
 
 		const hubs = await ask("mostReferenced", { limit: 5 });
 		expect(hubs.length).toBeGreaterThan(0);
 		expect(hubs[0]?.declaration).not.toBeNull();
-
-		const cycles = await ask("cycles", { limit: 5 });
-		expect(cycles.some((cycle) => cycle.members.includes(ping) && cycle.members.includes(pong))).toBe(true);
 
 		expect(await ask("findByName", { name: "label" })).toHaveLength(3);
 	}, 60_000);

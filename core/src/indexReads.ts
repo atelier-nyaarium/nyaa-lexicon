@@ -36,7 +36,6 @@ import {
 	type UsesFromResult,
 } from "@nyaa-lexicon/protocol";
 import { isEdgeRole, NameCount, type NamespaceTarget, PeerTally } from "./edges.js";
-import { type Cycle, findCycles } from "./graph.js";
 import { inSourceOrder } from "./locals.js";
 import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
 import { proseHit } from "./proseText.js";
@@ -188,18 +187,7 @@ function useOf(context: ReadContext, reference: StoredReference): ReferenceUse {
 
 /** Read queries against one index. Usable alone by anything holding a store. */
 export class IndexReadModel {
-	private heldCycles: { generation: number; cycles: Cycle[] } | null = null;
-
 	constructor(private readonly store: IndexStore) {}
-
-	/** Every symbol cycle, found once per facts generation. */
-	private symbolCycles(): readonly Cycle[] {
-		const generation = this.store.factsGeneration();
-		if (this.heldCycles?.generation !== generation) {
-			this.heldCycles = { generation, cycles: findCycles(this.store.useEdges()) };
-		}
-		return this.heldCycles.cycles;
-	}
 
 	/** Symbols matching a name, so a caller holding a name rather than an id can start. */
 	findByName(name: string, module?: string): SymbolSummary[] {
@@ -727,15 +715,13 @@ export class IndexReadModel {
 	}
 
 	/**
-	 * Fan-in, fan-out, and whether this symbol sits in a cycle.
+	 * Fan-in and fan-out.
 	 *
 	 * Every number here is bounded by what binding reached, so it is a fact about the INDEX rather
 	 * than about the code. A caller told otherwise would read a low fan-in as "barely used" when it
 	 * may only mean "barely resolved".
 	 */
 	private graphSummary(context: ReadContext, symbolId: string): GraphSummary {
-		const cycle = this.symbolCycles().find((found) => found.members.includes(symbolId));
-
 		// Members counted too, because a reference inside a method belongs to the METHOD. Asking a
 		// class for its own fan-out returned zero however much it used, since nothing is written
 		// directly in a class body, and a reader takes zero as "depends on nothing".
@@ -760,13 +746,7 @@ export class IndexReadModel {
 			fanIn: incoming.length,
 			...(members.length === 0 ? {} : { viaMembers: members.length }),
 			dependents: dependents.size,
-			...(cycle === undefined ? {} : { cycle: cycle.members }),
 		};
-	}
-
-	/** Every cycle in the workspace, largest first. */
-	cycles(limit = 20) {
-		return [...this.symbolCycles()].sort((a, b) => b.members.length - a.members.length).slice(0, limit);
 	}
 
 	/**

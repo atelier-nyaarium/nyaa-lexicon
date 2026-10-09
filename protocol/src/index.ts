@@ -100,8 +100,6 @@ export {
 	type CountReason,
 	CountReasonSchema,
 	CountSchema,
-	type Cycle,
-	CycleSchema,
 	type DescribeResult,
 	DescribeResultSchema,
 	type DocQuery,

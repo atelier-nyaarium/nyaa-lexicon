@@ -545,9 +545,9 @@ file is not failed by it; only a provider outage is the daemon's own trouble.
 These reads let a client draw what surrounds one symbol without walking the store itself.
 
 - **Uses, not mentions:** `findReferences`, `usesFrom`, `mostReferenced`, and `describe`'s
-  `referenceCount`, `graph.fanIn`, `graph.fanOut`, `graph.dependents` and `graph.cycle` leave out
-  `import` and `export` rows. One closed role table in `core/src/store.ts` decides it, and every
-  such read goes through the store's use surfaces (`usesTo`, `usesFrom`, `usesIn`, `useEdges`).
+  `referenceCount`, `graph.fanIn`, `graph.fanOut` and `graph.dependents` leave out `import` and
+  `export` rows. One closed role table in `core/src/store.ts` decides it, and every such read goes
+  through the store's use surfaces (`usesTo`, `usesFrom`, `usesIn`).
   Rename planning reads the store's rows whole; a residue names every raw reader.
 - **`findReferences` rows** carry `topLevel` and `language`, both computed at read time, so neither
   is part of a reference's fact id. `topLevel` is the outermost declaration
@@ -580,14 +580,14 @@ These reads let a client draw what surrounds one symbol without walking the stor
   a `bad` load-order component: `{ verdict: "bad", modules, hazards }`, those hazards only. A target
   matches by its name at top level, or dotted through its containers. When the component's judgment
   is not ready within a 300 ms wait it is `{ verdict: "pending", modules }`; the judgment runs on, and
-  the next `describe` reads it. `graph.cycle` stays until the next major.
+  the next `describe` reads it.
 - **`scopeSymbols`** is the containment read Ask uses; `knowledge-layer.md` holds it.
 - **Notes:** `readNote`, `writeNote`, `confirmNote`, `doubtNote`, `resolveNoteProposal`,
   `noteBacklinks` and `searchRefs`; `knowledge-layer.md` holds them.
 
 Protocol 3.3.0 changed two answers an older client may count on. `describe.members` no longer lists
-parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `graph.fanIn`,
-`graph.fanOut` and `graph.cycle` no longer count import and export lines.
+parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `graph.fanIn` and
+`graph.fanOut` no longer count import and export lines.
 
 ### Painting
 
@@ -650,7 +650,7 @@ values mean the indexed facts and knowledge have not changed.
 
 ### Load-order cycles
 
-`cycles` reports symbol reference cycles. `moduleCycles` reports candidate module load cycles and
+`moduleCycles` reports candidate module load cycles and
 asks the owning provider for an on-demand judgment. A verdict is `bad`, `fine` or `unknown`;
 unknown never produces a warning. `moduleProblems({ module })` returns hazards whose reader is in
 that module. Provider evidence carries source hashes and occurrence landings, checked against
@@ -790,7 +790,8 @@ costs a protocol major: a client connects to a newer daemon on the premise that 
 table is still answered. A daemon states how far back that holds as `OLDEST_CLIENT_MAJOR`, and a
 major that removes a method raises it, so an older client is told to update rather than meeting
 `unknown method`. Protocol 5.0.0 raised it to 5: a scope landing, the `export` fact kind and the
-rename issue kinds fail a 4.x client's parse. A new method or a new optional field is a minor.
+rename issue kinds fail a 4.x client's parse. Protocol 7.0.0 raised it to 7, removing `cycles`. A
+new method or a new optional field is a minor.
 `PROTOCOL_VERSION` and `oldestClientMajor` are what both rules read, and the welcome frame carries
 both so a client that reached the socket some other way still learns what it is talking to.
 

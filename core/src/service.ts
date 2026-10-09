@@ -8,7 +8,6 @@ import {
 	type CacheStats,
 	type CoChangedWithResult,
 	type CommitsMentioningResult,
-	type Cycle,
 	type FileEdits,
 	type FileHistory,
 	type ImportEditsRequest,
@@ -566,10 +565,6 @@ export class LexiconService {
 
 	findComments(...args: Parameters<IndexReadModel["findComments"]>): CommentsResult {
 		return this.reads.findComments(...args);
-	}
-
-	cycles(limit = 20): Cycle[] {
-		return this.reads.cycles(limit);
 	}
 
 	moduleCycles(...args: Parameters<LoadCycleRead["moduleCycles"]>): ReturnType<LoadCycleRead["moduleCycles"]> {

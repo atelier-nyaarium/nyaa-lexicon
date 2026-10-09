@@ -77,7 +77,7 @@ export const CASES: Record<string, unknown[][]> = {
 				moreProse: 2,
 				referenceCount: 4,
 				hierarchy: { supertypes: [OTHER], subtypes: [OTHER], ancestors: [OTHER], unboundSupertypes: ["Foo"] },
-				graph: { fanOut: 6, viaMembers: 3, cycle: ["a", "b"] },
+				graph: { fanOut: 6, viaMembers: 3 },
 			},
 		],
 		[

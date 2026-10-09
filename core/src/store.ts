@@ -3547,16 +3547,6 @@ export class IndexStore {
 		return new Set(rows.map((row) => row.targetId));
 	}
 
-	/** Every bound use edge, for a traversal that needs the whole graph rather than one neighbourhood. */
-	useEdges(): Array<{ from: string; to: string }> {
-		return this.db
-			.prepare(
-				`SELECT DISTINCT fromId AS 'from', targetId AS 'to' FROM refs r
-				 WHERE fromId IS NOT NULL AND targetId IS NOT NULL AND ${useSql("r")}`,
-			)
-			.all() as Array<{ from: string; to: string }>;
-	}
-
 	/** Most-used symbols first. Hub rank, which is fan-in sorted, ties by id so two runs agree. */
 	mostReferenced(limit: number): Array<{ symbolId: string; count: number }> {
 		return this.db

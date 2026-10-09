@@ -14,7 +14,6 @@ import {
 	CommentsResultSchema,
 	CommitsMentioningResultSchema,
 	CommittedStepSchema,
-	CycleSchema,
 	DescribeResultSchema,
 	DocsResultSchema,
 	DriftedModuleSchema,
@@ -574,8 +573,6 @@ export const DAEMON_METHODS = {
 		budget: "read",
 		exclusion: true,
 	},
-	/** Largest reference cycles first. */
-	cycles: { request: Paged, response: z.array(CycleSchema), lifecycle: "query", mutates: false, budget: "read" },
 	moduleCycles: {
 		request: ModuleCyclesRequestSchema,
 		response: z.array(ModuleCycleSchema),

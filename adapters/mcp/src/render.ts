@@ -144,15 +144,6 @@ function appendDependencies(lines: string[], summary: DescribeResult["graph"]): 
 ## Dependencies
 
 - Uses: ${summary.fanOut} distinct symbol${summary.fanOut === 1 ? "" : "s"}${via}`);
-	if (summary.cycle) {
-		lines.push(`
-### Cycle
-`);
-		for (const member of summary.cycle.slice(0, 10)) lines.push(`- ${code(member)}`);
-		if (summary.cycle.length > 10)
-			lines.push(`
-> ${summary.cycle.length - 10} more cycle members not shown.`);
-	}
 	lines.push(`
 > Counts use resolved indexed bindings.`);
 }

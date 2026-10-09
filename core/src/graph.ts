@@ -1,12 +1,9 @@
-// Traversals over the reference graph.
+// Traversals over a graph of edges, such as the modules runtime imports load.
 //
 // The store holds edges and nothing else, deliberately, so anything needing to walk them lives
-// here. Every answer is bounded by what BINDING reached, which is why each one carries that caveat
-// rather than reading as a fact about the code.
+// here.
 
-import type { Cycle, WorkMeter } from "@nyaa-lexicon/protocol";
-
-export type { Cycle } from "@nyaa-lexicon/protocol";
+import type { WorkMeter } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -16,6 +13,11 @@ export interface Edge {
 	to: string;
 }
 
+/** Members, in no meaningful order. A cycle has no first element. */
+export interface Cycle {
+	members: string[];
+}
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -23,11 +25,10 @@ export interface Edge {
  * Strongly connected components with more than one member, plus real self-loops.
  *
  * Tarjan's algorithm, written iteratively. A recursive one is shorter and blows the stack on a real
- * workspace: this graph has as many nodes as the codebase has symbols, and a deep chain is ordinary
- * rather than pathological.
+ * workspace, where a deep chain is ordinary rather than pathological.
  *
- * A single symbol is only a cycle when it genuinely references itself, so ordinary recursion is
- * reported and a symbol merely sitting alone is not.
+ * A single node is only a cycle when it genuinely reaches itself, so a self-loop is reported and a
+ * node merely sitting alone is not.
  *
  * `meter` counts each edge and member read, so a test bounds the work as linear.
  */
