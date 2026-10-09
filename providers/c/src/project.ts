@@ -6,6 +6,7 @@ import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from "no
 import path from "node:path";
 import { type IncludeSearch, readCompileCommands } from "@nyaa-lexicon/formats/compile-commands";
 import { type Diagnostic, hashContent, type ReadPolicy, workspaceFile, workspaceModule } from "@nyaa-lexicon/protocol";
+import { type ExcludedDirectories, excludesDirectory } from "@nyaa-lexicon/protocol/excludedDirectories";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -72,7 +73,7 @@ function databaseFiles(root: string): string[] {
  * Workspace directories named `include`, absolute and sorted. Excluded names, links, directories the
  * scope denies and directories that cannot be read are passed by.
  */
-function includeDirectories(root: string, excluded: ReadonlySet<string>, policy: ReadPolicy): string[] {
+function includeDirectories(root: string, excluded: ExcludedDirectories, policy: ReadPolicy): string[] {
 	const found: string[] = [];
 	const pending = [root];
 	for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
@@ -82,8 +83,10 @@ function includeDirectories(root: string, excluded: ReadonlySet<string>, policy:
 		} catch {
 			continue;
 		}
+		const names = entries.map((entry) => entry.name);
 		for (const entry of entries) {
-			if (!entry.isDirectory() || excluded.has(entry.name)) continue;
+			if (!entry.isDirectory() || excludesDirectory(excluded, entry.name, directory === root, () => names))
+				continue;
 			const child = path.join(directory, entry.name);
 			if (!policy.readable(child)) continue;
 			if (entry.name === "include") found.push(child);
@@ -112,7 +115,7 @@ export function findInclude(
 }
 
 /** The databases the scope lets be read, and the search lists they and the tree give. */
-export function discoverCProject(root: string, excluded: ReadonlySet<string>, policy: ReadPolicy): CProject {
+export function discoverCProject(root: string, excluded: ExcludedDirectories, policy: ReadPolicy): CProject {
 	const units = new Map<string, CUnit[]>();
 	const searches: IncludeSearch[] = [];
 	const searchIds = new Map<string, number>();

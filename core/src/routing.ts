@@ -4,6 +4,7 @@
 // state what they claim at initialize; nothing here knows what any of those claims mean.
 
 import { type FileContent, shebangInterpreter } from "@nyaa-lexicon/protocol";
+import type { ExcludedDirectories } from "@nyaa-lexicon/protocol/excludedDirectories";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -19,8 +20,8 @@ export interface ProviderClaims {
 	sharedExtensions?: Array<{ extension: string; beside: string[] }>;
 	/** Interpreters whose shebang claims an extensionless file; ranks with a filename claim. */
 	shebangs?: string[];
-	/** Directory names no root of this provider's lies under, unless its discovery names it. */
-	excludedDirectories?: string[];
+	/** Directories no root of this provider's lies under, unless its discovery names it. */
+	excludedDirectories?: ExcludedDirectories;
 	fallback?: boolean;
 	/** As declared at initialize; absent means code, resolved here once. */
 	content?: FileContent;
@@ -41,8 +42,7 @@ export type HeadReader = (module: string) => string | undefined;
 
 /** Why routing answered as it did, so a caller can report an unowned file honestly. */
 export type Route =
-	/** `excluded`: under a directory the owner declared, so a root or an import target only if discovery names it. */
-	| { owned: true; providerId: string; content: FileContent; excluded?: true }
+	| { owned: true; providerId: string; content: FileContent }
 	| { owned: false; reason: "unclaimed" }
 	| { owned: false; reason: "contested"; providerIds: string[] };
 
@@ -84,12 +84,7 @@ export function routeModule(module: string, providers: ProviderClaims[], context
 		return { owned: false, reason: "contested", providerIds: candidates.map((p) => p.providerId).sort() };
 	}
 	const owner = candidates[0] as ProviderClaims;
-	return {
-		owned: true,
-		providerId: owner.providerId,
-		content: owner.content ?? "code",
-		...(underExcludedDirectory(module, owner) ? { excluded: true as const } : {}),
-	};
+	return { owned: true, providerId: owner.providerId, content: owner.content ?? "code" };
 }
 
 function matchByExtension(module: string, providers: ProviderClaims[]): ProviderClaims[] {
@@ -119,16 +114,6 @@ function matchBySharedExtension(
 			(claim) => claim.extension.toLowerCase() === extension && claim.beside.some((e) => context.hasExtension(e)),
 		),
 	);
-}
-
-/** Whether `module` lies under a directory its owner declared it never indexes beneath. */
-function underExcludedDirectory(module: string, owner: Pick<ProviderClaims, "excludedDirectories">): boolean {
-	const excluded = owner.excludedDirectories;
-	if (excluded === undefined || excluded.length === 0) return false;
-	return module
-		.split("/")
-		.slice(0, -1)
-		.some((segment) => excluded.includes(segment));
 }
 
 /** Every module a provider claims, for a bulk pass that asks one provider for its whole set. */

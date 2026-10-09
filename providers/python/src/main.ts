@@ -48,18 +48,10 @@ import { wireAllList, wireImports } from "./wiring";
 //////// Constants
 
 const EXTENSIONS = [".py"];
-const EXCLUDED_DIRECTORIES = new Set([
-	".git",
-	".hg",
-	".mypy_cache",
-	".pytest_cache",
-	".venv",
-	"__pycache__",
-	"build",
-	"dist",
-	"node_modules",
-	"venv",
-]);
+const EXCLUDED_DIRECTORIES = {
+	anywhere: [".git", ".hg", ".mypy_cache", ".pytest_cache", ".venv", "__pycache__", "node_modules", "venv"],
+	beside: [{ names: ["build", "dist"], markers: ["pyproject.toml", "setup.py", "setup.cfg"] }],
+};
 
 export const TIERS = {
 	projectModel: true,
@@ -274,7 +266,7 @@ export class PythonProvider {
 			providerId: "python-provider",
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

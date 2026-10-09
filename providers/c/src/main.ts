@@ -97,7 +97,10 @@ const INCLUDE_CONFLICT: Conflict = { priority: 0, amongTransfers: "exclude", aga
 const LANGUAGE = "c";
 const EXTENSIONS = [".c", ".h"];
 
-const EXCLUDED_DIRECTORIES = new Set([...DEFAULT_EXCLUDED_DIRECTORIES, ".clangd", "CMakeFiles"]);
+const EXCLUDED_DIRECTORIES = {
+	anywhere: [...DEFAULT_EXCLUDED_DIRECTORIES.anywhere, ".clangd", "CMakeFiles"],
+	beside: DEFAULT_EXCLUDED_DIRECTORIES.beside.map((group) => ({ ...group, markers: ["CMakeLists.txt"] })),
+};
 
 const PROJECT_CONFIGS = ["CMakeLists.txt", "Makefile", "compile_commands.json", ".clang-format", ".clangd"];
 
@@ -388,7 +391,7 @@ export class CProvider {
 			providerId: "c-provider",
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

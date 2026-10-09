@@ -95,7 +95,7 @@ interface Binder {
 
 const EXTENSIONS = [".ps1", ".psm1", ".psd1"];
 const SHEBANGS = ["pwsh", "powershell"];
-const EXCLUDED_DIRECTORIES = new Set([...DEFAULT_EXCLUDED_DIRECTORIES]);
+const EXCLUDED_DIRECTORIES = DEFAULT_EXCLUDED_DIRECTORIES;
 
 export const TIERS = {
 	projectModel: true,
@@ -420,7 +420,7 @@ export class PowerShellProvider {
 			extensions: EXTENSIONS,
 			filenames: [],
 			shebangs: SHEBANGS,
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

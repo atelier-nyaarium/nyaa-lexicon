@@ -20,6 +20,7 @@ import type {
 	ResolutionMode,
 } from "@nyaa-lexicon/protocol";
 import { defined, hashContent } from "@nyaa-lexicon/protocol";
+import { directoryEntries, underExcludedDirectory } from "@nyaa-lexicon/protocol/excludedDirectories";
 import type { Clock, TimerHandle } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
@@ -225,7 +226,11 @@ export class WorkspaceIndexer {
 		supervisor.headFrom((module) => readHead(this.workspaceRoot, module));
 		// A provider process starting again may answer what its predecessor failed or refused.
 		supervisor.respawnedFrom(() => this.queueRebinds());
+		this.entries = directoryEntries(workspaceRoot);
 	}
+
+	/** What a workspace directory holds, for a marker beside an output directory. Renewed by each admission. */
+	private entries: (directory: string) => readonly string[];
 
 	/** What the last prune kept; null until one has run, and the timer's sweep judges nothing before that. */
 	private reachable: Set<string> | null = null;
@@ -665,7 +670,11 @@ export class WorkspaceIndexer {
 		this.status = { state: "discovering", done: 0, total: 0 };
 		try {
 			this.newInPass = new Set();
-			this.discovered = new Map();
+			// Kept until each provider states its project again, so an excluded file it named stays
+			// claimed meanwhile. One no longer running names nothing.
+			const running = new Set(this.supervisor.running().map((claims) => claims.providerId));
+			for (const providerId of this.discovered.keys())
+				if (!running.has(providerId)) this.discovered.delete(providerId);
 			this.configFiles = new Map();
 			// The workspace is being re-learned, so nothing a previous pass was told still vouches
 			// for itself. Once, rather than per file: a scan reads what is already on disk.
@@ -1199,6 +1208,8 @@ export class WorkspaceIndexer {
 							: target.depth;
 					const prior = this.depths.get(target.module);
 					if (seen.has(target.module) && !(prior === "surface" && depth === "full")) continue;
+					// An unclaimed target stays unseen, so the prune that follows forgets any row it holds.
+					if (!this.claimOf(target.module).claimed) continue;
 					seen.add(target.module);
 					this.depths.set(target.module, depth);
 					found.push(target.module);
@@ -1249,6 +1260,7 @@ export class WorkspaceIndexer {
 	/** Every module the scope admits, owned by a provider or not. Rebuilds the scope from git each time. */
 	private async admitted(extra: Iterable<string> = [], gone: Iterable<string> = []): Promise<Admitted> {
 		this.scope = await this.computeScope();
+		this.entries = directoryEntries(this.workspaceRoot);
 		const named = includedFiles(this.workspaceRoot, this.scope.include);
 		const namedSet = new Set(named);
 		const goneSet = new Set(gone);
@@ -1301,7 +1313,14 @@ export class WorkspaceIndexer {
 
 	/** Under a directory its owner declared excluded, which only the owner's own discovery overrides. */
 	private excludedByOwner(module: string, route: Route): boolean {
-		return route.owned && route.excluded === true && this.discovered.get(route.providerId)?.has(module) !== true;
+		if (!route.owned) return false;
+		const named = this.discovered.get(route.providerId);
+		if (named?.has(module) === true) return false;
+		const owner = this.supervisor.running().find((claims) => claims.providerId === route.providerId);
+		const excluded = owner?.excludedDirectories;
+		if (excluded === undefined || !underExcludedDirectory(module, excluded, this.entries)) return false;
+		// Before that provider's first discovery here, a held row may be a file it names.
+		return named !== undefined || this.store.depthOf(module) === null;
 	}
 
 	/**

@@ -171,19 +171,15 @@ export const WORDS = {
 };
 
 const EXTENSIONS = [".kt"];
-const EXCLUDED_DIRECTORIES = new Set([
-	".git",
-	".gradle",
-	".idea",
-	".kotlin",
-	".mvn",
-	"build",
-	"dist",
-	"generated",
-	"node_modules",
-	"out",
-	"target",
-]);
+const EXCLUDED_DIRECTORIES = {
+	anywhere: [".git", ".gradle", ".idea", ".kotlin", ".mvn", "node_modules"],
+	beside: [
+		{
+			names: ["build", "dist", "generated", "out", "target"],
+			markers: ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml"],
+		},
+	],
+};
 
 export { LANGUAGE, REFERENCE_ROLES };
 
@@ -320,7 +316,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

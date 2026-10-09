@@ -8,6 +8,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { type IncludeSearch, readCompileCommands } from "@nyaa-lexicon/formats/compile-commands";
 import { type Diagnostic, hashContent, type ReadPolicy, workspaceFile, workspaceModule } from "@nyaa-lexicon/protocol";
+import { type ExcludedDirectories, excludesDirectory } from "@nyaa-lexicon/protocol/excludedDirectories";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -74,7 +75,7 @@ function databaseFiles(root: string): string[] {
  * Workspace directories named `include`, absolute and sorted, outside `excluded` ones, links and what
  * `policy` denies. A directory that cannot be listed is skipped.
  */
-function includeDirectories(root: string, excluded: ReadonlySet<string>, policy: ReadPolicy): string[] {
+function includeDirectories(root: string, excluded: ExcludedDirectories, policy: ReadPolicy): string[] {
 	const found: string[] = [];
 	const pending = [root];
 	for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
@@ -84,8 +85,10 @@ function includeDirectories(root: string, excluded: ReadonlySet<string>, policy:
 		} catch {
 			continue;
 		}
+		const names = entries.map((entry) => entry.name);
 		for (const entry of entries) {
-			if (!entry.isDirectory() || excluded.has(entry.name)) continue;
+			if (!entry.isDirectory() || excludesDirectory(excluded, entry.name, directory === root, () => names))
+				continue;
 			const child = path.join(directory, entry.name);
 			if (!policy.readable(child)) continue;
 			if (entry.name === "include") found.push(child);
@@ -96,7 +99,7 @@ function includeDirectories(root: string, excluded: ReadonlySet<string>, policy:
 }
 
 /** The databases the scope lets be read, and the search lists they and the tree give. */
-export function discoverCppProject(root: string, excluded: ReadonlySet<string>, policy: ReadPolicy): CppProject {
+export function discoverCppProject(root: string, excluded: ExcludedDirectories, policy: ReadPolicy): CppProject {
 	const units = new Map<string, CppEntry[]>();
 	const searches: IncludeSearch[] = [];
 	const searchIds = new Map<string, number>();

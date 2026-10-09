@@ -69,19 +69,44 @@ describe("shared parser primitives", () => {
 
 describe("walking a workspace", () => {
 	it("claims by extension and exact name, collects configuration apart, skips excluded directories, walked or scoped", () => {
-		const modules = ["src/a.kt", "src/b.java", "project.godot", "build/c.kt", "deep/build/e.kt", "app.csproj"];
-		for (const module of [...modules, "deep/nested/d.kt"]) put(module);
+		const modules = [
+			"src/a.kt",
+			"src/b.java",
+			"project.godot",
+			"build/c.kt",
+			"deep/build/e.kt",
+			"deep/cache/h.kt",
+			"deep/nested/d.kt",
+			"app/app.csproj",
+			"app/build/f.kt",
+			"app/gen-x/g.kt",
+		];
+		for (const module of modules) put(module);
 		const options = {
 			extensions: [".kt"],
 			filenames: ["project.godot"],
 			configExtensions: [".csproj"],
-			excludedDirectories: new Set(["build"]),
+			excludedDirectories: {
+				anywhere: ["cache"],
+				beside: [{ names: ["build", "gen-*"], markers: ["*.csproj"] }],
+			},
 		};
-		const expected = { files: ["deep/nested/d.kt", "project.godot", "src/a.kt"], configFiles: ["app.csproj"] };
+		// An output name below the root is source unless a marker sits beside it.
+		const expected = {
+			files: ["deep/build/e.kt", "deep/nested/d.kt", "project.godot", "src/a.kt"],
+			configFiles: ["app/app.csproj"],
+		};
 
 		expect(walkWorkspace(root, options)).toEqual(expected);
 		// A scope that names a file under an excluded directory, as git does for a tracked one.
-		expect(walkWorkspace(root, { ...options, scope: [...modules, "deep/nested/d.kt"] })).toEqual(expected);
+		expect(walkWorkspace(root, { ...options, scope: modules })).toEqual(expected);
+		// Undeclared, the walk skips every default name at any depth.
+		expect(walkWorkspace(root, { extensions: [".kt"] }).files).toEqual([
+			"app/gen-x/g.kt",
+			"deep/cache/h.kt",
+			"deep/nested/d.kt",
+			"src/a.kt",
+		]);
 	});
 
 	it("claims an extensionless file by the interpreter its shebang names", () => {

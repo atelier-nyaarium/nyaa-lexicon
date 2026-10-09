@@ -61,7 +61,10 @@ interface Package {
 
 export const RUST_EXTENSIONS = [".rs"] as const;
 
-export const EXCLUDED_DIRECTORIES = new Set([".git", ".hg", ".svn", ".idea", "node_modules", "target", "vendor"]);
+export const EXCLUDED_DIRECTORIES = {
+	anywhere: [".git", ".hg", ".svn", ".idea", "node_modules"],
+	beside: [{ names: ["target", "vendor"], markers: ["Cargo.toml"] }],
+};
 
 const STANDARD_CRATES = new Set(["alloc", "core", "proc_macro", "std", "test"]);
 

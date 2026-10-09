@@ -53,21 +53,13 @@ import { type Reaches, reachesOf } from "./reach.js";
 const PROVIDER_ID = "cpp-provider";
 
 const EXTENSIONS = [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"];
-const EXCLUDED_DIRECTORIES = new Set([
-	".git",
-	".hg",
-	".svn",
-	"build",
-	"cmake-build-debug",
-	"cmake-build-release",
-	"dist",
-	"node_modules",
-	"out",
-	"target",
-	"vendor",
-	"bazel-bin",
-	"bazel-out",
-]);
+const EXCLUDED_DIRECTORIES = {
+	anywhere: [".git", ".hg", ".svn", "node_modules"],
+	beside: [
+		{ names: ["build", "cmake-build-*", "dist", "out", "target", "vendor"], markers: ["CMakeLists.txt"] },
+		{ names: ["bazel-*"], markers: ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"] },
+	],
+};
 export const REFERENCE_ROLES = ["call", "read", "write", "import", "extends", "instantiate", "typeUse"] as const;
 
 export const TIERS = {
@@ -261,7 +253,7 @@ export class CppProvider {
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
 			sharedExtensions: [{ extension: ".h", beside: EXTENSIONS }],
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

@@ -386,7 +386,7 @@ export class RustProvider {
 			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: [...EXTENSIONS],
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

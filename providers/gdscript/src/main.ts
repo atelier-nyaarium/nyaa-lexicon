@@ -156,7 +156,7 @@ export class GDScriptProvider {
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
 			filenames: FILENAMES,
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: { anywhere: [...EXCLUDED_DIRECTORIES] },
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

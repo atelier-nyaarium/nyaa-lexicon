@@ -4,6 +4,7 @@
 // (Unknown with a reason), never by omitting a method, so the core cannot branch on language.
 
 import { z } from "zod";
+import { ExcludedDirectoriesSchema } from "./excludedDirectories.js";
 import { ImportEditsRequestSchema, ImportEditsResponseSchema } from "./importEdits.js";
 import {
 	JudgeLoadCycleAnswerSchema,
@@ -112,10 +113,10 @@ export const InitializeResponseSchema = z
 		/** Interpreters, as `shebangInterpreter` names them, claiming an extensionless file; ranks with a filename claim. */
 		shebangs: z.array(z.string().min(1)).optional(),
 		/**
-		 * Directory names never indexed beneath, tracked or not: no claimed file under one is a root
+		 * Directories never indexed beneath, tracked or not: no claimed file under one is a root
 		 * unless discovery names it, and no import is followed into one. Absent excludes nothing.
 		 */
-		excludedDirectories: z.array(z.string().min(1)).optional(),
+		excludedDirectories: ExcludedDirectoriesSchema.optional(),
 		fallback: z.boolean().optional(),
 		protocolVersion: z.string().min(1),
 		tiers: ProviderTiersSchema,

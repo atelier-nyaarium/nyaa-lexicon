@@ -3,6 +3,12 @@
 import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
+import {
+	directoryEntries,
+	type ExcludedDirectories,
+	excludesDirectory,
+	underExcludedDirectory,
+} from "./excludedDirectories.js";
 import type { METHOD_SCHEMAS, NOTIFICATION_SCHEMAS, ProviderMethod } from "./methods.js";
 import { type ModuleValue, type StoreProvider, storeHandlersFor } from "./moduleStore.js";
 import type { ProjectModel } from "./project.js";
@@ -51,8 +57,8 @@ export interface WalkOptions {
 	shebangs?: readonly string[];
 	/** Suffixes collected as the project's configuration rather than its sources. */
 	configExtensions?: readonly string[];
-	/** Directory names never entered. */
-	excludedDirectories?: ReadonlySet<string>;
+	/** Directories never entered, as declared at initialize. Absent: the default names, at any depth. */
+	excludedDirectories?: ExcludedDirectories;
 	/** Claim every regular file below the root. */
 	everything?: boolean;
 	/** Core-owned workspace-relative modules to consider. */
@@ -62,20 +68,19 @@ export interface WalkOptions {
 ////////////////////////////////
 //  Constants
 
-/** Directories no language's sources live in. A provider adds its own build outputs. */
-export const DEFAULT_EXCLUDED_DIRECTORIES: ReadonlySet<string> = new Set([
-	".git",
-	".hg",
-	".svn",
-	".cache",
-	".venv",
-	"build",
-	"dist",
-	"node_modules",
-	"out",
-	"target",
-	"vendor-cache",
-]);
+/** Directories no language's sources live in, and outputs at the root. A provider adds its own. */
+export const DEFAULT_EXCLUDED_DIRECTORIES = {
+	anywhere: [".git", ".hg", ".svn", ".cache", ".venv", "node_modules", "vendor-cache"],
+	beside: [{ names: ["build", "dist", "out", "target"] }],
+} as const satisfies ExcludedDirectories;
+
+/** A walk with no declared set: core excludes nothing for it, and the walk skips every default name. */
+const UNDECLARED_EXCLUDED_DIRECTORIES: ExcludedDirectories = {
+	anywhere: [
+		...DEFAULT_EXCLUDED_DIRECTORIES.anywhere,
+		...DEFAULT_EXCLUDED_DIRECTORIES.beside.flatMap((group) => group.names),
+	],
+};
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -163,7 +168,7 @@ function claimsOf(root: string, options: WalkOptions) {
 /** Every claimed file under `root`, or in `options.scope`, sorted. An unreadable directory is skipped, never fatal. */
 export function walkWorkspace(root: string, options: WalkOptions): { files: string[]; configFiles: string[] } {
 	if (options.scope !== undefined) return scopedWorkspace(root, options);
-	const excluded = options.excludedDirectories ?? DEFAULT_EXCLUDED_DIRECTORIES;
+	const excluded = options.excludedDirectories ?? UNDECLARED_EXCLUDED_DIRECTORIES;
 	const claims = claimsOf(root, options);
 	const files: string[] = [];
 	const configFiles: string[] = [];
@@ -175,10 +180,11 @@ export function walkWorkspace(root: string, options: WalkOptions): { files: stri
 		} catch {
 			return;
 		}
+		const names = entries.map((entry) => entry.name);
 		for (const entry of entries) {
 			const absolute = path.join(directory, entry.name);
 			if (entry.isDirectory()) {
-				if (!excluded.has(entry.name)) visit(absolute);
+				if (!excludesDirectory(excluded, entry.name, directory === root, () => names)) visit(absolute);
 				continue;
 			}
 			if (!entry.isFile()) continue;
@@ -195,25 +201,18 @@ export function walkWorkspace(root: string, options: WalkOptions): { files: stri
 	return { files: files.sort(), configFiles: configFiles.sort() };
 }
 
-/** Whether a module sits under one of `excluded`'s directory names, which no walk enters. */
-function underExcludedDirectory(module: string, excluded: ReadonlySet<string>): boolean {
-	return module
-		.split("/")
-		.slice(0, -1)
-		.some((segment) => excluded.has(segment));
-}
-
 /**
  * The claimed files among core's scope, which already left out what the workspace ignores. A
  * provider's own excluded directories are skipped as core skips them, so only a declared set applies.
  */
 function scopedWorkspace(root: string, options: WalkOptions): { files: string[]; configFiles: string[] } {
 	const excluded = options.excludedDirectories;
+	const entries = directoryEntries(root);
 	const claims = claimsOf(root, options);
 	const files = new Set<string>();
 	const configFiles = new Set<string>();
 	for (const module of options.scope ?? []) {
-		if (excluded !== undefined && underExcludedDirectory(module, excluded)) continue;
+		if (excluded !== undefined && underExcludedDirectory(module, excluded, entries)) continue;
 		if (workspaceModule(root, path.resolve(root, module)) === null) continue;
 		const name = path.basename(module);
 		if (claims.source(name, () => module)) files.add(module);

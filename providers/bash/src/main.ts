@@ -78,7 +78,10 @@ const EXTENSIONS = [".sh", ".bash"];
 const FILENAMES = [".bashrc", ".bash_profile", ".bash_aliases", ".bash_logout", ".profile"];
 /** Interpreters an extensionless script's shebang may name, `env` looked through by the kit. */
 const SHEBANGS = ["bash", "sh"];
-const EXCLUDED_DIRECTORIES = new Set([...DEFAULT_EXCLUDED_DIRECTORIES, ".venv", "venv"]);
+const EXCLUDED_DIRECTORIES = {
+	...DEFAULT_EXCLUDED_DIRECTORIES,
+	anywhere: [...DEFAULT_EXCLUDED_DIRECTORIES.anywhere, "venv"],
+};
 
 export const TIERS = {
 	projectModel: true,
@@ -278,7 +281,7 @@ export class BashProvider {
 			extensions: EXTENSIONS,
 			filenames: FILENAMES,
 			shebangs: SHEBANGS,
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

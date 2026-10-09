@@ -189,21 +189,15 @@ export const REFERENCE_ROLES = [
 ] as const;
 
 const EXTENSIONS = [".cs"];
-const EXCLUDED_DIRECTORIES = new Set([
-	".git",
-	".hg",
-	".vs",
-	".idea",
-	"bin",
-	"obj",
-	"build",
-	"dist",
-	"node_modules",
-	"packages",
-	"TestResults",
-	"Debug",
-	"Release",
-]);
+const EXCLUDED_DIRECTORIES = {
+	anywhere: [".git", ".hg", ".vs", ".idea", "node_modules", "TestResults"],
+	beside: [
+		{
+			names: ["bin", "obj", "build", "dist", "packages", "Debug", "Release"],
+			markers: ["*.csproj", "*.sln"],
+		},
+	],
+};
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -242,7 +236,7 @@ export class CsharpProvider extends CsharpBinder {
 			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: [...EXTENSIONS],
-			excludedDirectories: [...EXCLUDED_DIRECTORIES],
+			excludedDirectories: EXCLUDED_DIRECTORIES,
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],
