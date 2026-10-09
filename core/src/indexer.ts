@@ -1805,6 +1805,8 @@ export class WorkspaceIndexer {
 			for (const { providerId, fingerprint, written } of restated) {
 				for (const module of written) {
 					if (attempted.has(module)) continue;
+					// Cut short at a file boundary, the project stays unrecorded, so the next warm scan restates the rest.
+					if (shouldAbandon?.() === true) return outcomes;
 					attempted.add(module);
 					try {
 						outcomes.push(await this.indexOne(module, this.store.depthOf(module) ?? undefined));

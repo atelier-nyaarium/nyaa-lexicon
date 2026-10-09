@@ -747,6 +747,47 @@ describe("module load cycles", () => {
 		});
 	});
 
+	it("holds what a dissolved component turned into to the query's module, unread and limit filters", async () => {
+		const read = (module: string, targets: string[], hash: string) =>
+			file(
+				module,
+				targets.map((target) => ({ target, elided: false })),
+				hash,
+				[crossing("X")],
+			);
+		const pair = () => {
+			store.replaceFile(read("a.fake", ["b.fake"], "a1"));
+			store.replaceFile(read("b.fake", ["a.fake"], "b1"));
+		};
+		pair();
+		store.replaceFile(file("c.fake", [{ target: "b.fake", elided: false }]));
+		store.replaceFile(file("d.fake", [{ target: "a.fake", elided: false }]));
+		let during: (() => void) | null = null;
+		const provider = fakeSupervisor({
+			answers: {
+				judgeLoadCycle: (request) => {
+					during?.();
+					during = null;
+					return judged(request);
+				},
+			},
+		});
+		// a and b split into two read cycles, a with d and b with c, while the provider judges them.
+		during = () => {
+			store.replaceFile(read("a.fake", ["d.fake"], "a2"));
+			store.replaceFile(read("b.fake", ["c.fake"], "b2"));
+		};
+		const limited = await service(provider).moduleCycles({ limit: 1 });
+		// b joins an unread cycle with c and a leaves every cycle, while the provider judges a's.
+		pair();
+		during = () => store.replaceFile(file("b.fake", [{ target: "c.fake", elided: false }], "b3"));
+		const filtered = await service(provider).moduleCycles({ module: "a.fake", limit: 5 });
+		expect({ limited: limited.length, filtered: filtered.map((cycle) => cycle.modules) }).toEqual({
+			limited: 1,
+			filtered: [],
+		});
+	});
+
 	it("publishes the entries a component holds when its judgment ends, not when it began", async () => {
 		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
 		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));

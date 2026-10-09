@@ -239,11 +239,13 @@ export class LoadCycleRead {
 	async moduleCycles(raw: unknown, dispatchGate?: Gate): Promise<ModuleCycle[]> {
 		const query = ModuleCyclesRequestSchema.parse(raw);
 		const shown = (judgment: Judgment) => query.verdict === undefined || judgment.verdict === query.verdict;
+		// Nothing crosses an unread component, so it is never judged unless asked for.
+		const asked = (cycle: Cycle) =>
+			(query.module === undefined || cycle.modules.includes(query.module)) &&
+			(query.includeUnread === true || cycle.crossingCount > 0);
 		const knownBad = (cycle: Cycle) => Number(this.cache.get(cycle.key)?.verdict === "bad");
 		const candidates = (await this.componentsNow(dispatchGate)).cycles
-			.filter((cycle) => query.module === undefined || cycle.modules.includes(query.module))
-			// Nothing crosses an unread component, so it is never judged unless asked for.
-			.filter((cycle) => query.includeUnread === true || cycle.crossingCount > 0)
+			.filter(asked)
 			.sort((a, b) => knownBad(b) - knownBad(a) || a.modules[0]!.localeCompare(b.modules[0]!));
 		const judged: Array<{ cycle: Cycle; judgment: Judgment }> = [];
 		for (const cycle of candidates) {
@@ -251,13 +253,15 @@ export class LoadCycleRead {
 			const judgment = await this.judge(cycle);
 			if (shown(judgment)) judged.push({ cycle, judgment });
 		}
+		// A component can stand differently at publish time, so the query holds it to the same filters.
 		return (await this.published(judged, dispatchGate))
-			.filter(({ judgment }) => shown(judgment))
+			.filter(({ cycle, judgment }) => asked(cycle) && shown(judgment))
 			.sort(
 				(a, b) =>
 					Number(b.judgment.verdict === "bad") - Number(a.judgment.verdict === "bad") ||
 					a.cycle.modules[0]!.localeCompare(b.cycle.modules[0]!),
 			)
+			.slice(0, query.limit)
 			.map(({ cycle, judgment }) =>
 				ModuleCycleSchema.parse({
 					modules: cycle.modules,
@@ -277,7 +281,9 @@ export class LoadCycleRead {
 			candidate.modules.includes(query.module),
 		);
 		if (cycle === undefined) return [];
-		const [current] = await this.published([{ cycle, judgment: await this.judge(cycle) }], dispatchGate);
+		const current = (await this.published([{ cycle, judgment: await this.judge(cycle) }], dispatchGate)).find(
+			(answer) => answer.cycle.modules.includes(query.module),
+		);
 		return (current?.judgment.bad ?? []).filter((hazard) => hazard.reader.module === query.module);
 	}
 
@@ -334,6 +340,7 @@ export class LoadCycleRead {
 			if (detail.generation === read.generation)
 				return this.keep(assemble(read.generation, components, graph, detail));
 		}
+		// The hold is the reads every build takes anyway plus the linear graph work between them, shared.
 		return this.keep(await this.shortRead(dispatchGate, () => buildIn(this.store)));
 	}
 

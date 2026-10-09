@@ -18,6 +18,9 @@ import { harness } from "./harness.js";
 
 const roots: string[] = [];
 
+/** Watched even when absent, since an install writes one. */
+const LOCKFILES = ["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"];
+
 function workspace(files: Record<string, string>): string {
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-analysis-"));
 	roots.push(root);
@@ -368,7 +371,7 @@ describe("checker-backed analysis", () => {
 		expect(provider.programStats().rootFiles).toBe(2);
 
 		const walked = discover();
-		expect(walked.configFiles).toEqual(["tsconfig.json"]);
+		expect(walked.configFiles.sort()).toEqual([...LOCKFILES, "tsconfig.json"].sort());
 		writeFileSync(path.join(root, "tsconfig.json"), JSON.stringify({ include: ["src/nested"] }));
 		const configured = discover();
 		expect(configured.fingerprint).not.toBe(walked.fingerprint);
@@ -400,7 +403,9 @@ describe("checker-backed analysis", () => {
 		const lands = () => provider.resolveImport({ fromModule: "src/use.ts", specifier: "@lib/value" });
 
 		const first = discover();
-		expect(first.configFiles.sort()).toEqual(["package.json", "tsconfig.base.json", "tsconfig.json"]);
+		expect(first.configFiles.sort()).toEqual(
+			[...LOCKFILES, "package.json", "tsconfig.base.json", "tsconfig.json"].sort(),
+		);
 		expect(lands()).toMatchObject({ status: "resolved", landing: { module: "one/value.ts" } });
 		const edits: [string, string, boolean][] = [
 			["tsconfig.json", config({ paths: { "@lib/*": ["./one/*"] }, outDir: "out" }), false],
@@ -482,35 +487,46 @@ describe("checker-backed analysis", () => {
 		provider.shutdown();
 	});
 
-	it("restates the project, dropping its old Programs, when a dependency or type package it reads moves", () => {
+	it("moves the fingerprint for what is installed, never for what the workspace imports", () => {
+		const manifest = (name: string, version: string) =>
+			JSON.stringify({ name, version, types: "index.d.ts", exports: { ".": "./index.js", "./sub": "./sub.js" } });
+		const source = 'import { dep } from "dep";\nexport const a = dep;\n';
 		const root = workspace({
-			"tsconfig.json": JSON.stringify({ compilerOptions: { module: "CommonJS", types: ["*"] } }),
-			"a.ts": 'import { dep } from "dep";\nexport const x = dep;\n',
-			"node_modules/dep/package.json": JSON.stringify({ name: "dep", version: "1.0.0", types: "index.d.ts" }),
+			"tsconfig.json": JSON.stringify({ compilerOptions: { module: "NodeNext", types: ["*"] } }),
+			"package.json": JSON.stringify({ name: "ws", type: "module", dependencies: { dep: "^1.0.0" } }),
+			"node_modules/dep/package.json": manifest("dep", "1.0.0"),
 			"node_modules/dep/index.d.ts": "export declare const dep: number;\n",
+			"node_modules/dep/sub.d.ts": "export declare const sub: number;\n",
+			"node_modules/other/package.json": manifest("other", "1.0.0"),
+			"node_modules/other/index.d.ts": "export declare const other: number;\n",
+			"src/a.ts": source,
 		});
 		const provider = harness();
 		provider.initialize(root);
 		const discover = () => provider.handlers.discoverProject({ workspaceRoot: root }) as ProjectModel;
 		const first = discover();
-		expect(first.configFiles).toEqual(
-			expect.arrayContaining(["node_modules/dep/index.d.ts", "node_modules/dep/package.json"]),
-		);
-		const edits: Array<[string, string]> = [
-			["node_modules/dep/package.json", JSON.stringify({ name: "dep", version: "2.0.0", types: "index.d.ts" })],
-			["node_modules/@types/extra/index.d.ts", "declare const extra: number;\n"],
+		expect(first.configFiles).toEqual(expect.arrayContaining(["package.json", ...LOCKFILES]));
+		const edits: Array<[string, string, boolean]> = [
+			["src/a.ts", `${source}import { other } from "other";\nexport const b = other;\n`, false],
+			["src/a.ts", `${source}import { sub } from "dep/sub";\nexport const b = sub;\n`, false],
+			["src/a.ts", `${source}import type { other } from "other";\nexport let b: typeof other;\n`, false],
+			["src/a.ts", `${source}import { gone } from "not-installed";\nexport const b = gone;\n`, false],
+			// The last import gone, resolution stops probing for a package.json in src.
+			["src/a.ts", "export const a = 1;\n", false],
+			["node_modules/dep/package.json", manifest("dep", "2.0.0"), true],
+			["bun.lock", '{ "lockfileVersion": 1 }\n', true],
+			["node_modules/@types/extra/index.d.ts", "declare const extra: number;\n", true],
 		];
 		let fingerprint = first.fingerprint;
-		for (const [file, text] of edits) {
-			const source = 'import { dep } from "dep";\nexport const x = dep;\n';
-			provider.parseFile({ module: "a.ts", contentHash: file, text: source });
+		for (const [index, [file, text, moves]] of edits.entries()) {
+			provider.parseFile({ module: "src/a.ts", contentHash: `a${index}`, text: source });
 			const held = provider.provider.store.project;
-			expect(held.languageServices.size, file).toBe(1);
 			mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
 			writeFileSync(path.join(root, file), text);
 			const next = discover().fingerprint;
-			expect(next, file).not.toBe(fingerprint);
-			expect(held.languageServices.size, file).toBe(0);
+			expect(next !== fingerprint, file).toBe(moves);
+			// A restated project leaves its old Programs behind.
+			expect(held.languageServices.size, file).toBe(moves ? 0 : 1);
 			fingerprint = next;
 		}
 		provider.shutdown();

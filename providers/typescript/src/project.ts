@@ -120,6 +120,11 @@ const INERT_OPTIONS = new Set([
 /** The package.json fields module resolution reads. */
 const PACKAGE_FIELDS = ["name", "type", "main", "types", "typings", "typesVersions", "exports", "imports"] as const;
 
+const DEPENDENCY_GROUPS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
+
+/** Root lockfiles, which change with every install, and which a watcher sees where node_modules it does not. */
+const LOCKFILES = ["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"] as const;
+
 ////////////////////////////////
 //  Functions & Helpers
 
@@ -339,56 +344,82 @@ function parseConfig(
 /**
  * What facts depend on beyond file text: the options that shape binding, types and resolution,
  * the project references and settings groups, the declaration files that declare globals, the
- * resolution fields of each package.json over the files, and each declaration file outside the
- * index that resolution lands on, by its package's version and its text.
+ * resolution fields of each package.json over the files, and what is installed: each declared
+ * package's installed version, the automatic type packages, the root lockfiles and TypeScript's own
+ * libs. What the workspace imports never moves it.
  */
 export function projectFingerprint(
 	root: string,
 	loaded: LoadedProject,
-): { fingerprint: string; packageFiles: string[]; externalFiles: string[] } {
+): { fingerprint: string; packageFiles: string[]; lockfiles: string[] } {
 	const { system } = loaded;
 	const options = relevantSettings(loaded.options);
-	const reads = resolutionReads(root, loaded);
-	const packageFiles = [...new Set([...packageFilesOver(root, loaded.files, system), ...reads.packages])].sort();
-	const packages = packageFiles.map((file) => [toPosix(path.relative(root, file)), packageFields(file, system)]);
+	const declaring = packageFilesOver(root, loaded.files, system);
+	const packageFiles = [...new Set([...declaring, ...resolutionPackages(root, loaded)])].sort();
+	// Watched where absent, hashed only where present, so an import that stops probing one moves nothing.
+	const packages = packageFiles
+		.filter((file) => system.fileExists(file))
+		.map((file) => [toPosix(path.relative(root, file)), packageFields(file, system)]);
 	const references = [...loaded.references].sort();
 	const ambient = globalDeclarations(root, loaded.files, system);
 	const referenced = loaded.referenced.map(relevantSettings);
 	const groups = [...loaded.groups.settings.keys()].sort();
-	const landings = [...reads.external].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-	const external = landings.map(([file, version]) => [
-		shownPath(root, file),
-		version,
-		hashContent(system.readFile(file) ?? ""),
-	]);
-	const externalFiles = [...new Set(landings.flatMap(([file]) => [file, ...packageManifestOf(file, system)]))].sort();
+	const installed = declaring.flatMap((manifest) =>
+		declaredPackages(manifest, system).map((name) => [
+			toPosix(path.relative(root, manifest)),
+			name,
+			installedVersion(path.dirname(manifest), name, system),
+		]),
+	);
+	const types = [...loaded.groups.settings.values()].flatMap((settings) =>
+		automaticTypes(settings, system).map((resolved) => [
+			resolved?.resolvedFileName ?? null,
+			resolved?.packageId?.version ?? null,
+		]),
+	);
+	const lockfiles = LOCKFILES.map((name) => path.join(root, name));
+	const locks = lockfiles.map((file) => {
+		const text = system.readFile(file);
+		return text === undefined ? null : hashContent(text);
+	});
+	const installs = { installed, types, locks, typescript: ts.version };
 	return {
 		fingerprint: hashContent(
-			JSON.stringify({ options, references, referenced, groups, ambient, packages, external }),
+			JSON.stringify({ options, references, referenced, groups, ambient, packages, installs }),
 		),
 		packageFiles,
-		externalFiles,
+		lockfiles,
 	};
 }
 
-/** Workspace-relative inside the root, else absolute; POSIX either way. */
-function shownPath(root: string, file: string): string {
-	const relative = path.relative(root, file);
-	return toPosix(relative.startsWith("..") || path.isAbsolute(relative) ? path.resolve(file) : relative);
+/** Every package a package.json declares, across its dependency groups. */
+function declaredPackages(manifest: string, system: ts.System): string[] {
+	try {
+		const value = JSON.parse(system.readFile(manifest) ?? "null") as Record<string, unknown> | null;
+		if (value === null || typeof value !== "object") return [];
+		const names = DEPENDENCY_GROUPS.flatMap((group) => {
+			const declared = value[group];
+			return declared !== null && typeof declared === "object" ? Object.keys(declared) : [];
+		});
+		return [...new Set(names)].sort();
+	} catch {
+		return [];
+	}
 }
 
-/** Outside what the index holds: beyond the root, or in a dependency. */
-function outsideIndex(root: string, file: string): boolean {
-	const relative = path.relative(root, path.resolve(file));
-	return relative.startsWith("..") || path.isAbsolute(relative) || relative.split(path.sep).includes("node_modules");
-}
-
-/** The package.json of the package holding `file`, when one sits beneath its node_modules. */
-function packageManifestOf(file: string, system: ts.System): string[] {
-	for (let directory = path.dirname(file); ; directory = path.dirname(directory)) {
-		if (path.basename(directory) === "node_modules" || path.dirname(directory) === directory) return [];
-		const manifest = path.join(directory, "package.json");
-		if (system.fileExists(manifest)) return [manifest];
+/** The version a package installed for `directory` declares, found as Node finds it; null when absent. */
+function installedVersion(directory: string, name: string, system: ts.System): string | null {
+	for (let current = directory; ; current = path.dirname(current)) {
+		const text = system.readFile(path.join(current, "node_modules", name, "package.json"));
+		if (text !== undefined) {
+			try {
+				const version = (JSON.parse(text) as { version?: unknown }).version;
+				return typeof version === "string" ? version : hashContent(text);
+			} catch {
+				return hashContent(text);
+			}
+		}
+		if (path.dirname(current) === current) return null;
 	}
 }
 
@@ -463,14 +494,11 @@ function packageFilesOver(root: string, files: readonly string[], system: ts.Sys
 }
 
 /**
- * What resolving the project's imports and automatic types reads: the workspace package.json files,
- * through `paths` or a linked workspace package, and each file landed on outside the index with its
- * package's version. Each specifier resolves once per mode, in its file's settings.
+ * Workspace package.json files that resolving the project's imports reads, through `paths` or a
+ * linked workspace package: each specifier resolved once in its file's settings, recording what the
+ * host reads.
  */
-function resolutionReads(
-	root: string,
-	loaded: LoadedProject,
-): { packages: string[]; external: Map<string, string | null> } {
+function resolutionPackages(root: string, loaded: LoadedProject): string[] {
 	const { system } = loaded;
 	// Probed, found or not: creating one moves resolution as much as editing one.
 	const probed = new Set<string>();
@@ -485,32 +513,17 @@ function resolutionReads(
 			return system.readFile(fileName);
 		},
 	};
-	const external = new Map<string, string | null>();
-	const land = (resolved: ts.ResolvedModuleFull | ts.ResolvedTypeReferenceDirective | undefined) => {
-		const file = resolved?.resolvedFileName;
-		if (resolved === undefined || file === undefined || !outsideIndex(root, file)) return;
-		const id = resolved.packageId;
-		external.set(path.resolve(file), id === undefined ? null : `${id.name}@${id.version}`);
-	};
 	const canonical = (fileName: string) => (system.useCaseSensitiveFileNames ? fileName : fileName.toLowerCase());
 	const caches = new Map<string, ts.ModuleResolutionCache>();
-	for (const [group, options] of loaded.groups.settings) {
+	for (const [group, options] of loaded.groups.settings)
 		caches.set(group, ts.createModuleResolutionCache(root, canonical, options));
-		for (const resolved of automaticTypes(options, system)) land(resolved);
-	}
 	for (const file of loaded.files) {
 		const text = system.readFile(file);
 		if (text === undefined) continue;
-		const group = groupOf(file, loaded);
+		const cache = caches.get(groupOf(file, loaded));
 		const options = optionsForFile(file, loaded);
 		for (const imported of ts.preProcessFile(text, true, true).importedFiles) {
-			// Both modes, since a scan cannot tell an import from a require.
-			for (const mode of [ts.ModuleKind.ESNext, ts.ModuleKind.CommonJS] as const) {
-				const cache = caches.get(group);
-				land(
-					ts.resolveModuleName(imported.fileName, file, options, host, cache, undefined, mode).resolvedModule,
-				);
-			}
+			ts.resolveModuleName(imported.fileName, file, options, host, cache);
 		}
 	}
 	// Through links, so a linked package or a root opened through a link still counts.
@@ -523,7 +536,7 @@ function resolutionReads(
 		const inside = !relative.startsWith("..") && !path.isAbsolute(relative);
 		if (inside && !relative.split(path.sep).includes("node_modules")) found.add(path.join(root, relative));
 	}
-	return { packages: [...found], external };
+	return [...found];
 }
 
 function packageFields(file: string, system: ts.System): unknown {

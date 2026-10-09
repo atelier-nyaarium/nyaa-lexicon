@@ -283,7 +283,7 @@ export class TypeScriptProvider {
 			...loaded,
 			files: discovered.files.map((module) => path.resolve(root, module)),
 		};
-		const { fingerprint, packageFiles, externalFiles } = projectFingerprint(root, projectLoaded);
+		const { fingerprint, packageFiles, lockfiles } = projectFingerprint(root, projectLoaded);
 		// The warm analyzer stays while reading is unchanged.
 		const kept = previous?.root === root && previous.fingerprint === fingerprint ? previous : undefined;
 		if (kept === undefined) previous?.analyzer?.dispose();
@@ -297,9 +297,8 @@ export class TypeScriptProvider {
 		const configFiles = [
 			...discovered.configFiles,
 			...packageFiles.map((file) => toModule(root, file) ?? file),
-			// An upgraded dependency restates the project, as its fingerprint moves.
-			...externalFiles.map((file) => toModule(root, file) ?? file),
-			// Probed even when absent.
+			// Probed even when absent: an install writes one, and restates the project.
+			...lockfiles.map((file) => toModule(root, file) ?? file),
 			"tsconfig.json",
 		];
 

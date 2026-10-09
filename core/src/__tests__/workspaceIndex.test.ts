@@ -414,7 +414,15 @@ describe("a config edit that restates a project", () => {
 	 * A provider reading `fake.config`: its first line is the project's fingerprint, the rest the
 	 * files it discovers. Every parse declares `Under_<fingerprint>`, the project it read under.
 	 */
-	function projectService({ refusing, down }: { refusing?: Set<string>; down?: Set<string> } = {}): LexiconService {
+	function projectService({
+		refusing,
+		down,
+		parses,
+	}: {
+		refusing?: Set<string>;
+		down?: Set<string>;
+		parses?: string[];
+	} = {}): LexiconService {
 		let reading = "";
 		const port = sharedFake({
 			answers: {
@@ -427,6 +435,7 @@ describe("a config edit that restates a project", () => {
 				},
 				parseFile: (request) => {
 					if (down?.has(request.module)) throw new ProviderUnavailableError("provider is gone");
+					parses?.push(request.module);
 					const facts = parseFake(request);
 					return {
 						...facts,
@@ -488,6 +497,32 @@ describe("a config edit that restates a project", () => {
 			refused: "one",
 			outage: "one",
 			admitted: "four",
+		});
+	});
+
+	// A daemon on its way out cuts a restatement at a file boundary; the project it states stays unrecorded.
+	it("stops a restatement for a leaving daemon and leaves the rest to the next warm scan", async () => {
+		await initGit();
+		put("fake.config", "one\n");
+		for (const module of ["a.fake", "b.fake", "c.fake", "d.fake"]) put(module, "export class A {}\n");
+		const parses: string[] = [];
+		service = projectService({ parses });
+		await service.indexWorkspace();
+
+		parses.length = 0;
+		put("fake.config", "two\n");
+		await service.applyBatch(
+			[{ kind: "changed", module: "fake.config", contentHash: "two" }],
+			() => parses.length >= 2,
+		);
+		const cut = { parsed: parses.length, project: store.projectFingerprint("fake") };
+		await service.warmupWorkspace();
+
+		const under = service.findByName("Under_two").map((found) => found.module);
+		expect({ cut, under: under.sort(), project: store.projectFingerprint("fake") }).toEqual({
+			cut: { parsed: 2, project: "one" },
+			under: ["a.fake", "b.fake", "c.fake", "d.fake"],
+			project: "two",
 		});
 	});
 
