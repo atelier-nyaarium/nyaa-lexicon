@@ -652,12 +652,16 @@ values mean the indexed facts and knowledge have not changed.
 
 `moduleCycles` reports candidate module load cycles and
 asks the owning provider for an on-demand judgment. A verdict is `bad`, `fine` or `unknown`;
-unknown never produces a warning. `moduleProblems({ module })` returns hazards whose reader is in
-that module. Provider evidence carries source hashes and occurrence landings, checked against
-admitted facts before publishing or serving a cached answer, so a judgment stands until its own
-evidence moves and an unrelated write leaves it alone. `crossingCount` counts the value reads, bound
-or not, through runtime edges inside a component, and `crossings` lists the first 20. A component
-with none is left out unless `includeUnread` asks for it.
+unknown never produces a warning. Each unknown names its reason; `model` carries the module and
+`range` of code the provider's model does not cover. A hazard's `target` is what was read before it
+was set, `{ module, name, kind, symbolId? }`; `symbolId` names its declaration, absent where no
+workspace declaration has one. `moduleProblems({ module })` returns hazards whose reader is in that
+module. Provider evidence carries source hashes and occurrence landings,
+checked against admitted facts before publishing or serving a cached answer. A judgment stands until
+its own evidence moves or the set of modules its provider writes changes; an edit elsewhere leaves
+it alone. Evidence may name any number of modules: the provider caps only those its walk reads.
+`crossingCount` counts the value reads, bound or not, through runtime edges inside a component, and
+`crossings` lists the first 20. A component with none is left out unless `includeUnread` asks for it.
 
 `indexStatus.providers` lists each running provider as `{ id, language, phase, label?, pending }`.
 `phase` is `starting` (spawned, initialize unanswered), `initializing` (the provider said it is

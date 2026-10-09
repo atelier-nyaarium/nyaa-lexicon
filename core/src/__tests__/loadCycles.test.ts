@@ -171,12 +171,13 @@ describe("module load cycles", () => {
 	it("continues partial work with a fresh provider request, across unrelated writes between slices", async () => {
 		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
 		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		store.replaceFile(file("unrelated.fake", []));
 		const slices: Array<string | undefined> = [];
 		const provider = fakeSupervisor({
 			answers: {
 				judgeLoadCycle: (request) => {
 					slices.push(request.partial);
-					store.replaceFile(file(`unrelated${slices.length}.fake`, []));
+					store.replaceFile(file("unrelated.fake", [], `unrelated${slices.length}`));
 					return request.partial === undefined ? { partial: "slice-1" } : judged(request);
 				},
 			},
@@ -255,6 +256,57 @@ describe("module load cycles", () => {
 		expect((await service(provider).moduleCycles({ module: "a.fake", includeUnread: true }))[0]?.verdict).toBe(
 			"unknown",
 		);
+	});
+
+	it("asks again once the provider writes another set of modules, and keeps the answer across an edit", async () => {
+		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
+		store.replaceFile(file("unrelated.fake", []));
+		let calls = 0;
+		const provider = fakeSupervisor({
+			answers: {
+				judgeLoadCycle: (request) => {
+					calls++;
+					return judged(request);
+				},
+			},
+		});
+		const svc = service(provider);
+		const ask = async () => {
+			const verdict = (await svc.moduleCycles({ includeUnread: true }))[0]?.verdict;
+			return { verdict, calls };
+		};
+		const asks = [await ask()];
+		store.replaceFile(file("unrelated.fake", [], "edited"));
+		asks.push(await ask());
+		// A module the scope newly admits, or a new file, may assign what the answer read as never assigned.
+		store.replaceFile(file("admitted.fake", []));
+		asks.push(await ask());
+		store.forgetFile("unrelated.fake");
+		asks.push(await ask());
+		expect(asks).toEqual([
+			{ verdict: "fine", calls: 1 },
+			{ verdict: "fine", calls: 1 },
+			{ verdict: "fine", calls: 2 },
+			{ verdict: "fine", calls: 3 },
+		]);
+	});
+
+	it("publishes an answer whose evidence names any number of modules outside the component", async () => {
+		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
+		const read = Array.from({ length: 2_001 }, (_, at) => `read${at}.fake`);
+		for (const module of read) store.replaceFile(file(module, []));
+		const provider = fakeSupervisor({
+			answers: {
+				judgeLoadCycle: (request) =>
+					judged(request, {
+						evidence: [
+							...request.members.map((member) => ({ ...member, landings: [] })),
+							...read.map((module) => ({ module, contentHash: module, landings: [] })),
+						],
+					}),
+			},
+		});
+		expect((await service(provider).moduleCycles({ includeUnread: true }))[0]?.verdict).toBe("fine");
 	});
 
 	it("lands and validates each occurrence of one specifier by its resolution mode", async () => {
@@ -570,6 +622,7 @@ describe("module load cycles", () => {
 		// `a` is answered as past its budget; `p` never finishes, so core stops it at the slice cap.
 		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
 		store.replaceFile(file("p.fake", [{ target: "p.fake", elided: false }]));
+		store.replaceFile(file("unrelated.fake", []));
 		const clock = fakeClock();
 		const starts = { a: 0, p: 0 };
 		const provider = fakeSupervisor({
@@ -586,7 +639,7 @@ describe("module load cycles", () => {
 		const asks: Array<typeof starts> = [];
 		for (const [index, wait] of [0, 61_000, 540_000].entries()) {
 			clock.advance(wait);
-			store.replaceFile(file(`unrelated${index}.fake`, []));
+			store.replaceFile(file("unrelated.fake", [], `unrelated${index}`));
 			await svc.moduleCycles({ includeUnread: true });
 			asks.push({ ...starts });
 		}

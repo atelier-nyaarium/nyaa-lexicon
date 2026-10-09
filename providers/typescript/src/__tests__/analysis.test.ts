@@ -64,6 +64,22 @@ describe("checker-backed analysis", () => {
 		expect(discovered.model.files).toEqual(["src/kept.ts"]);
 	});
 
+	it("binds the synthetic default of a CommonJS package's dynamic import as external", () => {
+		const text = 'export async function load() {\n\treturn (await import("pkg")).default;\n}';
+		const root = workspace({
+			"tsconfig.json": JSON.stringify({ compilerOptions: { module: "ESNext", moduleResolution: "Bundler" } }),
+			"node_modules/pkg/package.json": JSON.stringify({ name: "pkg", main: "./index.js", types: "./index.d.ts" }),
+			"node_modules/pkg/index.d.ts": "export declare const value: number;",
+			"a.ts": text,
+		});
+		const provider = harness();
+		provider.initialize(root);
+		const facts = provider.parseFile({ module: "a.ts", contentHash: "a", text }) as FileFacts;
+		provider.shutdown();
+		const synthetic = facts.references.find((reference) => reference.name === "default");
+		expect(synthetic?.binding).toMatchObject({ status: "unbound", reason: "ExternalDependency" });
+	});
+
 	it("binds default imports to anonymous default declarations", () => {
 		const files = {
 			"class-default.ts": "export default class { run() {} }\n",

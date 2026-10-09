@@ -451,6 +451,7 @@ export {
 	asyncModuleStore,
 	type Entries,
 	type Held,
+	type IndexAdmission,
 	type Maybe,
 	type ModuleStore,
 	type ModuleValue,

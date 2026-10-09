@@ -11,6 +11,8 @@ import {
 	type ImportEditsResponse,
 	type ImportResolution,
 	type IndexDepth,
+	type JudgeLoadCycleAnswer,
+	type JudgeLoadCycleRequest,
 	type MoveEditsRequest,
 	type MoveEditsResponse,
 	PROTOCOL_VERSION,
@@ -29,6 +31,7 @@ import { isDeclarationModule } from "./bundle.js";
 import { extractTrivia } from "./comments.js";
 import { extractFile, LANGUAGE } from "./extract.js";
 import { EXTENSIONS, scriptKindOf } from "./file-types.js";
+import { type JudgeHost, judgeLoadCycle, releaseLoadCycle } from "./judge/session.js";
 import {
 	createTypeScriptProject,
 	createTypeScriptStore,
@@ -60,6 +63,8 @@ import { extractSurfaceFile } from "./surface.js";
 
 /** What the provider is doing while the program builds, as core shows it. */
 const PROGRAM_LABEL = "building the TypeScript program";
+
+const PROVIDER_ID = "typescript-provider";
 
 /** Declares the semantic tiers backed by the TypeScript checker. */
 export const TIERS = {
@@ -217,7 +222,7 @@ export class TypeScriptProvider {
 
 	initialize(_workspaceRoot: string) {
 		return {
-			providerId: "typescript-provider",
+			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: [...EXTENSIONS],
 			protocolVersion: PROTOCOL_VERSION,
@@ -509,6 +514,28 @@ export class TypeScriptProvider {
 
 	programStats() {
 		return this.analyzed().programStats();
+	}
+
+	/** Never builds a Program: before the first one exists, the answer is not ready. */
+	judgeLoadCycle(params: JudgeLoadCycleRequest): JudgeLoadCycleAnswer {
+		return judgeLoadCycle(this.currentProject(), this.loadCycleHost(), params);
+	}
+
+	/** Landings as `resolveImport` answers them, which is what the index stored. */
+	loadCycleHost(): JudgeHost {
+		return {
+			providerId: PROVIDER_ID,
+			resolve: (fromModule, specifier, resolutionMode) => {
+				const resolution = this.resolveImport({ fromModule, specifier, resolutionMode });
+				return resolution.status === "resolved" ? resolution.landing : null;
+			},
+			surface: (module) => this.store.peek(module)?.surface === true && !isDeclarationModule(module),
+			admission: (module) => this.store.admission(module),
+		};
+	}
+
+	releaseLoadCycle(params: { partial: string }): void {
+		releaseLoadCycle(this.currentProject(), params.partial);
 	}
 
 	shutdown() {

@@ -68,9 +68,6 @@ export const LANGUAGE = "typescript";
 /** The checker's name for what `export =` exports. */
 export const EXPORT_EQUALS = "export=";
 
-type CyclePhase = "load" | "deferred";
-type CycleUse = "read" | "member" | "call" | "new" | "extends" | "destructure";
-
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -81,7 +78,6 @@ export interface Extracted {
 	exports: Export[];
 	literals: Literal[];
 	role: FileRole;
-	referenceBehavior: Array<{ name: string; range: Reference["range"]; phase?: CyclePhase; use: CycleUse }>;
 }
 
 export interface ExtractedWithNodes extends Extracted {
@@ -118,7 +114,6 @@ export function extractFile(
 	return {
 		declarations: extracted.declarations,
 		references: extracted.references,
-		referenceBehavior: extracted.referenceBehavior,
 		imports: extracted.imports,
 		exports: extracted.exports,
 		literals: extracted.literals,
@@ -135,7 +130,6 @@ export function extractFileWithNodes(
 ): ExtractedWithNodes {
 	const declarations: Declaration[] = [];
 	const references: Reference[] = [];
-	const referenceBehavior: Extracted["referenceBehavior"] = [];
 	const literals: Literal[] = [];
 	const declarationNodes = new Map<ts.Node, string>();
 	const declarationScopes = new Map<ts.Node, Scope>();
@@ -469,14 +463,6 @@ export function extractFileWithNodes(
 	}
 
 	function recordReference(node: ReferenceNode, role: ReferenceRole, scope: Scope): void {
-		const phase = phaseOf(node, role);
-		const use = useOf(node, role);
-		referenceBehavior.push({
-			name: node.text,
-			range: rangeOf(node, source),
-			...(phase === undefined ? {} : { phase }),
-			use,
-		});
 		references.push({
 			name: node.text,
 			range: rangeOf(node, source),
@@ -485,101 +471,6 @@ export function extractFileWithNodes(
 			qualified: isQualifiedReference(node),
 			...defined({ fromId: scope.containerId }),
 		});
-	}
-
-	function useOf(node: ReferenceNode, role: ReferenceRole): CycleUse {
-		if (role === "extends") return "extends";
-		const parent = node.parent;
-		if (ts.isDecorator(parent)) return "call";
-		if (ts.isCallExpression(parent) && parent.expression === node) return "call";
-		if (ts.isNewExpression(parent) && parent.expression === node) return "new";
-		if (ts.isPropertyAccessExpression(parent) && parent.expression === node) return "member";
-		if (ts.isElementAccessExpression(parent) && parent.expression === node) return "member";
-		if (ts.isBindingElement(parent)) return "destructure";
-		if (ts.isVariableDeclaration(parent) && parent.initializer === node && !ts.isIdentifier(parent.name))
-			return "destructure";
-		return "read";
-	}
-
-	function phaseOf(node: ts.Node, role: ReferenceRole): CyclePhase | undefined {
-		if (role === "read" && ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)
-			return undefined;
-		if (checker !== undefined && role === "read") {
-			const declarations = checker.getSymbolAtLocation(node)?.declarations ?? [];
-			if (declarations.some((declaration) => ts.isGetAccessorDeclaration(declaration))) return undefined;
-		}
-		let current = node;
-		while (!ts.isSourceFile(current)) {
-			const parent = current.parent;
-			if (ts.isClassStaticBlockDeclaration(parent)) return "load";
-			if (ts.isPropertyDeclaration(parent) && parent.initializer === current) {
-				const className = ts.isClassLike(parent.parent) && parent.parent.name?.getText(source);
-				if (className && hasModuleConstruction(className)) return undefined;
-				return parent.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)
-					? "load"
-					: "deferred";
-			}
-			if (
-				ts.isComputedPropertyName(parent) &&
-				(ts.isMethodDeclaration(parent.parent) || ts.isPropertyDeclaration(parent.parent)) &&
-				ts.isClassLike(parent.parent.parent)
-			)
-				return "load";
-			if (
-				ts.isMethodDeclaration(parent) ||
-				ts.isGetAccessorDeclaration(parent) ||
-				ts.isSetAccessorDeclaration(parent)
-			) {
-				return "deferred";
-			}
-			if (ts.isFunctionLike(parent) && "body" in parent && parent.body === current) {
-				if ((ts.isArrowFunction(parent) || ts.isFunctionExpression(parent)) && assignedAndCalled(parent))
-					return undefined;
-				let call: ts.Node = parent;
-				while (ts.isParenthesizedExpression(call.parent)) call = call.parent;
-				const invocation = call.parent;
-				if (ts.isCallExpression(invocation) && invocation.expression === call) return "load";
-				return "deferred";
-			}
-			if (ts.isParameter(current) && ts.isFunctionLike(parent)) {
-				let fn: ts.Node = parent;
-				while (ts.isParenthesizedExpression(fn.parent)) fn = fn.parent;
-				const invocation = fn.parent;
-				return ts.isCallExpression(invocation) && invocation.expression === fn ? "load" : "deferred";
-			}
-			if (ts.isArrowFunction(parent) || ts.isFunctionExpression(parent)) return "deferred";
-			current = parent;
-		}
-		return "load";
-	}
-
-	function hasModuleConstruction(name: string): boolean {
-		let found = false;
-		const visit = (item: ts.Node) => {
-			if (found) return;
-			if (item !== source && ts.isFunctionLike(item)) return;
-			if (ts.isNewExpression(item) && ts.isIdentifier(item.expression) && item.expression.text === name)
-				found = true;
-			ts.forEachChild(item, visit);
-		};
-		visit(source);
-		return found;
-	}
-
-	function assignedAndCalled(fn: ts.ArrowFunction | ts.FunctionExpression): boolean {
-		const holder = fn.parent;
-		const name = ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name) ? holder.name.text : undefined;
-		if (name === undefined) return false;
-		let called = false;
-		const visit = (item: ts.Node) => {
-			if (called) return;
-			if (item !== source && ts.isFunctionLike(item)) return;
-			if (ts.isCallExpression(item) && ts.isIdentifier(item.expression) && item.expression.text === name)
-				called = true;
-			ts.forEachChild(item, visit);
-		};
-		visit(source);
-		return called;
 	}
 
 	function walk(node: ts.Node, scope: Scope, exportedByParent: boolean): void {
@@ -633,7 +524,6 @@ export function extractFileWithNodes(
 		declarations,
 		...edges,
 		references: uses,
-		referenceBehavior,
 		literals,
 		role: fileRoleOf(source),
 		declarationNodes,

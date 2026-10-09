@@ -415,6 +415,38 @@ describe("the module store's verdicts", () => {
 		});
 	});
 
+	it("tells admitted, pending and outside modules apart by verdicts and discovery's scope", () => {
+		const root = workspace({ "a.toy": "x", "b.toy": "y", "c.toy": "z", "d.toy": "w" });
+		const store = moduleStore<Toy, null, string>({ read, entries });
+		const handlers = toy(store, root);
+		handlers.parseFile({ module: "a.toy", contentHash: "h1", text: "x" });
+		handlers.moduleAdmission?.({ module: "a.toy", contentHash: "h1", outcome: { status: "admitted" } });
+		handlers.parseFile({ module: "b.toy", contentHash: "h2", text: "y" });
+		const states = () =>
+			Object.fromEntries(
+				["a.toy", "b.toy", "c.toy", "d.toy", "e.toy"].map((module) => [module, store.admission(module)]),
+			);
+		const discovered = states();
+		handlers.discoverProject({ workspaceRoot: root, scope: ["a.toy", "b.toy", "d.toy"] });
+		const admitted = { state: "admitted", contentHash: hashContent("x") } as const;
+		expect({ discovered, scoped: states() }).toEqual({
+			discovered: {
+				"a.toy": admitted,
+				"b.toy": { state: "pending" },
+				"c.toy": { state: "pending" },
+				"d.toy": { state: "pending" },
+				"e.toy": { state: "outside" },
+			},
+			scoped: {
+				"a.toy": admitted,
+				"b.toy": { state: "pending" },
+				"c.toy": { state: "outside" },
+				"d.toy": { state: "pending" },
+				"e.toy": { state: "outside" },
+			},
+		});
+	});
+
 	it("reads every module again, admitted ones included, once discovery's fingerprint moves", () => {
 		const root = workspace({ "a.toy": "x", "b.toy": "y" });
 		let symbols = "one";

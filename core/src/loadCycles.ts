@@ -1,6 +1,7 @@
 // Load-order cycles: candidate components from runtime import edges, judged by their provider.
 
 import {
+	hashContent,
 	type JudgeLoadCycleAnswer,
 	type JudgeLoadCycleRequest,
 	type LoadCycleHazard,
@@ -76,6 +77,11 @@ type Basis = {
 	members: Members;
 	/** The provider's project settings when asked; null when it recorded none. */
 	fingerprint: string | null;
+	/**
+	 * The modules the provider wrote when asked, as one key. Evidence covers what the judgment read;
+	 * a module admitted since, new or brought in by a changed scope, was read by no one.
+	 */
+	written: string;
 	reply?: Answered;
 };
 
@@ -85,7 +91,6 @@ type Running = { cycle: Cycle; state: { superseded: boolean }; work: Promise<Jud
 //  Constants
 
 const MAX_ENTRIES = 32;
-const MAX_DOWNSTREAM = 2_000;
 const MAX_SLICES = 40;
 /** Judgments holding provider state at once, per provider. */
 const PROVIDER_SLOTS = 4;
@@ -228,6 +233,8 @@ export class LoadCycleRead {
 	private readonly cache = new Map<string, Judgment>();
 	private readonly running = new Map<string, Running>();
 	private readonly providerSlots = new Map<string, FifoSemaphore>();
+	/** Each provider's written-modules key, for the facts generation they were read at. */
+	private writtenAt: { generation: number; keys: Map<string, string> } = { generation: -1, keys: new Map() };
 
 	constructor(
 		private readonly store: IndexStore,
@@ -437,11 +444,11 @@ export class LoadCycleRead {
 			release();
 			return this.unknown(cycle, "outage");
 		}
-		const basis: Basis = {
-			provider: { id: owner, incarnation },
-			members: asked,
-			fingerprint: await this.shortRead(undefined, () => this.store.projectFingerprint(owner)),
-		};
+		const { fingerprint, written } = await this.shortRead(undefined, () => ({
+			fingerprint: this.store.projectFingerprint(owner),
+			written: this.written(owner),
+		}));
+		const basis: Basis = { provider: { id: owner, incarnation }, members: asked, fingerprint, written };
 		const failed = (reason: Unknown["reason"]): Judgment => ({ ...this.unknown(cycle, reason), basis });
 		let partial: string | undefined;
 		try {
@@ -467,10 +474,6 @@ export class LoadCycleRead {
 					continue;
 				}
 				partial = undefined;
-				const downstream = new Set(
-					reply.evidence.map((row) => row.module).filter((module) => !cycle.modules.includes(module)),
-				);
-				if (downstream.size > MAX_DOWNSTREAM) return failed("budget");
 				return {
 					cycle,
 					verdict: reply.verdict,
@@ -494,8 +497,24 @@ export class LoadCycleRead {
 		if (basis === undefined) return true;
 		if (this.providers.incarnationOf(basis.provider.id) !== basis.provider.incarnation) return false;
 		if (this.store.projectFingerprint(basis.provider.id) !== basis.fingerprint) return false;
+		if (this.written(basis.provider.id) !== basis.written) return false;
 		if (!this.membersHold(basis.members)) return false;
 		return basis.reply === undefined || this.answerHolds(view, basis.provider.id, basis.reply);
+	}
+
+	/** Every module the provider writes, as one key: an admission or removal moves it, an edit does not. */
+	private written(providerId: string): string {
+		const generation = this.store.factsGeneration();
+		if (this.writtenAt.generation !== generation) this.writtenAt = { generation, keys: new Map() };
+		let key = this.writtenAt.keys.get(providerId);
+		if (key === undefined) {
+			const modules = [...this.store.writers()].flatMap(([module, writer]) =>
+				writer === providerId ? [module] : [],
+			);
+			key = hashContent(modules.sort().join("\u0000"));
+			this.writtenAt.keys.set(providerId, key);
+		}
+		return key;
 	}
 
 	private membersHold(members: Members): boolean {

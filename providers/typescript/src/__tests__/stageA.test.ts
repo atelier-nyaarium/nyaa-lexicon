@@ -108,51 +108,6 @@ afterEach(() => {
 });
 
 describe("Stage A load facts", () => {
-	it("classifies reference phase and operation where syntax proves them", () => {
-		const text = [
-			"load();",
-			"function later() { deferred(); }",
-			"const immediate = (() => { invoked(); })();",
-			"class C { static value = staticRead(); static { staticBlock(); } field = fieldRead(); get value2() { return getterBody(); } }",
-			"const arrow = () => uncertain(); arrow();",
-			"class Constructed { field = constructedField(); } new Constructed();",
-			"const object = { get value() { return 1; } }; object.value;",
-			"target.member; target(); new Target(); class Derived extends Base {}",
-			"const stored = value; const { piece } = namespace;",
-			"@decorator class Decorated {} target[key];",
-			"export default defaultValue; const immediateParams = ((x = immediateDefault()) => {})();",
-			"function deferredParams(x = deferredDefault()) {} class Computed { [computedName()]() {} }",
-		].join("\n");
-		const source = ts.createSourceFile("src/a.ts", text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
-		const extracted = extractFile("src/a.ts", source);
-		const refs = extracted.referenceBehavior;
-		const phase = (name: string) => refs.find((reference) => reference.name === name)?.phase;
-		const use = (name: string) => refs.find((reference) => reference.name === name)?.use;
-		for (const name of [
-			"load",
-			"invoked",
-			"staticRead",
-			"staticBlock",
-			"defaultValue",
-			"immediateDefault",
-			"computedName",
-			"decorator",
-		])
-			expect(phase(name)).toBe("load");
-		for (const name of ["deferred", "fieldRead", "getterBody", "deferredDefault"])
-			expect(phase(name)).toBe("deferred");
-		for (const name of ["uncertain", "constructedField", "value"]) expect(phase(name)).toBeUndefined();
-		expect(use("target")).toBe("member");
-		expect(refs.filter((reference) => reference.name === "target").map((reference) => reference.use)).toContain(
-			"call",
-		);
-		expect(use("Target")).toBe("new");
-		expect(use("Base")).toBe("extends");
-		expect(use("value")).toBe("read");
-		expect(use("namespace")).toBe("destructure");
-		expect(use("decorator")).toBe("call");
-	});
-
 	it("marks import and require load timing", () => {
 		const text = [
 			'import "./side";',

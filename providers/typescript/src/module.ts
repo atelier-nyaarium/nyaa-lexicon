@@ -4,6 +4,8 @@ import ts from "typescript";
 import type { TypeScriptAnalyzer } from "./analyzer.js";
 import { isLikelyBundle } from "./bundle.js";
 import { scriptKindOf } from "./file-types.js";
+import type { JudgeSession } from "./judge/session.js";
+import type { Writes } from "./judge/writes.js";
 import type { LoadedProject } from "./project.js";
 
 const JAVASCRIPT = new Set([ts.ScriptKind.JS, ts.ScriptKind.JSX]);
@@ -48,6 +50,10 @@ export interface TypeScriptProject {
 	readonly declarationIds: Map<string, Map<string, string[]>>;
 	/** Each analyzer's language services, by settings group. */
 	readonly languageServices: Map<object, Map<string, ts.LanguageService>>;
+	/** Load-cycle judgments between slices, by partial token. */
+	readonly judgments: Map<string, JudgeSession>;
+	/** What each Program assigns, scanned once for every judgment pinning it. */
+	readonly writes: WeakMap<ts.Program, Writes>;
 }
 
 export type TypeScriptStore = ModuleStore<TypeScriptValue, TypeScriptProject, string>;
@@ -62,6 +68,8 @@ export function createTypeScriptProject(root: string, loaded: LoadedProject, fin
 		warming: undefined,
 		declarationIds: new Map(),
 		languageServices: new Map(),
+		judgments: new Map(),
+		writes: new WeakMap(),
 	};
 }
 

@@ -7,7 +7,13 @@ export const LoadCycleHazardSchema = z
 		entry: z.string().min(1),
 		order: z.array(z.string().min(1)),
 		reader: z.object({ module: z.string().min(1), range: RangeSchema, name: z.string().min(1) }),
-		target: z.object({ module: z.string().min(1), name: z.string().min(1), kind: z.string().min(1) }),
+		/** `symbolId`: the declaration the target names, absent where no workspace declaration has one. */
+		target: z.object({
+			module: z.string().min(1),
+			name: z.string().min(1),
+			kind: z.string().min(1),
+			symbolId: z.string().min(1).optional(),
+		}),
 		calls: z.array(z.object({ module: z.string().min(1), range: RangeSchema, name: z.string().min(1) })),
 	})
 	.meta({ id: "LoadCycleHazard" });
@@ -16,11 +22,12 @@ export type LoadCycleHazard = z.infer<typeof LoadCycleHazardSchema>;
 
 /**
  * `runtime`: a member's module system is unreported or not modeled. `notReady`: the provider has
- * nothing to judge with yet.
+ * nothing to judge with yet. `model`: the walk met code outside the subset it models, at `range`.
  */
 export const LoadCycleUnknownSchema = z
 	.object({
 		module: z.string().min(1).optional(),
+		range: RangeSchema.optional(),
 		reason: z.enum([
 			"undecided",
 			"provider",
@@ -31,6 +38,7 @@ export const LoadCycleUnknownSchema = z
 			"notReady",
 			"runtime",
 			"evidence",
+			"model",
 		]),
 	})
 	.meta({ id: "LoadCycleUnknown" });

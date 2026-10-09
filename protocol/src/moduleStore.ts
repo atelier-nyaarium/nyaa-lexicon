@@ -41,6 +41,18 @@ export interface Held {
 /** Parse request or kit fill. */
 export type Origin = "parse" | "fill";
 
+/** What the index does with a module, as far as admissions and discovery tell the kit. */
+export type IndexAdmission =
+	/** The index holds this text. */
+	| { readonly state: "admitted"; readonly contentHash: string }
+	/** The index may hold it: a parse awaits a verdict or was refused, or discovery named it. */
+	| { readonly state: "pending" }
+	/**
+	 * Nothing names it to the index: the deny globs cover it, or discovery's last scope left it out.
+	 * An import from a module the index holds still brings it in.
+	 */
+	| { readonly state: "outside" };
+
 /** Compute index entries from one module. */
 export type Entries<V, P, E> = (
 	module: string,
@@ -79,6 +91,7 @@ interface StoreReads<P> {
 	readonly generation: number;
 	/** Forgotten modules cannot be filled. */
 	withheld(module: string): boolean;
+	admission(module: string): IndexAdmission;
 	/** Discovered and visible modules, sorted. */
 	modules(): readonly string[];
 	/** Cached once per key and generation. */
@@ -222,6 +235,8 @@ class Kit<V extends ModuleValue, P, E> {
 	policy: ReadPolicy = OPEN_READ_POLICY;
 	private discovery: { project: P; fingerprint: string | undefined } | null = null;
 	private discovered = new Set<string>();
+	/** What the index's scope admits, when discovery was told; it names more than the index roots. */
+	private scope: ReadonlySet<string> | undefined;
 	private readonly slots = new Map<string, Slot<V>>();
 	/** Discovered modules awaiting a fill. */
 	private readonly owed = new Set<string>();
@@ -276,6 +291,7 @@ class Kit<V extends ModuleValue, P, E> {
 		this.policy = policy;
 		this.discovery = null;
 		this.discovered = new Set();
+		this.scope = undefined;
 		this.slots.clear();
 		this.owed.clear();
 		this.index.clear();
@@ -291,11 +307,18 @@ class Kit<V extends ModuleValue, P, E> {
 	 * Drop fills; preserve admitted values and refusal marks. A moved fingerprint means every file
 	 * reads differently, so admitted values and staged parses go too, and each read starts over.
 	 */
-	rediscover(root: string, files: readonly string[], project: P, fingerprint?: string): void {
+	rediscover(
+		root: string,
+		files: readonly string[],
+		project: P,
+		fingerprint?: string,
+		scope?: readonly string[],
+	): void {
 		const reread = this.discovery !== null && this.discovery.fingerprint !== fingerprint;
 		this.root = path.resolve(root);
 		this.discovery = { project, fingerprint };
 		this.discovered = new Set(files);
+		this.scope = scope === undefined ? undefined : new Set(scope);
 		this.owed.clear();
 		for (const slot of this.slots.values()) {
 			const base = slot.base;
@@ -445,6 +468,19 @@ class Kit<V extends ModuleValue, P, E> {
 
 	withheld(module: string): boolean {
 		return this.visible(module) === undefined && this.slots.get(module)?.base.kind === "withheld";
+	}
+
+	admission(module: string): IndexAdmission {
+		const slot = this.slots.get(module);
+		const base = slot?.base;
+		// A moved fingerprint sets the admitted layer aside, and the index keeps its rows until a re-parse.
+		const layer = slot?.aside ?? (base?.kind === "held" && base.layer.origin === "parse" ? base.layer : undefined);
+		if (layer !== undefined) return { state: "admitted", contentHash: layer.held.contentHash };
+		if (!this.policy.readable(path.join(this.root, module))) return { state: "outside" };
+		const refused = base?.kind !== "withheld" && base?.refused !== undefined;
+		if ((slot?.chain.length ?? 0) > 0 || refused) return { state: "pending" };
+		// Without a scope, the provider's own discovery is the closest list of what the index reads.
+		return (this.scope ?? this.discovered).has(module) ? { state: "pending" } : { state: "outside" };
 	}
 
 	modules(): readonly string[] {
@@ -710,6 +746,7 @@ function readSide<V extends ModuleValue, P, E, S extends object>(kit: Kit<V, P, 
 	const store = Object.assign(
 		{
 			withheld: (module: string) => kit.withheld(module),
+			admission: (module: string) => kit.admission(module),
 			modules: () => kit.modules(),
 			memo: <R>(key: string, compute: () => R) => kit.memo(key, compute),
 			peek: (module: string) => kit.peek(module),
@@ -761,7 +798,7 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 	if (kit === undefined) throw new Error("the provider's store was not made by moduleStore or asyncModuleStore");
 	const discover = (root: string, scope?: string[]) =>
 		after(provider.discoverProject(root, kit.previousProject(), scope), ({ model, project }) => {
-			kit.rediscover(root, model.files, project, model.fingerprint);
+			kit.rediscover(root, model.files, project, model.fingerprint, scope);
 			return model;
 		});
 	// Discover before the first request.

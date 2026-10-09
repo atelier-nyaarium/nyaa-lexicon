@@ -24,6 +24,7 @@ import {
 	withOccurrences,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { immediateAliasTarget } from "./aliases.js";
 import { makeArrangeEdits } from "./arrange.js";
 import { isLikelyBundle } from "./bundle.js";
 import { commonJsMemberValue, isCommonJsTarget, isModuleName, meaningOf } from "./edges.js";
@@ -403,6 +404,16 @@ export class TypeScriptAnalyzer {
 		for (const group of this.rootGroups()) this.groupProgram(group);
 	}
 
+	/** The Program of `module`'s settings group, as indexing reads it now. */
+	programOf(module: string): ts.Program | undefined {
+		return this.program(this.fileName(module));
+	}
+
+	/** The settings group `module` compiles in. */
+	groupOf(module: string): string {
+		return groupOf(this.fileName(module), this.project.loaded);
+	}
+
 	dispose(): void {
 		for (const service of this.project.languageServices.get(this)?.values() ?? []) service.dispose();
 		this.project.languageServices.delete(this);
@@ -560,7 +571,7 @@ export class TypeScriptAnalyzer {
 		while (current !== undefined && (current.flags & ts.SymbolFlags.Alias) !== 0 && !seen.has(current)) {
 			seen.add(current);
 			specifiers.push(...declarationsOf(current).filter((declaration) => ts.isExportSpecifier(declaration)));
-			current = checker.getImmediateAliasedSymbol(current);
+			current = immediateAliasTarget(checker, current);
 		}
 		const ids = this.mapDeclarations(specifiers).flatMap((item) => (item.id === undefined ? [] : [item.id]));
 		return firstOfOnePath(ids).sort();
