@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-text",
-	"version": "15.12.0",
+	"version": "16.0.0",
 	"private": true,
 	"type": "module",
 	"description": "Plain-text fallback provider for nyaa-lexicon",
