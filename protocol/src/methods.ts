@@ -246,6 +246,11 @@ export const ReleaseModuleNotificationSchema = z
 	.object({ module: z.string().min(1) })
 	.meta({ id: "ReleaseModuleNotification" });
 
+/** The modules this provider owns as roots, sent after each root recount. */
+export const IndexRootsNotificationSchema = z
+	.object({ roots: z.array(z.string().min(1)) })
+	.meta({ id: "IndexRootsNotification" });
+
 /**
  * What the index did with a parse, after it decided, never before.
  *
@@ -338,13 +343,20 @@ export const METHOD_SCHEMAS = {
  * Told, never asked: no answer, so an older provider that ignores one keeps working. A provider
  * holding workspace state beyond one parse handles them; any other ignores them.
  */
-export const PROVIDER_NOTIFICATIONS = ["forgetModule", "releaseModule", "moduleAdmission", "releaseLoadCycle"] as const;
+export const PROVIDER_NOTIFICATIONS = [
+	"forgetModule",
+	"releaseModule",
+	"moduleAdmission",
+	"releaseLoadCycle",
+	"indexRoots",
+] as const;
 
 export type ProviderNotification = (typeof PROVIDER_NOTIFICATIONS)[number];
 
 export const NOTIFICATION_SCHEMAS = {
 	forgetModule: ForgetModuleNotificationSchema,
 	releaseModule: ReleaseModuleNotificationSchema,
+	indexRoots: IndexRootsNotificationSchema,
 	moduleAdmission: ModuleAdmissionNotificationSchema,
 	releaseLoadCycle: ReleaseLoadCycleNotificationSchema,
 } as const satisfies Record<ProviderNotification, z.ZodType>;

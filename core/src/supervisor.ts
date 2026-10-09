@@ -606,6 +606,15 @@ export class ProviderSupervisor implements ProviderPort {
 			.catch(() => {});
 	}
 
+	indexRoots(providerId: string, roots: string[]): void {
+		const provider = this.providers.get(providerId);
+		if (provider === undefined) return;
+		const params: z.infer<(typeof NOTIFICATION_SCHEMAS)["indexRoots"]> = { roots };
+		provider.queue
+			.run(() => provider.connection.sendNotification("indexRoots" satisfies ProviderNotification, params))
+			.catch(() => {});
+	}
+
 	/** Only the process that issued the token holds its state. */
 	releaseJudgment(providerId: string, incarnation: number, partial: string): void {
 		const provider = this.providers.get(providerId);

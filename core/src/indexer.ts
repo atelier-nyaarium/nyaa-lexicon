@@ -248,6 +248,7 @@ export class WorkspaceIndexer {
 	/** Each provider's discovered files, replaced whole whenever it states its project again. */
 	private discovered = new Map<string, Set<string>>();
 	private roots = new Set<string>();
+	private readonly sentRoots = new Map<string, { incarnation: number | null; key: string }>();
 	private depths = new Map<string, IndexDepth>();
 
 	/** Counts sum to `tracked`. */
@@ -1298,6 +1299,24 @@ export class WorkspaceIndexer {
 		// Evidence before ownership: a shared claim is decided by what the scope admits.
 		this.supervisor.observeWorkspace(reachable);
 		const roots = new Set(reachable.filter((module) => this.claimOf(module).claimed));
+		const byProvider = new Map<string, string[]>();
+		for (const module of roots) {
+			const claim = this.claimOf(module);
+			if (!claim.claimed) continue;
+			const providerId = claim.provider;
+			const owned = byProvider.get(providerId) ?? [];
+			owned.push(module);
+			byProvider.set(providerId, owned);
+		}
+		for (const { providerId } of this.supervisor.running()) {
+			const owned = (byProvider.get(providerId) ?? []).sort();
+			const incarnation = this.supervisor.incarnationOf(providerId);
+			const key = JSON.stringify(owned);
+			const previous = this.sentRoots.get(providerId);
+			if (previous?.incarnation === incarnation && previous.key === key) continue;
+			this.supervisor.indexRoots(providerId, owned);
+			this.sentRoots.set(providerId, { incarnation, key });
+		}
 		this.dropMovedOwners();
 
 		// Hold all sets here.

@@ -410,6 +410,7 @@ export {
 	type FileContent,
 	FileContentSchema,
 	ForgetModuleNotificationSchema,
+	IndexRootsNotificationSchema,
 	InitializeRequestSchema,
 	InitializeResponseSchema,
 	isProviderMethod,

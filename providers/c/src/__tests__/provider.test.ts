@@ -118,6 +118,7 @@ describe("C provider protocol", () => {
 			"discoverProject",
 			"forgetModule",
 			"importEdits",
+			"indexRoots",
 			"initialize",
 			"judgeLoadCycle",
 			"moduleAdmission",

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DescribeResult, LoadCycleHazard } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock } from "../clock.js";
+import { involves } from "../describeLoadCycle.js";
 import { createDispatch } from "../dispatch.js";
 import type { MethodRequest, MethodResponse } from "../providerPort.js";
 import { LexiconService } from "../service.js";
@@ -173,6 +174,35 @@ afterEach(() => {
 //  Tests
 
 describe("describe's load cycle", () => {
+	it("matches a named target by symbol id despite a same-named top-level declaration", () => {
+		const target = { symbolId: "member-id", module: "b.fake", range: line(3), chain: ["NS", "Y"] };
+		const hazard: LoadCycleHazard = {
+			...READS_MEMBER,
+			target: { module: "b.fake", name: "Y", kind: "property", symbolId: "member-id" },
+		};
+		expect({
+			member: involves(target, hazard),
+			topLevel: involves({ ...target, symbolId: "top-id", chain: ["Y"] }, hazard),
+		}).toEqual({
+			member: true,
+			topLevel: false,
+		});
+	});
+
+	it("matches a renamed target by symbol id", () => {
+		const symbol = { symbolId: "export-id", module: "b.fake", range: line(3), chain: ["currentName"] };
+		const hazard: LoadCycleHazard = {
+			...READS_MEMBER,
+			target: { module: "b.fake", name: "oldExportName", kind: "const", symbolId: "export-id" },
+		};
+		expect(involves(symbol, hazard)).toBe(true);
+	});
+
+	it("falls back to the target name and container chain without a symbol id", () => {
+		const symbol = { symbolId: "member-id", module: "b.fake", range: line(3), chain: ["NS", "member"] };
+		expect(involves(symbol, READS_MEMBER)).toBe(true);
+	});
+
 	it("names the hazards a symbol reads in or is the target of, by plain name or container chain", async () => {
 		const { loadCycleOf } = service("bad", waiting().clock);
 		const modules = ["a.fake", "b.fake"];

@@ -428,8 +428,11 @@ describe("the module store's verdicts", () => {
 			);
 		const discovered = states();
 		handlers.discoverProject({ workspaceRoot: root, scope: ["a.toy", "b.toy", "d.toy"] });
+		const scoped = states();
 		const admitted = { state: "admitted", contentHash: hashContent("x") } as const;
-		expect({ discovered, scoped: states() }).toEqual({
+		const generation = store.generation;
+		handlers.indexRoots?.({ roots: ["c.toy"] });
+		expect({ discovered, scoped, generationMoved: store.generation !== generation }).toEqual({
 			discovered: {
 				"a.toy": admitted,
 				"b.toy": { state: "pending" },
@@ -444,6 +447,14 @@ describe("the module store's verdicts", () => {
 				"d.toy": { state: "pending" },
 				"e.toy": { state: "outside" },
 			},
+			generationMoved: true,
+		});
+		expect(states()).toMatchObject({
+			"a.toy": admitted,
+			"b.toy": { state: "pending" },
+			"c.toy": { state: "pending" },
+			"d.toy": { state: "outside" },
+			"e.toy": { state: "outside" },
 		});
 	});
 

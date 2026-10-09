@@ -52,6 +52,8 @@ export interface FakeOptions {
 	forgotten?: string[];
 	/** Each module the index told its former owner to release. */
 	released?: Array<{ module: string; providerId: string }>;
+	/** Each provider root list sent by the indexer, in order. */
+	indexedRoots?: Array<{ providerId: string; roots: string[] }>;
 	/** Each partial judgment the index told its provider to drop. */
 	releasedJudgments?: Array<{ providerId: string; partial: string }>;
 	/** Each verdict DELIVERED, with the provider it named, in order. */
@@ -251,6 +253,9 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		},
 		release: (module, providerId) => {
 			options.released?.push({ module, providerId });
+		},
+		indexRoots: (providerId, roots) => {
+			options.indexedRoots?.push({ providerId, roots: [...roots] });
 		},
 		releaseJudgment: (providerId, given, partial) => {
 			if (given === incarnation.current) options.releasedJudgments?.push({ providerId, partial });

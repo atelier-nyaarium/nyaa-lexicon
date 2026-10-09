@@ -38,6 +38,8 @@ export interface ProviderPort {
 	forget(module: string): void;
 	/** Tells a module's former owner that another provider owns it now. Not awaited. */
 	release(module: string, providerId: string): void;
+	/** Tells each provider which modules the index currently roots. Not awaited. */
+	indexRoots(providerId: string, roots: string[]): void;
 	/** Tells the process holding a partial load-cycle judgment to drop it. Not awaited. */
 	releaseJudgment(providerId: string, incarnation: number, partial: string): void;
 	/** Which process answers for this provider now; null when none does. */

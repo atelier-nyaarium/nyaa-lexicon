@@ -402,6 +402,7 @@ describe("C++ structural coverage", () => {
 			"discoverProject",
 			"forgetModule",
 			"importEdits",
+			"indexRoots",
 			"initialize",
 			"judgeLoadCycle",
 			"moduleAdmission",

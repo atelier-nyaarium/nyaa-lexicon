@@ -12,6 +12,7 @@ type DescribeLoadCycle = NonNullable<DescribeResult["loadCycle"]>;
 
 /** The described declaration as hazards are matched against it. */
 export interface Described {
+	symbolId: string;
 	module: string;
 	range: Range;
 	/** Its name under its containers, the outermost first. */
@@ -53,15 +54,16 @@ export function describedOf(
 		chain.unshift(held.name);
 		container = held.containerId;
 	}
-	return { module: declaration.module, range: declaration.range, chain };
+	return { symbolId, module: declaration.module, range: declaration.range, chain };
 }
 
 /**
  * Whether the symbol holds the hazard's read, or is the binding it reads: a top-level symbol by its
- * name, a member by its container chain dotted.
+ * symbol id when named, or by its top-level name or dotted container chain.
  */
 export function involves(symbol: Described, hazard: LoadCycleHazard): boolean {
 	if (hazard.reader.module === symbol.module && contains(symbol.range, hazard.reader.range)) return true;
+	if (hazard.target.symbolId !== undefined) return hazard.target.symbolId === symbol.symbolId;
 	return hazard.target.module === symbol.module && hazard.target.name === symbol.chain.join(".");
 }
 

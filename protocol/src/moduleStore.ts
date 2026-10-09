@@ -237,6 +237,7 @@ class Kit<V extends ModuleValue, P, E> {
 	private discovered = new Set<string>();
 	/** What the index's scope admits, when discovery was told; it names more than the index roots. */
 	private scope: ReadonlySet<string> | undefined;
+	private roots: ReadonlySet<string> | undefined;
 	private readonly slots = new Map<string, Slot<V>>();
 	/** Discovered modules awaiting a fill. */
 	private readonly owed = new Set<string>();
@@ -292,6 +293,7 @@ class Kit<V extends ModuleValue, P, E> {
 		this.discovery = null;
 		this.discovered = new Set();
 		this.scope = undefined;
+		this.roots = undefined;
 		this.slots.clear();
 		this.owed.clear();
 		this.index.clear();
@@ -301,6 +303,12 @@ class Kit<V extends ModuleValue, P, E> {
 		this.filling.clear();
 		this.transientOpen = false;
 		this.generation++;
+	}
+
+	setRoots(roots: readonly string[]): void {
+		this.roots = new Set(roots);
+		this.generation++;
+		this.memos.clear();
 	}
 
 	/**
@@ -479,8 +487,7 @@ class Kit<V extends ModuleValue, P, E> {
 		if (!this.policy.readable(path.join(this.root, module))) return { state: "outside" };
 		const refused = base?.kind !== "withheld" && base?.refused !== undefined;
 		if ((slot?.chain.length ?? 0) > 0 || refused) return { state: "pending" };
-		// Without a scope, the provider's own discovery is the closest list of what the index reads.
-		return (this.scope ?? this.discovered).has(module) ? { state: "pending" } : { state: "outside" };
+		return (this.roots ?? this.scope ?? this.discovered).has(module) ? { state: "pending" } : { state: "outside" };
 	}
 
 	modules(): readonly string[] {
@@ -844,6 +851,7 @@ export function storeHandlersFor<V extends ModuleValue, P, E>(
 		moduleAdmission: (verdict: ModuleAdmission) => kit.settle(verdict),
 		forgetModule: (params: { module: string }) => kit.forget(params.module),
 		releaseModule: (params: { module: string }) => kit.release(params.module),
+		indexRoots: (params: { roots: string[] }) => kit.setRoots(params.roots),
 		releaseLoadCycle: (params: { partial: string }) => provider.releaseLoadCycle?.call(provider, params),
 		shutdown: () => {
 			provider.shutdown?.();

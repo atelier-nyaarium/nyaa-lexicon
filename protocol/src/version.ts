@@ -165,7 +165,9 @@ export type Compatibility =
 // provider notification drops a partial judgment. A provider may declare `excludedDirectories` at
 // initialize, names excluded at any depth and output names excluded at the root or beside a marker,
 // which core never roots or follows into. No 6.x client is served.
-export const PROTOCOL_VERSION = "7.0.0" as const;
+// 7.1.0: `indexRoots` tells the kit core's roots, which `admission()` reads. A load-cycle target
+// matches a described symbol by `symbolId` when the hazard names one.
+export const PROTOCOL_VERSION = "7.1.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 7;

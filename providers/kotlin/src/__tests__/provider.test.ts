@@ -26,6 +26,7 @@ test("every handler answers, the notifications included, and write operations re
 		"discoverProject",
 		"forgetModule",
 		"importEdits",
+		"indexRoots",
 		"initialize",
 		"judgeLoadCycle",
 		"moduleAdmission",

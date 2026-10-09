@@ -903,6 +903,40 @@ describe("root exclusions and includes", () => {
 		});
 	});
 
+	it("updates the provider's roots after a new module is indexed", async () => {
+		await initGit();
+		put("root.fake", "export class Root {}\n");
+		await gitAdd(root, "root.fake");
+		const indexedRoots: Array<{ providerId: string; roots: string[] }> = [];
+		const port = sharedFake({
+			claims: [claims],
+			indexedRoots,
+			answers: { parseFile: (request) => parseFake(request), resolveImport: (request) => resolveFake(request) },
+		});
+		service = new LexiconService(store, port, sourceReader(root), root);
+
+		await service.indexWorkspace();
+		const first = indexedRoots.at(-1)?.roots ?? [];
+		put("next.fake", "export class Next {}\n");
+		await service.applyBatch([{ kind: "changed", module: "next.fake", contentHash: null }]);
+		const second = indexedRoots.at(-1)?.roots ?? [];
+
+		expect({ first, second }).toEqual({ first: ["root.fake"], second: ["next.fake", "root.fake"] });
+	});
+
+	it("sends the roots in a walk-mode workspace", async () => {
+		put("root.fake", "export class Root {}\n");
+		put("generated.fake", "export class Generated {}\n");
+		const indexedRoots: Array<{ providerId: string; roots: string[] }> = [];
+		const port = sharedFake({ claims: [claims], discover: () => ["root.fake"], indexedRoots });
+		service = new LexiconService(store, port, sourceReader(root), root);
+
+		await service.indexWorkspace();
+
+		expect(indexedRoots).toEqual([{ providerId: "fake", roots: ["root.fake"] }]);
+		expect(service.findByName("Generated")).toEqual([]);
+	});
+
 	it("passes configured bundle roots and reachable files to providers at surface depth", async () => {
 		await initGit();
 		put(".gitignore", "opaque/\n");

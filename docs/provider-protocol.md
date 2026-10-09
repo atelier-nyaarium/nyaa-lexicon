@@ -108,6 +108,7 @@ lookups use `store.get(key)`, not provider-owned maps.
   while waiting.
 - `forgetModule` hides a module. Fills cannot restore it until a parse is admitted.
 - `releaseModule` drops a module's admitted and staged values. The next read fills it from disk.
+- `indexRoots` replaces the kit's root set. `admission()` reads that set.
 - A fill reads a module with `readWorkspaceFile` at outline depth. The reader applies the core's
   containment, size and binary checks. Missing, binary, oversized, lossy files, files whose real path
   leaves the workspace, and parses with error diagnostics are skipped until rediscovery. Unreadable files remain owed and retry on later
