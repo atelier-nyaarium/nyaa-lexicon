@@ -111,6 +111,11 @@ export const InitializeResponseSchema = z
 			.optional(),
 		/** Interpreters, as `shebangInterpreter` names them, claiming an extensionless file; ranks with a filename claim. */
 		shebangs: z.array(z.string().min(1)).optional(),
+		/**
+		 * Directory names never indexed beneath, tracked or not: no claimed file under one is a root
+		 * unless discovery names it, and no import is followed into one. Absent excludes nothing.
+		 */
+		excludedDirectories: z.array(z.string().min(1)).optional(),
 		fallback: z.boolean().optional(),
 		protocolVersion: z.string().min(1),
 		tiers: ProviderTiersSchema,

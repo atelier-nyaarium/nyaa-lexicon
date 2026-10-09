@@ -38,6 +38,7 @@ import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarat
 import { patternDigests } from "./patternDigest.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import type { ResultCache } from "./resultCache.js";
+import type { Route } from "./routing.js";
 import {
 	DENIED_BY_SCOPE_REASON,
 	insideWorkspace,
@@ -97,6 +98,9 @@ const REPARSES_NAMED = 10;
 
 /** Why a provider hears a parse refused that the index wrote, then lost with its batch. */
 const LOST_BATCH_REASON = "the index lost the batch holding this parse; it is parsed again";
+
+/** Why a claimed module under its provider's declared excluded directories is not indexed. */
+const EXCLUDED_DIRECTORY_REASON = "under a directory its provider excludes";
 
 /** Of overlapping works, the one a status names first: each holds or waits out those after it. */
 const ACTIVITY_ORDER: ReadonlyArray<IndexActivity["kind"]> = ["refactor", "batch", "scan", "rebind", "upgrade"];
@@ -1148,10 +1152,12 @@ export class WorkspaceIndexer {
 		return this.outcome(module, "fault", failure);
 	}
 
-	/** Whether anything will index a module: the scope's word, then the routing's. */
+	/** Whether anything will index a module: the scope's word, then the routing's, then its owner's exclusions. */
 	claimOf(module: string): ModuleClaim {
 		if (this.scopeOrThrow().denies(module)) return { claimed: false, unclaimedReason: DENIED_BY_SCOPE_REASON };
 		const route = this.supervisor.route(module);
+		// The one check: roots, followed imports and every explicit index road all ask here.
+		if (this.excludedByOwner(module, route)) return { claimed: false, unclaimedReason: EXCLUDED_DIRECTORY_REASON };
 		if (route.owned) return { claimed: true, provider: route.providerId };
 		return {
 			claimed: false,
@@ -1279,7 +1285,7 @@ export class WorkspaceIndexer {
 		const { everything, candidates, reachable } = await this.admitted(extra, gone);
 		// Evidence before ownership: a shared claim is decided by what the scope admits.
 		this.supervisor.observeWorkspace(reachable);
-		const roots = new Set(reachable.filter((module) => this.supervisor.route(module).owned));
+		const roots = new Set(reachable.filter((module) => this.claimOf(module).claimed));
 		this.dropMovedOwners();
 
 		// Hold all sets here.
@@ -1291,6 +1297,11 @@ export class WorkspaceIndexer {
 			denied: everything.length - candidates.length,
 		};
 		return roots;
+	}
+
+	/** Under a directory its owner declared excluded, which only the owner's own discovery overrides. */
+	private excludedByOwner(module: string, route: Route): boolean {
+		return route.owned && route.excluded === true && this.discovered.get(route.providerId)?.has(module) !== true;
 	}
 
 	/**

@@ -29,13 +29,20 @@ type NormalizeModulePath = (raw: string) => string;
 
 //////// Constants
 
-const IGNORED_DIRECTORIES = new Set([".git", ".godot"]);
+export const EXCLUDED_DIRECTORIES = new Set([".git", ".godot"]);
 
 //////// Functions
 
+function underExcludedDirectory(module: string): boolean {
+	return module
+		.split("/")
+		.slice(0, -1)
+		.some((segment) => EXCLUDED_DIRECTORIES.has(segment));
+}
+
 function filesUnder(root: string, directory: string, found: Found, normalize: NormalizeModulePath): void {
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
-		if (entry.isDirectory() && !IGNORED_DIRECTORIES.has(entry.name)) {
+		if (entry.isDirectory() && !EXCLUDED_DIRECTORIES.has(entry.name)) {
 			filesUnder(root, path.join(directory, entry.name), found, normalize);
 			continue;
 		}
@@ -63,6 +70,8 @@ export function discoverProjectCore(
 		for (const module of scope) {
 			const absolute = path.resolve(root, module);
 			if (!absolute.startsWith(`${root}${path.sep}`)) continue;
+			// Skipped as the walk skips it, tracked or not.
+			if (underExcludedDirectory(module)) continue;
 			if (path.basename(module) === "project.godot") {
 				const directory = path.posix.dirname(module);
 				found.projectDirectories.push(directory === "." ? "" : directory);

@@ -261,6 +261,7 @@ export class CppProvider {
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
 			sharedExtensions: [{ extension: ".h", beside: EXTENSIONS }],
+			excludedDirectories: [...EXCLUDED_DIRECTORIES],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

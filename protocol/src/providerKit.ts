@@ -195,12 +195,25 @@ export function walkWorkspace(root: string, options: WalkOptions): { files: stri
 	return { files: files.sort(), configFiles: configFiles.sort() };
 }
 
-/** The claimed files among core's scope, which already left out what the workspace ignores. */
+/** Whether a module sits under one of `excluded`'s directory names, which no walk enters. */
+function underExcludedDirectory(module: string, excluded: ReadonlySet<string>): boolean {
+	return module
+		.split("/")
+		.slice(0, -1)
+		.some((segment) => excluded.has(segment));
+}
+
+/**
+ * The claimed files among core's scope, which already left out what the workspace ignores. A
+ * provider's own excluded directories are skipped as core skips them, so only a declared set applies.
+ */
 function scopedWorkspace(root: string, options: WalkOptions): { files: string[]; configFiles: string[] } {
+	const excluded = options.excludedDirectories;
 	const claims = claimsOf(root, options);
 	const files = new Set<string>();
 	const configFiles = new Set<string>();
 	for (const module of options.scope ?? []) {
+		if (excluded !== undefined && underExcludedDirectory(module, excluded)) continue;
 		if (workspaceModule(root, path.resolve(root, module)) === null) continue;
 		const name = path.basename(module);
 		if (claims.source(name, () => module)) files.add(module);

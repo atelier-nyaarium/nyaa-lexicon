@@ -278,6 +278,7 @@ export class BashProvider {
 			extensions: EXTENSIONS,
 			filenames: FILENAMES,
 			shebangs: SHEBANGS,
+			excludedDirectories: [...EXCLUDED_DIRECTORIES],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

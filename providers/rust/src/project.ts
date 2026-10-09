@@ -61,7 +61,7 @@ interface Package {
 
 export const RUST_EXTENSIONS = [".rs"] as const;
 
-const EXCLUDED_DIRECTORIES = new Set([".git", ".hg", ".svn", ".idea", "node_modules", "target", "vendor"]);
+export const EXCLUDED_DIRECTORIES = new Set([".git", ".hg", ".svn", ".idea", "node_modules", "target", "vendor"]);
 
 const STANDARD_CRATES = new Set(["alloc", "core", "proc_macro", "std", "test"]);
 

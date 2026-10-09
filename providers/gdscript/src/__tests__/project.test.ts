@@ -2,8 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { handlersFor, moduleOf, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { handlersFor, moduleOf, normalizeModulePath, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { GDScriptProvider } from "../main.js";
+import { discoverProjectCore } from "../projectCore.js";
 
 ////////////////////////////////
 //  Constants
@@ -134,6 +135,18 @@ afterEach(() => {
 
 ////////////////////////////////
 //  Tests
+
+test("discovery skips the editor's cache, walked or scoped by a scope that names it", () => {
+	const files = {
+		"project.godot": "config_version=5\n",
+		"scripts/a.gd": "extends Node\n",
+		".godot/editor/cached.gd": "extends Node\n",
+	};
+	workspace(files);
+	const root = roots.at(-1) as string;
+	expect(discoverProjectCore(root, normalizeModulePath).files).toEqual(["scripts/a.gd"]);
+	expect(discoverProjectCore(root, normalizeModulePath, Object.keys(files)).files).toEqual(["scripts/a.gd"]);
+});
 
 // A scene root's own `script`, `null` included, overrides the scene it inherits. Godot's scene
 // loader skips a byte order mark and its uid reader does not, so `MarkedByUid` names nothing.

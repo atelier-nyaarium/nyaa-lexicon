@@ -260,6 +260,7 @@ export class ProviderSupervisor implements ProviderPort {
 				filenames: parsed.filenames,
 				sharedExtensions: parsed.sharedExtensions,
 				shebangs: parsed.shebangs,
+				excludedDirectories: parsed.excludedDirectories,
 				fallback: parsed.fallback,
 				content: parsed.content,
 			}),

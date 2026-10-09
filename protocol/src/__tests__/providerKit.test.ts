@@ -68,22 +68,20 @@ describe("shared parser primitives", () => {
 });
 
 describe("walking a workspace", () => {
-	it("claims by extension and exact name, collects configuration apart, skips excluded directories", () => {
-		put("src/a.kt");
-		put("src/b.java");
-		put("project.godot");
-		put("build/c.kt");
-		put("app.csproj");
-		put("deep/nested/d.kt");
+	it("claims by extension and exact name, collects configuration apart, skips excluded directories, walked or scoped", () => {
+		const modules = ["src/a.kt", "src/b.java", "project.godot", "build/c.kt", "deep/build/e.kt", "app.csproj"];
+		for (const module of [...modules, "deep/nested/d.kt"]) put(module);
+		const options = {
+			extensions: [".kt"],
+			filenames: ["project.godot"],
+			configExtensions: [".csproj"],
+			excludedDirectories: new Set(["build"]),
+		};
+		const expected = { files: ["deep/nested/d.kt", "project.godot", "src/a.kt"], configFiles: ["app.csproj"] };
 
-		expect(
-			walkWorkspace(root, {
-				extensions: [".kt"],
-				filenames: ["project.godot"],
-				configExtensions: [".csproj"],
-				excludedDirectories: new Set(["build"]),
-			}),
-		).toEqual({ files: ["deep/nested/d.kt", "project.godot", "src/a.kt"], configFiles: ["app.csproj"] });
+		expect(walkWorkspace(root, options)).toEqual(expected);
+		// A scope that names a file under an excluded directory, as git does for a tracked one.
+		expect(walkWorkspace(root, { ...options, scope: [...modules, "deep/nested/d.kt"] })).toEqual(expected);
 	});
 
 	it("claims an extensionless file by the interpreter its shebang names", () => {

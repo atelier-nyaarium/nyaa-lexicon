@@ -28,6 +28,7 @@ import { LANGUAGE } from "./extract.js";
 import { createGDScriptStore, type GDScriptProject, type GDScriptValue } from "./module.js";
 import { makeMoveEdits } from "./move.js";
 import { discoverGDScriptProject } from "./project.js";
+import { EXCLUDED_DIRECTORIES } from "./projectCore.js";
 import { renameGdscript } from "./rename.js";
 import { scriptRole } from "./role.js";
 import { GDScriptTypeIndex } from "./types.js";
@@ -155,6 +156,7 @@ export class GDScriptProvider {
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
 			filenames: FILENAMES,
+			excludedDirectories: [...EXCLUDED_DIRECTORIES],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

@@ -420,6 +420,7 @@ export class PowerShellProvider {
 			extensions: EXTENSIONS,
 			filenames: [],
 			shebangs: SHEBANGS,
+			excludedDirectories: [...EXCLUDED_DIRECTORIES],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

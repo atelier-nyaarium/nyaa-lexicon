@@ -35,6 +35,7 @@ import type { ImportBinding, ParsedFile, RawDeclaration, RawReference } from "./
 import { parseRustFile } from "./parser.js";
 import {
 	discoverRustProject,
+	EXCLUDED_DIRECTORIES,
 	isModRs,
 	moduleFileOf,
 	pathSegments,
@@ -385,6 +386,7 @@ export class RustProvider {
 			providerId: PROVIDER_ID,
 			language: LANGUAGE,
 			extensions: [...EXTENSIONS],
+			excludedDirectories: [...EXCLUDED_DIRECTORIES],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

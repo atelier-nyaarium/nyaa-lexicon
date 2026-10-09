@@ -388,6 +388,7 @@ export class CProvider {
 			providerId: "c-provider",
 			language: LANGUAGE,
 			extensions: EXTENSIONS,
+			excludedDirectories: [...EXCLUDED_DIRECTORIES],
 			protocolVersion: PROTOCOL_VERSION,
 			tiers: TIERS,
 			referenceRoles: [...REFERENCE_ROLES],

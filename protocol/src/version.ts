@@ -162,6 +162,7 @@ export type Compatibility =
 // symbol's part in one as `loadCycle`. An import edge, a `resolveImport` request and a `probeBatch`
 // landing may carry `resolutionMode`, the module system resolving that occurrence. The
 // `releaseLoadCycle` provider notification drops a partial judgment; an older provider ignores it.
+// A provider may declare `excludedDirectories` at initialize, which core never roots or follows into.
 export const PROTOCOL_VERSION = "6.11.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */

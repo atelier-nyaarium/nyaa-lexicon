@@ -242,8 +242,15 @@ interpreter contest the file, and an extension decides before any shebang is rea
 walk each read the opening bytes of an extensionless file for its first line, and only when some
 provider claims a shebang.
 
-In Git mode, tracked files remain in scope even under a default-excluded directory; directory exclusions
-only limit files added by provider discovery. An ignored file never enters scope unless explicitly included.
+`excludedDirectories` names the directories a provider's sources never live in, such as Rust's
+`vendor` or C#'s `obj` and `bin`. A claimed file under one is never a root, tracked or not, unless the
+provider's own discovery names it (a C forced-include header), and core follows no import into one.
+Declare exactly the set passed to `walkWorkspace`, whose scoped form skips the same directories.
+Absent excludes nothing: a provider that declares none, as TypeScript does for its `node_modules`
+surfaces, has every tracked file it claims rooted and every import followed.
+
+In Git mode, tracked files remain in scope even under a default-excluded directory a provider does
+not declare. An ignored file never enters scope unless explicitly included.
 Use `deny` for tracked secrets, such as `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.
 `**/.git/**` is always denied. Denied files are excluded from indexing, and no provider reads one.
 `initialize` carries the scope's `deny` globs, the built-in one included. The kit's module store never
