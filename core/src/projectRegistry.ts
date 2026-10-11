@@ -5,7 +5,8 @@
 //
 // Single owner of the registry file; call sites take the whole state or nothing.
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
 	canonicalRoot,
@@ -15,6 +16,7 @@ import {
 	workspaceKey,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
+import { Database } from "./database.js";
 import { admitStateDir } from "./workspaceAdmission.js";
 
 ////////////////////////////////
@@ -46,6 +48,33 @@ export type AdmitVerdict = { admitted: boolean; reason?: string };
 
 function registryFile(host: PlatformEnv): string {
 	return path.join(stateRoot(host), "projects.json");
+}
+
+/** A SQLite write transaction serializes registry read-modify-write across processes. */
+function withRegistryLock<T>(host: PlatformEnv, work: () => T): T {
+	const file = path.join(stateRoot(host), "projects.lock.sqlite");
+	mkdirSync(path.dirname(file), { recursive: true });
+	const db = Database.open(file, undefined, 4_000);
+	let locked = false;
+	try {
+		db.exec("BEGIN IMMEDIATE");
+		locked = true;
+		const result = work();
+		db.exec("COMMIT");
+		locked = false;
+		return result;
+	} catch (error) {
+		if (locked) {
+			try {
+				db.exec("ROLLBACK");
+			} catch {
+				// Closing the connection releases a transaction SQLite could not roll back.
+			}
+		}
+		throw error;
+	} finally {
+		db.close();
+	}
 }
 
 function entryOf(key: string, root: string, stateDir: string | undefined): RegisteredProject {
@@ -80,10 +109,14 @@ export function readRegistry(host: PlatformEnv = currentHost()): RegisteredProje
 function writeRegistry(host: PlatformEnv, projects: RegisteredProject[]): void {
 	const file = registryFile(host);
 	mkdirSync(path.dirname(file), { recursive: true });
-	const staging = `${file}.${process.pid}.tmp`;
+	const staging = `${file}.${process.pid}.${randomUUID()}.tmp`;
 	const stored = projects.map(({ key, root, stateDir }) => entryOf(key, root, stateDir));
-	writeFileSync(staging, JSON.stringify({ projects: stored } satisfies RegistryFile, null, 2));
-	renameSync(staging, file);
+	try {
+		writeFileSync(staging, JSON.stringify({ projects: stored } satisfies RegistryFile, null, 2));
+		renameSync(staging, file);
+	} finally {
+		rmSync(staging, { force: true });
+	}
 }
 
 /**
@@ -129,23 +162,26 @@ export function registerProject(
 		if (directory === workspacePaths(host, resolved).dir) directory = undefined;
 	}
 
-	const projects = readRegistry(host);
-	const project = entryOf(workspaceKey(resolved), resolved, directory);
-	const existing = projects.find((candidate) => sameStore(candidate, project));
-	if (existing !== undefined) return { registered: true, project: existing, already: true };
-
-	writeRegistry(host, [...projects, project]);
-	return { registered: true, project, already: false };
+	return withRegistryLock(host, () => {
+		const projects = readRegistry(host);
+		const project = entryOf(workspaceKey(resolved), resolved, directory);
+		const existing = projects.find((candidate) => sameStore(candidate, project));
+		if (existing !== undefined) return { registered: true, project: existing, already: true };
+		writeRegistry(host, [...projects, project]);
+		return { registered: true, project, already: false };
+	});
 }
 
 /** Dropped from the registry entirely. The index it built survives until deleted separately. */
 export function forgetProject(reference: string, host: PlatformEnv = currentHost()): boolean {
-	const projects = readRegistry(host);
-	const target = findProject(reference, projects);
-	if (target === null) return false;
-	writeRegistry(
-		host,
-		projects.filter((project) => !sameStore(project, target)),
-	);
-	return true;
+	return withRegistryLock(host, () => {
+		const projects = readRegistry(host);
+		const target = findProject(reference, projects);
+		if (target === null) return false;
+		writeRegistry(
+			host,
+			projects.filter((project) => !sameStore(project, target)),
+		);
+		return true;
+	});
 }

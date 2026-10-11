@@ -319,6 +319,7 @@ function storeFiles(directory: string): string[] {
 	const paths = storePaths(directory);
 	return [
 		...indexFiles(directory).flatMap(({ file }) => [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]),
+		paths.indexedStateFile,
 		`${paths.index}.seeding`,
 		paths.logFile,
 		`${paths.logFile}.old`,

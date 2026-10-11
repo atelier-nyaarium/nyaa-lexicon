@@ -328,6 +328,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		),
 		resolveImport: read((params) => service.resolveImport(params.fromModule, params.specifier)),
 		indexStatus: status((params) => service.indexStatus(params.concerning)),
+		discoverSubmodules: status(() => service.discoverSubmodules()),
 		// Trigger lifecycle starts warming before this status answer.
 		indexWorkspace: status(() => service.indexStatus()),
 		findLiterals: read(({ limit, exclude, ...query }) => service.findLiterals(query, limit, exclude)),

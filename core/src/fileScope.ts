@@ -14,6 +14,7 @@
 import type { ChildProcess } from "node:child_process";
 import { type Dirent, existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { canonicalRoot } from "@nyaa-lexicon/client";
 import {
 	type BoundedTimer,
 	globToRegExp,
@@ -96,6 +97,7 @@ export interface GitRunOptions {
 	onSpawn?: (child: ChildProcess) => void;
 	/** Overrides `GIT_MAX_STDOUT_BYTES`, for a test proving the cap kills without a real 128MB run. */
 	maxStdoutBytes?: number;
+	timeoutMs?: number;
 }
 
 /** A `BoundedTimer` over the injected clock, so a fake clock in a test drives the same timeout road. */
@@ -119,7 +121,7 @@ export async function runGit(
 		cwd,
 		input: options.input,
 		maxBytes: options.maxStdoutBytes ?? GIT_MAX_STDOUT_BYTES,
-		timeoutMs: GIT_TIMEOUT_MS,
+		timeoutMs: options.timeoutMs ?? GIT_TIMEOUT_MS,
 		timer: clockTimer(clock),
 		onSpawn: options.onSpawn,
 	});
@@ -200,9 +202,13 @@ export async function gitFiles(workspaceRoot: string, clock: Clock = systemClock
  * lag or outlive the actual index, and the mode is exactly what `check-ignore` and `check-attr`
  * refuse to cross. Null when git cannot say.
  */
-export async function submoduleRoots(workspaceRoot: string, clock: Clock = systemClock): Promise<Set<string> | null> {
+export async function submoduleRoots(
+	workspaceRoot: string,
+	clock: Clock = systemClock,
+	timeoutMs = GIT_TIMEOUT_MS,
+): Promise<Set<string> | null> {
 	if (!existsSync(path.join(workspaceRoot, ".git"))) return null;
-	const result = await runGit(clock, workspaceRoot, ["ls-files", "--stage", "-z"]);
+	const result = await runGit(clock, workspaceRoot, ["ls-files", "--stage", "-z"], { timeoutMs });
 	if (result === null || result.code !== 0) return null;
 	const roots = new Set<string>();
 	for (const line of result.stdout.split("\0")) {
@@ -217,6 +223,89 @@ export async function submoduleRoots(workspaceRoot: string, clock: Clock = syste
 		}
 	}
 	return roots;
+}
+
+const SUBMODULE_DISCOVERY_MS = 8_000;
+const SUBMODULE_DISCOVERY_LIMIT = 256;
+
+/** Initialized recursive submodules and whether every Git read completed. */
+export async function discoverSubmodules(
+	workspaceRoot: string,
+	clock: Clock = systemClock,
+): Promise<{ roots: string[]; complete: boolean }> {
+	let root: string;
+	try {
+		root = canonicalRoot(workspaceRoot);
+	} catch {
+		return { roots: [], complete: false };
+	}
+	if (!existsSync(path.join(root, ".git"))) return { roots: [], complete: true };
+	const deadline = clock.now() + SUBMODULE_DISCOVERY_MS;
+	const roots = new Set<string>();
+	const visited = new Set<string>();
+	let complete = true;
+	const visit = async (current: string): Promise<void> => {
+		const canonical = canonicalRoot(current);
+		if (visited.has(canonical)) return;
+		if (visited.size >= SUBMODULE_DISCOVERY_LIMIT || clock.now() >= deadline) {
+			complete = false;
+			return;
+		}
+		visited.add(canonical);
+		const remaining = Math.max(1, Math.min(GIT_TIMEOUT_MS, deadline - clock.now()));
+		const gitRoot = await runGit(clock, canonical, ["rev-parse", "--show-toplevel"], { timeoutMs: remaining });
+		if (gitRoot === null || gitRoot.code !== 0 || gitRoot.stdout.trim().length === 0) {
+			complete = false;
+			return;
+		}
+		if (canonicalRoot(gitRoot.stdout.trim()) !== canonical) {
+			complete = false;
+			return;
+		}
+		const children = await submoduleRoots(
+			canonical,
+			clock,
+			Math.max(1, Math.min(GIT_TIMEOUT_MS, deadline - clock.now())),
+		);
+		if (children === null) {
+			complete = false;
+			return;
+		}
+		for (const child of children) {
+			if (clock.now() >= deadline) {
+				complete = false;
+				return;
+			}
+			const childPath = path.resolve(canonical, ...child.split("/"));
+			if (!existsSync(childPath) || !existsSync(path.join(childPath, ".git"))) continue;
+			const childCanonical = canonicalRoot(childPath);
+			const relative = path.relative(root, childCanonical);
+			if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+				complete = false;
+				continue;
+			}
+			const childGitRoot = await runGit(clock, childCanonical, ["rev-parse", "--show-toplevel"], {
+				timeoutMs: Math.max(1, Math.min(GIT_TIMEOUT_MS, deadline - clock.now())),
+			});
+			if (
+				childGitRoot === null ||
+				childGitRoot.code !== 0 ||
+				childGitRoot.stdout.trim().length === 0 ||
+				canonicalRoot(childGitRoot.stdout.trim()) !== childCanonical
+			) {
+				complete = false;
+				continue;
+			}
+			roots.add(childCanonical);
+			await visit(childCanonical);
+		}
+	};
+	try {
+		await visit(root);
+	} catch {
+		complete = false;
+	}
+	return { roots: [...roots].sort(), complete };
 }
 
 /** The submodule root `module` lies under, or itself if it names one directly; undefined outside every submodule. */

@@ -624,7 +624,7 @@ export class WorkspaceIndexer {
 	 * flooding it would only trade a readable progress order for the same wall clock.
 	 */
 	async indexWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		return this.during(this.scanning(), () => this.pass(() => this.scanWorkspace("full", onProgress)));
+		return this.during(this.scanning(), () => this.runWorkspaceScan("full", onProgress));
 	}
 
 	/** Runs `work` as `doing`, which a status answer names while it runs. */
@@ -660,7 +660,17 @@ export class WorkspaceIndexer {
 
 	/** Stores declarations and imports before full facts. */
 	async warmupWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
-		return this.during(this.scanning(), () => this.pass(() => this.scanWorkspace("outline", onProgress)));
+		return this.during(this.scanning(), () => this.runWorkspaceScan("outline", onProgress));
+	}
+
+	private async runWorkspaceScan(
+		floor: "full" | "outline",
+		onProgress?: (done: number, total: number) => void,
+	): Promise<IndexOutcome[]> {
+		this.store.beginProjectIndexing();
+		const outcomes = await this.pass(() => this.scanWorkspace(floor, onProgress));
+		if (!outcomes.some((outcome) => outcome.cause === "providerDown")) this.store.markProjectIndexed();
+		return outcomes;
 	}
 
 	private async scanWorkspace(
@@ -1708,8 +1718,11 @@ export class WorkspaceIndexer {
 		// Store-derived counts survive restarts.
 		const depths = this.store.depthTotals();
 		const concerned = concerning === undefined ? null : this.store.parseFailureOf(concerning);
+		const indexed = this.store.projectIndexed();
+		const scanning = ["discovering", "warming", "indexing", "upgrading"].includes(this.status.state);
 		return {
 			...this.status,
+			...(indexed === undefined || (!indexed && scanning) ? {} : { indexed }),
 			stored: this.store.totals().files,
 			failures: this.store.parseFailureCount(),
 			failed: this.store.parseFailures(NAMED_FAILURES),

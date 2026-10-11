@@ -45,6 +45,40 @@ describe("registering", () => {
 		expect(readRegistry(host)).toEqual([]);
 	});
 
+	it("preserves concurrent registrations from separate processes", async () => {
+		const roots = Array.from({ length: 8 }, (_, index) => dir(`parallel-${index}`));
+		const readyDir = dir("ready");
+		const start = path.join(home, "start");
+		const module = new URL("../projectRegistry.ts", import.meta.url).href;
+		const children = roots.map((root, index) => {
+			const ready = path.join(readyDir, String(index));
+			const code = [
+				`import { existsSync, writeFileSync } from "node:fs";`,
+				`import { registerProject } from ${JSON.stringify(module)};`,
+				`const root = ${JSON.stringify(root)};`,
+				`const host = ${JSON.stringify(host)};`,
+				`writeFileSync(${JSON.stringify(ready)}, "");`,
+				`while (!existsSync(${JSON.stringify(start)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);`,
+				`registerProject(root, () => ({ admitted: true }), host);`,
+			].join("\n");
+			return Bun.spawn([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
+		});
+		const deadline = Date.now() + 10_000;
+		while (roots.some((_, index) => !existsSync(path.join(readyDir, String(index))))) {
+			if (Date.now() >= deadline) throw new Error("registry workers did not become ready");
+			await Bun.sleep(5);
+		}
+		writeFileSync(start, "");
+		const exited = await Promise.all(children.map((child) => child.exited));
+
+		expect(exited).toEqual(roots.map(() => 0));
+		expect(
+			readRegistry(host)
+				.map(({ root }) => root)
+				.sort(),
+		).toEqual(roots.sort());
+	});
+
 	it("keeps stable identity without session naming state", () => {
 		const outcome = registerProject(dir("alpha"), admitAll, host);
 

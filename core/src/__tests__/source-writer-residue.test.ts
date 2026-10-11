@@ -47,9 +47,7 @@ const WRITERS = new Set([
 
 const TEMPORARY_SUFFIX = "lexicon-tmp";
 
-/** The one writer. daemonLock.ts, projectRegistry.ts, projectStores.ts (moving a store aside),
- * indexSeed.ts (a new schema's index) and diagnostics.ts (the memory collection) write lexicon's
- * OWN state, never source. */
+/** State writers own their files; sourceWriter alone writes workspace files. */
 const OWNERS = new Set([
 	"sourceWriter.ts",
 	"daemonLock.ts",
@@ -57,6 +55,7 @@ const OWNERS = new Set([
 	"projectStores.ts",
 	"indexSeed.ts",
 	"diagnostics.ts",
+	"projectIndexState.ts",
 ]);
 
 const SKIP = ["__tests__", "dist", "node_modules"];

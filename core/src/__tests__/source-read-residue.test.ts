@@ -25,6 +25,7 @@ const OWNERS = new Set([
 	"fileScope.ts",
 	"fingerprint.ts",
 	"manage.ts",
+	"projectIndexState.ts",
 	"projectRegistry.ts",
 	"transactions.ts",
 ]);

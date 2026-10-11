@@ -8,6 +8,7 @@ import {
 	type CacheStats,
 	type CoChangedWithResult,
 	type CommitsMentioningResult,
+	type DiscoveredSubmodules,
 	type FileEdits,
 	type FileHistory,
 	type ImportEditsRequest,
@@ -31,7 +32,13 @@ import { type Clock, systemClock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
 import { describedOf, loadCycleOf } from "./describeLoadCycle.js";
 import { bindsModule, type NamespaceTarget, namespaceTargetOf, sameTarget } from "./edges.js";
-import { describeScope, type FileScope, isExternalModule, readScopeConfig } from "./fileScope.js";
+import {
+	describeScope,
+	discoverSubmodules as discoverInitializedSubmodules,
+	type FileScope,
+	isExternalModule,
+	readScopeConfig,
+} from "./fileScope.js";
 import { runFix, runFixText } from "./fixOnWrite.js";
 import {
 	CoChangeIndex,
@@ -247,6 +254,10 @@ export class LexiconService {
 
 	indexStatus(concerning?: string): ReturnType<WorkspaceIndexer["indexStatus"]> {
 		return this.indexer.indexStatus(concerning);
+	}
+
+	discoverSubmodules(): Promise<DiscoveredSubmodules> {
+		return discoverInitializedSubmodules(this.workspaceRoot, this.clock);
 	}
 
 	moduleStatus(module: string): ReturnType<WorkspaceIndexer["moduleStatus"]> {

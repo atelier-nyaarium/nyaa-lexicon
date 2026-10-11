@@ -197,6 +197,9 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	indexWorkspace: async () => {
 		expect((await ask("indexWorkspace", {})).state).toBe("ready");
 	},
+	discoverSubmodules: async () => {
+		expect(await ask("discoverSubmodules", {})).toMatchObject({ complete: true });
+	},
 	findLiterals: async () => {
 		expect((await ask("findLiterals", { value: "warning" })).total).toBe(2);
 		expect((await ask("findLiterals", { kind: "number", min: 1, max: 5, limit: 10 })).literals).toHaveLength(1);

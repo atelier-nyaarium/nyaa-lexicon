@@ -5,9 +5,9 @@
 // reports that nothing persists.
 
 import { createHash } from "node:crypto";
-import { readdirSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { SCHEMA_VERSION } from "@nyaa-lexicon/protocol";
+import { ProjectIndexStateSchema, SCHEMA_VERSION } from "@nyaa-lexicon/protocol";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -85,6 +85,8 @@ export function storePaths(directory: string) {
 		lockFile: path.join(directory, "daemon.json"),
 		/** This build's schema; an older install keeps its own file. */
 		index: path.join(directory, `index-${SCHEMA_VERSION}.sqlite`),
+		/** Written only after a complete project scan. */
+		indexedStateFile: path.join(directory, "indexed-state.json"),
 		/** The daemon's own words. It runs detached, so this is the only place they land. */
 		logFile: path.join(directory, "daemon.log"),
 		/** The bounded memory collection. Rewritten whole, never appended. */
@@ -113,6 +115,26 @@ export function indexFiles(directory: string): Array<{ file: string; schema: num
 /** The index a reader looks at: the newest any install left, or null when the directory holds none. */
 export function storedIndex(directory: string): string | null {
 	return indexFiles(directory)[0]?.file ?? null;
+}
+
+export type StoredProjectState = "indexed" | "unindexed" | "unknown";
+
+/** Reads the core's passive project marker without opening or warming an index. */
+export function storedProjectState(host: PlatformEnv, workspaceRoot: string, stateDir?: string): StoredProjectState {
+	const paths = workspacePaths(host, workspaceRoot, stateDir);
+	if (storedIndex(paths.dir) === null) return "unindexed";
+	let raw: string;
+	try {
+		raw = readFileSync(paths.indexedStateFile, "utf8");
+	} catch {
+		return "unknown";
+	}
+	try {
+		const parsed = ProjectIndexStateSchema.safeParse(JSON.parse(raw));
+		return parsed.success && parsed.data.root === canonicalRoot(workspaceRoot) ? "indexed" : "unknown";
+	} catch {
+		return "unknown";
+	}
 }
 
 /** The live host, for production call sites. */

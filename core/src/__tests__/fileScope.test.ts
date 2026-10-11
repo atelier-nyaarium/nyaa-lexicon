@@ -5,6 +5,7 @@ import path from "node:path";
 import { globToRegExp } from "@nyaa-lexicon/protocol";
 import {
 	describeScope,
+	discoverSubmodules,
 	fileScopeFor,
 	generatedVerdicts,
 	gitFiles,
@@ -15,7 +16,7 @@ import {
 	submoduleRoots,
 } from "../fileScope";
 import { fakeClock } from "./fakeClock";
-import { gitAdd, gitClone, gitCommit, gitConfig, gitInit, gitSubmoduleAdd } from "./gitFixture";
+import { gitAdd, gitClone, gitCommit, gitConfig, gitInit, gitSubmoduleAdd, gitSubmoduleUpdate } from "./gitFixture";
 
 ////////////////////////////////
 //  Helpers
@@ -310,6 +311,27 @@ describe("a command that never answers", () => {
 });
 
 describe("submodules", () => {
+	it("finds initialized nested gitlinks and treats a non-Git workspace as complete", async () => {
+		const leaf = await submoduleSource();
+		const nested = await repo({ "src/nested.ts": "" });
+		await gitSubmoduleAdd(nested, leaf, "leaf");
+		await gitAdd(nested, "-A");
+		await gitCommit(nested, "nested");
+		const root = await repo({ "src/root.ts": "" });
+		await gitSubmoduleAdd(root, nested, "nested");
+		await gitSubmoduleUpdate(root);
+		const nestedRoot = path.join(root, "nested");
+		const leafRoot = path.join(nestedRoot, "leaf");
+
+		expect(await discoverSubmodules(root)).toEqual({
+			roots: [nestedRoot, leafRoot].map((candidate) => path.resolve(candidate)).sort(),
+			complete: true,
+		});
+		const plain = mkdtempSync(path.join(tmpdir(), "lexicon-not-git-"));
+		roots.push(plain);
+		expect(await discoverSubmodules(plain)).toEqual({ roots: [], complete: true });
+	});
+
 	/**
 	 * `git check-ignore --stdin` and `check-attr --stdin` refuse a pathspec reaching into a
 	 * submodule, and the refusal is of the WHOLE batch: git saw exactly this, `fatal: Pathspec

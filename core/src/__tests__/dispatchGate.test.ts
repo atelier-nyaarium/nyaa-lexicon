@@ -170,6 +170,7 @@ describe("status reads", () => {
 	it("answers every status-budget method while a write holds the gate", async () => {
 		const ledger = { id: "ledger", latest: 0 };
 		const service = asService({
+			discoverSubmodules: () => ({ complete: true, roots: [] }),
 			indexStatus: () => ({
 				state: "indexing",
 				done: 0,

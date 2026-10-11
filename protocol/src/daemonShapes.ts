@@ -828,10 +828,18 @@ export const IndexActivitySchema = z
 
 export type IndexActivity = z.infer<typeof IndexActivitySchema>;
 
+export const DiscoveredSubmodulesSchema = z
+	.object({ roots: z.array(z.string().min(1)), complete: z.boolean() })
+	.meta({ id: "DiscoveredSubmodules" });
+
+export type DiscoveredSubmodules = z.infer<typeof DiscoveredSubmodulesSchema>;
+
 /** How complete the index is. `state`, `done` and `total` are this process's scan; `stored` is the index on disk. */
 export const IndexStatusSchema = z
 	.object({
 		state: z.enum(["unstarted", "discovering", "warming", "indexing", "upgrading", "ready"]),
+		/** Whether a complete scan has established this project as indexed. */
+		indexed: z.boolean().optional(),
 		done: z.number(),
 		total: z.number(),
 		failures: z.number(),

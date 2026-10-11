@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { storePaths } from "@nyaa-lexicon/client";
 import type { Declaration, IndexDepth } from "@nyaa-lexicon/protocol";
 import {
 	DAEMON_METHODS,
@@ -157,6 +158,98 @@ afterEach(() => {
 //  Tests
 
 describe("warmup pass", () => {
+	it("persists completion for an empty project scan", async () => {
+		await initGit();
+		store.close();
+		store = IndexStore.open(path.join(root, "index.sqlite"), undefined, root).store;
+		service = serviceOver(depthSupervisor([], true, []));
+
+		await service.warmupWorkspace();
+		expect(service.indexStatus().indexed).toBe(true);
+
+		store.close();
+		store = IndexStore.open(path.join(root, "index.sqlite"), undefined, root).store;
+		expect(store.projectIndexed()).toBe(true);
+	});
+
+	it("does not reuse a sidecar after replacing the database", () => {
+		store.close();
+		const index = path.join(root, "index.sqlite");
+		store = IndexStore.open(index, undefined, root).store;
+		store.markProjectIndexed();
+		expect(existsSync(storePaths(root).indexedStateFile)).toBe(true);
+		store.close();
+		rmSync(index, { force: true });
+		rmSync(`${index}-wal`, { force: true });
+		rmSync(`${index}-shm`, { force: true });
+
+		store = IndexStore.open(index, undefined, root).store;
+		expect(store.projectIndexed()).toBe(false);
+		expect(existsSync(storePaths(root).indexedStateFile)).toBe(false);
+	});
+
+	it("does not publish completion when the scan commit fails", async () => {
+		await initGit();
+		put("a.fake", "export class A {}\n");
+		store.close();
+		store = IndexStore.open(path.join(root, "index.sqlite"), undefined, root).store;
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		store.writeScanSummary({ tracked: 0, claimed: 0, unclaimed: 0, generated: 0, denied: 0, outlined: false });
+		const legacy = new DatabaseSync(path.join(root, "index.sqlite"));
+		legacy.prepare("DELETE FROM meta WHERE key = 'projectIndexLifecycle'").run();
+		legacy.close();
+		const pass = store.pass.bind(store);
+		const db = (store as unknown as { db: { exec: (sql: string) => void } }).db;
+		const exec = db.exec.bind(db);
+		let during: boolean | undefined;
+		store.pass = ((work: () => Promise<unknown>) =>
+			pass(async () => {
+				const result = await work();
+				during = store.projectIndexed();
+				expect(existsSync(storePaths(root).indexedStateFile)).toBe(false);
+				db.exec = (sql) => {
+					if (sql === "COMMIT") {
+						db.exec = exec;
+						throw new Error("injected commit failure");
+					}
+					exec(sql);
+				};
+				return result;
+			})) as typeof store.pass;
+
+		const result = await service.warmupWorkspace().then(
+			() => "resolved",
+			(error) => (error instanceof Error ? error.name : typeof error),
+		);
+
+		expect({ result, indexed: store.projectIndexed() }).toEqual({
+			result: "BatchFailed",
+			indexed: undefined,
+		});
+		expect(during).toBeUndefined();
+		expect(existsSync(storePaths(root).indexedStateFile)).toBe(false);
+	});
+
+	it("keeps legacy stores unknown when their completion summary is absent or malformed", () => {
+		store.close();
+		store = IndexStore.open(path.join(root, "index.sqlite"), undefined, root).store;
+		expect(store.projectIndexed()).toBe(false);
+		store.close();
+
+		const db = new DatabaseSync(path.join(root, "index.sqlite"));
+		db.prepare("DELETE FROM meta WHERE key = 'projectIndexLifecycle'").run();
+		db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('scanSummary', ?)").run("{broken");
+		db.close();
+		rmSync(storePaths(root).indexedStateFile, { force: true });
+		store = IndexStore.open(path.join(root, "index.sqlite"), undefined, root).store;
+		expect(store.projectIndexed()).toBeUndefined();
+
+		const legacy = new DatabaseSync(path.join(root, "index.sqlite"));
+		legacy.prepare("DELETE FROM meta WHERE key = 'scanSummary'").run();
+		legacy.close();
+		expect(store.projectIndexed()).toBeUndefined();
+	});
+
 	it("holds a partial store until each missing root is attempted", async () => {
 		await initGit();
 		put("a.fake", "export class A {}\n");

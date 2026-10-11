@@ -46,6 +46,13 @@ export async function gitSubmoduleAdd(root: string, source: string, at: string):
 	});
 }
 
+/** Initializes gitlinks already committed inside a fixture checkout. */
+export async function gitSubmoduleUpdate(root: string): Promise<void> {
+	await run("git", ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"], {
+		cwd: root,
+	});
+}
+
 /** Clones `source` into `at` without checking out its submodules, so a gitlink there stays uninitialized. */
 export async function gitClone(source: string, at: string): Promise<void> {
 	await run("git", ["clone", "-q", "--no-recurse-submodules", source, at]);

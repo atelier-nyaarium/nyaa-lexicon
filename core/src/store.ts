@@ -6,6 +6,9 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { storePaths } from "@nyaa-lexicon/client";
 import {
 	type AllList,
 	type ContentCounts,
@@ -81,6 +84,7 @@ import {
 import { stampSeen } from "./lastSeen.js";
 import { insertNote, NoteRows } from "./noteRows.js";
 import type { PatternDigest } from "./patternDigest.js";
+import { ProjectIndexMarker } from "./projectIndexState.js";
 import { normalizeDocText } from "./proseText.js";
 import { insertRelation, orderedPair, RELATION_TABLES, RelationRows } from "./relationRows.js";
 import type { ScopeFilter } from "./scope.js";
@@ -690,6 +694,7 @@ const UNBLOCK = "UPDATE rebind_owed SET blockedBy = NULL, blockedFor = NULL, blo
 
 /** Where the last scan's coverage arithmetic lives in the meta table. */
 const SCAN_SUMMARY_KEY = "scanSummary";
+const PROJECT_INDEX_LIFECYCLE_KEY = "projectIndexLifecycle";
 
 /** Where the last capped sweep stopped, beside the scan summary. */
 const SWEEP_CURSOR_KEY = "knowledgeSweepCursor";
@@ -1008,17 +1013,23 @@ function readSweepCursor(db: Database): SweepCursor {
 /** A sweep report survives the summary only whole; a partial one reads as no sweep. */
 function sweepReportOf(value: unknown): SweepReport | null {
 	if (typeof value !== "object" || value === null) return null;
-	const report = value as Record<string, unknown>;
+	const report = value as Record<string, unknown> & {
+		examined?: unknown;
+		rebound?: unknown;
+		orphaned?: unknown;
+		deleted?: unknown;
+		ambiguous?: unknown;
+		stoppedEarly?: unknown;
+	};
 	const counts = ["examined", "rebound", "orphaned", "deleted", "ambiguous"] as const;
-	if (counts.some((key) => typeof report[key] !== "number") || typeof report["stoppedEarly"] !== "boolean")
-		return null;
+	if (counts.some((key) => typeof report[key] !== "number") || typeof report.stoppedEarly !== "boolean") return null;
 	return {
-		examined: report["examined"] as number,
-		rebound: report["rebound"] as number,
-		orphaned: report["orphaned"] as number,
-		deleted: report["deleted"] as number,
-		ambiguous: report["ambiguous"] as number,
-		stoppedEarly: report["stoppedEarly"] as boolean,
+		examined: report.examined as number,
+		rebound: report.rebound as number,
+		orphaned: report.orphaned as number,
+		deleted: report.deleted as number,
+		ambiguous: report.ambiguous as number,
+		stoppedEarly: report.stoppedEarly as boolean,
 	};
 }
 
@@ -1148,12 +1159,39 @@ export class IndexStore {
 	private constructor(
 		private readonly db: Database,
 		private readonly clock: Clock,
+		private readonly indexedState: ProjectIndexMarker,
+		private readonly workspaceRoot?: string,
 	) {
 		const knowledge = db.checkedWrites((sql) => this.checkKnowledgeWrite(sql));
 		this.subjects = new KnowledgeSubjects(knowledge, (changed) => this.recordKnowledgeWrite(changed));
 		this.notes = new NoteRows(knowledge, (changed) => this.recordKnowledgeWrite(changed));
 		this.relations = new RelationRows(knowledge, (changed) => this.recordKnowledgeWrite(changed));
 		this.newestStamp = this.newestIndexedAt() ?? 0;
+	}
+
+	projectIndexed(): boolean | undefined {
+		if (this.workspaceRoot === undefined) return undefined;
+		const lifecycle = readMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY);
+		if (lifecycle === "fresh") return false;
+		if (lifecycle !== "complete") return undefined;
+		return this.indexedState.belongsToRoot();
+	}
+
+	markProjectIndexed(): void {
+		if (this.workspaceRoot === undefined) return;
+		writeMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY, "complete");
+		this.indexedState.publish(this.clock.now());
+	}
+
+	beginProjectIndexing(): void {
+		if (this.workspaceRoot === undefined) return;
+		if (readMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY) !== "complete")
+			writeMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY, "unknown");
+	}
+
+	clearProjectIndexed(): void {
+		this.indexedState.clear();
+		writeMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY, "unknown");
 	}
 
 	/** Runs a note write in one transaction, so a note and its links never land apart. */
@@ -1434,6 +1472,9 @@ export class IndexStore {
 		workspaceRoot?: string,
 		clock: Clock = systemClock,
 	): { store: IndexStore; rebuilt: boolean; reason?: string; unplaced?: number; dropped?: number } {
+		const fresh = !existsSync(file);
+		const indexedState = new ProjectIndexMarker(storePaths(path.dirname(file)).indexedStateFile, workspaceRoot);
+		if (fresh) indexedState.clear();
 		const db = Database.open(file);
 		db.exec("PRAGMA journal_mode = WAL");
 
@@ -1447,6 +1488,8 @@ export class IndexStore {
 		} catch {
 			version = -1;
 		}
+		const initialized = fresh || version === 0;
+		if (version === 0) indexedState.clear();
 
 		// Read before any rebuild drops the table it lives in.
 		const stored = version === SCHEMA_VERSION ? readMeta(db, COMPATIBILITY_KEY) : null;
@@ -1611,8 +1654,18 @@ export class IndexStore {
 			stampSeen(db, clock.now());
 		}
 
+		const store = new IndexStore(db, clock, indexedState, workspaceRoot);
+		if (rebuilt) store.clearProjectIndexed();
+		else if (initialized) writeMeta(db, PROJECT_INDEX_LIFECYCLE_KEY, "fresh");
+		else if (
+			workspaceRoot !== undefined &&
+			readMeta(db, PROJECT_INDEX_LIFECYCLE_KEY) === null &&
+			!store.indexedState.exists() &&
+			store.readScanSummary()?.outlined === true
+		)
+			store.markProjectIndexed();
 		return {
-			store: new IndexStore(db, clock),
+			store,
 			rebuilt,
 			...defined({ reason }),
 			...(unplaced === 0 ? {} : { unplaced }),

@@ -9,6 +9,7 @@ import {
 	type PlatformEnv,
 	stateRoot,
 	storedIndex,
+	storedProjectState,
 	storePaths,
 	workspaceKey,
 	workspacePaths,
@@ -148,6 +149,31 @@ describe("index files", () => {
 			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("stored project state", () => {
+	it("reads only a valid passive marker and leaves legacy stores unknown", () => {
+		const scratch = mkdtempSync(path.join(tmpdir(), "lexicon-index-state-"));
+		const workspace = path.join(scratch, "workspace");
+		mkdirSync(workspace);
+		const paths = workspacePaths(POSIX, workspace, path.join(scratch, "state"));
+		try {
+			mkdirSync(paths.dir, { recursive: true });
+			writeFileSync(paths.index, "");
+			expect(storedProjectState(POSIX, workspace, paths.dir)).toBe("unknown");
+			writeFileSync(
+				paths.indexedStateFile,
+				JSON.stringify({ version: 1, root: canonicalRoot(workspace), indexedAt: 0 }),
+			);
+			expect(storedProjectState(POSIX, workspace, paths.dir)).toBe("indexed");
+			writeFileSync(paths.indexedStateFile, "{}");
+			expect(storedProjectState(POSIX, workspace, paths.dir)).toBe("unknown");
+			rmSync(paths.index, { force: true });
+			expect(storedProjectState(POSIX, workspace, paths.dir)).toBe("unindexed");
+		} finally {
+			rmSync(scratch, { recursive: true, force: true });
 		}
 	});
 });

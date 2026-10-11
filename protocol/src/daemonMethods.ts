@@ -15,6 +15,7 @@ import {
 	CommitsMentioningResultSchema,
 	CommittedStepSchema,
 	DescribeResultSchema,
+	DiscoveredSubmodulesSchema,
 	DocsResultSchema,
 	DriftedModuleSchema,
 	ExportFactIdSchema,
@@ -525,6 +526,14 @@ export const DAEMON_METHODS = {
 	indexStatus: {
 		request: Status,
 		response: IndexStatusSchema,
+		lifecycle: "status",
+		mutates: false,
+		budget: "status",
+	},
+	/** Initialized recursive gitlinks. */
+	discoverSubmodules: {
+		request: Empty,
+		response: DiscoveredSubmodulesSchema,
 		lifecycle: "status",
 		mutates: false,
 		budget: "status",

@@ -15,7 +15,11 @@ Bun workspace monorepo. Seven packages, and the boundaries are real.
 - `client/` - the client half of the daemon socket: find or spawn a daemon, connect, ask. Depends
   on protocol only and never writes index state; the daemon and both adapters consume it, and so
   can any other node project.
-- `core/` - daemon, SQLite store, provider supervisor, every query, the knowledge layer.
+- `core/` - daemon, SQLite store, provider supervisor, every query, the knowledge layer. Project
+  completion is SQLite `fresh`, `unknown` or `complete` state plus a root-bound marker. Reads are
+  passive; open migrates committed legacy outline evidence, and a scan marks complete after its
+  pass commits. `fileScope.discoverSubmodules` recursively verifies initialized Git children and
+  reports incomplete reads. `projectRegistry` serializes registry updates with SQLite.
 - `adapters/mcp/` - agent-facing tools over stdio.
 - `adapters/lsp/` - the editor face, answering from the same service class but its own instance,
   which is why it reads and does not write.

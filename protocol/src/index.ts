@@ -102,6 +102,8 @@ export {
 	CountSchema,
 	type DescribeResult,
 	DescribeResultSchema,
+	type DiscoveredSubmodules,
+	DiscoveredSubmodulesSchema,
 	type DocQuery,
 	DocQuerySchema,
 	type DocsResult,
@@ -591,6 +593,7 @@ export {
 	type Selector,
 	SelectorSchema,
 } from "./project.js";
+export { type ProjectIndexState, ProjectIndexStateSchema } from "./projectIndexState.js";
 export {
 	angleDelta,
 	DEFAULT_EXCLUDED_DIRECTORIES,

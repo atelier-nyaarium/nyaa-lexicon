@@ -26,6 +26,7 @@ export { createDispatch, daemonHandlers } from "./dispatch.js";
 export {
 	CONFIG_FILE,
 	describeScope,
+	discoverSubmodules,
 	type FileScope,
 	fileScopeFor,
 	type GeneratedReason,

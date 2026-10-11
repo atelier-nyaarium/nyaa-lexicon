@@ -44,7 +44,14 @@ const UPGRADED = [
 const HISTORY_FIRST = ["relationsOf", "relationsBetween", "relationCandidates", "relationGaps"];
 
 /** Answered with no gate, so no batch or step holding it delays them. */
-const STATUS = ["indexStatus", "indexWorkspace", "cacheStats", "refactorStatus", "refactorSettlements"];
+const STATUS = [
+	"discoverSubmodules",
+	"indexStatus",
+	"indexWorkspace",
+	"cacheStats",
+	"refactorStatus",
+	"refactorSettlements",
+];
 
 function parsed(code: string): ts.SourceFile {
 	return parseSource("probe.ts", code).source;
