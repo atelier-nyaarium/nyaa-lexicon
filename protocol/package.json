@@ -10,6 +10,7 @@
 		"./excludedDirectories": "./src/excludedDirectories.ts",
 		"./mermaid": "./src/mermaid.ts",
 		"./noteRefs": "./src/noteRefs.ts",
+		"./refTargets": "./src/refTargets.ts",
 		"./rejection": "./src/conformance/rejection.ts",
 		"./symbolId": "./src/symbolId.ts",
 		"./toy": "./src/conformance/toyLexer.ts"

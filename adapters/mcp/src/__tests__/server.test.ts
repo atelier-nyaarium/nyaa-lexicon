@@ -36,6 +36,8 @@ const QUERY_TOOLS = [
 	"type_of",
 ] as const;
 
+const STANDALONE_TOOLS = ["build_ref"] as const;
+
 // Both take no per-query arguments worth batching: overview describes the workspace, and a
 // workspace holds one transaction, so asking twice in one call could only ask the same thing.
 const BATCH_QUERY_TOOLS = QUERY_TOOLS.filter((name) => name !== "overview" && name !== "refactor_status");
@@ -154,7 +156,12 @@ describe("the published MCP project selectors", () => {
 	it("classifies every tool and derives the matching selector schema", async () => {
 		const client = await connectClient(backend({}), binding([]));
 		const listed = await client.listTools();
-		const expected = [...QUERY_TOOLS, ...MUTATION_TOOLS, ...Object.keys(MANAGEMENT_PROPERTIES)].sort();
+		const expected = [
+			...QUERY_TOOLS,
+			...MUTATION_TOOLS,
+			...STANDALONE_TOOLS,
+			...Object.keys(MANAGEMENT_PROPERTIES),
+		].sort();
 
 		expect(listed.tools.map((tool) => tool.name).sort()).toEqual(expected);
 		// Against the list above rather than a literal, so this stays a duplicate check instead of
@@ -196,6 +203,27 @@ describe("the published MCP project selectors", () => {
 			const tool = listed.tools.find((candidate) => candidate.name === name);
 			expect(Object.keys(tool?.inputSchema.properties ?? {}).sort()).toEqual([...expectedProperties].sort());
 		}
+	});
+
+	it("builds refs without binding a project or calling a backend", async () => {
+		const source = (() => {
+			throw new Error("build_ref must not select a project");
+		}) as unknown as BackendSource;
+		const client = await connectClient(source, binding([]));
+		const result = await call(client, "build_ref", {
+			module: "src/Crème: Cart.ts",
+			segments: ["Outer", "inner:part"],
+			range: { start: { line: 9, column: 8 }, end: { line: 7, column: 3 } },
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(result.structuredContent).toEqual({
+			ref: "ref://src/Cr%C3%A8me%3A%20Cart.ts:Outer:inner%3Apart#L7,3-L9,8",
+		});
+		const wholeFile = await call(client, "build_ref", { module: "src/cart.ts" });
+		const symbol = await call(client, "build_ref", { module: "src/cart.ts", segments: ["Cart"] });
+		expect(wholeFile.structuredContent).toEqual({ ref: "ref://src/cart.ts" });
+		expect(symbol.structuredContent).toEqual({ ref: "ref://src/cart.ts:Cart" });
 	});
 
 	// Past the cap a client truncates or refuses the description, with no error to read.

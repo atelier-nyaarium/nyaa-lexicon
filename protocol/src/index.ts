@@ -609,6 +609,15 @@ export {
 } from "./providerKit.js";
 export { OPEN_READ_POLICY, type ReadPolicy, readPolicy } from "./readPolicy.js";
 export {
+	BuildRefInputSchema,
+	buildRef,
+	formatRefTarget,
+	parseRefTarget,
+	type RefTarget,
+	refSelection,
+	selectionWithin,
+} from "./refTargets.js";
+export {
 	AnswerRelationGapRequestSchema,
 	RELATION_KINDS,
 	RELATION_TEXT_MAX,

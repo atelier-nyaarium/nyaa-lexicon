@@ -127,4 +127,40 @@ describe("parsing a ref", () => {
 			});
 		}
 	});
+
+	it("roundtrips URI-significant characters in paths and names", () => {
+		for (const [module, segments] of [
+			['src/a:b # (x) % "[雪].ts', ["one:two", "Physics::World", "x y"]],
+			["src/quote'!*.ts", ["[name]", "a#b"]],
+		] as const) {
+			expect(parseRef(formatRef(module, segments))).toEqual({
+				ok: true,
+				ref: { module, segments: [...segments] },
+			});
+		}
+		expect(formatRef("src/a::b%.ts", ["Physics::World", "a:b"])).toBe(
+			"ref://src/a%3A%3Ab%25.ts:Physics::World:a%3Ab",
+		);
+	});
+
+	it("roundtrips leading and repeated qualifier pairs", () => {
+		for (const [module, segments] of [
+			["src/file.ts", ["::Global"]],
+			["src/file.ts", ["A::", "B"]],
+			["src/file.ts", ["A", "::B"]],
+			["src/file.ts", [":::"]],
+			["src/file.ts", ["A::B"]],
+			["src/file.ts", ["::::Global"]],
+			["src/file.ts", ["A::::B", "::C::"]],
+			["src/a::b.ts", []],
+			["src/a:b.ts", []],
+			["src/file.ts", ["A:B"]],
+			["src/file.ts", ["Outer", "Inner:Part"]],
+		] as const) {
+			expect(parseRef(formatRef(module, segments))).toEqual({
+				ok: true,
+				ref: { module, segments: [...segments] },
+			});
+		}
+	});
 });

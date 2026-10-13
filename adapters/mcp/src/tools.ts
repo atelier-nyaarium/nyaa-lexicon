@@ -53,7 +53,17 @@ import type {
 	TypeInfo,
 	UnreversedRebind,
 } from "@nyaa-lexicon/protocol";
-import { defined, formatRef, parseRef, parseSymbolId } from "@nyaa-lexicon/protocol";
+import {
+	BuildRefInputSchema,
+	buildRef,
+	defined,
+	formatRefTarget,
+	parseRefTarget,
+	parseSymbolId,
+	type RefTarget,
+	refSelection,
+	selectionWithin,
+} from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import {
 	renderCandidates,
@@ -222,6 +232,8 @@ export const ResolveRefInput = {
 			`The raw ref URI from a link destination, e.g. ref://src/file.ts:Symbol. Do not pass @ shorthand or the Markdown link.`,
 		),
 };
+
+export const BuildRefInput = BuildRefInputSchema.shape;
 
 export const TypeOfInput = {
 	name: z.string().min(1).optional().describe(`Symbol name. Omit with \`symbolId\`.`),
@@ -460,14 +472,13 @@ Resolve an import specifier through path mappings, package exports, and re-expor
 Distinguishes workspace files, external dependencies, and unresolved specifiers. Unresolved is a result, not an error.
 `.trim();
 
-export const RESOLVE_REF_DESCRIPTION = [
-	"# resolve_ref",
-	"",
-	"Resolve a ref:// to the file or declaration it names.",
-	"Pass the ref URI itself, not the surrounding Markdown link or @ shorthand.",
-	"",
-	"Accepts NyaaCode line spans as #start..end (one-based, inclusive). Column spans and call-site references are not supported.",
-].join("\n");
+export const BUILD_REF_DESCRIPTION = `Build a canonical ref:// URI from a module, symbol path, and optional selection.`;
+
+export const RESOLVE_REF_DESCRIPTION = `
+# \`resolve_ref\`
+
+Resolve a ref:// URI to its file or declaration. Accepts line spans and exact line-column selections.
+`.trim();
 
 export const REFACTOR_MOVE_DESCRIPTION = `
 # \`refactor_move\`
@@ -1365,67 +1376,81 @@ export async function resolveImport(
 	);
 }
 
-interface RangedReference {
-	module: string;
-	segments: string[];
-	lines: { start: number; end: number } | null;
+export function buildRefTool(input: unknown): ToolResult & { structuredContent?: { ref: string } } {
+	const built = buildRef(input);
+	if (!built.ok) {
+		return text(
+			`
+# Ref invalid
+
+${built.problem}
+			`.trim(),
+			true,
+		);
+	}
+	return { ...text(built.ref), structuredContent: { ref: built.ref } };
 }
 
-type RangedReferenceParse = { ok: true; ref: RangedReference } | { ok: false; problem: string };
-
-const REF_LINES = /#(\d+)\.\.(\d+)$/;
-
-function parseRangedReference(input: string): RangedReferenceParse {
-	const match = REF_LINES.exec(input);
-	if (input.includes("#") && match === null) {
-		return {
-			ok: false,
-			problem: "Only line spans written as #start..end are supported; column spans and other anchors are not.",
-		};
+function selectionText(target: RefTarget): string {
+	if (target.lines !== undefined) {
+		const { start, end } = target.lines;
+		return start === end ? `line ${start}` : `lines ${start}-${end}`;
 	}
-	const parsed = parseRef(match === null ? input : input.slice(0, match.index));
-	if (!parsed.ok) return parsed;
-	if (match === null) return { ok: true, ref: { ...parsed.ref, lines: null } };
-
-	const first = Number(match[1]);
-	const last = Number(match[2]);
-	if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 1 || last < 1) {
-		return { ok: false, problem: `Line spans use positive, one-based line numbers.` };
+	if (target.range !== undefined) {
+		const point = ({ line, character }: { line: number; character: number }) => `${line + 1}:${character + 1}`;
+		const start = point(target.range.start);
+		const end = point(target.range.end);
+		return start === end ? `line ${start}` : `${start}-${end}`;
 	}
-	return {
-		ok: true,
-		ref: { ...parsed.ref, lines: { start: Math.min(first, last), end: Math.max(first, last) } },
-	};
-}
-
-function linesText(lines: { start: number; end: number }): string {
-	return lines.start === lines.end ? `line ${lines.start}` : `lines ${lines.start}-${lines.end}`;
+	return `whole target`;
 }
 
 export async function resolveRef(backend: ToolBackend, args: { ref: string }): Promise<ToolResult> {
-	const parsed = parseRangedReference(args.ref);
-	if (!parsed.ok) return text(`# Ref invalid\n\n${parsed.problem}`, true);
-	const { module, segments, lines } = parsed.ref;
-	const canonical = `${formatRef(module, segments)}${lines === null ? "" : `#${lines.start}..${lines.end}`}`;
+	const parsed = parseRefTarget(args.ref);
+	if (!parsed.ok) {
+		return text(
+			`
+# Ref invalid
+
+${parsed.problem}
+			`.trim(),
+			true,
+		);
+	}
+	const target = parsed.target;
+	const { module, segments } = target;
+	const canonical = formatRefTarget(target);
 
 	if (segments.length === 0) {
 		const status = await backend.moduleStatus(module);
-		if (!status.exists) return text(`# Ref unresolved\n\n\`${canonical}\` names no file at \`${module}\`.`, true);
+		if (!status.exists)
+			return text(
+				`
+# Ref unresolved
+
+${canonical} names no file at ${module}.
+				`.trim(),
+				true,
+			);
 		const indexState = status.indexed
 			? `indexed`
 			: status.claimed
 				? `not indexed yet`
 				: `outside the indexed scope`;
+		const selection =
+			target.lines === undefined && target.range === undefined
+				? ""
+				: `
+- Requested selection: ${selectionText(target)} (file bounds are not checked)`;
 		return text(
-			[
-				`# Ref resolved`,
-				``,
-				`${canonical} resolves to file ${module}.`,
-				``,
-				`- Exists: yes`,
-				`- Index: ${indexState}`,
-				...(lines === null ? [] : [`- Requested span: ${linesText(lines)} (file line bounds are not checked)`]),
-			].join("\n"),
+			`
+# Ref resolved
+
+${canonical} resolves to file ${module}.
+
+- Exists: yes
+- Index: ${indexState}${selection}
+			`.trim(),
 		);
 	}
 
@@ -1434,51 +1459,94 @@ export async function resolveRef(backend: ToolBackend, args: { ref: string }): P
 		const { candidate } = answer;
 		const targetStart = candidate.range.start.line + 1;
 		const targetEnd = candidate.range.end.line + 1;
-		const outside = lines !== null && (lines.start < targetStart || lines.end > targetEnd);
+		const hasSelection = target.lines !== undefined || target.range !== undefined;
+		let outside = hasSelection && !selectionWithin(target, candidate.range);
+		let unchecked: string | undefined;
+		if (!outside && target.range !== undefined) {
+			try {
+				const source = await backend.symbolSource({ symbolId: candidate.symbolId });
+				if (!source.found) {
+					unchecked = source.reason;
+				} else if (!selectionWithin(target, source.range)) {
+					outside = true;
+				} else {
+					const toLocal = (position: { line: number; character: number }) => ({
+						line: position.line - source.range.start.line,
+						character:
+							position.character -
+							(position.line === source.range.start.line ? source.range.start.character : 0),
+					});
+					const localTarget: RefTarget = {
+						...target,
+						range: {
+							start: toLocal(target.range.start),
+							end: toLocal(target.range.end),
+						},
+					};
+					const checked = refSelection(localTarget, source.text);
+					if (!checked.ok) outside = true;
+				}
+			} catch (error) {
+				unchecked = error instanceof Error ? error.message : String(error);
+			}
+		}
+		const name =
+			candidate.selectionRange === undefined
+				? ""
+				: `
+- Name: line ${candidate.selectionRange.start.line + 1}, column ${candidate.selectionRange.start.character + 1}`;
+		const selection = hasSelection
+			? `
+- Requested selection: ${selectionText(target)}${outside ? `; outside declaration or source text` : unchecked ? `; exact bounds unchecked: ${unchecked}` : target.range !== undefined ? `; inside declaration and source text` : `; inside declaration`}`
+			: "";
 		return text(
-			[
-				outside ? `# Ref target found; span is outside it` : `# Ref resolved`,
-				``,
-				`${canonical} resolves to ${candidate.kind} ${candidate.name} in ${module}.`,
-				``,
-				`- Symbol ID: ${candidate.symbolId}`,
-				`- Declaration: lines ${targetStart}-${targetEnd} (zero-based range ${candidate.range.start.line}:${candidate.range.start.character}..${candidate.range.end.line}:${candidate.range.end.character})`,
-				...(candidate.selectionRange === undefined
-					? []
-					: [
-							`- Name: line ${candidate.selectionRange.start.line + 1}, column ${candidate.selectionRange.start.character + 1}`,
-						]),
-				...(lines === null
-					? []
-					: [
-							`- Requested span: ${linesText(lines)}${outside ? `; outside declaration lines ${targetStart}-${targetEnd}` : `; inside declaration`}`,
-						]),
-			].join("\n"),
-			outside,
+			`
+# ${outside ? `Ref target found; selection is outside it` : unchecked ? `Ref target found; exact bounds unchecked` : `Ref resolved`}
+
+${canonical} resolves to ${candidate.kind} ${candidate.name} in ${module}.
+
+- Symbol ID: ${candidate.symbolId}
+- Declaration: lines ${targetStart}-${targetEnd} (zero-based range ${candidate.range.start.line}:${candidate.range.start.character}..${candidate.range.end.line}:${candidate.range.end.character})${name}${selection}
+			`.trim(),
+			outside || unchecked !== undefined,
 		);
 	}
 
 	if (answer.kind === "ambiguous") {
-		const candidates = answer.candidates.map((candidate) => {
-			const first = candidate.range.start.line + 1;
-			const last = candidate.range.end.line + 1;
-			return `- ${candidate.kind} ${candidate.name} in ${module}, lines ${first}-${last}: ${candidate.symbolId}`;
-		});
+		const candidates = answer.candidates
+			.map((candidate) => {
+				const first = candidate.range.start.line + 1;
+				const last = candidate.range.end.line + 1;
+				return `- ${candidate.kind} ${candidate.name} in ${module}, lines ${first}-${last}: ${candidate.symbolId}`;
+			})
+			.join("\n");
 		return text(
-			[`# Ref ambiguous`, ``, `${canonical} matches multiple declarations:`, ``, ...candidates].join("\n"),
+			`
+# Ref ambiguous
+
+${canonical} matches multiple declarations:
+
+${candidates}
+			`.trim(),
 			true,
 		);
 	}
 
-	const details = [
-		`# Ref unresolved`,
-		``,
-		`${canonical} did not resolve to a declaration in ${module}.`,
-		``,
-		`- Reason: ${answer.reason}${answer.detail === undefined ? "" : ` (${answer.detail})`}`,
-		...(answer.available.length === 0 ? [] : [`- Names here: ${answer.available.join(", ")}`]),
-	];
-	return text(details.join("\n"), true);
+	const available =
+		answer.available.length === 0
+			? ""
+			: `
+- Names here: ${answer.available.join(", ")}`;
+	return text(
+		`
+# Ref unresolved
+
+${canonical} did not resolve to a declaration in ${module}.
+
+- Reason: ${answer.reason}${answer.detail === undefined ? "" : ` (${answer.detail})`}${available}
+		`.trim(),
+		true,
+	);
 }
 
 function detailOf(resolution: ImportResolution): string {

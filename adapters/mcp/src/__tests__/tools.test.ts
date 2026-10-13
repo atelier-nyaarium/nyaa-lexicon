@@ -457,6 +457,15 @@ describe("resolving a ref", () => {
 		contentHash: null,
 		diskHash: null,
 	};
+	const exactSource = {
+		found: true as const,
+		module: "src/cart.ts",
+		name: "Cart",
+		kind: "class",
+		range: exact.candidate.range,
+		text: "class Cart {}\n  add() {}\n  x\n}",
+		contentHash: "source-hash",
+	};
 
 	it("returns the declaration and confirms a line span within it", async () => {
 		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
@@ -468,20 +477,139 @@ describe("resolving a ref", () => {
 		expect(result.content[0]?.text).toContain("inside declaration");
 	});
 
+	it("normalizes reversed legacy line spans", async () => {
+		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
+			ref: "ref://src/cart.ts:Cart#5..3",
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("ref://src/cart.ts:Cart#3..5");
+		expect(result.content[0]?.text).toContain("inside declaration");
+	});
+
 	it("reports a line span outside the declaration", async () => {
 		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
 			ref: "ref://src/cart.ts:Cart#2..6",
 		});
 
 		expect(result.isError).toBe(true);
-		expect(result.content[0]?.text).toContain("span is outside it");
+		expect(result.content[0]?.text).toContain("selection is outside it");
 	});
 
-	it("rejects column spans with the supported syntax", async () => {
-		const result = await resolveRef(backend(), { ref: "ref://src/cart.ts:Cart#3:2..4:1" });
+	it("resolves exact columns and caret selections", async () => {
+		const targetBackend = backend({ resolveChain: async () => exact, symbolSource: async () => exactSource });
+		const range = await resolveRef(targetBackend, { ref: "ref://src/cart.ts:Cart#L5,1-L3,14" });
+		const caret = await resolveRef(targetBackend, { ref: "ref://src/cart.ts:Cart#L3,14" });
+
+		expect(range.isError).toBeUndefined();
+		expect(range.content[0]?.text).toContain("ref://src/cart.ts:Cart#L3,14-L5,1");
+		expect(range.content[0]?.text).toContain("inside declaration");
+		expect(caret.isError).toBeUndefined();
+		expect(caret.content[0]?.text).toContain("line 3:14");
+	});
+
+	it("checks exact coordinates against the full declaration range", async () => {
+		const result = await resolveRef(
+			backend({ resolveChain: async () => exact, symbolSource: async () => exactSource }),
+			{
+				ref: "ref://src/cart.ts:Cart#L3,18-L6,3",
+			},
+		);
 
 		expect(result.isError).toBe(true);
-		expect(result.content[0]?.text).toContain("Only line spans");
+		expect(result.content[0]?.text).toContain("outside declaration");
+	});
+
+	it("rejects an impossible column on an interior source line", async () => {
+		const result = await resolveRef(
+			backend({ resolveChain: async () => exact, symbolSource: async () => exactSource }),
+			{
+				ref: "ref://src/cart.ts:Cart#L4,99999",
+			},
+		);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("outside declaration or source text");
+	});
+
+	it("checks exact coordinates against the source range when it differs from the declaration", async () => {
+		const source = {
+			...exactSource,
+			range: { start: { line: 2, character: 14 }, end: exact.candidate.range.end },
+		};
+		const result = await resolveRef(
+			backend({ resolveChain: async () => exact, symbolSource: async () => source }),
+			{
+				ref: "ref://src/cart.ts:Cart#L3,14",
+			},
+		);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("outside declaration or source text");
+	});
+
+	it("translates exact coordinates from a nonzero declaration column", async () => {
+		const shifted = {
+			...exact,
+			candidate: {
+				...exact.candidate,
+				range: { start: { line: 2, character: 4 }, end: { line: 2, character: 9 } },
+			},
+		};
+		const source = { ...exactSource, range: shifted.candidate.range, text: "name!" };
+		const result = await resolveRef(
+			backend({ resolveChain: async () => shifted, symbolSource: async () => source }),
+			{
+				ref: "ref://src/cart.ts:Cart#L3,9-L3,10",
+			},
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("L3,9-L3,10");
+		expect(result.content[0]?.text).toContain("inside declaration and source text");
+	});
+
+	it("checks CRLF and UTF-16 exact coordinates against source text", async () => {
+		const shifted = {
+			...exact,
+			candidate: {
+				...exact.candidate,
+				range: { start: { line: 10, character: 2 }, end: { line: 11, character: 6 } },
+			},
+		};
+		const source = { ...exactSource, range: shifted.candidate.range, text: "😀x\r\nsecond" };
+		const result = await resolveRef(
+			backend({ resolveChain: async () => shifted, symbolSource: async () => source }),
+			{
+				ref: "ref://src/cart.ts:Cart#L11,5-L12,3",
+			},
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("inside declaration and source text");
+	});
+
+	it("marks exact bounds unchecked when symbol source is unavailable", async () => {
+		const result = await resolveRef(
+			backend({
+				resolveChain: async () => exact,
+				symbolSource: async () => ({ found: false, reason: "source is stale", stale: true }),
+			}),
+			{
+				ref: "ref://src/cart.ts:Cart#L3,14",
+			},
+		);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("exact bounds unchecked");
+		expect(result.content[0]?.text).toContain("source is stale");
+	});
+
+	it("rejects malformed and unsafe selection coordinates", async () => {
+		for (const ref of ["ref://src/cart.ts:Cart#bad", "ref://src/cart.ts:Cart#L9007199254740992,1"]) {
+			const result = await resolveRef(backend(), { ref });
+			expect(result.isError).toBe(true);
+		}
 	});
 
 	it("resolves a file ref and reports its index state", async () => {
@@ -494,7 +622,40 @@ describe("resolving a ref", () => {
 
 		expect(result.isError).toBeUndefined();
 		expect(result.content[0]?.text).toContain("file src/cart.ts");
-		expect(result.content[0]?.text).toContain("line bounds are not checked");
+		expect(result.content[0]?.text).toContain("file bounds are not checked");
+	});
+
+	it("reports missing and ambiguous symbols", async () => {
+		const missing = await resolveRef(
+			backend({
+				resolveChain: async () => ({
+					kind: "none",
+					reason: "noMatch",
+					matched: { containerPaths: [], consumed: 0, count: 0 },
+					available: [],
+					availableTotal: 0,
+					contentHash: null,
+					diskHash: null,
+				}),
+			}),
+			{ ref: "ref://src/cart.ts:Ghost" },
+		);
+		const ambiguous = await resolveRef(
+			backend({
+				resolveChain: async () => ({
+					kind: "ambiguous",
+					candidates: [exact.candidate, exact.candidate],
+					contentHash: null,
+					diskHash: null,
+				}),
+			}),
+			{ ref: "ref://src/cart.ts:Cart" },
+		);
+
+		expect(missing.isError).toBe(true);
+		expect(missing.content[0]?.text).toContain("did not resolve");
+		expect(ambiguous.isError).toBe(true);
+		expect(ambiguous.content[0]?.text).toContain("matches multiple declarations");
 	});
 });
 

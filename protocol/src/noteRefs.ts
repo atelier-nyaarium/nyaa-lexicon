@@ -192,7 +192,15 @@ export function parseRef(ref: string): RefParse {
 
 /** The ref text for a module and chain, escaping what would end the link or split the path. */
 export function formatRef(module: string, segments: readonly string[]): string {
-	const escaped = (part: string) =>
-		part.replace(/%/g, "%25").replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/#/g, "%23");
-	return `${REF_SCHEME}${[escaped(module).replace(/:/g, "%3A"), ...segments.map(escaped)].join(":")}`;
+	const escaped = (part: string, path = false, qualifiers = false) =>
+		(qualifiers ? part.split("::") : [part])
+			.map((piece) =>
+				encodeURIComponent(piece)
+					.replace(/:/g, "%3A")
+					.replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`),
+			)
+			.join("::")
+			.replace(qualifiers ? /^::/ : /$^/, "%3A%3A")
+			.replace(path ? /%2F/gi : /$^/, "/");
+	return `${REF_SCHEME}${[escaped(module, true), ...segments.map((segment) => escaped(segment, false, true))].join(":")}`;
 }

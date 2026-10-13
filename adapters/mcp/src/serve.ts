@@ -46,6 +46,7 @@ import {
 } from "./manage.js";
 import { type BackendSource, registerProjectTools } from "./projectTools.js";
 import type { ToolBackend, ToolResult } from "./tools.js";
+import { BUILD_REF_DESCRIPTION, BuildRefInput, buildRefTool } from "./tools.js";
 
 ////////////////////////////////
 //  Constants
@@ -152,6 +153,7 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 	const deleteStoreShape = DeleteStoreInput as any;
 	const stopDaemonShape = StopDaemonInput as any;
 	const diagnosticsShape = ProjectDiagnosticsInput as any;
+	const buildRefShape = BuildRefInput as any;
 	const listProjectsShape = ListProjectsInput as any;
 	const registerProjectShape = RegisterProjectInput as any;
 	const bindProjectShape = BindProjectInput as any;
@@ -160,6 +162,12 @@ export function buildServer(source: BackendSource, manageDeps?: ManageDeps, bind
 		async (args: any): Promise<any> =>
 			handler(args);
 	// biome-ignore-end lint/suspicious/noExplicitAny: MCP SDK type compat
+
+	server.registerTool(
+		"build_ref",
+		{ title: `Build Ref`, description: BUILD_REF_DESCRIPTION, inputSchema: buildRefShape },
+		adapt(async (args) => buildRefTool(args)),
+	);
 
 	server.registerTool(
 		"list_projects",
