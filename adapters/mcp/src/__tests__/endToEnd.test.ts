@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { callDaemon, findDaemon, type PlatformEnv } from "@nyaa-lexicon/client";
+import { callDaemon, findDaemon, type PlatformEnv, resolveChain as resolveChainInSession } from "@nyaa-lexicon/client";
 import {
 	createDispatch,
 	fromText,
@@ -22,6 +22,7 @@ import {
 	readNote,
 	refactorPreview,
 	resolveImport,
+	resolveRef,
 	symbolSource,
 	type ToolBackend,
 	typeOfSymbol,
@@ -59,6 +60,8 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 	}
 	return {
 		findByName: (name, module) => ask("findByName", { name, module }),
+		resolveChain: (module, segments) => resolveChainInSession({ ask }, module, segments),
+		moduleStatus: (module) => ask("moduleStatus", { module }),
 		describe: (symbolId) => ask("describe", { symbolId }),
 		findReferences: (symbolId, limit) => ask("findReferences", { symbolId, limit }),
 		resolveImport: (fromModule, specifier) => ask("resolveImport", { fromModule, specifier }),
@@ -156,6 +159,20 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		const result = await resolveImport(backendOverDaemon(dir), { fromModule: "cart.ref", specifier: "./item" });
 
 		expect(result.isError).toBeUndefined();
+	}, 30_000);
+
+	it("resolves file, symbol, and line-span refs against the daemon", async () => {
+		const backend = backendOverDaemon(dir);
+		const symbol = await resolveRef(backend, { ref: "ref://cart.ref:Cart" });
+		const symbolLines = await resolveRef(backend, { ref: "ref://cart.ref:Cart#1..1" });
+		const fileLines = await resolveRef(backend, { ref: "ref://cart.ref#1..2" });
+
+		expect(symbol.isError).toBeUndefined();
+		expect(symbol.content[0]?.text).toContain("class Cart");
+		expect(symbolLines.isError).toBeUndefined();
+		expect(symbolLines.content[0]?.text).toContain("inside declaration");
+		expect(fileLines.isError).toBeUndefined();
+		expect(fileLines.content[0]?.text).toContain("file cart.ref");
 	}, 30_000);
 
 	it("says a name is not indexed rather than answering emptily", async () => {

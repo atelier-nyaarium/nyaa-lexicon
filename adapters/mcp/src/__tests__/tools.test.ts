@@ -16,6 +16,7 @@ import {
 	refactorStatus,
 	refactorUndo,
 	resolveImport,
+	resolveRef,
 	searchDocs,
 	searchSymbols,
 	symbolSource,
@@ -42,6 +43,16 @@ function summary(name: string, extra: Partial<SymbolSummary> = {}): SymbolSummar
 function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 	return {
 		findByName: async () => [],
+		resolveChain: async () => ({
+			kind: "none",
+			reason: "noMatch",
+			matched: { containerPaths: [], consumed: 0, count: 0 },
+			available: [],
+			availableTotal: 0,
+			contentHash: null,
+			diskHash: null,
+		}),
+		moduleStatus: async (module) => ({ module, exists: false, claimed: false, indexed: false }),
 		describe: async () => null,
 		// Resolves by default, so a test that hands an id reaches its handler; a test about a bad id overrides it.
 		declarationOf: async (symbolId) => ({ symbolId }) as unknown as StoredDeclaration,
@@ -428,6 +439,62 @@ describe("resolving an import", () => {
 	it("does not call an unresolved import an error, since it is a finding", async () => {
 		const result = await resolveImport(backend(), { fromModule: "src/a.ts", specifier: "./gone" });
 		expect(result.isError).toBeUndefined();
+	});
+});
+
+describe("resolving a ref", () => {
+	const exact = {
+		kind: "exact" as const,
+		candidate: {
+			symbolId: "lexicon ts src/cart.ts Cart#",
+			kind: "class" as const,
+			name: "Cart",
+			range: { start: { line: 2, character: 0 }, end: { line: 5, character: 1 } },
+			selectionRange: { start: { line: 2, character: 13 }, end: { line: 2, character: 17 } },
+			containerPath: [],
+			segments: ["Cart"],
+		},
+		contentHash: null,
+		diskHash: null,
+	};
+
+	it("returns the declaration and confirms a line span within it", async () => {
+		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
+			ref: "ref://src/cart.ts:Cart#3..5",
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("class Cart");
+		expect(result.content[0]?.text).toContain("inside declaration");
+	});
+
+	it("reports a line span outside the declaration", async () => {
+		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
+			ref: "ref://src/cart.ts:Cart#2..6",
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("span is outside it");
+	});
+
+	it("rejects column spans with the supported syntax", async () => {
+		const result = await resolveRef(backend(), { ref: "ref://src/cart.ts:Cart#3:2..4:1" });
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("Only line spans");
+	});
+
+	it("resolves a file ref and reports its index state", async () => {
+		const result = await resolveRef(
+			backend({
+				moduleStatus: async (module) => ({ module, exists: true, claimed: true, indexed: true }),
+			}),
+			{ ref: "ref://src/cart.ts#2..3" },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0]?.text).toContain("file src/cart.ts");
+		expect(result.content[0]?.text).toContain("line bounds are not checked");
 	});
 });
 

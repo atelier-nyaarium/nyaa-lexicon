@@ -4,6 +4,7 @@
 // both free, so a tool earns a call only by doing something they cannot. Each description says
 // what that is.
 
+import type { ChainAnswer } from "@nyaa-lexicon/client";
 import type {
 	CommentsResult,
 	ContentTotals,
@@ -29,6 +30,7 @@ import type {
 	FindImportsResult,
 	ImportResolution,
 	InsertOutcome,
+	ModuleStatus,
 	MostReferencedResult,
 	MoveAnchor,
 	MoveOutcome,
@@ -51,7 +53,7 @@ import type {
 	TypeInfo,
 	UnreversedRebind,
 } from "@nyaa-lexicon/protocol";
-import { defined, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { defined, formatRef, parseRef, parseSymbolId } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import {
 	renderCandidates,
@@ -92,6 +94,8 @@ import {
 /** What a tool needs from the daemon. Injected, so the tools are testable without one. */
 export interface ToolBackend {
 	findByName: (name: string, module?: string) => Promise<SymbolSummary[]>;
+	resolveChain: (module: string, segments: string[]) => Promise<ChainAnswer>;
+	moduleStatus: (module: string) => Promise<ModuleStatus>;
 	describe: (symbolId: string) => Promise<DescribeResult | null>;
 	findReferences: (symbolId: string, limit?: number, within?: string, module?: string) => Promise<ReferencesResult>;
 	resolveImport: (fromModule: string, specifier: string) => Promise<ImportResolution>;
@@ -208,6 +212,15 @@ export const FindReferencesInput = {
 export const ResolveImportInput = {
 	fromModule: z.string().min(1).describe(`Workspace-relative importer path.`),
 	specifier: z.string().min(1).describe(`Import specifier as written.`),
+};
+
+export const ResolveRefInput = {
+	ref: z
+		.string()
+		.min(1)
+		.describe(
+			`The raw ref URI from a link destination, e.g. ref://src/file.ts:Symbol. Do not pass @ shorthand or the Markdown link.`,
+		),
 };
 
 export const TypeOfInput = {
@@ -368,7 +381,7 @@ export const ReadNoteInput = NOTE_SUBJECT;
 // Core caps the length.
 export const WriteNoteInput = {
 	...NOTE_SUBJECT,
-	text: z.string().describe(`Markdown opening with one summary sentence. Empty removes the note.`),
+	text: z.string().describe(`Markdown for the note. Empty removes it.`),
 	expectedRevision: z
 		.number()
 		.int()
@@ -446,6 +459,15 @@ Resolve an import specifier through path mappings, package exports, and re-expor
 
 Distinguishes workspace files, external dependencies, and unresolved specifiers. Unresolved is a result, not an error.
 `.trim();
+
+export const RESOLVE_REF_DESCRIPTION = [
+	"# resolve_ref",
+	"",
+	"Resolve a ref:// to the file or declaration it names.",
+	"Pass the ref URI itself, not the surrounding Markdown link or @ shorthand.",
+	"",
+	"Accepts NyaaCode line spans as #start..end (one-based, inclusive). Column spans and call-site references are not supported.",
+].join("\n");
 
 export const REFACTOR_MOVE_DESCRIPTION = `
 # \`refactor_move\`
@@ -697,18 +719,11 @@ export const WRITE_NOTE_DESCRIPTION = `
 Save a symbol's note. Read it first; pass its revision as \`expectedRevision\`, \`0\` when none
 stands.
 
-Write on demand, when you learned something the code does not show. Never sweep for coverage.
+Describe this symbol in 1 short sentence.
 
-\`text\` is markdown:
-- Open with one sentence on what the symbol is for. It shows on cards and hovers.
-- Then only what the code and its doc comment do not show: a reason for a design choice, a
-  constraint or failure a caller would miss, how it works with other symbols.
-- State only what you can support: the code, its history, or what you were told.
-- Never restate the signature, callers, members or doc comment.
-- One sentence is a complete note.
+Include additional notes like related symbols, configs, traps, known pain points, or whatever.
 
-Refs anywhere, as \`[label](ref://path:Scope:Name)\`; \`[label](ref://path)\` names a file. Mermaid
-blocks allowed. A broken ref, or a note opening with anything but a paragraph, is refused.
+Use \`[label](ref://path:Scope:Name)\` to reference a symbol or \`[label](ref://path)\` for a file. Broken refs are refused.
 
 Over a note a person wrote or confirmed, the write becomes a proposal for them.
 `.trim();
@@ -1348,6 +1363,122 @@ export async function resolveImport(
 	return text(
 		`# Import unresolved\n\n\`${args.specifier}\` did not resolve.\n\n- Reason: ${resolution.reason}${detailOf(resolution)}`,
 	);
+}
+
+interface RangedReference {
+	module: string;
+	segments: string[];
+	lines: { start: number; end: number } | null;
+}
+
+type RangedReferenceParse = { ok: true; ref: RangedReference } | { ok: false; problem: string };
+
+const REF_LINES = /#(\d+)\.\.(\d+)$/;
+
+function parseRangedReference(input: string): RangedReferenceParse {
+	const match = REF_LINES.exec(input);
+	if (input.includes("#") && match === null) {
+		return {
+			ok: false,
+			problem: "Only line spans written as #start..end are supported; column spans and other anchors are not.",
+		};
+	}
+	const parsed = parseRef(match === null ? input : input.slice(0, match.index));
+	if (!parsed.ok) return parsed;
+	if (match === null) return { ok: true, ref: { ...parsed.ref, lines: null } };
+
+	const first = Number(match[1]);
+	const last = Number(match[2]);
+	if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 1 || last < 1) {
+		return { ok: false, problem: `Line spans use positive, one-based line numbers.` };
+	}
+	return {
+		ok: true,
+		ref: { ...parsed.ref, lines: { start: Math.min(first, last), end: Math.max(first, last) } },
+	};
+}
+
+function linesText(lines: { start: number; end: number }): string {
+	return lines.start === lines.end ? `line ${lines.start}` : `lines ${lines.start}-${lines.end}`;
+}
+
+export async function resolveRef(backend: ToolBackend, args: { ref: string }): Promise<ToolResult> {
+	const parsed = parseRangedReference(args.ref);
+	if (!parsed.ok) return text(`# Ref invalid\n\n${parsed.problem}`, true);
+	const { module, segments, lines } = parsed.ref;
+	const canonical = `${formatRef(module, segments)}${lines === null ? "" : `#${lines.start}..${lines.end}`}`;
+
+	if (segments.length === 0) {
+		const status = await backend.moduleStatus(module);
+		if (!status.exists) return text(`# Ref unresolved\n\n\`${canonical}\` names no file at \`${module}\`.`, true);
+		const indexState = status.indexed
+			? `indexed`
+			: status.claimed
+				? `not indexed yet`
+				: `outside the indexed scope`;
+		return text(
+			[
+				`# Ref resolved`,
+				``,
+				`${canonical} resolves to file ${module}.`,
+				``,
+				`- Exists: yes`,
+				`- Index: ${indexState}`,
+				...(lines === null ? [] : [`- Requested span: ${linesText(lines)} (file line bounds are not checked)`]),
+			].join("\n"),
+		);
+	}
+
+	const answer = await backend.resolveChain(module, segments);
+	if (answer.kind === "exact") {
+		const { candidate } = answer;
+		const targetStart = candidate.range.start.line + 1;
+		const targetEnd = candidate.range.end.line + 1;
+		const outside = lines !== null && (lines.start < targetStart || lines.end > targetEnd);
+		return text(
+			[
+				outside ? `# Ref target found; span is outside it` : `# Ref resolved`,
+				``,
+				`${canonical} resolves to ${candidate.kind} ${candidate.name} in ${module}.`,
+				``,
+				`- Symbol ID: ${candidate.symbolId}`,
+				`- Declaration: lines ${targetStart}-${targetEnd} (zero-based range ${candidate.range.start.line}:${candidate.range.start.character}..${candidate.range.end.line}:${candidate.range.end.character})`,
+				...(candidate.selectionRange === undefined
+					? []
+					: [
+							`- Name: line ${candidate.selectionRange.start.line + 1}, column ${candidate.selectionRange.start.character + 1}`,
+						]),
+				...(lines === null
+					? []
+					: [
+							`- Requested span: ${linesText(lines)}${outside ? `; outside declaration lines ${targetStart}-${targetEnd}` : `; inside declaration`}`,
+						]),
+			].join("\n"),
+			outside,
+		);
+	}
+
+	if (answer.kind === "ambiguous") {
+		const candidates = answer.candidates.map((candidate) => {
+			const first = candidate.range.start.line + 1;
+			const last = candidate.range.end.line + 1;
+			return `- ${candidate.kind} ${candidate.name} in ${module}, lines ${first}-${last}: ${candidate.symbolId}`;
+		});
+		return text(
+			[`# Ref ambiguous`, ``, `${canonical} matches multiple declarations:`, ``, ...candidates].join("\n"),
+			true,
+		);
+	}
+
+	const details = [
+		`# Ref unresolved`,
+		``,
+		`${canonical} did not resolve to a declaration in ${module}.`,
+		``,
+		`- Reason: ${answer.reason}${answer.detail === undefined ? "" : ` (${answer.detail})`}`,
+		...(answer.available.length === 0 ? [] : [`- Names here: ${answer.available.join(", ")}`]),
+	];
+	return text(details.join("\n"), true);
 }
 
 function detailOf(resolution: ImportResolution): string {

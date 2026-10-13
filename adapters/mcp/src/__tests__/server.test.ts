@@ -28,6 +28,7 @@ const QUERY_TOOLS = [
 	"refactor_preview",
 	"refactor_status",
 	"resolve_import",
+	"resolve_ref",
 	"search_docs",
 	"search_symbols",
 	"symbol_history",

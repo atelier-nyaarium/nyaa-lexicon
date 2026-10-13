@@ -2,7 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { daemonChannel, writeInstallRecord } from "@nyaa-lexicon/client";
+import { daemonChannel, resolveChain as resolveChainInSession, writeInstallRecord } from "@nyaa-lexicon/client";
 import {
 	createSessionBinds,
 	lexiconRoot,
@@ -88,6 +88,8 @@ export function daemonBackend(workspaceRoot: string, stateDir?: string): ToolBac
 function backendOver(ask: Asker): ToolBackend {
 	return {
 		findByName: (name, module) => ask("findByName", { name, module }),
+		resolveChain: (module, segments) => resolveChainInSession({ ask }, module, segments),
+		moduleStatus: (module) => ask("moduleStatus", { module }),
 		describe: (symbolId) => ask("describe", { symbolId }),
 		findReferences: (symbolId, limit, within, module) => ask("findReferences", { symbolId, limit, within, module }),
 		resolveImport: (fromModule, specifier) => ask("resolveImport", { fromModule, specifier }),
