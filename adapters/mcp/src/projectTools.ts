@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SessionProject } from "@nyaa-lexicon/core";
-import { defined, type NoteAuthor } from "@nyaa-lexicon/protocol";
+import { defined, type NoteAuthor, parseRefTarget } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import type { BindingDeps } from "./binding.js";
 import { nothingBoundMessage } from "./binding.js";
@@ -106,7 +106,7 @@ import {
 //  Interfaces & Types
 
 export type BackendSource = ToolBackend | ((project: SessionProject) => ToolBackend);
-export type ProjectToolScope = "query" | "mutation";
+export type ProjectToolScope = "query" | "mutation" | "ref";
 
 interface ProjectToolDefinition {
 	name: string;
@@ -158,6 +158,7 @@ const QUERY_PROJECTS = z
 const MUTATION_PROJECT = z.string().min(1).optional().describe(`Bound project name from \`list_projects\`.`);
 
 const QUERY_BATCH_NOTE = `\n\nRun one or more query objects in \`queries\`. \`projects\` applies to each.`;
+const REF_BATCH_NOTE = `\n\nRun one or more query objects in \`queries\`. Each ref routes by its embedded workspace key.`;
 
 function queryBatch(input: Record<string, z.ZodType>, validation?: QueryValidation): z.ZodType {
 	const query = z.strictObject(input);
@@ -197,7 +198,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		name: "resolve_ref",
 		title: `Resolve Ref`,
 		description: RESOLVE_REF_DESCRIPTION,
-		scope: "query",
+		scope: "ref",
 		input: ResolveRefInput,
 		handler: resolveRef,
 	},
@@ -484,7 +485,6 @@ function selectProjects(
 	const all = binding.list();
 	const bound = all.filter((project) => project.bound);
 	if (bound.length === 0) return text(nothingBoundMessage(all));
-
 	if (scope === "mutation") {
 		const { project, ...args } = raw as Record<string, unknown> & { project?: string };
 		if (project === undefined) {
@@ -578,7 +578,9 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 	const routed = typeof source === "function" ? source : null;
 
 	for (const definition of PROJECT_TOOL_DEFINITIONS) {
-		const batched = definition.scope === "query" && (!("batch" in definition) || definition.batch !== false);
+		const batched =
+			(definition.scope === "query" || definition.scope === "ref") &&
+			(!("batch" in definition) || definition.batch !== false);
 		const queryValidation = "queryValidation" in definition ? definition.queryValidation : undefined;
 		const run = definition.handler as unknown as (
 			backend: ToolBackend,
@@ -590,17 +592,22 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 				? (backend: ToolBackend, args: Record<string, unknown>) =>
 						run(backend, { ...args, ...defined({ author: clientAuthor(server) }) })
 				: run;
-		const selector = batched
-			? { queries: queryBatch(definition.input, queryValidation), projects: QUERY_PROJECTS }
-			: definition.scope === "query"
-				? { ...definition.input, projects: QUERY_PROJECTS }
-				: { ...definition.input, project: MUTATION_PROJECT };
+		const selector =
+			definition.scope === "ref"
+				? { queries: queryBatch(definition.input) }
+				: batched
+					? { queries: queryBatch(definition.input, queryValidation), projects: QUERY_PROJECTS }
+					: definition.scope === "query"
+						? { ...definition.input, projects: QUERY_PROJECTS }
+						: { ...definition.input, project: MUTATION_PROJECT };
 		const inputSchema = z.strictObject(selector);
 		server.registerTool(
 			definition.name,
 			{
 				title: definition.title,
-				description: batched ? `${definition.description}${QUERY_BATCH_NOTE}` : definition.description,
+				description: batched
+					? `${definition.description}${definition.scope === "ref" ? REF_BATCH_NOTE : QUERY_BATCH_NOTE}`
+					: definition.description,
 				inputSchema,
 			},
 			async (raw: Record<string, unknown>): Promise<ToolResult & Record<string, unknown>> => {
@@ -616,6 +623,39 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 						);
 					}
 					return serverResult(await handler(source as ToolBackend, args));
+				}
+				if (definition.scope === "ref") {
+					const queries = (raw as { queries: Record<string, unknown>[] }).queries;
+					const all = binding.list();
+					const bound = all.filter((project) => project.bound);
+					if (bound.length === 0) return serverResult(text(nothingBoundMessage(all)));
+					let failed = false;
+					const results: string[] = [];
+					for (const query of queries) {
+						const parsed = parseRefTarget(String(query["ref"] ?? ""));
+						if (!parsed.ok) return serverResult(text(`# Ref invalid\n\n${parsed.problem}`));
+						const matches = bound.filter((project) => project.key === parsed.target.project);
+						if (matches.length !== 1) {
+							return serverResult(
+								text(
+									matches.length > 1
+										? `# Project not found\n\nNo unique project matches this ref.`
+										: all.some((project) => project.key === parsed.target.project)
+											? `# Project not bound\n\nBind this project with \`bind_project\` first.`
+											: `# Project not found\n\nNo project matches this ref.`,
+								),
+							);
+						}
+						const project = matches[0];
+						if (project === undefined) continue;
+						const result = await handler(routed(project), query);
+						failed ||= result.isError === true;
+						results.push(result.content.map((chunk) => chunk.text).join("\n"));
+					}
+					return serverResult({
+						content: [{ type: "text", text: results.join("\n\n") }],
+						...(failed ? { isError: true } : {}),
+					});
 				}
 				const selection = selectProjects(definition.scope, binding, raw);
 				if (isToolResult(selection)) return serverResult(selection);

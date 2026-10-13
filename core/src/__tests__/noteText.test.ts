@@ -32,7 +32,11 @@ describe("how a note opens", () => {
 			["Holds items.\n# Why\nShoppers.", "Holds items.", "# Why\nShoppers."],
 			["Costs:\n- one cart", "Costs:", "- one cart"],
 			["A cache is shared\n2. after retries.", "A cache is shared 2. after retries.", ""],
-			["Wraps a [Cart](ref://src/a.ts:Cart).\r\n\r\nMore.", "Wraps a [Cart](ref://src/a.ts:Cart).", "More."],
+			[
+				"Wraps a [Cart](project-ref://test-project/src/a.ts:Cart).\r\n\r\nMore.",
+				"Wraps a [Cart](project-ref://test-project/src/a.ts:Cart).",
+				"More.",
+			],
 			[`${String.fromCharCode(0xfeff)}Holds items.\r\n\r\nMore.`, "Holds items.", "More."],
 		];
 		for (const [written, summary, rest] of cases) {

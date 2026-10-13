@@ -42,6 +42,7 @@ function summary(name: string, extra: Partial<SymbolSummary> = {}): SymbolSummar
 
 function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 	return {
+		projectId: "test-project",
 		findByName: async () => [],
 		resolveChain: async () => ({
 			kind: "none",
@@ -469,7 +470,7 @@ describe("resolving a ref", () => {
 
 	it("returns the declaration and confirms a line span within it", async () => {
 		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
-			ref: "ref://src/cart.ts:Cart#3..5",
+			ref: "project-ref://test-project/src/cart.ts:Cart#3..5",
 		});
 
 		expect(result.isError).toBeUndefined();
@@ -479,17 +480,17 @@ describe("resolving a ref", () => {
 
 	it("normalizes reversed legacy line spans", async () => {
 		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
-			ref: "ref://src/cart.ts:Cart#5..3",
+			ref: "project-ref://test-project/src/cart.ts:Cart#5..3",
 		});
 
 		expect(result.isError).toBeUndefined();
-		expect(result.content[0]?.text).toContain("ref://src/cart.ts:Cart#3..5");
+		expect(result.content[0]?.text).toContain("project-ref://test-project/src/cart.ts:Cart#3..5");
 		expect(result.content[0]?.text).toContain("inside declaration");
 	});
 
 	it("reports a line span outside the declaration", async () => {
 		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
-			ref: "ref://src/cart.ts:Cart#2..6",
+			ref: "project-ref://test-project/src/cart.ts:Cart#2..6",
 		});
 
 		expect(result.isError).toBe(true);
@@ -498,11 +499,13 @@ describe("resolving a ref", () => {
 
 	it("resolves exact columns and caret selections", async () => {
 		const targetBackend = backend({ resolveChain: async () => exact, symbolSource: async () => exactSource });
-		const range = await resolveRef(targetBackend, { ref: "ref://src/cart.ts:Cart#L5,1-L3,14" });
-		const caret = await resolveRef(targetBackend, { ref: "ref://src/cart.ts:Cart#L3,14" });
+		const range = await resolveRef(targetBackend, {
+			ref: "project-ref://test-project/src/cart.ts:Cart#L5,1-L3,14",
+		});
+		const caret = await resolveRef(targetBackend, { ref: "project-ref://test-project/src/cart.ts:Cart#L3,14" });
 
 		expect(range.isError).toBeUndefined();
-		expect(range.content[0]?.text).toContain("ref://src/cart.ts:Cart#L3,14-L5,1");
+		expect(range.content[0]?.text).toContain("project-ref://test-project/src/cart.ts:Cart#L3,14-L5,1");
 		expect(range.content[0]?.text).toContain("inside declaration");
 		expect(caret.isError).toBeUndefined();
 		expect(caret.content[0]?.text).toContain("line 3:14");
@@ -512,7 +515,7 @@ describe("resolving a ref", () => {
 		const result = await resolveRef(
 			backend({ resolveChain: async () => exact, symbolSource: async () => exactSource }),
 			{
-				ref: "ref://src/cart.ts:Cart#L3,18-L6,3",
+				ref: "project-ref://test-project/src/cart.ts:Cart#L3,18-L6,3",
 			},
 		);
 
@@ -524,7 +527,7 @@ describe("resolving a ref", () => {
 		const result = await resolveRef(
 			backend({ resolveChain: async () => exact, symbolSource: async () => exactSource }),
 			{
-				ref: "ref://src/cart.ts:Cart#L4,99999",
+				ref: "project-ref://test-project/src/cart.ts:Cart#L4,99999",
 			},
 		);
 
@@ -540,7 +543,7 @@ describe("resolving a ref", () => {
 		const result = await resolveRef(
 			backend({ resolveChain: async () => exact, symbolSource: async () => source }),
 			{
-				ref: "ref://src/cart.ts:Cart#L3,14",
+				ref: "project-ref://test-project/src/cart.ts:Cart#L3,14",
 			},
 		);
 
@@ -560,7 +563,7 @@ describe("resolving a ref", () => {
 		const result = await resolveRef(
 			backend({ resolveChain: async () => shifted, symbolSource: async () => source }),
 			{
-				ref: "ref://src/cart.ts:Cart#L3,9-L3,10",
+				ref: "project-ref://test-project/src/cart.ts:Cart#L3,9-L3,10",
 			},
 		);
 
@@ -581,7 +584,7 @@ describe("resolving a ref", () => {
 		const result = await resolveRef(
 			backend({ resolveChain: async () => shifted, symbolSource: async () => source }),
 			{
-				ref: "ref://src/cart.ts:Cart#L11,5-L12,3",
+				ref: "project-ref://test-project/src/cart.ts:Cart#L11,5-L12,3",
 			},
 		);
 
@@ -596,7 +599,7 @@ describe("resolving a ref", () => {
 				symbolSource: async () => ({ found: false, reason: "source is stale", stale: true }),
 			}),
 			{
-				ref: "ref://src/cart.ts:Cart#L3,14",
+				ref: "project-ref://test-project/src/cart.ts:Cart#L3,14",
 			},
 		);
 
@@ -606,7 +609,10 @@ describe("resolving a ref", () => {
 	});
 
 	it("rejects malformed and unsafe selection coordinates", async () => {
-		for (const ref of ["ref://src/cart.ts:Cart#bad", "ref://src/cart.ts:Cart#L9007199254740992,1"]) {
+		for (const ref of [
+			"project-ref://test-project/src/cart.ts:Cart#bad",
+			"project-ref://test-project/src/cart.ts:Cart#L9007199254740992,1",
+		]) {
 			const result = await resolveRef(backend(), { ref });
 			expect(result.isError).toBe(true);
 		}
@@ -617,7 +623,7 @@ describe("resolving a ref", () => {
 			backend({
 				moduleStatus: async (module) => ({ module, exists: true, claimed: true, indexed: true }),
 			}),
-			{ ref: "ref://src/cart.ts#2..3" },
+			{ ref: "project-ref://test-project/src/cart.ts#2..3" },
 		);
 
 		expect(result.isError).toBeUndefined();
@@ -638,7 +644,7 @@ describe("resolving a ref", () => {
 					diskHash: null,
 				}),
 			}),
-			{ ref: "ref://src/cart.ts:Ghost" },
+			{ ref: "project-ref://test-project/src/cart.ts:Ghost" },
 		);
 		const ambiguous = await resolveRef(
 			backend({
@@ -649,7 +655,7 @@ describe("resolving a ref", () => {
 					diskHash: null,
 				}),
 			}),
-			{ ref: "ref://src/cart.ts:Cart" },
+			{ ref: "project-ref://test-project/src/cart.ts:Cart" },
 		);
 
 		expect(missing.isError).toBe(true);

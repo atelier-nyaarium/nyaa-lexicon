@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { comparePositions, coordinatesOf } from "./coordinates.js";
 import { ModulePathSchema } from "./modulePath.js";
-import { formatRef, parseRef } from "./noteRefs.js";
+import { formatRef, parseRef, validProjectId } from "./noteRefs.js";
 import type { Range } from "./symbols.js";
 
 export interface RefTarget {
+	project: string;
 	module: string;
 	segments: string[];
 	lines?: { start: number; end: number };
@@ -24,6 +25,7 @@ const OneBasedRangeSchema = z.object({
 });
 export const BuildRefInputSchema = z
 	.object({
+		project: z.string().min(1).refine(validProjectId, `Invalid project id.`).describe(`Workspace key.`),
 		module: z.string().min(1).describe(`Raw, unencoded workspace-relative path.`),
 		segments: z.array(z.string().min(1)).optional().describe(`Raw names, outermost first.`),
 		lines: z
@@ -60,7 +62,7 @@ function encodeFragment(target: RefTarget): string {
 }
 
 export function formatRefTarget(target: RefTarget): string {
-	return `${formatRef(target.module, target.segments)}${encodeFragment(target)}`;
+	return `${formatRef(target.project, target.module, target.segments)}${encodeFragment(target)}`;
 }
 
 export function buildRef(input: unknown): Result<{ ref: string; target: RefTarget }> {
@@ -68,7 +70,7 @@ export function buildRef(input: unknown): Result<{ ref: string; target: RefTarge
 	if (!parsed.success) return failure(parsed.error.issues[0]?.message ?? "invalid ref target");
 	const path = ModulePathSchema.safeParse(parsed.data.module);
 	if (!path.success) return failure(path.error.issues[0]?.message ?? "invalid module path");
-	const target: RefTarget = { module: path.data, segments: parsed.data.segments ?? [] };
+	const target: RefTarget = { project: parsed.data.project, module: path.data, segments: parsed.data.segments ?? [] };
 	if (parsed.data.lines) {
 		const [start, end] = normalizeEnds(parsed.data.lines.start, parsed.data.lines.end, (a, b) => a - b);
 		target.lines = { start, end };
@@ -141,7 +143,8 @@ function parseFragment(fragment: string): Pick<RefTarget, "lines" | "range"> | {
 }
 
 export function parseRefTarget(uri: string): Result<{ target: RefTarget }> {
-	if (typeof uri !== "string" || !uri.startsWith("ref://")) return failure("a ref starts with ref://");
+	if (typeof uri !== "string" || !uri.startsWith("project-ref://"))
+		return failure("a ref starts with project-ref://");
 	const hash = uri.indexOf("#");
 	if (hash >= 0 && hash === uri.length - 1) return failure("selection fragment is invalid");
 	const base = hash < 0 ? uri : uri.slice(0, hash);

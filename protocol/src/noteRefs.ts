@@ -1,14 +1,14 @@
-// The `ref://` links a knowledge note carries: found in its markdown, parsed into a module and a
-// name chain. A ref is a link written as `[label](ref://...)`; a bare `ref://` in prose is text.
+// The `project-ref://` links a knowledge note carries.
 // Code spans and fences hold literal text, except a mermaid block's `click` line.
 
 import { parse, postprocess, preprocess } from "micromark";
 import { mermaidClick, mermaidStatements } from "./mermaid.js";
+import { ModulePathSchema } from "./modulePath.js";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-/** One `ref://` as written, and where it starts in the text. */
+/** One `project-ref://` as written, and where it starts in the text. */
 export interface FoundRef {
 	ref: string;
 	index: number;
@@ -23,6 +23,7 @@ export interface RefLink extends FoundRef {
 
 /** A module path and the chain inside it; no chain names the module itself. */
 export interface ParsedRef {
+	project: string;
 	module: string;
 	segments: string[];
 }
@@ -46,7 +47,11 @@ interface Token {
 ////////////////////////////////
 //  Constants
 
-export const REF_SCHEME = "ref://";
+export const REF_SCHEME = "project-ref://";
+
+export function validProjectId(project: string): boolean {
+	return /^[A-Za-z0-9._-]+$/.test(project) && project !== "." && project !== "..";
+}
 
 /** What micromark reads as code: its text is literal. */
 const CODE = new Set(["codeFenced", "codeIndented", "codeText"]);
@@ -97,13 +102,13 @@ export function blankCode(text: string): string {
 }
 
 /** Each written link to a ref, from its label and destination tokens. */
-function linksOf(text: string, tokens: readonly Token[]): RefLink[] {
+function linksOf(text: string, tokens: readonly Token[], legacy = false): RefLink[] {
 	const links: RefLink[] = [];
 	let link: { token: Token; label?: Token; destination?: Token } | null = null;
 	const finish = (done: { token: Token; label?: Token; destination?: Token }) => {
 		const { token, label, destination } = done;
 		const ref = destination === undefined ? "" : text.slice(destination.from, destination.to);
-		if (destination === undefined || !ref.startsWith(REF_SCHEME)) return;
+		if (destination === undefined || !(ref.startsWith(REF_SCHEME) || (legacy && ref.startsWith("ref://")))) return;
 		const written = label === undefined ? "" : text.slice(label.from, label.to);
 		links.push({ ref, index: destination.from, from: token.from, to: token.to, label: written });
 	};
@@ -125,27 +130,29 @@ function linksOf(text: string, tokens: readonly Token[]): RefLink[] {
 }
 
 /** Each mermaid `click` whose target is a ref, pointing at the ref itself. */
-function clicksOf(text: string, tokens: readonly Token[]): FoundRef[] {
+function clicksOf(text: string, tokens: readonly Token[], legacy = false): FoundRef[] {
 	return fencesOf(text, tokens).flatMap((fence) => {
 		if (fence.info.toLowerCase() !== "mermaid") return [];
 		const lines = fence.values.map((token) => ({ text: text.slice(token.from, token.to), from: token.from }));
 		return mermaidStatements(lines).flatMap((statement) => {
 			const target = mermaidClick(statement)?.target;
-			return target?.text.startsWith(REF_SCHEME) ? [{ ref: target.text, index: target.from + 1 }] : [];
+			return target?.text.startsWith(REF_SCHEME) || (legacy && target?.text.startsWith("ref://"))
+				? [{ ref: target.text, index: target.from + 1 }]
+				: [];
 		});
 	});
 }
 
-/** Every `ref://` link in markdown, in order, outside code; `index` is where the ref itself starts. */
-export function findRefs(text: string): FoundRef[] {
+/** Every project ref in markdown, in order, outside code. */
+export function findRefs(text: string, options: { legacy?: boolean } = {}): FoundRef[] {
 	const tokens = tokensOf(text);
-	const links = linksOf(text, tokens).map(({ ref, index }) => ({ ref, index }));
-	return [...links, ...clicksOf(text, tokens)].sort((a, b) => a.index - b.index);
+	const links = linksOf(text, tokens, options.legacy).map(({ ref, index }) => ({ ref, index }));
+	return [...links, ...clicksOf(text, tokens, options.legacy)].sort((a, b) => a.index - b.index);
 }
 
-/** Each written `[label](ref://...)` outside code, in order, with the span it covers. */
-export function findRefLinks(text: string): RefLink[] {
-	return linksOf(text, tokensOf(text));
+/** Each written project ref link outside code, with the span it covers. */
+export function findRefLinks(text: string, options: { legacy?: boolean } = {}): RefLink[] {
+	return linksOf(text, tokensOf(text), options.legacy);
 }
 
 /** Splits on single colons; `::` stays inside a segment as a qualifier. */
@@ -170,28 +177,36 @@ function isAbsolute(path: string): boolean {
 	return path.startsWith("/") || path.startsWith("~") || /^[A-Za-z]:[\\/]/.test(path);
 }
 
-/** `ref://<module>[:<segment>...]`, workspace-relative. Split first, then each part decoded. */
+/** `project-ref://<project>/<module>[:<segment>...]`. */
 export function parseRef(ref: string): RefParse {
-	if (!ref.startsWith(REF_SCHEME)) return { ok: false, problem: "a ref starts with ref://" };
+	if (!ref.startsWith(REF_SCHEME)) return { ok: false, problem: "a ref starts with project-ref://" };
 	const body = ref.slice(REF_SCHEME.length);
 	if (body.includes("#") || body.includes("@after:") || body.includes("@before:")) {
 		return { ok: false, problem: "a note's ref names a symbol or a file; text anchors are not used" };
 	}
+	const slash = body.indexOf("/");
+	const project = slash < 0 ? "" : body.slice(0, slash);
+	if (!validProjectId(project)) return { ok: false, problem: "the ref has an invalid project id" };
+	const path = body.slice(slash + 1);
 	let parts: string[];
 	try {
-		parts = splitChain(body).map((part) => decodeURIComponent(part));
+		parts = splitChain(path).map((part) => decodeURIComponent(part));
 	} catch {
 		return { ok: false, problem: "a percent escape in the ref does not decode" };
 	}
 	const [module = "", ...segments] = parts;
-	if (isAbsolute(body) || isAbsolute(module)) return { ok: false, problem: "a note's ref is workspace-relative" };
+	if (isAbsolute(path) || isAbsolute(module)) return { ok: false, problem: "a note's ref is workspace-relative" };
+	if (module.includes(REF_SCHEME)) return { ok: false, problem: "a ref cannot contain another ref" };
 	if (module === "") return { ok: false, problem: "the ref names no module" };
+	if (!ModulePathSchema.safeParse(module).success)
+		return { ok: false, problem: "the ref has an invalid module path" };
 	if (segments.some((segment) => segment === "")) return { ok: false, problem: "the ref has an empty segment" };
-	return { ok: true, ref: { module, segments } };
+	return { ok: true, ref: { project, module, segments } };
 }
 
 /** The ref text for a module and chain, escaping what would end the link or split the path. */
-export function formatRef(module: string, segments: readonly string[]): string {
+export function formatRef(project: string, module: string, segments: readonly string[]): string {
+	if (!validProjectId(project)) throw new Error("invalid project id");
 	const escaped = (part: string, path = false, qualifiers = false) =>
 		(qualifiers ? part.split("::") : [part])
 			.map((piece) =>
@@ -202,5 +217,5 @@ export function formatRef(module: string, segments: readonly string[]): string {
 			.join("::")
 			.replace(qualifiers ? /^::/ : /$^/, "%3A%3A")
 			.replace(path ? /%2F/gi : /$^/, "/");
-	return `${REF_SCHEME}${[escaped(module, true), ...segments.map((segment) => escaped(segment, false, true))].join(":")}`;
+	return `${REF_SCHEME}${project}/${[escaped(module, true), ...segments.map((segment) => escaped(segment, false, true))].join(":")}`;
 }

@@ -30,8 +30,8 @@ const NOTE = {
 	symbolId: SYMBOL.symbolId,
 	recordedAs: SYMBOL.symbolId,
 	revision: 2,
-	text: "Adds one item to a [Cart](ref://src/a.ts:Cart).\n\nTotals are cached, so every add refreshes them.\n\nAdding past the limit throws.",
-	summary: "Adds one item to a [Cart](ref://src/a.ts:Cart).",
+	text: "Adds one item to a [Cart](project-ref://test-project/src/a.ts:Cart).\n\nTotals are cached, so every add refreshes them.\n\nAdding past the limit throws.",
+	summary: "Adds one item to a [Cart](project-ref://test-project/src/a.ts:Cart).",
 	restAt: 47,
 	author: { kind: "person" },
 	authoredAt: AT,
@@ -41,7 +41,13 @@ const NOTE = {
 	confirmedAt: null,
 	doubt: null,
 	sourceChanged: false,
-	links: [{ written: "ref://src/a.ts:Cart", current: "ref://src/a.ts:Cart", state: "ok" }],
+	links: [
+		{
+			written: "project-ref://test-project/src/a.ts:Cart",
+			current: "project-ref://test-project/src/a.ts:Cart",
+			state: "ok",
+		},
+	],
 	proposal: null,
 } as const;
 
@@ -57,8 +63,16 @@ const MOVED_NOTE = {
 	doubt: { by: AGENT, reason: "it adds two", at: AT },
 	sourceChanged: true,
 	links: [
-		{ written: "ref://src/b.ts:Gone", current: "ref://src/b.ts:Gone", state: "broken" },
-		{ written: "ref://src/a.ts:Cart", current: "ref://src/a.ts:Basket", state: "changed" },
+		{
+			written: "project-ref://test-project/src/b.ts:Gone",
+			current: "project-ref://test-project/src/b.ts:Gone",
+			state: "broken",
+		},
+		{
+			written: "project-ref://test-project/src/a.ts:Cart",
+			current: "project-ref://test-project/src/a.ts:Basket",
+			state: "changed",
+		},
 	],
 	proposal: { text: "Adds.", baseRevision: 1, by: AGENT, at: AT },
 } as const;
@@ -280,16 +294,19 @@ export const CASES: Record<string, unknown[][]> = {
 				reason: "1 ref does not resolve. Each is listed with candidates",
 				refs: [
 					{
-						ref: "ref://src/a.ts:Ghost",
+						ref: "project-ref://test-project/src/a.ts:Ghost",
 						at: 12,
 						problem: "names nothing in src/a.ts",
 						candidates: [],
 					},
 					{
-						ref: "ref://src/a.ts:add",
+						ref: "project-ref://test-project/src/a.ts:add",
 						at: 60,
 						problem: "names 2 declarations",
-						candidates: ["ref://src/a.ts:add[1]", "ref://src/a.ts:add[2]"],
+						candidates: [
+							"project-ref://test-project/src/a.ts:add[1]",
+							"project-ref://test-project/src/a.ts:add[2]",
+						],
 					},
 				],
 			},

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { NoteAuthor, SymbolKind } from "@nyaa-lexicon/protocol";
+import { workspaceKey } from "@nyaa-lexicon/client";
+import { formatRef, type NoteAuthor, type SymbolKind } from "@nyaa-lexicon/protocol";
 import type { NoteWrite } from "../notes";
 import * as refusal from "../refusals";
 import { LexiconService } from "../service";
@@ -25,7 +26,8 @@ const TROLLEY = "lexicon reference a.ref Trolley#";
 const BASKET = "lexicon reference b.ref Basket#";
 const PERSON: NoteAuthor = { kind: "person" };
 const AGENT: NoteAuthor = { kind: "agent", model: "gpt-6-luna", via: "test", run: null };
-const HOLDS = "Holds a [Cart](ref://a.ref:Cart) per shopper.";
+const ref = (module: string, ...segments: string[]) => formatRef(workspaceKey(dir), module, segments);
+const HOLDS = () => `Holds a [Cart](${ref("a.ref", "Cart")}) per shopper.`;
 
 const at = (line: number) => ({ start: { line, character: 0 }, end: { line, character: 8 } });
 
@@ -73,7 +75,7 @@ function shownAt(symbolId = BASKET): number {
 }
 
 function note(fields: Partial<NoteWrite> = {}): NoteWrite {
-	return { symbolId: BASKET, text: HOLDS, expectedRevision: 0, author: PERSON, ...fields };
+	return { symbolId: BASKET, text: HOLDS(), expectedRevision: 0, author: PERSON, ...fields };
 }
 
 function saved(outcome: ReturnType<LexiconService["writeNote"]>) {
@@ -107,6 +109,24 @@ afterEach(() => {
 //  Tests
 
 describe("writing a note", () => {
+	it("refuses a ref from another project", () => {
+		const outcome = service.writeNote(note({ text: "Holds a [Cart](project-ref://foreign-project/a.ref:Cart)." }));
+		expect(outcome.outcome).toBe("refused");
+	});
+
+	it("rejects old ref links while leaving code literals alone", () => {
+		for (const text of [
+			"Holds a [Cart](ref://a.ref:Cart).",
+			'Holds carts.\n\n```mermaid\ngraph LR\nA --> B\nclick A "ref://a.ref:Cart"\n```',
+		]) {
+			const outcome = service.writeNote(note({ text }));
+			expect(outcome).toMatchObject({ outcome: "refused", refs: [{ ref: "ref://a.ref:Cart" }] });
+		}
+
+		const literal = service.writeNote(note({ text: "The old URI is `ref://a.ref:Cart`." }));
+		expect(literal.outcome).toBe("saved");
+	});
+
 	it("opens with a plain sentence, and empty text removes the note", () => {
 		const openings: Array<[string, string]> = [
 			["# Basket", "heading"],
@@ -152,19 +172,19 @@ describe("writing a note", () => {
 			{ symbolId: CART, name: "Cart", digest: "c1" },
 			{ symbolId: `${CART}Item#`, name: "Item", digest: "i1", containerId: CART },
 		]);
-		const text = "  \r\nHolds a [cart](ref://a.ref:Ghost).\n\nEach [item](ref://a.ref:Cart:Ghost).";
+		const text = `  \r\nHolds a [cart](${ref("a.ref", "Ghost")}).\n\nEach [item](${ref("a.ref", "Cart", "Ghost")}).`;
 		expect(service.writeNote(note({ text }))).toMatchObject({
 			outcome: "refused",
 			refs: [
 				{
-					ref: "ref://a.ref:Ghost",
-					at: text.indexOf("ref://a.ref:Ghost"),
-					candidates: ["ref://a.ref:Cart", "ref://a.ref:Cart:Item"],
+					ref: ref("a.ref", "Ghost"),
+					at: text.indexOf(ref("a.ref", "Ghost")),
+					candidates: [ref("a.ref", "Cart"), ref("a.ref", "Cart", "Item")],
 				},
 				{
-					ref: "ref://a.ref:Cart:Ghost",
-					at: text.indexOf("ref://a.ref:Cart:Ghost"),
-					candidates: ["ref://a.ref:Cart:Item"],
+					ref: ref("a.ref", "Cart", "Ghost"),
+					at: text.indexOf(ref("a.ref", "Cart", "Ghost")),
+					candidates: [ref("a.ref", "Cart", "Item")],
 				},
 			],
 		});
@@ -174,16 +194,18 @@ describe("writing a note", () => {
 
 describe("a note's refs over time", () => {
 	it("follow their target through a rename, reading at its new address in either link form", () => {
-		saved(service.writeNote(note({ text: `${HOLDS}\n\nAlso [the cart](<ref://a.ref:Cart>).` })));
+		saved(service.writeNote(note({ text: `${HOLDS()}\n\nAlso [the cart](<${ref("a.ref", "Cart")}>).` })));
 		plant("a.ref", [{ symbolId: TROLLEY, name: "Trolley", digest: "c1" }]);
 		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9));
 
 		expect(service.readNote(BASKET)).toMatchObject({
-			text: "Holds a [Cart](ref://a.ref:Trolley) per shopper.\n\nAlso [the cart](<ref://a.ref:Trolley>).",
-			links: [{ written: "ref://a.ref:Cart", current: "ref://a.ref:Trolley", symbolId: TROLLEY, state: "ok" }],
+			text: `Holds a [Cart](${ref("a.ref", "Trolley")}) per shopper.\n\nAlso [the cart](<${ref("a.ref", "Trolley")}>).`,
+			links: [
+				{ written: ref("a.ref", "Cart"), current: ref("a.ref", "Trolley"), symbolId: TROLLEY, state: "ok" },
+			],
 		});
 		expect(service.noteBacklinks(TROLLEY).notes).toEqual([
-			{ symbolId: BASKET, summary: "Holds a [Cart](ref://a.ref:Trolley) per shopper." },
+			{ symbolId: BASKET, summary: `Holds a [Cart](${ref("a.ref", "Trolley")}) per shopper.` },
 		]);
 	});
 
@@ -211,15 +233,15 @@ describe("a note's refs over time", () => {
 		plant("a.ref", []);
 
 		expect(service.readNote(BASKET)).toMatchObject({
-			text: HOLDS,
-			links: [{ current: "ref://a.ref:Cart", state: "broken" }],
+			text: HOLDS(),
+			links: [{ current: ref("a.ref", "Cart"), state: "broken" }],
 		});
 	});
 
 	it("name a whole file, found by its path", () => {
-		saved(service.writeNote(note({ text: "Holds carts. See [the cart file](ref://a.ref)." })));
+		saved(service.writeNote(note({ text: `Holds carts. See [the cart file](${ref("a.ref")}).` })));
 		expect(service.readNote(BASKET)?.links).toEqual([
-			expect.objectContaining({ written: "ref://a.ref", state: "ok" }),
+			expect.objectContaining({ written: ref("a.ref"), state: "ok" }),
 		]);
 		expect(service.noteBacklinks("a.ref").notes.map((entry) => entry.symbolId)).toEqual([BASKET]);
 	});
@@ -232,7 +254,7 @@ describe("whose words an agent may replace", () => {
 
 		expect(proposed).toMatchObject({
 			outcome: "proposed",
-			note: { revision: 1, text: HOLDS, proposal: { text: "Holds items.", by: AGENT } },
+			note: { revision: 1, text: HOLDS(), proposal: { text: "Holds items.", by: AGENT } },
 		});
 		expect(saved(service.writeNote(note({ text: "Holds carts.", expectedRevision: 1 })))).toMatchObject({
 			revision: 2,
@@ -242,14 +264,16 @@ describe("whose words an agent may replace", () => {
 
 	it("keeps a proposal's refs on their targets, so accepting after a rename links the same symbol", () => {
 		saved(service.writeNote(note({ text: "Holds items." })));
-		service.writeNote(note({ text: "Wraps a [Cart](ref://a.ref:Cart).", expectedRevision: 1, author: AGENT }));
+		service.writeNote(
+			note({ text: `Wraps a [Cart](${ref("a.ref", "Cart")}).`, expectedRevision: 1, author: AGENT }),
+		);
 		plant("a.ref", [
 			{ symbolId: TROLLEY, name: "Trolley", digest: "c1" },
 			{ symbolId: CART, name: "Cart", digest: "other" },
 		]);
 		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9));
 
-		expect(service.readNote(BASKET)?.proposal?.text).toBe("Wraps a [Cart](ref://a.ref:Trolley).");
+		expect(service.readNote(BASKET)?.proposal?.text).toBe(`Wraps a [Cart](${ref("a.ref", "Trolley")}).`);
 		expect(saved(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON))).toMatchObject({
 			revision: 2,
 			links: [{ symbolId: TROLLEY }],
@@ -312,24 +336,24 @@ describe("searching for a ref", () => {
 		]);
 
 		expect(service.searchRefs("Cart").results.map((entry) => [entry.kind, entry.ref])).toEqual([
-			["class", "ref://a.ref:Cart"],
-			["class", "ref://src/cart.ref:Cart"],
-			["class", "ref://src/__tests__/cart.test.ref:Cart"],
-			["function", "ref://src/shop.ref:cartTotal"],
-			["class", "ref://src/shop.ref:ShopCart"],
-			["property", "ref://src/shop.ref:ShopCart:cart"],
-			["class", "ref://node_modules/zod/cart.ref:Cart"],
-			["class", "ref://node_modules/zod/cart.ref:Carton"],
-			["file", "ref://src/cart.ref"],
-			["file", "ref://src/__tests__/cart.test.ref"],
-			["file", "ref://node_modules/zod/cart.ref"],
+			["class", ref("a.ref", "Cart")],
+			["class", ref("src/cart.ref", "Cart")],
+			["class", ref("src/__tests__/cart.test.ref", "Cart")],
+			["function", ref("src/shop.ref", "cartTotal")],
+			["class", ref("src/shop.ref", "ShopCart")],
+			["property", ref("src/shop.ref", "ShopCart", "cart")],
+			["class", ref("node_modules/zod/cart.ref", "Cart")],
+			["class", ref("node_modules/zod/cart.ref", "Carton")],
+			["file", ref("src/cart.ref")],
+			["file", ref("src/__tests__/cart.test.ref")],
+			["file", ref("node_modules/zod/cart.ref")],
 		]);
 
 		const refs = (kinds: SymbolKind[]) =>
 			service.searchRefs("Cart", undefined, kinds).results.map((entry) => entry.ref);
 		expect({ functions: refs(["function"]), files: refs(["file"]), none: refs([]) }).toEqual({
-			functions: ["ref://src/shop.ref:cartTotal"],
-			files: ["ref://src/cart.ref", "ref://src/__tests__/cart.test.ref", "ref://node_modules/zod/cart.ref"],
+			functions: [ref("src/shop.ref", "cartTotal")],
+			files: [ref("src/cart.ref"), ref("src/__tests__/cart.test.ref"), ref("node_modules/zod/cart.ref")],
 			none: [],
 		});
 	});
@@ -370,11 +394,23 @@ describe("a store with four-field notes", () => {
 		);
 		row.run(cart, CART, 1, "Seeded from a sweep.", null, null, null, null, 5, null, 5);
 		const person = JSON.stringify(PERSON);
-		row.run(basket, BASKET, 1, HOLDS, null, "One per shopper.", null, person, 20, person, 20);
+		row.run(
+			basket,
+			BASKET,
+			1,
+			"Holds a [Cart](ref://a.ref:Cart) per shopper.",
+			null,
+			"One per shopper.",
+			null,
+			person,
+			20,
+			person,
+			20,
+		);
 		db.prepare(
 			`INSERT INTO symbol_note_proposals (subjectId, baseRevision, summary, description, proposedBy, proposedAt)
 			 VALUES (?, 1, ?, ?, ?, 30)`,
-		).run(basket, "Holds items.", "Pairs with [Cart](ref://a.ref:Cart).", JSON.stringify(AGENT));
+		).run(basket, "Holds items.", `Pairs with [Cart](${ref("a.ref", "Cart")}).`, JSON.stringify(AGENT));
 		const link = db.prepare("INSERT INTO symbol_note_links VALUES (?, ?, 'ref://a.ref:Cart', ?, 'c1')");
 		link.run(basket, "summary", cart);
 		link.run(basket, "proposal:description", cart);
@@ -397,15 +433,15 @@ describe("a store with four-field notes", () => {
 
 		expect(service.readNote(CART)).toBeNull();
 		expect(service.readNote(BASKET)).toMatchObject({
-			text: `${HOLDS}\n\nOne per shopper.`,
+			text: `${HOLDS()}\n\nOne per shopper.`,
 			links: [{ symbolId: CART, state: "ok" }],
 			proposal: {
-				text: "Holds items.\n\nPairs with [Cart](ref://a.ref:Cart).",
+				text: `Holds items.\n\nPairs with [Cart](${ref("a.ref", "Cart")}).`,
 				by: AGENT,
 				links: [{ symbolId: CART }],
 			},
 		});
-		expect(service.noteBacklinks(CART).notes).toEqual([{ symbolId: BASKET, summary: HOLDS }]);
+		expect(service.noteBacklinks(CART).notes).toEqual([{ symbolId: BASKET, summary: HOLDS() }]);
 	});
 
 	it("checks a carried proposal's text again when a person accepts it", () => {
@@ -428,13 +464,13 @@ describe("a store with four-field notes", () => {
 		db.close();
 		reopen();
 
-		expect(service.readNote(BASKET)).toMatchObject({ text: `${HOLDS}\n\nOne per shopper.`, proposal: null });
+		expect(service.readNote(BASKET)).toMatchObject({ text: `${HOLDS()}\n\nOne per shopper.`, proposal: null });
 	});
 });
 
 describe("a store rebuild", () => {
 	it("carries notes, their links and proposals", () => {
-		saved(service.writeNote(note({ text: `${HOLDS}\n\nPairs with [Cart](ref://a.ref:Cart).` })));
+		saved(service.writeNote(note({ text: `${HOLDS()}\n\nPairs with [Cart](${ref("a.ref", "Cart")}).` })));
 		service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT }));
 		const before = service.readNote(BASKET);
 		store.close();

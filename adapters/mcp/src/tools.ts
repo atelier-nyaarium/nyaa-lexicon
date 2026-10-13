@@ -103,6 +103,7 @@ import {
 
 /** What a tool needs from the daemon. Injected, so the tools are testable without one. */
 export interface ToolBackend {
+	projectId: string;
 	findByName: (name: string, module?: string) => Promise<SymbolSummary[]>;
 	resolveChain: (module: string, segments: string[]) => Promise<ChainAnswer>;
 	moduleStatus: (module: string) => Promise<ModuleStatus>;
@@ -225,12 +226,7 @@ export const ResolveImportInput = {
 };
 
 export const ResolveRefInput = {
-	ref: z
-		.string()
-		.min(1)
-		.describe(
-			`The raw ref URI from a link destination, e.g. ref://src/file.ts:Symbol. Do not pass @ shorthand or the Markdown link.`,
-		),
+	ref: z.string().min(1).describe(`A raw project-ref URI from a link destination. Do not pass a Markdown link.`),
 };
 
 export const BuildRefInput = BuildRefInputSchema.shape;
@@ -472,12 +468,12 @@ Resolve an import specifier through path mappings, package exports, and re-expor
 Distinguishes workspace files, external dependencies, and unresolved specifiers. Unresolved is a result, not an error.
 `.trim();
 
-export const BUILD_REF_DESCRIPTION = `Build a canonical ref:// URI from a module, symbol path, and optional selection.`;
+export const BUILD_REF_DESCRIPTION = `Build a project-ref URI from the workspace key shown by list_projects, module, symbol path, and optional selection.`;
 
 export const RESOLVE_REF_DESCRIPTION = `
 # \`resolve_ref\`
 
-Resolve a ref:// URI to its file or declaration. Accepts line spans and exact line-column selections.
+Resolve a project-ref URI to its file or declaration. Accepts line spans and exact line-column selections.
 `.trim();
 
 export const REFACTOR_MOVE_DESCRIPTION = `
@@ -734,7 +730,7 @@ Describe this symbol in 1 short sentence.
 
 Include additional notes like related symbols, configs, traps, known pain points, or whatever.
 
-Use \`[label](ref://path:Scope:Name)\` to reference a symbol or \`[label](ref://path)\` for a file. Broken refs are refused.
+Use this project's workspace key from \`list_projects\`: \`[label](project-ref://<workspace-key>/path:Scope:Name)\` for a symbol or \`[label](project-ref://<workspace-key>/path)\` for a file. Notes only link within their own project; broken or foreign-project refs are refused.
 
 Over a note a person wrote or confirmed, the write becomes a proposal for them.
 `.trim();
@@ -1420,6 +1416,9 @@ ${parsed.problem}
 	const target = parsed.target;
 	const { module, segments } = target;
 	const canonical = formatRefTarget(target);
+	if (target.project !== backend.projectId) {
+		return text(`# Ref unresolved\n\n${canonical} names a different project.`, true);
+	}
 
 	if (segments.length === 0) {
 		const status = await backend.moduleStatus(module);

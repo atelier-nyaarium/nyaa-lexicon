@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { callDaemon, findDaemon, type PlatformEnv, resolveChain as resolveChainInSession } from "@nyaa-lexicon/client";
+import {
+	callDaemon,
+	findDaemon,
+	type PlatformEnv,
+	resolveChain as resolveChainInSession,
+	workspaceKey,
+} from "@nyaa-lexicon/client";
 import {
 	createDispatch,
 	fromText,
@@ -13,6 +19,7 @@ import {
 	type RunningDaemon,
 	startDaemon,
 } from "@nyaa-lexicon/core";
+import { formatRef } from "@nyaa-lexicon/protocol";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import {
 	describeSymbol,
@@ -51,6 +58,8 @@ let supervisor: ProviderSupervisor;
 let daemon: RunningDaemon;
 let files: Map<string, string>;
 
+const ref = (module: string, ...segments: string[]) => formatRef(workspaceKey(dir), module, segments);
+
 /** Exactly what main.ts builds, but pointed at a test state dir. */
 function backendOverDaemon(workspaceRoot: string): ToolBackend {
 	async function ask<T>(method: string, params: unknown): Promise<T> {
@@ -59,6 +68,7 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		return (await callDaemon(decision.lock, method, params)) as T;
 	}
 	return {
+		projectId: workspaceKey(workspaceRoot),
 		findByName: (name, module) => ask("findByName", { name, module }),
 		resolveChain: (module, segments) => resolveChainInSession({ ask }, module, segments),
 		moduleStatus: (module) => ask("moduleStatus", { module }),
@@ -119,6 +129,7 @@ beforeEach(async () => {
 		store,
 		supervisor,
 		fromText((module) => files.get(module) ?? null),
+		dir,
 	);
 	const outcome = await startDaemon({
 		workspaceRoot: dir,
@@ -163,9 +174,9 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 
 	it("resolves file, symbol, and line-span refs against the daemon", async () => {
 		const backend = backendOverDaemon(dir);
-		const symbol = await resolveRef(backend, { ref: "ref://cart.ref:Cart" });
-		const symbolLines = await resolveRef(backend, { ref: "ref://cart.ref:Cart#1..1" });
-		const fileLines = await resolveRef(backend, { ref: "ref://cart.ref#1..2" });
+		const symbol = await resolveRef(backend, { ref: ref("cart.ref", "Cart") });
+		const symbolLines = await resolveRef(backend, { ref: `${ref("cart.ref", "Cart")}#1..1` });
+		const fileLines = await resolveRef(backend, { ref: `${ref("cart.ref")}#1..2` });
 
 		expect(symbol.isError).toBeUndefined();
 		expect(symbol.content[0]?.text).toContain("class Cart");
@@ -257,7 +268,7 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		const [add] = await backend.findByName("add", undefined);
 		const cartId = cart?.symbolId as string;
 		const symbolId = add?.symbolId as string;
-		const note = { ...NOTHING, symbolId, text: "Adds one item to a [Cart](ref://cart.ref:Cart)." };
+		const note = { ...NOTHING, symbolId, text: `Adds one item to a [Cart](${ref("cart.ref", "Cart")}).` };
 
 		expect((await writeNote(backend, note)).isError).toBeUndefined();
 		expect(await backend.readNote(symbolId)).toMatchObject({
@@ -273,10 +284,10 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		expect((await writeNote(backend, note)).isError).toBe(true);
 		const broken = await backend.writeNote({
 			...note,
-			text: "Adds to a [cart](ref://cart.ref:Ghost).",
+			text: `Adds to a [cart](${ref("cart.ref", "Ghost")}).`,
 			expectedRevision: 1,
 		});
-		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain("ref://cart.ref:Cart");
+		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain(ref("cart.ref", "Cart"));
 
 		const cleared = await backend.writeNote({ ...note, expectedRevision: 1 });
 		expect(cleared.outcome === "saved" && cleared.note).toMatchObject({ revision: 2, doubt: null });

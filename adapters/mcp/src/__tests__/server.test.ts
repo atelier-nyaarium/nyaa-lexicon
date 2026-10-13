@@ -28,7 +28,6 @@ const QUERY_TOOLS = [
 	"refactor_preview",
 	"refactor_status",
 	"resolve_import",
-	"resolve_ref",
 	"search_docs",
 	"search_symbols",
 	"symbol_history",
@@ -37,6 +36,7 @@ const QUERY_TOOLS = [
 ] as const;
 
 const STANDALONE_TOOLS = ["build_ref"] as const;
+const REF_TOOLS = ["resolve_ref"] as const;
 
 // Both take no per-query arguments worth batching: overview describes the workspace, and a
 // workspace holds one transaction, so asking twice in one call could only ask the same thing.
@@ -160,6 +160,7 @@ describe("the published MCP project selectors", () => {
 			...QUERY_TOOLS,
 			...MUTATION_TOOLS,
 			...STANDALONE_TOOLS,
+			...REF_TOOLS,
 			...Object.keys(MANAGEMENT_PROPERTIES),
 		].sort();
 
@@ -198,6 +199,8 @@ describe("the published MCP project selectors", () => {
 			expect(properties.projects).toBeUndefined();
 			expect(tool?.inputSchema.required ?? []).not.toContain("project");
 		}
+		const resolveRef = listed.tools.find((candidate) => candidate.name === "resolve_ref");
+		expect(Object.keys(resolveRef?.inputSchema.properties ?? {})).toEqual(["queries"]);
 
 		for (const [name, expectedProperties] of Object.entries(MANAGEMENT_PROPERTIES)) {
 			const tool = listed.tools.find((candidate) => candidate.name === name);
@@ -211,6 +214,7 @@ describe("the published MCP project selectors", () => {
 		}) as unknown as BackendSource;
 		const client = await connectClient(source, binding([]));
 		const result = await call(client, "build_ref", {
+			project: "local-project",
 			module: "src/Crème: Cart.ts",
 			segments: ["Outer", "inner:part"],
 			range: { start: { line: 9, column: 8 }, end: { line: 7, column: 3 } },
@@ -218,12 +222,16 @@ describe("the published MCP project selectors", () => {
 
 		expect(result.isError).toBeFalsy();
 		expect(result.structuredContent).toEqual({
-			ref: "ref://src/Cr%C3%A8me%3A%20Cart.ts:Outer:inner%3Apart#L7,3-L9,8",
+			ref: "project-ref://local-project/src/Cr%C3%A8me%3A%20Cart.ts:Outer:inner%3Apart#L7,3-L9,8",
 		});
-		const wholeFile = await call(client, "build_ref", { module: "src/cart.ts" });
-		const symbol = await call(client, "build_ref", { module: "src/cart.ts", segments: ["Cart"] });
-		expect(wholeFile.structuredContent).toEqual({ ref: "ref://src/cart.ts" });
-		expect(symbol.structuredContent).toEqual({ ref: "ref://src/cart.ts:Cart" });
+		const wholeFile = await call(client, "build_ref", { project: "local-project", module: "src/cart.ts" });
+		const symbol = await call(client, "build_ref", {
+			project: "local-project",
+			module: "src/cart.ts",
+			segments: ["Cart"],
+		});
+		expect(wholeFile.structuredContent).toEqual({ ref: "project-ref://local-project/src/cart.ts" });
+		expect(symbol.structuredContent).toEqual({ ref: "project-ref://local-project/src/cart.ts:Cart" });
 	});
 
 	// Past the cap a client truncates or refuses the description, with no error to read.
@@ -330,6 +338,26 @@ describe("query project routing", () => {
 
 		expect(routes).toEqual(["beta"]);
 		expect(result.isError).toBeUndefined();
+	});
+
+	it("routes a project-ref by workspace key to one bound project", async () => {
+		const routes: string[] = [];
+		const source: BackendSource = (selected) =>
+			backend({
+				projectId: selected.key,
+				moduleStatus: async (module) => {
+					routes.push(selected.key);
+					return { module, exists: true, claimed: true, indexed: true };
+				},
+			});
+		const client = await connectClient(source, binding([project("alpha", true), project("beta", true)]));
+
+		const result = await call(client, "resolve_ref", {
+			queries: [{ ref: "project-ref://beta-key/src/file.ts" }, { ref: "project-ref://alpha-key/src/other.ts" }],
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(routes).toEqual(["beta-key", "alpha-key"]);
 	});
 
 	it("forwards literal regex searches", async () => {

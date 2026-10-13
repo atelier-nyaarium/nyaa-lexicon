@@ -87,14 +87,27 @@ function heldByPerson(row: NoteRow): boolean {
 }
 
 /** Each ref at its target's current address, rewritten from the end so indices hold. */
-function rewriteRefs(text: string, current: ReadonlyMap<string, string>): string {
-	let out = text;
-	for (const found of findRefs(text).reverse()) {
-		const next = current.get(found.ref);
+function rewriteRefs(text: string, current: ReadonlyMap<string, string>, project: string): string {
+	const replacements: Array<{ from: number; to: number; value: string }> = [];
+	for (const found of findRefs(text, { legacy: true }).reverse()) {
+		const written = storedRef(found.ref, project);
+		const next = current.get(written) ?? (written === found.ref ? undefined : written);
 		if (next === undefined || next === found.ref) continue;
-		out = out.slice(0, found.index) + next + out.slice(found.index + found.ref.length);
+		replacements.push({ from: found.index, to: found.index + found.ref.length, value: next });
+	}
+	let out = text;
+	for (const replacement of replacements.sort((left, right) => right.from - left.from)) {
+		out = out.slice(0, replacement.from) + replacement.value + out.slice(replacement.to);
 	}
 	return out;
+}
+
+/** Old note rows are interpreted only while they are read from storage. */
+function storedRef(ref: string, project: string): string {
+	if (!ref.startsWith("ref://") || ref.includes("#")) return ref;
+	const converted = `project-ref://${project}/${ref.slice("ref://".length)}`;
+	const parsed = parseRef(converted);
+	return parsed.ok ? formatRef(parsed.ref.project, parsed.ref.module, parsed.ref.segments) : ref;
 }
 
 ////////////////////////////////
@@ -103,6 +116,7 @@ function rewriteRefs(text: string, current: ReadonlyMap<string, string>): string
 export class NoteLedger {
 	constructor(
 		private readonly store: IndexStore,
+		private readonly project: string,
 		private readonly clock: Clock = systemClock,
 	) {}
 
@@ -312,7 +326,7 @@ export class NoteLedger {
 				const segments = chainOf(context.heldIn(row.module), row.symbolId);
 				if (segments === null) continue;
 				results.push({
-					ref: formatRef(row.module, segments),
+					ref: formatRef(this.project, row.module, segments),
 					name: row.name,
 					kind: row.kind,
 					module: row.module,
@@ -326,7 +340,7 @@ export class NoteLedger {
 			kinds === undefined || kinds.includes("file") ? this.store.filesNamedLike(needle, FILES_SHOWN) : [];
 		for (const module of files) {
 			const name = module.slice(module.lastIndexOf("/") + 1);
-			results.push({ ref: formatRef(module, []), name, kind: "file", module, container: [] });
+			results.push({ ref: formatRef(this.project, module, []), name, kind: "file", module, container: [] });
 		}
 		return { results };
 	}
@@ -355,7 +369,7 @@ export class NoteLedger {
 	private backlinkSummary(subjectId: string, text: string): string | null {
 		const opening = noteOpening(text);
 		if (opening.kind !== "paragraph") return null;
-		const written = new Set(findRefs(opening.summary).map((found) => found.ref));
+		const written = new Set(findRefs(opening.summary, { legacy: true }).map((found) => found.ref));
 		if (written.size === 0) return opening.summary;
 		const links = this.store.notes.links(subjectId).filter((link) => written.has(link.written));
 		return this.shown(opening.summary, links).text;
@@ -385,7 +399,7 @@ export class NoteLedger {
 		const resolved: ResolvedRef[] = [];
 		const problems: NoteRefProblem[] = [];
 		const context = new ReadContext(this.store);
-		for (const { ref, index } of findRefs(text)) {
+		for (const { ref, index } of findRefs(text, { legacy: true })) {
 			const found = this.resolveRef(ref, context);
 			if (found.ok) resolved.push({ written: ref, target: found.target });
 			else problems.push({ ref, at: index, problem: found.problem, candidates: found.candidates });
@@ -402,7 +416,10 @@ export class NoteLedger {
 	): { ok: true; target: ResolvedRef["target"] } | { ok: false; problem: string; candidates: string[] } {
 		const parsed = parseRef(ref);
 		if (!parsed.ok) return { ok: false, problem: parsed.problem, candidates: [] };
-		const { module, segments } = parsed.ref;
+		const { project, module, segments } = parsed.ref;
+		if (project !== this.project) {
+			return { ok: false, problem: "the ref names a different project", candidates: [] };
+		}
 		if (this.store.depthOf(module) === null) {
 			return { ok: false, problem: refusal.refModuleNotIndexed(module), candidates: [] };
 		}
@@ -421,7 +438,7 @@ export class NoteLedger {
 					problem: refusal.refAmbiguous(walk.candidates.length),
 					candidates: walk.candidates
 						.slice(0, CANDIDATES_SHOWN)
-						.map((candidate) => formatRef(module, candidate.segments)),
+						.map((candidate) => formatRef(this.project, module, candidate.segments)),
 				};
 			case "none": {
 				// Names beneath each path the walk stood on, each as the chain that names it alone.
@@ -437,7 +454,7 @@ export class NoteLedger {
 								: tried.kind === "ambiguous"
 									? tried.candidates
 									: [];
-						for (const each of found) candidates.add(formatRef(module, each.segments));
+						for (const each of found) candidates.add(formatRef(this.project, module, each.segments));
 					}
 				}
 				return {
@@ -471,7 +488,12 @@ export class NoteLedger {
 	private shown(text: string, rows: readonly NoteLinkRow[]): { text: string; links: NoteLink[] } {
 		const context = new ReadContext(this.store);
 		const links = rows.map((link) => this.linkNow(link, context));
-		return { text: rewriteRefs(text, new Map(links.map((link) => [link.written, link.current]))), links };
+		const current = new Map(links.map((link) => [link.written, link.current]));
+		rows.forEach((row, index) => {
+			const link = links[index];
+			if (link !== undefined) current.set(row.written, link.current);
+		});
+		return { text: rewriteRefs(text, current, this.project), links };
 	}
 
 	private summaryOf(text: string): Pick<Note, "summary" | "restAt"> {
@@ -517,7 +539,8 @@ export class NoteLedger {
 
 	/** A link at its target's current address, or broken where the target is gone. */
 	private linkNow(link: NoteLinkRow, context: ReadContext): NoteLink {
-		const broken: NoteLink = { written: link.written, current: link.written, state: "broken" };
+		const written = storedRef(link.written, this.project);
+		const broken: NoteLink = { written, current: written, state: "broken" };
 		if (link.target.startsWith(MODULE_TARGET)) {
 			const module = link.target.slice(MODULE_TARGET.length);
 			return module !== "" && this.store.depthOf(module) !== null
@@ -532,8 +555,8 @@ export class NoteLedger {
 		const declaration = declarations.find((row) => row.symbolId === at.symbolId);
 		if (module === null || segments === null || declaration === undefined) return broken;
 		return {
-			written: link.written,
-			current: formatRef(module, segments),
+			written,
+			current: formatRef(this.project, module, segments),
 			symbolId: at.symbolId,
 			kind: declaration.kind,
 			state: this.store.notes.digestOf(link.target) === link.targetDigest ? "ok" : "changed",

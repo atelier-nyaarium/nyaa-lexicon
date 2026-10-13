@@ -87,6 +87,8 @@ describe("listing", () => {
 				?.text ?? "";
 
 		expect(plain).not.toContain("Store");
+		expect(plain).toContain("Workspace Key");
+		expect(plain).toContain("alpha-abc123");
 		expect(mixed).toContain("Store");
 		expect(mixed).toContain("/x/refs");
 	});

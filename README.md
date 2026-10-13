@@ -94,7 +94,7 @@ change broke is reported rather than assumed away. `refactor_replace` given the 
 refused rather than rewritten.
 
 **Knowledge.** One markdown note per symbol; its opening paragraph is the summary. `read_note` shows
-it with advisories: source changed, broken or changed refs, doubt, a pending proposal. `write_note` saves it against the revision it read; a broken `ref://` link is
+it with advisories: source changed, broken or changed refs, doubt, a pending proposal. `write_note` saves it against the revision it read; a broken `project-ref://` link is
 refused with candidates. `doubt_note` flags a misleading revision. `note_backlinks` lists notes
 whose refs name a symbol or file. The author comes from the MCP client handshake, never from the
 caller. See [docs/knowledge-layer.md](docs/knowledge-layer.md).

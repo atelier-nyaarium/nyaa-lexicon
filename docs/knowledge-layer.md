@@ -19,11 +19,12 @@ carries the revision it read, and a mismatch bounces with the note as it stands.
 What to write is the `write_note` prompt: what the symbol is for, then only what the code and its
 doc comment do not show.
 
-A ref is a link, `[label](ref://path:Scope:Name)`, or `[label](ref://path)` for a file, anywhere in
+A ref is a link, `[label](project-ref://<workspace-key>/path:Scope:Name)`, or `[label](project-ref://<workspace-key>/path)` for a file, anywhere in
 the text, a mermaid `click` line included; never inside other code. Saving resolves each to a
-subject and refuses a broken or ambiguous one with candidates and its text offset (`at`). Refs are stored by subject, so a read
-renders each at its target's current address and a rename needs no rewrite. `noteBacklinks` reads
-them back.
+subject in the same project as the note; use that project's workspace key, shown by `list_projects`.
+Saving refuses a broken, ambiguous or foreign-project ref with candidates and its text offset (`at`).
+Refs are stored by subject, so a read renders each at its target's current address and a rename needs
+no rewrite. `noteBacklinks` reads them back.
 
 Advisories are computed on read: the symbol's source changed since the revision was saved or
 confirmed, a ref's target is gone or changed, a doubt stands, a proposal waits. A doubt belongs to

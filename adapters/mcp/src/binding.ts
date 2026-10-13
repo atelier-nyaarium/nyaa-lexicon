@@ -55,7 +55,7 @@ export interface BindingDeps {
 export const LIST_PROJECTS_DESCRIPTION = `
 # \`list_projects\`
 
-List registered projects with their last indexed time, when their workspace was last seen, and workspace path.
+List registered projects, workspace keys, index times, and workspace paths.
 
 A \`●\` marks projects bound in this session.
 `.trim();
@@ -174,12 +174,21 @@ export function listProjectsTool(deps: BindingDeps): ToolResult {
 	const cells = rows.map(({ project, times }) => [
 		project.bound ? `●` : "",
 		project.name,
+		project.key,
 		stamp(times.lastIndexedAt),
 		stamp(times.lastSeenAt),
 		project.root,
 		...(anyCustom ? [project.stateDir ?? ""] : []),
 	]);
-	const headers = ["", `Project`, `Last Indexed`, `Last Seen`, `Workspace`, ...(anyCustom ? [`Store`] : [])];
+	const headers = [
+		"",
+		`Project`,
+		`Workspace Key`,
+		`Last Indexed`,
+		`Last Seen`,
+		`Workspace`,
+		...(anyCustom ? [`Store`] : []),
+	];
 	const widths = headers.map((header, column) =>
 		Math.max(header.length, ...cells.map((row) => row[column]?.length ?? 0)),
 	);
@@ -206,6 +215,7 @@ export function registerProjectTool(deps: BindingDeps, args: { root: string; sta
 			outcome.already ? `# Project already registered` : `# Project registered`,
 			"",
 			`\`${outcome.project.name}\``,
+			`Workspace key: \`${outcome.project.key}\``,
 			`\`${outcome.project.root}\``,
 			...(outcome.project.stateDir === undefined ? [] : [`Store: \`${outcome.project.stateDir}\``]),
 			...renamed,

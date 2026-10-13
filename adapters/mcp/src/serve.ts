@@ -2,7 +2,12 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { daemonChannel, resolveChain as resolveChainInSession, writeInstallRecord } from "@nyaa-lexicon/client";
+import {
+	daemonChannel,
+	resolveChain as resolveChainInSession,
+	workspaceKey,
+	writeInstallRecord,
+} from "@nyaa-lexicon/client";
 import {
 	createSessionBinds,
 	lexiconRoot,
@@ -82,12 +87,13 @@ export function daemonBackend(workspaceRoot: string, stateDir?: string): ToolBac
 		source: ownSource(),
 		...defined({ stateDir }),
 	});
-	return backendOver(ask);
+	return backendOver(ask, workspaceKey(workspaceRoot));
 }
 
 /** One table over one `ask`, so the daemon's socket and the in-process dispatcher meet the wire alike. */
-function backendOver(ask: Asker): ToolBackend {
+function backendOver(ask: Asker, projectId: string): ToolBackend {
 	return {
+		projectId,
 		findByName: (name, module) => ask("findByName", { name, module }),
 		resolveChain: (module, segments) => resolveChainInSession({ ask }, module, segments),
 		moduleStatus: (module) => ask("moduleStatus", { module }),

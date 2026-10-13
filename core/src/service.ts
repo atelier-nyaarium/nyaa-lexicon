@@ -3,6 +3,7 @@
 // Each owner is handed a narrow port rather than the supervisor, and a residue test holds it there.
 // The methods below are pass-throughs on purpose.
 
+import { workspaceKey } from "@nyaa-lexicon/client";
 import {
 	type Binding,
 	type CacheStats,
@@ -138,7 +139,7 @@ export class LexiconService {
 				ask,
 			);
 		});
-		this.notes = new NoteLedger(store, this.clock);
+		this.notes = new NoteLedger(store, workspaceKey(workspaceRoot), this.clock);
 		this.relations = new RelationLedger(store, this.clock);
 		this.discovery = new RelationDiscovery(store, this.clock);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.

@@ -58,10 +58,16 @@ describe("reading a note back", () => {
 		const moved = renderNote(SYMBOL, {
 			...note,
 			sourceChanged: true,
-			links: [{ written: "ref://src/b.ts:Gone", current: "ref://src/b.ts:Gone", state: "broken" }],
+			links: [
+				{
+					written: "project-ref://test-project/src/b.ts:Gone",
+					current: "project-ref://test-project/src/b.ts:Gone",
+					state: "broken",
+				},
+			],
 		});
 		expect(moved).toContain("## Advisories");
-		expect(moved).toContain("ref://src/b.ts:Gone");
+		expect(moved).toContain("project-ref://test-project/src/b.ts:Gone");
 		expect(renderNote(SYMBOL, note)).not.toContain("## Advisories");
 	});
 });

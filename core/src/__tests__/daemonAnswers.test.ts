@@ -12,9 +12,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { workspaceKey } from "@nyaa-lexicon/client";
 import {
 	DAEMON_METHODS,
 	type DaemonMethod,
+	formatRef,
 	hashContent,
 	methodMutates,
 	type RequestOf,
@@ -46,6 +48,7 @@ interface Harness {
 	gate: Gate;
 	dispatch: (method: string, params: unknown) => Promise<unknown>;
 	symbol: (name: string, module: string) => string;
+	ref: (module: string, ...segments: string[]) => string;
 	close: () => void;
 }
 
@@ -83,6 +86,7 @@ async function openWorkspace(files: Record<string, string>, providers: string[],
 
 	return {
 		service,
+		ref: (module, ...segments) => formatRef(workspaceKey(workspace), module, segments),
 		handlers: daemonHandlers(service, refactor),
 		gate: gateOf(service.gate),
 		dispatch: createDispatch(service, refactor),
@@ -425,12 +429,15 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	writeNote: async () => {
 		const note = {
 			symbolId: harness.symbol("add", "cart.ref"),
-			text: "Adds one item to a [Cart](ref://cart.ref:Cart).",
+			text: `Adds one item to a [Cart](${harness.ref("cart.ref", "Cart")}).`,
 			expectedRevision: 0,
 			author: AGENT,
 		};
-		const broken = await ask("writeNote", { ...note, text: "Adds to a [cart](ref://cart.ref:Ghost)." });
-		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain("ref://cart.ref:Cart");
+		const broken = await ask("writeNote", {
+			...note,
+			text: `Adds to a [cart](${harness.ref("cart.ref", "Ghost")}).`,
+		});
+		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain(harness.ref("cart.ref", "Cart"));
 		const saved = await ask("writeNote", note);
 		expect(saved.outcome === "saved" && saved.note).toMatchObject({
 			revision: 1,
@@ -476,13 +483,13 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	searchRefs: async () => {
 		const found = await ask("searchRefs", { text: "car", limit: 10 });
 		expect(found.results.map((entry) => entry.ref)).toEqual(
-			expect.arrayContaining(["ref://cart.ref:Cart", "ref://cart.ref"]),
+			expect.arrayContaining([harness.ref("cart.ref", "Cart"), harness.ref("cart.ref")]),
 		);
 		expect((await ask("searchRefs", { text: " " })).results).toEqual([]);
 	},
 	noteBacklinks: async () => {
 		const symbolId = harness.symbol("add", "cart.ref");
-		const text = "Fills a [Cart](ref://cart.ref:Cart).";
+		const text = `Fills a [Cart](${harness.ref("cart.ref", "Cart")}).`;
 		await ask("writeNote", { symbolId, text, expectedRevision: 2, author: { kind: "person" } });
 		const backlinks = await ask("noteBacklinks", { symbolId: cart });
 		expect(backlinks.notes.map((entry) => entry.symbolId)).toEqual([symbolId]);
