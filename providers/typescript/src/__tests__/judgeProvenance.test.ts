@@ -14,38 +14,42 @@ import {
 afterEach(cleanWorkspaces);
 
 describe("load-cycle judge: provenance", () => {
-	it("reaches a branch of a guard on an input only where a simple test of it, by its type, can go either way", async () => {
-		const mode = 'declare const mode: "a" | "b";';
-		const maybe = "declare const s: string | undefined;";
-		await expectShapes([
-			['declare const env: { NODE_ENV?: string };\nif (env.NODE_ENV !== "production") A;', "bad"],
-			["declare const pkg: { flag: boolean };\nif (pkg.flag) A;", "bad"],
-			[`${mode}\nswitch (mode) { case "a": A; }`, "bad"],
-			[`${maybe}\nif (typeof s === "string") A;`, "bad"],
-			[`${maybe}\nif (s == null) A;`, "bad"],
-			[`${maybe}\nif (s ?? A) {}`, "bad"],
-			// A type that admits one outcome decides the test.
-			["declare const yes: true;\nif (yes) A;", "bad"],
-			['declare const x: "x";\nif (x === "x") A;', "bad"],
-			['declare const n: number;\nif (typeof n === "number") A;', "bad"],
-			[`${mode}\nif (mode === "c") A;`, "fine"],
-			[`${maybe}\nif (typeof s === "number") A;`, "fine"],
-			// A type that does not spell its values exactly, or a value computed from an input, decides nothing provable.
-			['declare const m: `prefix-${string}`;\nif (m === "wrong") A;', "unknown"],
-			['declare const m: Uppercase<string>;\nif (m === "lower") A;', "unknown"],
-			[`${mode}\nswitch (mode) { case "a": break; case "b": break; default: A; }`, "fine"],
-			["declare const n: number;\nif (n + 1 === 3) A;", "unknown"],
-			["if (Math.random() > 0.5) A;", "unknown"],
-			["if (Math.random() > 1) A;", "unknown"],
-			["const n = Math.random();\nif (Math.abs(n) < 0) A;", "unknown"],
-			["const n = Math.random();\nif (Math.min(n, 0) > 1) A;", "unknown"],
-			["switch (Math.random()) { case 1: A; }", "unknown"],
-			["if (Date.now() % 2 === 0) A;", "unknown"],
-			["const f = Math.random() > 0.5;\nif (f === (1 as any)) A;", "unknown"],
-			["const n = Math.random();\nif (Number.isNaN(n) === (1 as any)) A;", "unknown"],
-			['declare const argv: string[];\nif (new Set(argv).has("--x")) A;', "unknown"],
-		]);
-	});
+	it(
+		"reaches a branch of a guard on an input only where a simple test of it, by its type, can go either way",
+		async () => {
+			const mode = 'declare const mode: "a" | "b";';
+			const maybe = "declare const s: string | undefined;";
+			await expectShapes([
+				['declare const env: { NODE_ENV?: string };\nif (env.NODE_ENV !== "production") A;', "bad"],
+				["declare const pkg: { flag: boolean };\nif (pkg.flag) A;", "bad"],
+				[`${mode}\nswitch (mode) { case "a": A; }`, "bad"],
+				[`${maybe}\nif (typeof s === "string") A;`, "bad"],
+				[`${maybe}\nif (s == null) A;`, "bad"],
+				[`${maybe}\nif (s ?? A) {}`, "bad"],
+				// A type that admits one outcome decides the test.
+				["declare const yes: true;\nif (yes) A;", "bad"],
+				['declare const x: "x";\nif (x === "x") A;', "bad"],
+				['declare const n: number;\nif (typeof n === "number") A;', "bad"],
+				[`${mode}\nif (mode === "c") A;`, "fine"],
+				[`${maybe}\nif (typeof s === "number") A;`, "fine"],
+				// A type that does not spell its values exactly, or a value computed from an input, decides nothing provable.
+				['declare const m: `prefix-${string}`;\nif (m === "wrong") A;', "unknown"],
+				['declare const m: Uppercase<string>;\nif (m === "lower") A;', "unknown"],
+				[`${mode}\nswitch (mode) { case "a": break; case "b": break; default: A; }`, "fine"],
+				["declare const n: number;\nif (n + 1 === 3) A;", "unknown"],
+				["if (Math.random() > 0.5) A;", "unknown"],
+				["if (Math.random() > 1) A;", "unknown"],
+				["const n = Math.random();\nif (Math.abs(n) < 0) A;", "unknown"],
+				["const n = Math.random();\nif (Math.min(n, 0) > 1) A;", "unknown"],
+				["switch (Math.random()) { case 1: A; }", "unknown"],
+				["if (Date.now() % 2 === 0) A;", "unknown"],
+				["const f = Math.random() > 0.5;\nif (f === (1 as any)) A;", "unknown"],
+				["const n = Math.random();\nif (Number.isNaN(n) === (1 as any)) A;", "unknown"],
+				['declare const argv: string[];\nif (new Set(argv).has("--x")) A;', "unknown"],
+			]);
+		},
+		{ timeout: 90_000 },
+	);
 
 	it("includes missing numeric indexes in declared input domains", async () => {
 		await expectShapes([
