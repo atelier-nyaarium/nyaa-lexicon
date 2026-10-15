@@ -10,6 +10,16 @@ import { SymbolKindSchema } from "./symbols.js";
 /** The longest note `write_note` takes, in UTF-16 code units, so a scan for its refs stays fast. */
 export const NOTE_MAX = 16_000;
 
+/** How a note reads, for every tool that writes one. */
+export const NOTE_STYLE = `
+- First line: what the symbol does.
+- Then, only where they apply: traps, invariants, side effects, ordering, related symbols.
+- Concise but accurate; miss no important detail.
+- Markdown is welcome: lists, code spans, and a mermaid diagram where a flow or state reads better drawn.
+- Use the code's own names; don't coin terms or join words with slashes.
+- Describe behavior as it stands, not history. Regular quotes, never smart quotes.
+`.trim();
+
 ////////////////////////////////
 //  Schemas
 

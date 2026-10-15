@@ -1,4 +1,4 @@
-import { defined, type NoteAuthor } from "@nyaa-lexicon/protocol";
+import { defined, NOTE_STYLE, type NoteAuthor } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
 import { renderNote, renderNoteBacklinks, renderNoteOutcome } from "../render.js";
 import type { SymbolArgs, ToolBackend, ToolResult } from "../result.js";
@@ -55,9 +55,7 @@ export const WRITE_NOTE_DESCRIPTION = `
 Write or replace a symbol's note. Read it first; pass its revision as \`expectedRevision\`, \`0\`
 when none stands.
 
-Describe this symbol in 1 short sentence.
-
-Include additional notes like related symbols, configs, traps, known pain points, or whatever.
+${NOTE_STYLE}
 
 Use this project's workspace key from \`list_projects\`: \`[label](project-ref://<workspace-key>/path:Scope:Name)\` for a symbol or \`[label](project-ref://<workspace-key>/path)\` for a file. Notes only link within their own project; broken or foreign-project refs are refused.
 `.trim();

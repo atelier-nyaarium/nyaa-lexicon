@@ -550,6 +550,7 @@ export {
 } from "./noteRefs.js";
 export {
 	NOTE_MAX,
+	NOTE_STYLE,
 	type Note,
 	type NoteAuthor,
 	NoteAuthorSchema,
