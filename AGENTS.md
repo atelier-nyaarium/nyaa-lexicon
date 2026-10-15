@@ -1,379 +1,77 @@
 # nyaa-lexicon
 
-Symbol-level code understanding served from one core: an MCP server for agents and an LSP server
-for editors. Point at a symbol, ask what it is, and get structure, direction (who defines it, who
-uses it), types, and honest uncertainty.
+Symbol-level code understanding served through MCP and LSP. The core indexes workspaces, language
+providers extract facts in separate processes, and clients and adapters expose the shared service.
 
-Ships as the `lexicon` plugin on the `atelier-nyaarium` marketplace.
+## Packages
 
-## Layout
-
-Bun workspace monorepo. Seven packages, and the boundaries are real.
-
-- `protocol/` - zod schemas, the symbol and fact id grammars, the daemon method table, the
-  conformance suite. Runs without the core, so a provider team is never blocked on us.
-- `client/` - the client half of the daemon socket: find or spawn a daemon, connect, ask. Depends
-  on protocol only and never writes index state; the daemon and both adapters consume it, and so
-  can any other node project.
-- `core/` - daemon, SQLite store, provider supervisor, every query, the knowledge layer. Project
-  completion is SQLite `fresh`, `unknown` or `complete` state plus a root-bound marker. Reads are
-  passive; open migrates committed legacy outline evidence, and a scan marks complete after its
-  pass commits. `fileScope.discoverSubmodules` recursively verifies initialized Git children and
-  reports incomplete reads. `projectRegistry` serializes registry updates with SQLite.
-- `adapters/mcp/` - agent-facing tools over stdio.
-- `adapters/lsp/` - the editor face, answering from the same service class but its own instance,
-  which is why it reads and does not write.
-- `providers/<language>/` - one per language, separate process, own runtime, speaks the protocol.
-  A new language starts at `docs/parsing.md`: its tier, its standards, and the mistakes to avoid.
-- `formats/` - the one reading of a data format, for the providers that meet the same one. Markdown
-  frontmatter and a `.yml` file are the same mapping, so they are the same function. It takes
-  provider context as DATA, never as a language to branch on.
-- `docs/` - architecture, provider-protocol, daemon-protocol, client, knowledge-layer, parsing.
-
-## Principles
-
-- **No band-aids.** Weigh the long-run cost of a workaround against the one-time cost of the right
-  design. Touch counts are not a reason to defer.
-- **Bug-class elimination is the unit of work.** Do not fix the bug; build the primitive that makes
-  the class impossible, then write down that it is impossible.
-- **Anything repeatable across languages is abstracted before it repeats again.** A shape landing in
-  a second provider is the signal; the third is a defect class. The primitive goes in `protocol/`,
-  language facts stay with the provider, and a residue forbids a provider redefining a member the
-  kit owns.
-- **Single-owner invariants, enforced.** One module owns a concept, everything else routes through
-  it, and a residue test fails the build if another module touches it.
-- **Uncertainty lives in the value, never the interface.** Three-valued answers over absence, and
-  every Unknown carries a reason from a closed enum.
-- **Honest incompleteness, in writing.** A pinned contract does not mean the body exists, and
-  pretending otherwise is the one lie this project exists to stop telling.
-- **Test density is a bar.** Roughly 0.4 test-lines per source-line. A phase without its tests is
-  not done.
+- `protocol/`: wire schemas, identifiers, provider kit, and provider conformance tools.
+- `client/`: daemon discovery and socket client.
+- `core/`: daemon, SQLite index, provider supervisor, queries, and knowledge layer.
+- `adapters/mcp/` and `adapters/lsp/`: agent tools and editor support.
+- `providers/<language>/`: one provider package per language.
+- `formats/`: shared readers for data formats used by providers.
+- `docs/`: architecture, protocol, client, knowledge, and parsing guides.
 
 ## Development
 
 ```bash
 bun install
-bun run check     # the full gate: corpora, lint, then tests on a fresh dist/; all parts report
-bun run corpora   # test corpora cloned into temp/ at pinned commits; --reset discards edits
-bun run lint      # run and report biome ci and tsc --build
-bun run test      # bun test, including the residue tests
-bun run lint:fix
-bun run bench     # a timed cold index of Lexicon's own source; --against <ref> compares and gates
-bun run snapshot  # the working tree and a fresh dist/ as a commit, for a project pinning Lexicon
+bun run check
+bun run corpora
+bun run lint
+bun run test
+bun run bench
+bun run snapshot
+bun run build patch|minor|major
 ```
 
-Corpus tests require local checkouts, so `check` runs `corpora` first. `CORPORA` in
-`scripts/corpora.ts` pins each test corpus.
+- `bun run check` runs corpora, lint, and tests. Tests run against a fresh `dist/`, then restore it.
+- `bun run corpora` syncs test repositories to pinned commits under `temp/`; `--reset` discards local edits.
+- `bun run lint` runs Biome and the TypeScript project build, reporting both results.
+- `bun run test` runs Bun tests, including residue tests. Package tests live in `src/__tests__/`;
+  script tests live in `scripts/__tests__/`.
+- `bun run bench` measures a cold index. Use `--against <ref>` to gate indexing changes on time and file count.
+- `bun run snapshot` builds a fresh bundle and creates `refs/snapshots/dev` for a consumer project.
+  It uses a scratch index and leaves the checkout and real index unchanged.
+- `bun run build patch|minor|major` updates versions, bundles `dist/`, and commits the release. Do
+  not edit package versions by hand. `bun run build --build-only` builds without a bump or commit.
+- Run conformance after provider or protocol changes, against every provider:
 
-`bench` indexes Lexicon at `HEAD` in a separate checkout. With `--against <ref>`, it also builds
-that ref in a temporary worktree and fails when the working tree takes over 20% longer or indexes
-fewer files. Run it after extraction, provider project-model or indexer changes. Cold indexing
-takes minutes.
+  ```bash
+  bun run protocol/src/conformance/cli.ts -- bun run providers/<language>/src/main.ts
+  bun dist/conformance.js bun run providers/<language>/src/main.ts
+  ```
 
-`snapshot` commits the working tree, untracked files and a fresh `dist/` through a scratch index
-to `refs/snapshots/dev`, and prints `{ ref, sha, subject }`. The checkout, index and `dist/` remain
-unchanged. Projects pinning Lexicon as a submodule can fetch that ref to try unreleased work.
-NyaaCode's umbrella does this with `lexicon:dev`.
+  The source command is for iteration; the `dist/` command checks the shipped artifact.
 
-`withBuiltDist` in `scripts/dist.ts` owns building `dist/`, using the build and restoring the
-committed `dist/`. `check`, `bench` and `snapshot` use it; plain `bun run test` tests whatever
-`dist/` holds. It refuses a `dist/` that differs from HEAD, since restoring would discard it,
-and a failed restore fails the run. The release build commits
-`dist/` and manages its own rollback.
+`dist/` is the committed runtime bundle, not a standalone distribution. The plugin ships the full
+checkout so the daemon can find provider bundles. `check`, `bench`, and `snapshot` build it and restore
+the committed bundle. Package TypeScript output goes to `.tsbuild/`. Source tests do not verify the
+bundle; the build smoke checks the bundled providers.
 
-**Read both halves of the gate.** Grepping lint output for `error TS` misses every formatting
-failure. When in doubt, run `bunx biome ci . --reporter=summary` on its own.
+Provider fact changes for unchanged source require a package major release. Removing or renaming a
+daemon method requires a protocol major release. Package and protocol versions are separate.
 
-**Bun is the one runtime**, for development, tests and shipping; the floor is `BUN_FLOOR` in
-`client/src/runtime.ts`, since 1.3.9 and below resolve no `node:sqlite` and lack the `bun test`
-flags the gate uses, and every entry point but the conformance CLI, which a provider team may run
-anywhere, refuses anything else by name. Consumers run `bun dist/main.js` with no install step, which is the whole reason
-`dist/` is committed: Claude Code runs `bun install` in an installed plugin, Copilot copies the
-repository and runs nothing, and the bundle needs neither. The bundle is built for node's module
-surface and carries no `bun:` import, so `client/` and `protocol/` stay importable from a consumer's
-node process (Switchboard's vitest is one).
+For daemon crashes, run `project_diagnostics` with the store key before investigating.
 
-`dist/` is not standalone, though. The plugin ships the whole checkout, and `lexiconRoot()` walks up
-from the running file looking for a directory holding both `providers/` and `package.json`, which is
-how the daemon finds the provider bundles to spawn. Copying `dist/` somewhere on its own throws
-`could not locate the lexicon repository from this build`, which is the right answer to an unsupported
-layout rather than a bug to route around.
+## Invariants
 
-Bun ships `node:sqlite`, so the store, the indexer and the daemon run from source and from the
-bundle alike:
+- Cross-language primitives belong in `protocol/`; shared data-format readers belong in `formats/`.
+  Never branch on a language in `core/` or `formats/`. Read `docs/parsing.md` before adding or
+  changing a provider.
+- The protocol provider kit owns provider module state. Core publishes `moduleAdmission` only after
+  the index records a commit or refusal. Providers learn from that verdict, not from their output.
+- Indexing must not run code from the indexed workspace. Start daemon and provider children through
+  `bunCommand` in `client/src/launch.ts`; run bounded child processes through `runBounded`.
+- Residue tests enforce ownership rules and are build gates. Read source through
+  `protocol/src/astResidue.ts`, not text matching. Plant a negative control and make each sweep fail
+  if it finds no files to inspect. Match the narrowest unambiguous token and check every existing
+  occurrence before trusting a new residue.
+- Daemon wire schemas strip unknown object keys. Do not make them strict or passthrough. MCP tool
+  argument schemas reject unknown keys.
+- Uncertainty belongs in the answer with a reason from the protocol's closed set. Do not guess or
+  omit an unavailable fact.
+- Source files must not contain control bytes, smart quotes, em dashes, or zero-width characters.
 
-```bash
-bun run build --build-only                       # bundle without bumping or committing
-
-bun core/src/indexCli.ts <repo> [symbol]         # index a repo, optionally query a name
-bun dist/grade.js <switchboard checkout>         # graded checks against a repo whose answers are known
-bun dist/daemon.js <repo>                        # the daemon itself
-```
-
-**Conformance never touches the store, so it does not need the build at all.** Run it from source
-and skip the rebuild while iterating on a provider or the corpus:
-
-```bash
-bun run protocol/src/conformance/cli.ts -- bun run providers/<language>/src/main.ts
-bun dist/conformance.js bun run providers/<language>/src/main.ts   # same thing, from the artifact
-```
-
-Use the `dist/` form to check what actually ships, and before a release.
-
-**Dogfooding runs through the installed plugin.** `.mcp.json` resolves through
-`${CLAUDE_PLUGIN_ROOT}`, so this checkout registers no server for itself. After changing anything
-the tools reach, rebuild and reload the plugin rather than assuming the running server is current.
-
-### Releasing
-
-```bash
-bun run build patch|minor|major   # bump every manifest, bundle dist/, commit both
-```
-
-Never hand-edit a version. The root `package.json` is the only file BUMPED; every workspace package
-and `.claude-plugin/plugin.json` is SET from it, and the MCP server DERIVES its version at build
-time. Bumping and building are one command because a `dist/` built at a version the manifests do not
-claim looks correct and is not.
-
-A release refuses uncommitted tracked changes and untracked files outside `dist/`, since provider
-discovery walks directories and would bundle source the commit lacks. A failed step, a bundle or
-smoke stopped by Ctrl-C, or a refused commit reverts and unstages the version files and `dist/`.
-
-**The build starts every bundled provider before it finishes.** Bundling proves the imports
-resolved, not that the thing runs, and a provider that dies on launch is recorded as an outage and
-skipped, so the index reports files in scope and no facts. A provider that cannot start fails the
-build, and a failed release build reverts `dist/` along with the version files.
-
-**It also refuses any bundle carrying a UMD wrapper.** A wrapper surviving IS the bundler having
-failed to resolve that dependency, so its inner requires are still there and resolve against `dist/`
-at runtime. Import the package's ESM entry instead, by path if it declares no `exports` map. This
-check is static because the startup smoke cannot reach the case: it runs providers only, and only at
-launch, so a lazily-evaluated UMD module dies at first parse and smokes clean.
-
-**A green `bun run test` is not evidence that the artifact runs.** The suite imports sources, and
-the bundle is a different resolution of them. The build's provider smoke and the UMD gate are what
-meet the artifact.
-
-**Provider extraction changes require a MAJOR release.** Major releases retire stored facts. If a
-provider changes a kind, name, range, binding or literal for unchanged source, ship a major.
-Correcting `typeParameter` to `interface` is this case.
-
-**Removing or renaming a daemon method requires a PROTOCOL major.** Clients connect to daemons
-NEWER than themselves on the premise that method tables only grow within a protocol major. Without
-the major, a stale client's calls start failing as `unknown method`.
-
-Patch and minor releases preserve stores. Build updates every provider manifest, so core-only
-releases do not invalidate facts.
-
-`dist` means exactly one thing here: the shipped bundle. Package `tsc` output goes to `.tsbuild/`.
-
-**After a crash, call `project_diagnostics` with the store key** before guessing. It renders
-`diagnostics.json` and `reports/` from the workspace's state directory, no daemon needed: which
-process held the memory, what the daemon was doing, and where each dead heap went.
-`LEXICON_HEAP_SNAPSHOT=1` on the daemon adds a heap snapshot near the limit for a targeted repro,
-gigabytes each, so not by default.
-
-Crash reports are the daemon's own: a high-water sample and, with `LEXICON_HEAP_SNAPSHOT=1`, a heap
-snapshot from the runtime, both under the store's `reports/`. Providers are never signalled for
-one; bun treats the signal as a death.
-
-## Verifying a change
-
-A test awaits a rejection with `rejection` or `rethrown` from `@nyaa-lexicon/protocol/rejection`,
-never `expect(...).rejects`, which stalls bun's loop while I/O is pending; a residue enforces it.
-
-Ordered by how much they prove:
-
-1. `bun run test` for the unit level.
-2. Conformance if the change touches a provider or the protocol, every provider, not just the
-   one you edited. A corpus case is shared, so an edit for one language runs against every other.
-3. `bun dist/grade.js <switchboard checkout>` if it touches extraction, resolution or the service. This asks a real
-   repository questions whose right answers are already known, so it catches "produces output" that
-   is not "produces the right output".
-
-   **Budget minutes, and do not wrap it in a short timeout.** It indexes about a thousand files
-   into an in-memory store on every run, up to five minutes, and a run killed early looks exactly
-   like a hang. Nothing lexicon owns persists between runs, so a repeat that finishes in seconds is
-   not a store being reused.
-4. Drive the built server against a real workspace. **A green gate is not evidence.** A defect the
-   suite cannot express survives a clean gate and dies to a five-line probe.
-
-   Provider discovery prefers the bundle over the source, so `indexCli` and the daemon both spawn
-   what is in `dist/`, not what you just edited. `check`, `bench` and `snapshot` call
-   `withBuiltDist` to build and restore `dist/`. For an ad hoc probe, run
-   `bun run build --build-only` first and
-   `git restore dist` after, so a probe's bundle never lands in a commit.
-
-## Rules
-
-- **Residue tests are build gates.** When adding one, plant the violation and watch it fail before
-  trusting it. Every sweep also asserts it FOUND files to check, so a run matching nothing fails
-  instead of quietly reporting clean. A sweep reads code through `protocol/src/astResidue.ts`
-  (calls, member reads, strings, forbidden reaches), never a pattern over the file's text.
-- **Match the token, never the context around it.** Planting proves a check fires on the case you
-  thought of, and says nothing about the ones you did not. A check written against the spelling that
-  motivated it lets every other spelling through. Forbid the narrowest unambiguous token. Where the
-  token already has instances on disk, run the check against ALL of them before trusting it.
-- **Never branch on a language in `core/` or `formats/`.** A residue test fails the build on the
-  quoted name itself; the fix is a new field on the provider contract.
-- **A provider learns what the index ADMITTED, never what it emitted.** `core/src/indexer.ts` is the
-  sole `moduleAdmission` publisher, after `store.replaceFile` returns or `recordFailure` records a
-  refusal. The provider kit, `protocol/src/moduleStore.ts`, stages parses, settles them from
-  verdicts, layers probes, forgets and fills. Providers declare `read`, `entries` and an optional
-  `same`.
-  `admission-publish-residue.test.ts` holds the publisher. `provider-state-residue.test.ts` forbids
-  module text reads outside the kit and state beside the store. Lifecycle conformance case
-  `probes-and-refusals-are-unseen` checks every stateful provider against a control.
-- **Core asks providers through `ProviderPort`, and tests double it through `fakeSupervisor`.**
-  The port is declared where its callers live, so a member core starts calling fails the type check
-  rather than a suite at runtime. A residue forbids casting a double to the supervisor class. The
-  shared double settles what the wire settles: an
-  unowned or contested module refused, a provider that is not running refused, comments kept only
-  where the tiers declare them, every answer parsed by its schema. A double that skips one of those
-  proves a path the daemon cannot reach.
-- **Never write a control byte, em dash, smart quote or zero-width character into source.** Enforced
-  over every tracked source file except generated `dist/` and temporary `tmp/` files. A raw NUL is
-  legal to tsc, invisible in an editor, identical at runtime, and makes git call the file binary and
-  grep return nothing for any pattern in it. Scan with `grep -a`: without it the file holding the
-  byte is exactly the file grep goes silent on, so "no match" reads as clean.
-- **Time in `core/` comes from `clock.ts`.** Every module but the owner is swept for `Date.now`,
-  `new Date()`, `setTimeout`, `setInterval`, `setImmediate`, `Bun.sleep` and their kin, and one
-  `Clock` is handed from the daemon's composition root to the store, the service, the ledger, the
-  transaction manager, the supervisor and the transport, so a fake clock drives a whole daemon in a
-  test. A new stamp or timer takes the clock it is handed; an entry point that builds no daemon
-  reads `systemClock` by name at its top.
-- **A race in `core/` is a deadline from `deadline.ts`.** `withTimeout` and `withinBudget` mint
-  their own second arm, and a residue forbids `Promise.race` and `Promise.any` in every other
-  module. A promise that outlives the call, a provider's lifetime for one, keeps a reaction per
-  race until it settles, which for a living provider is never; the supervisor's request queue
-  fails in-flight callers on death instead.
-- **A bounded, one-shot child process is spawned through `protocol/src/boundedChild.ts`'s
-  `runBounded`, never `spawn` or `execFile` by hand.** It is the one owner of the reap and
-  process-group-kill machinery a git call, the runtime probe and the python import probe each used
-  to hand-copy; `bounded-child-owner-residue.test.ts` forbids a new copy, with a named exception for
-  a long-lived process (the provider supervisor) that never fits a bounded run.
-- **Indexing never runs the indexed repo's code.** Every daemon and provider argv starts from
-  `bunCommand` in `client/src/launch.ts`, which pins lexicon's own bunfig and tsconfig and turns off
-  `.env` loading and auto-install; `launch.test.ts` forbids one built elsewhere and holds the
-  plugin's `.mcp.json` launch to the same flags. Python children run from the
-  provider's own folder, and git reads turn fsmonitor off. `scripts/isolationSmoke.ts` indexes a
-  hostile workspace from inside it on every build.
-- **A store's lock is claimed through `core/src/daemonLock.ts`, before the store is opened and
-  before it is removed.** The daemon and the delete road take the same link, so neither can open
-  or remove a store the other holds; `lock-residue.test.ts` forbids a second claim through
-  `linkSync` in core.
-- **The install record has one publisher: the plugin's MCP server, behind `--publish-install`.**
-  A daemon, a dev checkout or an embedded copy that wrote it would repoint every consumer spawning
-  from the record at itself. `install-publisher-residue.test.ts` refuses a `writeInstallRecord`
-  call anywhere else. Which release beside another is newest has one answer, `newestInstallBeside`
-  in `client/src/install.ts`, for the record's reader and the daemon's drift alike.
-- **A lock's raw text is parsed through one function, `parseDaemonLock` in
-  `protocol/src/daemonRecords.ts`, from every package that reads one.** core's `daemonLock.ts`,
-  client's `decideFromLock` and `shutdownDaemon`, and the MCP adapter's machine-wide tools all call
-  it rather than parsing by hand; `lock-residue.test.ts` forbids a second `DaemonLockSchema.safeParse`
-  anywhere in core, client or adapters. The lock's `role`, `"daemon"` or absent for one, `"delete"`
-  for the other, is read before anything else a lock says, since a delete's own claim carries the
-  store's directory as its `workspaceRoot` and no real port. A client reading `role: "delete"` waits
-  the claim out instead, asking and signalling nothing, since nothing behind it is a daemon.
-- **A daemon handler declares its effect.** Only `read`, `write` and `staged` in `core/src/dispatch.ts`
-  mint one, so a bare function cannot sit in the table and the dispatcher takes the workspace gate
-  by tag. `staged` is the shape the type cannot check, since a handler handed the gate may ignore
-  it; a residue pins those methods by name, and adding one is a reviewed edit.
-- **Every indexing road takes the workspace gate, and says which way.** A caller-held road,
-  `indexFile` and `applyBatch`, runs inside a hold its caller took around a larger unit. A
-  self-driven road, the scans and the upgrade walk, takes the gate itself once per file, around the
-  read, the parse and the commit together: a parse of bytes read before another road committed
-  newer ones puts the file back, and nothing stored orders two parses after the fact. The gate is
-  not re-entrant, so a self-driven road reached from inside a hold deadlocks on its first file. The
-  service builds the gate and the dispatcher and the live index read `service.gate`, so a second one
-  cannot be handed in. The live index watches before the warm scan reads and holds what arrives,
-  coalesced, until the scan settles, since `applyBatch` refuses a batch under the outline pass and
-  a full module edited before a later watcher start would stay stale; a failed scan releases nothing
-  and stops the watcher. `index-gate-residue.test.ts` refuses every mistake here;
-  `docs/architecture.md` holds the whole of it.
-- **A test asserting current behavior is not a test.** After a fix, tests that encoded the bug will
-  fail; that is the fix working.
-- **A conformance `STALL` is the machine or the run, never the provider.** A timeout or a dead
-  process is reported as stalled, with the load and the elapsed time, and the CLI exits 3 rather
-  than 1. Re-run at lower load before believing one; never file it as a provider bug from the first
-  run.
-- **Parsers follow `docs/parsing.md`.** A provider reads through the language's own parser (gold)
-  or one written here to that law (in-house), never a third-party approximation patched around.
-  Adding a language or changing a provider: read that doc first, its "Writing a provider" sections
-  included.
-- **Comments state constraints, not narration.** One line, two at most for a critical one.
-- **A refusal names what the author did and what to do instead.** A merely correct refusal, like
-  "not in the index", leaves the reader to invent a next step and invent it wrong. Every refusal is
-  a constructor in `core/src/refusals.ts`, knowledge and refactor alike; a raw string in a reason
-  slot is a type error in core and a residue refuses the cast.
-  Slots the protocol types as `string` are narrowed for core in `refusalSlots.ts` and asserted in
-  `refusalSlots.types.ts`, so widening one fails `tsc`. A warning riding a success is not a
-  refusal and stays a string.
-- **Knowledge is keyed by a subject, never by a symbol id.** `core/src/subjects.ts` owns the table
-  and every transition; a row's key never changes (a trigger refuses the update), and identity moves
-  only by rebinding the address. A refactor step journals what its rebind moved, with the state it
-  replaced, in the same transaction as the move, and every reversal restores exactly that, never a
-  state inferred from the subject as it stands.
-- **Relation discovery's snapshot and queue have one writer, `core/src/relationDiscovery.ts`.**
-  `recordExports` writes an export's shape and its queue entry together, so a shape is seen only as
-  it queues, or by a store's first quiet seed. `discovery-owner-residue.test.ts` refuses any other
-  caller of the discovery row writes.
-- **A read derives its declaration topology once, through `core/src/readContext.ts`.** Which
-  declarations a module holds, how they nest, which are local, which grouping stands above one, and
-  the summary a declaration answers as: one derivation, built per read and handed down, so no two
-  readers disagree about the same file. `core/src/locals.ts` holds the per-module containment and
-  the one container walk beneath it, and a residue forbids every other module naming either,
-  reading `containerId` to answer a nesting question, or reading `declarationsIn` outside the
-  readers it names as asking nothing about nesting. A plan's context is read outside the gate,
-  so it stamps each module at its first touch and the step refuses inside the gate when a stamp
-  moved; a hash cannot see a re-parse or an upgrade, and `stampOf` is compared nowhere else. A
-  rename or a move takes one context across every planning read (`prepareRename`, `renameIdMap`
-  and `modulesBoundTo`; `planMove` and its dependency walk), minted by the step in `dispatch.ts`
-  rather than per call. `symbolIdsIn` stamps the module asked but answers the id grammar's own
-  subtree, never the container walk, and the residue names every reader of it by why.
-  `docs/architecture.md` holds the whole of it.
-- **Paint facts are a projection, never a second parser.** `moduleFacts` and `parseFacts`
-  (`docs/daemon-protocol.md`'s Painting section) shape stored rows or a freshly parsed candidate into
-  ranges and kinds for a client to color; `core/src/paintFacts.ts` reads the store's rows or the
-  probe's `parseCandidate` exactly as the refactor planner does, and mints no fact of its own.
-- **A daemon wire object strips unknown keys; never `strict`, never `passthrough`.** A client and a
-  daemon are separately versioned, so a strict schema refuses a newer peer's extra field and a
-  passthrough one carries it somewhere nothing validates it. Tool argument schemas are the opposite
-  case and do reject the unknown, since a typo there is the caller's mistake, not a version skew.
-- **A pattern digest is evidence, never an identity key.** Two declarations can be textually
-  identical and carry different notes, so a digest may support `batchExactMatch`
-  and may never key a row.
-
-## Blind test corpora
-
-Two repositories nobody working here reads. **The discipline is the point: no Read, no grep, no
-opening a file. Only lexicon's own tool output.** A tool that can only be evaluated by someone who
-already knows the answer is being graded on a test it has seen.
-
-- **evie-bot** - the SOURCE test. Can it teach you a codebase you have never opened? This is the
-  corpus that exercises comments: its prose carries invariants, their enforcement and their failure
-  modes, so a comment tier either surfaces them or does not.
-- **nyaaskills** (its `dist/`) - the HARD test. A single minified bundle where every identifier is
-  two characters, so names become noise, the reference graph stays structurally intact and
-  semantically useless, and LITERALS carry the entire public contract verbatim. This is where the
-  free facts run out and only literals carry meaning.
-  Minification strips comments, so the comment tier has nothing to report here and finding nothing
-  is the right answer rather than a gap. Use this corpus for literals; use evie-bot for prose.
-
-  **Indexing that bundle takes a step, and pointing at it bare does not work.** The TypeScript
-  provider is project-model driven, so a directory with no `tsconfig.json` enumerates no files and
-  the scan reports zero with nothing to explain it. Give the corpus a `tsconfig.json` whose `include`
-  names the bundle, then index the directory holding it. Indexing the package root instead gets its
-  source, not the bundle, since a project's own config does not include its build output.
-
-Blind corpora are cloned manually into ignored `temp/`. `bun run corpora` clones corpora read by tests.
-
-## References
-
-Sibling projects to consult. Paths are wherever they are checked out; nothing here assumes a
-layout.
-
-- **nyaadot** - the framework-first role model. Read its doctrine and its `util/` primitives before
-  designing a new mechanism here.
-- **switchboard** - the toolchain and plugin-packaging reference, and a dogfood target: barrel
-  re-exports, a Kotlin twin held by fixtures, and residue tests.
+See `docs/architecture.md` for core coordination and `docs/knowledge-layer.md` for knowledge rules.

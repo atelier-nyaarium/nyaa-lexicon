@@ -1,22 +1,32 @@
 # protocol
 
-The wire contract: provider methods and their schemas, the symbol and fact id grammars, the
-conformance suite. Runs without the core, so a provider team is never blocked on us.
+Shared wire and provider contract: schemas, identifiers, daemon methods, provider kit, and provider
+conformance tools. It runs without the core so provider teams can validate against the protocol alone.
 
-## Versioning is a migration window, never a museum
+## Wire and compatibility
 
-`PROTOCOL_VERSION` majors break the wire. When one does, a newer daemon MAY keep answering the
-previous major's read shape so sessions mid-update keep working. That window has rules:
+`PROTOCOL_VERSION` is `8.0.0`. The daemon's `OLDEST_CLIENT_MAJOR` is `8`, so this build serves
+protocol major 8. Package versions and the wire version are separate.
 
-- **One or two versions back. Never more.** The window exists so a running session survives an
-  update, not so every past shape lives forever.
-- **Delete the old surface when the window closes.** A shape kept "just in case" is the start of
-  permanent multi-versioning, where every change costs N implementations and the N-th is always
-  the one that drifts.
-- **State the removal date in the shim's comment.** A shim with no stated end is permanent.
-- **Clients ride forward, never backward.** A client meeting a NEWER protocol daemon connects to
-  it (`decideFromLock`); only an older one is replaced. Two sides retiring each other is a war
-  that rebuilds the index on every flip.
+Protocol majors break the wire. Changes within a major are additive. Daemon wire object schemas
+strip unknown keys; do not make them strict or passthrough. MCP tool argument schemas are strict.
 
-A major that ships no window is a clean break, which is allowed and sometimes right: say so in
-the release notes and tell people to reload.
+A client may use a newer daemon only when its advertised `oldestClientMajor` includes the client's
+major. Set that value only for client majors the daemon still serves. Removing or renaming a daemon
+method requires a protocol major release.
+
+Use `ModulePathSchema` for module paths in wire requests and notifications. It normalizes valid
+module keys, and handlers receive the parsed normalized value.
+
+Put behavior shared across providers in the provider kit before duplicating it. Read the ownership
+residues in `protocol/src/__tests__/` before changing a shared primitive.
+
+Run conformance from source while iterating, without building the core:
+
+```bash
+bun run protocol/src/conformance/cli.ts -- bun run providers/<language>/src/main.ts
+bun dist/conformance.js bun run providers/<language>/src/main.ts
+```
+
+Run it against every provider after a protocol or provider change. Use the `dist/` command to check
+the shipped artifact.
