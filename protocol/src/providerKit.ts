@@ -67,6 +67,25 @@ export interface WalkOptions {
 	scope?: readonly string[] | undefined;
 }
 
+/** Provider state carried along one import path. */
+export interface ImportGraphCallbacks<State, Edge, Value, Key> {
+	module(state: State): string;
+	key(state: State): Key;
+	imports(state: State): readonly Edge[];
+	resolve(state: State, edge: Edge): State | undefined;
+	initial(state: State): Value;
+	apply(state: State, edge: Edge, current: Value, child: Value | undefined): Value;
+}
+
+export type ImportGraphOrder = "depthFirst" | "breadthFirst";
+
+export interface ImportGraphEntry<State, Edge> {
+	state: State;
+	from: State;
+	edge: Edge;
+	depth: number;
+}
+
 ////////////////////////////////
 //  Constants
 
@@ -144,6 +163,86 @@ export function qualifierDescriptors(
 	declared: (name: string) => Descriptor | undefined,
 ): Descriptor[] {
 	return names.map((name) => declared(name) ?? { kind: "namespace", name });
+}
+
+/** Folds an import graph in source order, with module cycles and provider-keyed results. */
+export function walkImportGraph<State, Edge, Value, Key>(
+	root: State,
+	callbacks: ImportGraphCallbacks<State, Edge, Value, Key>,
+	memo: Map<Key, Value>,
+): Value {
+	function visit(state: State, ancestors: ReadonlySet<string>): Value {
+		const key = callbacks.key(state);
+		if (memo.has(key)) return memo.get(key) as Value;
+
+		const module = callbacks.module(state);
+		const active = new Set(ancestors);
+		active.add(module);
+		let value = callbacks.initial(state);
+		for (const edge of callbacks.imports(state)) {
+			const childState = callbacks.resolve(state, edge);
+			const childModule = childState === undefined ? undefined : callbacks.module(childState);
+			const child =
+				childState === undefined || childModule === undefined || active.has(childModule)
+					? undefined
+					: visit(childState, active);
+			value = callbacks.apply(state, edge, value, child);
+		}
+		memo.set(key, value);
+		return value;
+	}
+
+	return visit(root, new Set());
+}
+
+/** Lists reachable import states in the requested order, emitting each module once. */
+export function walkImportGraphEntries<State, Edge, Key>(
+	root: State,
+	callbacks: Pick<ImportGraphCallbacks<State, Edge, unknown, Key>, "module" | "key" | "imports" | "resolve">,
+	memo: Map<Key, State>,
+	order: ImportGraphOrder,
+): ImportGraphEntry<State, Edge>[] {
+	const held = (state: State): State => {
+		const key = callbacks.key(state);
+		if (memo.has(key)) return memo.get(key) as State;
+		memo.set(key, state);
+		return state;
+	};
+	const start = held(root);
+	const visited = new Set([callbacks.module(start)]);
+	const entries: ImportGraphEntry<State, Edge>[] = [];
+
+	function children(state: State, depth: number): Array<ImportGraphEntry<State, Edge>> {
+		const found: Array<ImportGraphEntry<State, Edge>> = [];
+		for (const edge of callbacks.imports(state)) {
+			const next = callbacks.resolve(state, edge);
+			if (next === undefined) continue;
+			const module = callbacks.module(next);
+			if (visited.has(module)) continue;
+			visited.add(module);
+			found.push({ state: held(next), from: state, edge, depth });
+		}
+		return found;
+	}
+
+	if (order === "breadthFirst") {
+		const pending = children(start, 1);
+		for (let at = 0; at < pending.length; at++) {
+			const entry = pending[at] as ImportGraphEntry<State, Edge>;
+			entries.push(entry);
+			pending.push(...children(entry.state, entry.depth + 1));
+		}
+		return entries;
+	}
+
+	function visit(state: State, depth: number): void {
+		for (const entry of children(state, depth)) {
+			entries.push(entry);
+			visit(entry.state, depth + 1);
+		}
+	}
+	visit(start, 1);
+	return entries;
 }
 
 /** Returns angle depth change; `>>=` is not a closer here. */

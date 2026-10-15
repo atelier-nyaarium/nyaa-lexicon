@@ -1,27 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import { coordinatesOf } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { extractTrivia } from "../comments";
-import { harness } from "./harness.js";
+import { harness, workspace } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
-
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-comments-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
 
 function trivia(text: string, module = "src/a.ts") {
 	const kind = module.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
@@ -50,10 +34,6 @@ function slicedOf(text: string, module?: string): string[] {
 		return value;
 	});
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 ////////////////////////////////
 //  Tests

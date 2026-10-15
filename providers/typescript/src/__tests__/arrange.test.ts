@@ -1,7 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import {
 	type ArrangeEditsRequest,
 	type ArrangeImportSite,
@@ -14,20 +11,7 @@ import {
 	type Range,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
-import { harness } from "./harness.js";
-
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-arrange-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
+import { harness, workspace } from "./harness.js";
 
 /** One module's part, as the core builds it. */
 type Part = Omit<ArrangeEditsRequest, "text" | "exists" | "fromModule" | "toModule">;
@@ -121,10 +105,6 @@ function imported(name: string, specifier = `./${name}`): MoveDependency {
 function inside(name: string): MoveDependency {
 	return { name, origin: { kind: "insideClosure", symbolId: id(name) } };
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("arrange edits", () => {
 	it("lands two source declarations at the target's end as one group, the one using the other importing nothing for it", () => {

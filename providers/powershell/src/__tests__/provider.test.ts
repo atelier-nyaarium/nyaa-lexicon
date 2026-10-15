@@ -8,6 +8,7 @@ import {
 	FileFactsSchema,
 	handlersFor,
 	PROTOCOL_VERSION,
+	parseSymbolId,
 	type Range,
 } from "@nyaa-lexicon/protocol";
 import { parsePowerShellFile } from "../extract.js";
@@ -449,6 +450,38 @@ describe("references and binding", () => {
 			status: "external",
 			packageName: "Pester",
 		});
+	});
+
+	it("keeps ambiguous type candidates in breadth-first import order across cycles", () => {
+		const files = {
+			"a.ps1": ". ./c.ps1\n",
+			"b.ps1": "class Thing { }\n",
+			"c.ps1": ". ./root.ps1\nclass Thing { }\n",
+			"root.ps1": ". ./a.ps1\n. ./b.ps1\n[Thing] $value\n",
+		};
+		const reference = provider(files)
+			.parse("root.ps1")
+			.references.find((candidate) => candidate.name === "Thing");
+		expect(reference?.binding.status).toBe("ambiguous");
+		if (reference?.binding.status !== "ambiguous") return;
+		expect(reference.binding.candidates.map((symbolId) => parseSymbolId(symbolId)?.module)).toEqual([
+			"b.ps1",
+			"c.ps1",
+		]);
+	});
+
+	it("settles a definition reachable after an import cycle", () => {
+		const files = {
+			"a.ps1": ". ./root.ps1\n. ./b.ps1\n",
+			"b.ps1": "function Get-AfterCycle { }\n",
+			"root.ps1": ". ./a.ps1\nGet-AfterCycle\n",
+		};
+		const reference = provider(files)
+			.parse("root.ps1")
+			.references.find((candidate) => candidate.name === "Get-AfterCycle");
+		expect(reference?.binding.status).toBe("bound");
+		if (reference?.binding.status !== "bound") return;
+		expect(parseSymbolId(reference.binding.symbolId)?.module).toBe("b.ps1");
 	});
 
 	it("drops an unbound command, type or member, and keeps an unbound variable", () => {

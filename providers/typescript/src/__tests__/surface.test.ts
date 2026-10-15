@@ -1,31 +1,13 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { FOLD_MARK, parseSymbolId, withOccurrences } from "@nyaa-lexicon/protocol";
 import { configuredSurfaceCandidates, isLikelyBundle, surfaceGlobMatches } from "../bundle";
 import { extractSurfaceFile } from "../surface";
-import { harness } from "./harness.js";
+import { harness, workspace } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
-
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-surface-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 ////////////////////////////////
 //  Tests
@@ -328,13 +310,23 @@ describe("registered declaration surfaces", () => {
 	});
 
 	it("resolves a workspace package linked into node_modules to its source", () => {
-		const root = workspace({
-			"src/app.ts": 'import { shared } from "shared";\n\nexport const app = shared;\n',
-			"packages/shared/package.json": JSON.stringify({ name: "shared", types: "src/index.ts" }),
-			"packages/shared/src/index.ts": "export const shared = 1;\n",
-		});
-		mkdirSync(path.join(root, "node_modules"));
-		symlinkSync(path.join(root, "packages/shared"), path.join(root, "node_modules/shared"), "dir");
+		const root = workspace(
+			{
+				"src/app.ts": 'import { shared } from "shared";\n\nexport const app = shared;\n',
+				"packages/shared/package.json": JSON.stringify({ name: "shared", types: "src/index.ts" }),
+				"packages/shared/src/index.ts": "export const shared = 1;\n",
+			},
+			{
+				setup: (workspaceRoot) => {
+					mkdirSync(path.join(workspaceRoot, "node_modules"));
+					symlinkSync(
+						path.join(workspaceRoot, "packages/shared"),
+						path.join(workspaceRoot, "node_modules/shared"),
+						"dir",
+					);
+				},
+			},
+		);
 		const provider = harness();
 		provider.initialize(root);
 

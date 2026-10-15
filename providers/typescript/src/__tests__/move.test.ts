@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { mkdirSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import {
 	applyEdits,
@@ -15,20 +14,7 @@ import {
 import ts from "typescript";
 import { importOf } from "../imports.js";
 import { makeMoveEdits } from "../move.js";
-import { harness } from "./harness.js";
-
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-move-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
+import { harness, workspace } from "./harness.js";
 
 function rangeForText(text: string, value: string, from = 0): Range {
 	const start = text.indexOf(value, from);
@@ -70,10 +56,6 @@ function importInto(target: string, dependencies: MoveDependency[], files: Recor
 function sibling(name: string): MoveDependency {
 	return { name, origin: { kind: "sourceModule", symbolId: `source.${name}.`, name, exported: true } };
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("move edits", () => {
 	it("refuses insertion positions that do not address content", () => {
@@ -1526,17 +1508,27 @@ describe("move edits", () => {
 
 	it("keeps a linked workspace package's specifier for a dependency it still reaches", () => {
 		const body = "export const moved = findRefs(text);\n";
-		const root = workspace({
-			"packages/proto/package.json": JSON.stringify({
-				name: "@acme/proto",
-				exports: { "./refs": "./src/refs.ts" },
-			}),
-			"packages/proto/src/refs.ts": "export function findRefs(text: string) { return text; }\n",
-			"app/src/source.ts": "",
-			"app/src/editor/target.ts": "",
-		});
-		mkdirSync(path.join(root, "node_modules/@acme"), { recursive: true });
-		symlinkSync(path.join(root, "packages/proto"), path.join(root, "node_modules/@acme/proto"), "dir");
+		const root = workspace(
+			{
+				"packages/proto/package.json": JSON.stringify({
+					name: "@acme/proto",
+					exports: { "./refs": "./src/refs.ts" },
+				}),
+				"packages/proto/src/refs.ts": "export function findRefs(text: string) { return text; }\n",
+				"app/src/source.ts": "",
+				"app/src/editor/target.ts": "",
+			},
+			{
+				setup: (workspaceRoot) => {
+					mkdirSync(path.join(workspaceRoot, "node_modules/@acme"), { recursive: true });
+					symlinkSync(
+						path.join(workspaceRoot, "packages/proto"),
+						path.join(workspaceRoot, "node_modules/@acme/proto"),
+						"dir",
+					);
+				},
+			},
+		);
 		const response = move(root, {
 			module: "app/src/editor/target.ts",
 			text: "",

@@ -1002,6 +1002,18 @@ describe("the wire face", () => {
 		});
 	});
 
+	test("a source cycle stops at the active file and reaches the child's definition", () => {
+		const files = {
+			"main.sh": "source ./child.sh\necho $CHILD\n",
+			"child.sh": "source ./main.sh\nCHILD=1\n",
+		};
+		const facts = provider(files).parseFile({ module: "main.sh", contentHash: "h", text: files["main.sh"] });
+		expect(facts.references.find((reference) => reference.name === "CHILD")?.binding).toMatchObject({
+			status: "bound",
+			symbolId: "lexicon bash child.sh CHILD.",
+		});
+	});
+
 	test("every reference is bare, a dotted or colon-joined function name included", () => {
 		const lib = "ns::helper() { :; }\nSHARED=1\n";
 		const main = [

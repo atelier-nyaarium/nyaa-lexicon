@@ -1,29 +1,15 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { harness } from "./harness.js";
+import { harness, workspace } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
-
-const roots: string[] = [];
 
 const CART = {
 	"src/cart.ts": "export function add(left: number, right: number) { return left + right; }\n",
 	"src/use.ts": 'import { add } from "./cart";\nexport const total = add(1, 2);\n',
 };
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-admission-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
 
 function verdict(provider: ReturnType<typeof harness>, module: string, hash: string, refusal?: string): void {
 	provider.handlers.moduleAdmission?.({
@@ -54,10 +40,6 @@ function addBinding(provider: ReturnType<typeof harness>) {
 	if (reference === undefined) throw new Error("use.ts does not reference add");
 	return reference.binding;
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 ////////////////////////////////
 //  Tests

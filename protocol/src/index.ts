@@ -382,7 +382,20 @@ export {
 	referenceFactId,
 } from "./factId.js";
 export { hashBytes, hashContent } from "./hash.js";
-export { FOLD_MARK, type HeaderFold, type HeaderSpan, renderHeader, type WorkMeter } from "./header.js";
+export {
+	blankLinesFromTrivia,
+	commentsFromTrivia,
+	FOLD_MARK,
+	type HeaderFold,
+	type HeaderSpan,
+	headerRangeGroups,
+	headerTriviaGroups,
+	type NormalizedTrivia,
+	normalizeTriviaRanges,
+	rangesStartingWithin,
+	renderHeader,
+	type WorkMeter,
+} from "./header.js";
 export {
 	type ImportEditsRequest,
 	ImportEditsRequestSchema,
@@ -620,10 +633,15 @@ export {
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	discoverByWalk,
 	handlersFor,
+	type ImportGraphCallbacks,
+	type ImportGraphEntry,
+	type ImportGraphOrder,
 	type ProviderMethods,
 	projectDiagnostic,
 	qualifierDescriptors,
 	type WalkOptions,
+	walkImportGraph,
+	walkImportGraphEntries,
 	walkWorkspace,
 	workspaceFile,
 	workspaceModule,
@@ -736,6 +754,7 @@ export {
 	isSymbolId,
 	isWithin,
 	languageOf,
+	mintOccurrence,
 	moduleOf,
 	normalizeModulePath,
 	ownerOf,

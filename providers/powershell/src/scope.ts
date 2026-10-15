@@ -2,10 +2,10 @@
 
 import {
 	comparePositions,
-	composeSymbolId,
 	type Descriptor,
 	defined,
 	type HeaderSpan,
+	mintOccurrence,
 	type Position,
 	type Range,
 	type SymbolKind,
@@ -62,16 +62,8 @@ export function childScope(w: Walk, scope: Scope, kind: Scope["kind"], declarati
 
 /** A repeated name path carries an occurrence, so what it holds nests under its own definition. */
 function mint(w: Walk, descriptors: Descriptor[]): { id: string; own: Descriptor } {
-	const base = composeSymbolId({ language: LANGUAGE, module: w.module, descriptors });
-	const seen = (w.minted.get(base) ?? 0) + 1;
-	w.minted.set(base, seen);
-	const last = descriptors.at(-1) as Descriptor;
-	if (seen === 1) return { id: base, own: last };
-	const own = { ...last, occurrence: seen };
-	return {
-		id: composeSymbolId({ language: LANGUAGE, module: w.module, descriptors: [...descriptors.slice(0, -1), own] }),
-		own,
-	};
+	const minted = mintOccurrence({ language: LANGUAGE, module: w.module, descriptors }, w.minted);
+	return { id: minted.id, own: minted.descriptor };
 }
 
 export function declare(w: Walk, scope: Scope, options: DeclareOptions): PowerShellDeclaration {

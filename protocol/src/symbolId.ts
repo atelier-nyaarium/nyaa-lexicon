@@ -231,6 +231,20 @@ export function composeSymbolId(id: SymbolId): string {
 	return `${SYMBOL_SCHEME} ${id.language} ${module} ${id.descriptors.map(encodeDescriptor).join("")}`;
 }
 
+/** Mints an occurrence for the last descriptor when its path has already appeared. */
+export function mintOccurrence(id: SymbolId, seen: Map<string, number>): { id: string; descriptor: Descriptor } {
+	const base = composeSymbolId(id);
+	const occurrence = (seen.get(base) ?? 0) + 1;
+	seen.set(base, occurrence);
+	const descriptor = id.descriptors.at(-1) as Descriptor;
+	if (occurrence === 1) return { id: base, descriptor };
+	const own = { ...descriptor, occurrence };
+	return {
+		id: composeSymbolId({ ...id, descriptors: [...id.descriptors.slice(0, -1), own] }),
+		descriptor: own,
+	};
+}
+
 /** Bare names stop at the first structural character, which is the caller's suffix. */
 function readName(c: SourceCursor): string | null {
 	if (c.peek() === "`") {

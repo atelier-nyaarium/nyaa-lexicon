@@ -2,9 +2,9 @@
 
 import {
 	comparePositions,
-	composeSymbolId,
 	type Descriptor,
 	defined,
+	mintOccurrence,
 	type Position,
 	type Range,
 } from "@nyaa-lexicon/protocol";
@@ -63,18 +63,8 @@ export function resolve(w: Walk, scope: Scope, name: string, options: ResolveOpt
 	return w.out.globalsByName.get(name);
 }
 
-/** A repeated name path carries an occurrence, so what it holds nests under its own definition. */
 function mint(w: Walk, descriptors: Descriptor[]): string {
-	const base = composeSymbolId({ language: LANGUAGE, module: w.module, descriptors });
-	const seen = (w.minted.get(base) ?? 0) + 1;
-	w.minted.set(base, seen);
-	if (seen === 1) return base;
-	const last = descriptors.at(-1) as Descriptor;
-	return composeSymbolId({
-		language: LANGUAGE,
-		module: w.module,
-		descriptors: [...descriptors.slice(0, -1), { ...last, occurrence: seen }],
-	});
+	return mintOccurrence({ language: LANGUAGE, module: w.module, descriptors }, w.minted).id;
 }
 
 export function declare(

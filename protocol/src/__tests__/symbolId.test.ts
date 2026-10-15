@@ -6,6 +6,7 @@ import {
 	isParameterSymbol,
 	isSymbolId,
 	isWithin,
+	mintOccurrence,
 	moduleOf,
 	normalizeModulePath,
 	ownerOf,
@@ -507,6 +508,28 @@ describe("moduleOf", () => {
  * already answers, so the core needs no store lookup and no knowledge of any language to ask it.
  */
 describe("occurrences", () => {
+	it("mints repeated declaration paths and returns the descriptor used for nesting", () => {
+		const seen = new Map<string, number>();
+		const first = mintOccurrence(CART, seen);
+		const second = mintOccurrence(CART, seen);
+		const third = mintOccurrence(CART, seen);
+
+		expect(first).toEqual({ id: composeSymbolId(CART), descriptor: { kind: "method", name: "add" } });
+		expect(second).toEqual({
+			id: composeSymbolId({
+				...CART,
+				descriptors: [...CART.descriptors.slice(0, -1), { kind: "method", name: "add", occurrence: 2 }],
+			}),
+			descriptor: { kind: "method", name: "add", occurrence: 2 },
+		});
+		expect(third.descriptor).toEqual({ kind: "method", name: "add", occurrence: 3 });
+		expect(parseSymbolId(third.id)?.descriptors.at(-1)).toEqual(third.descriptor);
+		expect(mintOccurrence({ ...CART, module: "src/other.ts" }, seen).descriptor).toEqual({
+			kind: "method",
+			name: "add",
+		});
+	});
+
 	it("round-trips an occurrence on every kind, after the disambiguator or a parameter's brackets", () => {
 		const shapes: Descriptor[][] = [
 			[{ kind: "type", name: "Cart", occurrence: 2 }],

@@ -1,3 +1,7 @@
+import { afterEach } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
 	handlersFor,
 	PROTOCOL_VERSION,
@@ -5,6 +9,34 @@ import {
 	type ProviderNotificationHandlers,
 } from "@nyaa-lexicon/protocol";
 import { TypeScriptProvider } from "../main.js";
+
+const workspaces: string[] = [];
+const workspaceCleanups: Array<() => void> = [];
+
+afterEach(() => {
+	for (const cleanup of workspaceCleanups.splice(0)) cleanup();
+	for (const root of workspaces.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+export function workspace(
+	files: Record<string, string>,
+	options: {
+		configFiles?: Record<string, string>;
+		createParents?: boolean;
+		setup?: (root: string) => (() => void) | undefined;
+	} = {},
+): string {
+	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-"));
+	workspaces.push(root);
+	for (const [file, text] of Object.entries({ ...(options.configFiles ?? {}), ...files })) {
+		const target = path.join(root, file);
+		if (options.createParents !== false) mkdirSync(path.dirname(target), { recursive: true });
+		writeFileSync(target, text);
+	}
+	const cleanup = options.setup?.(root);
+	if (cleanup !== undefined) workspaceCleanups.push(cleanup);
+	return root;
+}
 
 export function harness() {
 	const provider = new TypeScriptProvider();

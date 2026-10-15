@@ -1,20 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import { applyEdits, coordinatesOf, type Range, type RenameEditsRequest } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { parseDiagnostics } from "../syntax.js";
-import { harness } from "./harness.js";
+import { workspace as fixtureWorkspace, harness } from "./harness.js";
 
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-rename-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) writeFileSync(path.join(root, module), text);
-	return root;
-}
+const workspace = (files: Record<string, string>) => fixtureWorkspace(files, { createParents: false });
 
 function rangeForText(text: string, value: string, from = 0): Range {
 	const start = text.indexOf(value, from);
@@ -40,10 +30,6 @@ function rename(root: string, request: RenameEditsRequest) {
 	provider.shutdown();
 	return response;
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("rename edits", () => {
 	it("blocks a site range that does not address content", () => {

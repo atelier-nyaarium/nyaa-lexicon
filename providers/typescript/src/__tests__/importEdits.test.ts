@@ -1,15 +1,6 @@
-import { afterEach, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { expect, it } from "bun:test";
 import { applyEdits, type ImportEditsResponse } from "@nyaa-lexicon/protocol";
-import { harness } from "./harness.js";
-
-const roots: string[] = [];
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+import { harness, workspace } from "./harness.js";
 
 const HOSTS = "export function host() {}\nexport function other() {}\nexport interface Host {}\n";
 
@@ -22,12 +13,7 @@ async function imported(
 	o: { name?: string; module?: string; hosts?: string; disk?: string } = {},
 ): Promise<string | ImportEditsResponse> {
 	const module = o.module ?? "src/use.ts";
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-import-"));
-	roots.push(root);
-	for (const [file, body] of Object.entries({ "src/hosts.ts": o.hosts ?? HOSTS, [module]: o.disk ?? text })) {
-		mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-		writeFileSync(path.join(root, file), body);
-	}
+	const root = workspace({ "src/hosts.ts": o.hosts ?? HOSTS, [module]: o.disk ?? text });
 	const provider = harness();
 	provider.initialize(root);
 	const answer = await provider.handlers.importEdits({

@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
 	coordinatesOf,
@@ -11,26 +10,13 @@ import {
 } from "@nyaa-lexicon/protocol";
 import type { TypeScriptAnalyzer } from "../analyzer.js";
 import { TypeScriptProvider, warmingHandlers } from "../main.js";
-import { harness } from "./harness.js";
+import { harness, workspace } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
 
-const roots: string[] = [];
-
 /** Watched even when absent, since an install writes one. */
 const LOCKFILES = ["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-analysis-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
 
 function rangeAt(text: string, offset: number) {
 	const range = coordinatesOf(text).rangeAt(offset, offset);
@@ -46,10 +32,6 @@ function textAt(
 	if (value === undefined) throw new Error("invalid test range");
 	return value;
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 ////////////////////////////////
 //  Tests
@@ -577,7 +559,7 @@ describe("checker-backed analysis", () => {
 
 	it("moves the project fingerprint when a package.json resolution reads or probes changes, through a link too", () => {
 		for (const linked of [false, true]) {
-			const real = workspace({
+			const files = {
 				"tsconfig.json": JSON.stringify({
 					include: ["src"],
 					compilerOptions: { paths: { "@lib": ["./vendor/lib"], "@new": ["./vendor/new"] } },
@@ -588,12 +570,18 @@ describe("checker-backed analysis", () => {
 				"vendor/lib/b.d.ts": "export declare const value: 2;\n",
 				"vendor/new/index.d.ts": "export declare const fresh: 1;\n",
 				"vendor/new/b.d.ts": "export declare const fresh: 2;\n",
+			};
+			let linkedRoot: string | undefined;
+			const real = workspace(files, {
+				setup: (workspaceRoot) => {
+					if (!linked) return;
+					const link = `${workspaceRoot}-link`;
+					linkedRoot = link;
+					symlinkSync(workspaceRoot, link, "dir");
+					return () => rmSync(link, { force: true });
+				},
 			});
-			const root = linked ? `${real}-link` : real;
-			if (linked) {
-				symlinkSync(real, root, "dir");
-				roots.push(root);
-			}
+			const root = linkedRoot ?? real;
 			const provider = harness();
 			provider.initialize(root);
 			const discover = () => provider.handlers.discoverProject({ workspaceRoot: root }) as ProjectModel;

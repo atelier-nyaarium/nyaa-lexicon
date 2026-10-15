@@ -1,30 +1,14 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
 import path from "node:path";
 import type { FileFacts } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { extractFile } from "../extract.js";
 import { extractSurfaceFile } from "../surface.js";
-import { harness } from "./harness.js";
-
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>, config = "{}"): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-ts-stage-a-"));
-	roots.push(root);
-	writeFileSync(path.join(root, "tsconfig.json"), config);
-	for (const [module, text] of Object.entries(files)) {
-		const target = path.join(root, module);
-		mkdirSync(path.dirname(target), { recursive: true });
-		writeFileSync(target, text);
-	}
-	return root;
-}
+import { harness, workspace } from "./harness.js";
 
 function parse(files: Record<string, string>, module: string, config = "{}"): FileFacts {
 	const provider = harness();
-	provider.initialize(workspace(files, config));
+	provider.initialize(workspace(files, { configFiles: { "tsconfig.json": config } }));
 	let answer: FileFacts | undefined;
 	for (const [name, text] of Object.entries(files)) {
 		const facts = provider.parseFile({ module: name, contentHash: name, text }) as FileFacts;
@@ -75,7 +59,7 @@ function expectElisionMatchesEmit(options: object, cases: ReadonlyArray<Record<s
 	const files = Object.fromEntries(
 		cases.flatMap((entry, index) => Object.entries(entry).map(([name, text]) => [`case${index}/${name}`, text])),
 	);
-	const root = workspace(files, config);
+	const root = workspace(files, { configFiles: { "tsconfig.json": config } });
 	const loads = emittedLoads(root, config);
 	const provider = harness();
 	provider.initialize(root);
@@ -102,10 +86,6 @@ function expectElisionMatchesEmit(options: object, cases: ReadonlyArray<Record<s
 		}
 	}
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("Stage A load facts", () => {
 	it("marks import and require load timing", () => {
@@ -297,7 +277,7 @@ describe("Stage A load facts", () => {
 		};
 		const rootConfig = JSON.stringify({ files: [], references: [{ path: "./packages/lib" }] });
 		const provider = harness();
-		provider.initialize(workspace(files, rootConfig));
+		provider.initialize(workspace(files, { configFiles: { "tsconfig.json": rootConfig } }));
 		const facts = provider.parseFile({
 			module: "packages/lib/src/index.ts",
 			contentHash: "index",
@@ -352,7 +332,13 @@ describe("Stage A load facts", () => {
 		};
 		const provider = harness();
 		provider.initialize(
-			workspace(files, JSON.stringify({ compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext" } })),
+			workspace(files, {
+				configFiles: {
+					"tsconfig.json": JSON.stringify({
+						compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext" },
+					}),
+				},
+			}),
 		);
 		for (const module of ["b.ts", "b-cjs.cts"])
 			provider.parseFile({ module, contentHash: module, text: files[module as keyof typeof files] });
@@ -375,7 +361,13 @@ describe("Stage A load facts", () => {
 		};
 		const provider = harness();
 		provider.initialize(
-			workspace(files, JSON.stringify({ compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext" } })),
+			workspace(files, {
+				configFiles: {
+					"tsconfig.json": JSON.stringify({
+						compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext" },
+					}),
+				},
+			}),
 		);
 		const text = files["src/a.mts"];
 		const facts = provider.parseFile({ module: "src/a.mts", contentHash: "a", text }) as FileFacts;

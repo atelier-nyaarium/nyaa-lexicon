@@ -3,6 +3,8 @@
 import {
 	type HeaderFold,
 	type HeaderSpan,
+	headerTriviaGroups,
+	normalizeTriviaRanges,
 	type OffsetRange,
 	renderHeader,
 	SourceCursor,
@@ -53,51 +55,22 @@ export function assignmentFolds(text: string, pos: number): HeaderFold[] {
 	return [{ start: pos + head.valueAt, end: pos + text.length - (carriage ? 1 : 0) }];
 }
 
-/** The ranges starting inside the piece, from ranges sorted by start. */
-function startingWithin(ranges: readonly OffsetRange[], piece: OffsetRange): OffsetRange[] {
-	let low = 0;
-	let high = ranges.length;
-	while (low < high) {
-		const middle = (low + high) >> 1;
-		if ((ranges[middle] as OffsetRange).start < piece.start) low = middle + 1;
-		else high = middle;
-	}
-	const found: OffsetRange[] = [];
-	for (let at = low; at < ranges.length; at++) {
-		const range = ranges[at] as OffsetRange;
-		if (range.start >= piece.end) break;
-		found.push(range);
-	}
-	return found;
-}
-
-/** Quoted parts sorted, each outside every other. */
-function outermost(pairs: readonly number[]): OffsetRange[] {
-	const ranges: OffsetRange[] = [];
-	for (let at = 0; at < pairs.length; at += 2) {
-		ranges.push({ start: pairs[at] as number, end: pairs[at + 1] as number });
-	}
-	ranges.sort((a, b) => a.start - b.start || b.end - a.end);
-	const kept: OffsetRange[] = [];
-	for (const range of ranges) if (range.start >= (kept.at(-1)?.end ?? 0)) kept.push(range);
-	return kept;
-}
-
 /** Every declaration's signature: comments and line continuations out, quoted parts as written. */
 export function signHeaders(w: Walk, tokens: readonly Token[], meter?: WorkMeter): void {
 	const comments = rangesOf(tokens, "comment");
 	const continuations = rangesOf(tokens, "continuation");
-	const quoted = outermost(w.quoted);
+	const quoted = normalizeTriviaRanges(
+		Array.from({ length: w.quoted.length / 2 }, (_, index) => ({
+			start: w.quoted[index * 2] as number,
+			end: w.quoted[index * 2 + 1] as number,
+		})),
+	);
 	for (const { declaration, span } of w.headers) {
 		const omit: OffsetRange[] = [...(span.omit ?? [])];
-		const splices: OffsetRange[] = [];
-		const verbatim: OffsetRange[] = [];
-		for (const piece of span.lead === undefined ? [span] : [span.lead, span]) {
-			omit.push(...startingWithin(comments, piece));
-			// Bash removes a backslash-newline outright, so a continued word stays one word.
-			splices.push(...startingWithin(continuations, piece));
-			verbatim.push(...startingWithin(quoted, piece));
-		}
+		// Bash continuations join words.
+		const splices = headerTriviaGroups(continuations, span).flat();
+		const verbatim = headerTriviaGroups(quoted, span).flat();
+		omit.push(...headerTriviaGroups(comments, span).flat());
 		const signature = renderHeader(w.text, { ...span, omit, splices, verbatim }, meter);
 		if (signature !== undefined) declaration.signature = signature;
 	}

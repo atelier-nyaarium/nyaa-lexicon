@@ -5,7 +5,6 @@ import path from "node:path";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
-	comparePositions,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	type Declaration,
 	defined,
@@ -24,7 +23,6 @@ import {
 	type ProjectModel,
 	parseSymbolId,
 	positionInRange,
-	projectDiagnostic,
 	type Range,
 	type Reference,
 	type RenameEditsRequest,
@@ -37,39 +35,13 @@ import {
 	workspaceModule,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
-import {
-	type BashDeclaration,
-	type BashReference,
-	LANGUAGE,
-	type ParsedBashFile,
-	parseBash,
-	type SourceImport,
-} from "./extract.js";
-
-////////////////////////////////
-//  Interfaces & Types
-
-type Unresolved = Exclude<ImportResolution, { status: "resolved" }>;
-
-/** One reference settling across the files a module sources. */
-interface Settling {
-	reference: BashReference;
-	report: (status: Unresolved, specifier: string) => void;
-	/** What each sourced file leaves, by module, so a file sourced on two paths is read once. */
-	memo: Map<string, string | undefined>;
-}
-
-/** A file's own definition of a name, and where it last took effect. */
-interface Binder {
-	symbolId: string;
-	/** Absent when it took no effect before the read. */
-	at?: Position;
-}
+import { bindBashReference } from "./binding.js";
+import { type BashDeclaration, LANGUAGE, type ParsedBashFile, parseBash } from "./extract.js";
 
 ////////////////////////////////
 //  Constants
 
-const EXPANDS: Unresolved = {
+const EXPANDS: Exclude<ImportResolution, { status: "resolved" }> = {
 	status: "unresolved",
 	reason: "RuntimeConstructed",
 	detail: "the sourced path expands at run time",
@@ -193,73 +165,21 @@ const TYPE_DISPLAY = {
 ////////////////////////////////
 //  Functions & Helpers
 
-function unbound(reason: UnknownReason, detail: string): Binding {
-	return { status: "unbound", reason, detail };
-}
-
-function bound(symbolId: string): Binding {
-	return { status: "bound", symbolId, provenance: "bound" };
-}
-
 function contains(range: Range, position: Position): boolean {
 	return positionInRange(range, position);
+}
+
+function unbound(reason: UnknownReason, detail: string): Binding {
+	return { status: "unbound", reason, detail };
 }
 
 function landed(module: string): ImportResolution {
 	return { status: "resolved", landing: { kind: "module", module } };
 }
 
-/** Where a definition last took effect, before `before` when given: a variable at its last top-level write. */
-function binderOf(facts: ParsedBashFile, declaration: BashDeclaration, before?: Position): Binder {
-	let at: Position | undefined;
-	const consider = (position: Position) => {
-		if (before !== undefined && comparePositions(position, before) >= 0) return;
-		if (at === undefined || comparePositions(position, at) > 0) at = position;
-	};
-	consider(declaration.range.start);
-	if (declaration.kind !== "function") {
-		for (const reference of facts.references) {
-			if (
-				reference.role === "write" &&
-				reference.fromId === undefined &&
-				reference.target === declaration.symbolId
-			)
-				consider(reference.range.start);
-		}
-	}
-	return { symbolId: declaration.symbolId, ...defined({ at }) };
-}
-
-/** A sourced file's own definition: its last function of the name, or its variable. */
-function ownDefinition(facts: ParsedBashFile, reference: BashReference): Binder | undefined {
-	const declaration = reference.ofFunction
-		? facts.functionsByName.get(reference.name)?.at(-1)
-		: facts.globalsByName.get(reference.name);
-	return declaration === undefined ? undefined : binderOf(facts, declaration);
-}
-
 function declarationWire(declaration: BashDeclaration): Declaration {
 	const { declaredType: _type, ...wire } = declaration;
 	return wire;
-}
-
-function discover(root: string, scope?: string[]): ProjectModel {
-	if (!existsSync(root)) return projectDiagnostic(root, `workspace root does not exist: ${root}`);
-	try {
-		if (!statSync(root).isDirectory()) return projectDiagnostic(root, `workspace root is not a directory: ${root}`);
-		return discoverByWalk(root, {
-			extensions: EXTENSIONS,
-			filenames: FILENAMES,
-			shebangs: SHEBANGS,
-			excludedDirectories: EXCLUDED_DIRECTORIES,
-			scope,
-		});
-	} catch (error) {
-		return projectDiagnostic(
-			root,
-			`unable to inspect workspace root: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
 }
 
 ////////////////////////////////
@@ -285,13 +205,26 @@ export class BashProvider {
 	}
 
 	discoverProject(workspaceRoot: string, scope?: string[]): { model: ProjectModel; project: null } {
-		return { model: discover(path.resolve(workspaceRoot), scope), project: null };
+		return {
+			model: discoverByWalk(workspaceRoot, {
+				extensions: EXTENSIONS,
+				filenames: FILENAMES,
+				shebangs: SHEBANGS,
+				excludedDirectories: EXCLUDED_DIRECTORIES,
+				scope,
+			}),
+			project: null,
+		};
 	}
 
 	parseFile(params: { module: string; contentHash: string; text: string }, parsed: ParsedBashFile) {
 		const references: Reference[] = [];
+		const bindingContext = {
+			factsFor: (module: string) => this.factsFor(module),
+			resolveImport: (request: { fromModule: string; specifier: string }) => this.resolveImport(request),
+		};
 		for (const reference of parsed.references) {
-			const binding = this.bindReference(params.module, parsed, reference);
+			const binding = bindBashReference(params.module, parsed, reference, bindingContext);
 			// An unbound command name is a program, not a symbol.
 			if (reference.ofFunction && binding.status === "unbound") continue;
 			references.push({
@@ -348,13 +281,17 @@ export class BashProvider {
 		const reference = parsed.references.find(
 			(candidate) => candidate.name === params.name && contains(candidate.range, params.range.start),
 		);
-		if (reference !== undefined) return this.bindReference(params.module, parsed, reference);
+		if (reference !== undefined)
+			return bindBashReference(params.module, parsed, reference, {
+				factsFor: (module) => this.factsFor(module),
+				resolveImport: (request) => this.resolveImport(request),
+			});
 		const declaration = parsed.declarations.find(
 			(candidate) =>
 				candidate.name === params.name &&
 				contains(candidate.selectionRange ?? candidate.range, params.range.start),
 		);
-		if (declaration !== undefined) return bound(declaration.symbolId);
+		if (declaration !== undefined) return { status: "bound", symbolId: declaration.symbolId, provenance: "bound" };
 		return unbound("NotIndexed", "no indexed reference or declaration matched the requested range");
 	}
 
@@ -411,112 +348,6 @@ export class BashProvider {
 				contains(declaration.selectionRange ?? declaration.range, params.range.start),
 			) ?? null
 		);
-	}
-
-	/** At the top level, the last definition or source before the read; in a body, the file's own first. */
-	private bindReference(module: string, parsed: ParsedBashFile, reference: BashReference): Binding {
-		if (reference.role === "import") return this.importBinding(module, reference.name);
-		const target = reference.target;
-		// A write names the variable it assigns, whatever a source left.
-		if (target !== undefined && (reference.fromId !== undefined || reference.role === "write"))
-			return bound(target);
-		let reason: UnknownReason = "NotIndexed";
-		let detail = `no bash declaration matches ${reference.name}`;
-		const settling: Settling = {
-			reference,
-			memo: new Map(),
-			report: (status, specifier) => {
-				if (status.status === "external") {
-					reason = "ExternalDependency";
-					detail = `${reference.name} may come from ${specifier}, outside the workspace`;
-				} else {
-					reason = status.reason;
-					detail = status.detail ?? detail;
-				}
-			},
-		};
-		const visiting = new Set([module]);
-		// A function body may run after any source, so each source's definition stands.
-		if (reference.fromId !== undefined) {
-			const candidates = new Set<string>();
-			for (const source of parsed.sources) {
-				const settled = this.settledThrough(settling, module, source, visiting);
-				if (settled !== undefined) candidates.add(settled);
-			}
-			if (candidates.size > 1) return { status: "ambiguous", candidates: [...candidates], provenance: "bound" };
-			const [only] = candidates;
-			return only === undefined ? unbound(reason, detail) : bound(only);
-		}
-		const declaration = parsed.declarations.find((candidate) => candidate.symbolId === target);
-		const own = declaration === undefined ? undefined : binderOf(parsed, declaration, reference.range.start);
-		const settled = this.settledIn(settling, module, parsed, own, reference.range.start, visiting);
-		return settled === undefined ? unbound(reason, detail) : bound(settled);
-	}
-
-	/**
-	 * What running `facts` up to `before`, or whole, leaves: the last of its own definition and the
-	 * sources that bring the name.
-	 */
-	private settledIn(
-		s: Settling,
-		module: string,
-		facts: ParsedBashFile,
-		own: Binder | undefined,
-		before: Position | undefined,
-		visiting: ReadonlySet<string>,
-	): string | undefined {
-		let settled = own?.symbolId;
-		let since = own?.at;
-		for (const source of facts.sources) {
-			const at = source.range.start;
-			if (before !== undefined && comparePositions(at, before) >= 0) continue;
-			if (since !== undefined && comparePositions(at, since) < 0) continue;
-			const through = this.settledThrough(s, module, source, visiting);
-			if (through === undefined) continue;
-			settled = through;
-			since = at;
-		}
-		return settled;
-	}
-
-	/** What one source leaves once its file has run. */
-	private settledThrough(
-		s: Settling,
-		module: string,
-		source: SourceImport,
-		visiting: ReadonlySet<string>,
-	): string | undefined {
-		const resolution = this.resolveImport({ fromModule: module, specifier: source.specifier });
-		if (resolution.status !== "resolved") {
-			s.report(resolution, source.specifier);
-			return undefined;
-		}
-		const { landing } = resolution;
-		if (landing.kind !== "module" || visiting.has(landing.module)) return undefined;
-		if (s.memo.has(landing.module)) return s.memo.get(landing.module);
-		const target = this.factsFor(landing.module);
-		const settled =
-			target === null
-				? undefined
-				: this.settledIn(
-						s,
-						landing.module,
-						target,
-						ownDefinition(target, s.reference),
-						undefined,
-						new Set([...visiting, landing.module]),
-					);
-		s.memo.set(landing.module, settled);
-		return settled;
-	}
-
-	private importBinding(module: string, specifier: string): Binding {
-		const resolution = this.resolveImport({ fromModule: module, specifier });
-		if (resolution.status === "external")
-			return unbound("ExternalDependency", "the sourced file is outside the workspace");
-		if (resolution.status === "unresolved")
-			return unbound(resolution.reason, resolution.detail ?? "the sourced path is unresolved");
-		return unbound("NotIndexed", "a sourced path names a module, not a declaration");
 	}
 }
 

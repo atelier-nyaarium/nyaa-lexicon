@@ -6,6 +6,8 @@
 
 import { coordinatesOf, type OffsetRange } from "./coordinates.js";
 import { applyEdits, planEdits, type TextEdit } from "./edits.js";
+import type { CommentSpan } from "./project.js";
+import type { Range } from "./symbols.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -40,6 +42,11 @@ export interface HeaderSpan {
 export interface WorkMeter {
 	steps: number;
 }
+
+/** Token facts after a provider projects away layout and invisible text. */
+export type NormalizedTrivia =
+	| { kind: "comment"; range: Range; firstLine: number; lastLine: number; text: string }
+	| { kind: "token"; range: Range; firstLine: number; lastLine: number };
 
 ////////////////////////////////
 //  Constants
@@ -87,6 +94,80 @@ function isHorizontal(character: string | undefined): boolean {
 
 function within(piece: OffsetRange, cut: OffsetRange): boolean {
 	return cut.start >= piece.start && cut.end <= piece.end && cut.start < cut.end;
+}
+
+/** Sorts ranges and keeps only the outermost overlapping spans. */
+export function normalizeTriviaRanges(ranges: readonly OffsetRange[]): OffsetRange[] {
+	const ordered = [...ranges].sort((a, b) => a.start - b.start || b.end - a.end);
+	const kept: OffsetRange[] = [];
+	for (const range of ordered) if (range.start >= (kept.at(-1)?.end ?? Number.NEGATIVE_INFINITY)) kept.push(range);
+	return kept;
+}
+
+/** One range group for the lead, when present, then one for the declaration body. */
+export function headerRangeGroups(span: HeaderSpan): OffsetRange[][] {
+	const body = { start: span.start, end: span.end };
+	return span.lead === undefined ? [[body]] : [[span.lead], [body]];
+}
+
+/** The ranges beginning in one piece of a sorted range list. */
+export function rangesStartingWithin(ranges: readonly OffsetRange[], piece: OffsetRange): OffsetRange[] {
+	let low = 0;
+	let high = ranges.length;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if ((ranges[middle] as OffsetRange).start < piece.start) low = middle + 1;
+		else high = middle;
+	}
+	const found: OffsetRange[] = [];
+	for (let at = low; at < ranges.length; at++) {
+		const range = ranges[at] as OffsetRange;
+		if (range.start >= piece.end) break;
+		found.push(range);
+	}
+	return found;
+}
+
+/** Selects sorted trivia ranges separately for each header piece. */
+export function headerTriviaGroups(ranges: readonly OffsetRange[], span: HeaderSpan): OffsetRange[][] {
+	return headerRangeGroups(span).map((group) => group.flatMap((piece) => rangesStartingWithin(ranges, piece)));
+}
+
+/** Builds comment facts from provider-projected token positions. */
+export function commentsFromTrivia(trivia: readonly NormalizedTrivia[]): CommentSpan[] {
+	const spans: CommentSpan[] = [];
+	let before: Extract<NormalizedTrivia, { kind: "token" }> | undefined;
+	let undecided = 0;
+	for (const token of trivia) {
+		if (token.kind === "comment") {
+			spans.push({
+				range: token.range,
+				text: token.text,
+				codeBefore: before !== undefined && before.lastLine === token.firstLine,
+				codeAfter: false,
+			});
+			continue;
+		}
+		for (; undecided < spans.length; undecided++) {
+			const span = spans[undecided] as CommentSpan;
+			span.codeAfter = span.range.end.line === token.firstLine;
+		}
+		before = token;
+	}
+	return spans;
+}
+
+/** Lines untouched by projected tokens; the final empty remainder is not a line. */
+export function blankLinesFromTrivia(trivia: readonly NormalizedTrivia[], lineCount: number): number[] {
+	const count = Math.max(0, lineCount);
+	const blank: number[] = [];
+	let line = 0;
+	for (const token of trivia) {
+		for (; line < token.firstLine && line < count; line++) blank.push(line);
+		line = Math.max(line, token.lastLine + 1);
+	}
+	for (; line < count; line++) blank.push(line);
+	return blank;
 }
 
 /** Its delimiters around the mark; an empty one stays as written. */

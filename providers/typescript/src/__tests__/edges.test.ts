@@ -1,28 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import { coordinatesOf, type Export, type FileFacts, parseSymbolId, type Range } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { extractFile } from "../extract";
 import { extractSurfaceFile } from "../surface";
-import { harness } from "./harness.js";
+import { harness, workspace } from "./harness.js";
 
 ////////////////////////////////
 //  Helpers
-
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-typescript-edges-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
 
 function extract(text: string, module = "src/a.ts") {
 	const source = ts.createSourceFile(module, text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
@@ -97,10 +81,6 @@ const BINDS = {
 	bindsLocally: true,
 	conflict: { priority: 0, amongTransfers: "exclude", againstLocal: "localWins" },
 } as const;
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 ////////////////////////////////
 //  Tests
