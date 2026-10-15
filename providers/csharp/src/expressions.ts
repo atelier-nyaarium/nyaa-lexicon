@@ -1,8 +1,8 @@
 // C# expressions: where one ends, and what its patterns, `out` variables, lambdas, anonymous methods
+import type { CsharpParseContext } from "./parseContext.js";
 // and queries declare.
 
 import type { AnglePairs, RawDeclaration, Scope } from "./model.js";
-import { CsharpPatternReader } from "./patterns.js";
 import type { Token } from "./tokens.js";
 import { GROUP_CLOSERS } from "./words.js";
 
@@ -29,7 +29,9 @@ const QUERY_WORDS: ReadonlySet<string> = new Set([...QUERY_CLAUSES, "ascending",
 ////////////////////////////////
 //  Classes
 
-export abstract class CsharpExpressionReader extends CsharpPatternReader {
+export class CsharpExpressionReader {
+	constructor(private readonly context: CsharpParseContext) {}
+
 	/**
 	 * Each token an `expressionEnd` walk stepped on at its own depth, and where that walk ended:
 	 * at an ending token, or at its bound with none found. A lambda nested in an expression starts
@@ -38,7 +40,6 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 	private readonly expressionEnds = new Map<number, { end: number; found: boolean }>();
 
 	/** A block body's statements, in `scope`. */
-	protected abstract statements(start: number, end: number, owner: RawDeclaration, scope: Scope): void;
 
 	////////////////////////////////
 	//  Expressions
@@ -47,14 +48,14 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 	 * What an expression declares: patterns, `out` variables, lambdas, anonymous methods and
 	 * queries. `clauses` are a query's own `from` words, never a query of their own.
 	 */
-	protected scanExpression(
+	public scanExpression(
 		start: number,
 		end: number,
 		owner: RawDeclaration,
 		scope: Scope,
 		clauses?: ReadonlySet<number>,
 	): void {
-		this.nested(start, () => this.scanTokens(start, end, owner, scope, clauses));
+		this.context.tokenStream.nested(start, () => this.scanTokens(start, end, owner, scope, clauses));
 	}
 
 	private scanTokens(
@@ -64,28 +65,29 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 		scope: Scope,
 		clauses: ReadonlySet<number> | undefined,
 	): void {
-		let current = this.nextSignificant(start, end);
+		let current = this.context.tokenStream.nextSignificant(start, end);
 		while (current >= 0 && current < end) {
-			const value = this.value(current);
-			const next = this.nextSignificant(current + 1, end);
+			const value = this.context.tokenStream.value(current);
+			const next = this.context.tokenStream.nextSignificant(current + 1, end);
 			let past = current + 1;
-			if (value === "is") past = this.readPattern(current + 1, end, owner, scope);
+			if (value === "is") past = this.context.patterns.readPattern(current + 1, end, owner, scope);
 			else if (value === "out") past = this.outVariable(current, end, owner, scope);
-			else if (value === "switch" && this.value(next) === "{") past = this.switchArms(next, end, owner);
+			else if (value === "switch" && this.context.tokenStream.value(next) === "{")
+				past = this.switchArms(next, end, owner);
 			else if (value === "=>") past = this.lambda(current, end, owner);
 			else if (value === "delegate") past = this.anonymousMethod(current, end, owner);
 			else if (value === "from" && clauses?.has(current) !== true && this.startsQuery(current, end))
 				past = this.query(current, end, owner);
-			current = this.nextSignificant(Math.max(past, current + 1), end);
+			current = this.context.tokenStream.nextSignificant(Math.max(past, current + 1), end);
 		}
 	}
 
 	/** Where an expression from `start` ends: its first `,`, `;` or closer at its own depth. */
-	protected expressionEnd(start: number, end: number): number {
+	public expressionEnd(start: number, end: number): number {
 		const stepped: number[] = [];
 		let reached = { end, found: false };
 		let previous = -1;
-		let current = this.nextSignificant(start, end);
+		let current = this.context.tokenStream.nextSignificant(start, end);
 		while (current >= 0 && current < end) {
 			const known = this.expressionEnds.get(current);
 			// A walk that found its end answers any bound; one that ran out, only a bound no further.
@@ -94,7 +96,7 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 				break;
 			}
 			stepped.push(current);
-			const value = this.value(current) ?? "";
+			const value = this.context.tokenStream.value(current) ?? "";
 			if (EXPRESSION_ENDS.has(value)) {
 				reached = { end: current, found: true };
 				break;
@@ -105,7 +107,7 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 			}
 			current = this.skipGroup(current, previous, end);
 			previous = current;
-			current = this.nextSignificant(current + 1, end);
+			current = this.context.tokenStream.nextSignificant(current + 1, end);
 		}
 		for (const token of stepped) this.expressionEnds.set(token, reached);
 		return reached.end;
@@ -113,14 +115,14 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 
 	/** Past a group or type argument list opening at `index`, to its closer; `index` otherwise. */
 	private skipGroup(index: number, previous: number, end: number): number {
-		const value = this.value(index) ?? "";
+		const value = this.context.tokenStream.value(index) ?? "";
 		const closer = GROUP_CLOSERS.get(value);
 		if (closer !== undefined) {
-			const close = this.matching(index, value, closer, end);
+			const close = this.context.tokenStream.matching(index, value, closer, end);
 			return close < 0 ? end : close;
 		}
-		if (value === "<" && this.opensTypeList(previous, index, end, false, 0)) {
-			const close = this.listClose(index, end);
+		if (value === "<" && this.context.typeReader.opensTypeList(previous, index, end, false, 0)) {
+			const close = this.context.typeReader.listClose(index, end);
 			return close < 0 ? index : close;
 		}
 		return index;
@@ -128,86 +130,116 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 
 	/** A lambda at its arrow: parameters scoped to the body, then the body. */
 	private lambda(arrow: number, end: number, owner: RawDeclaration): number {
-		const body = this.nextSignificant(arrow + 1, end);
-		const block = this.value(body) === "{";
-		const close = block ? this.matching(body, "{", "}", end) : -1;
+		const body = this.context.tokenStream.nextSignificant(arrow + 1, end);
+		const block = this.context.tokenStream.value(body) === "{";
+		const close = block ? this.context.tokenStream.matching(body, "{", "}", end) : -1;
 		const stop = block ? (close < 0 ? end : close) : this.expressionEnd(arrow + 1, end);
-		const scope: Scope = { from: arrow, to: this.lastBefore(stop + (block ? 1 : 0), arrow) };
-		const previous = this.previousSignificant(arrow);
-		if (this.value(previous) === ")") {
-			const open = this.opener(previous, "(", ")");
+		const scope: Scope = { from: arrow, to: this.context.locals.lastBefore(stop + (block ? 1 : 0), arrow) };
+		const previous = this.context.tokenStream.previousSignificant(arrow);
+		if (this.context.tokenStream.value(previous) === ")") {
+			const open = this.context.tokenStream.opener(previous, "(", ")");
 			if (open >= 0) this.lambdaParameters(open, previous, owner, scope);
-		} else if (this.isDesignation(previous)) {
-			this.declareLocal(previous, previous, previous, owner, undefined, undefined, scope, "lambdaParameter");
+		} else if (this.context.locals.isDesignation(previous)) {
+			this.context.locals.declareLocal(
+				previous,
+				previous,
+				previous,
+				owner,
+				undefined,
+				undefined,
+				scope,
+				"lambdaParameter",
+			);
 		}
-		if (block) this.statements(body + 1, stop, owner, { from: body, to: stop });
+		if (block) this.context.statements.statements(body + 1, stop, owner, { from: body, to: stop });
 		else this.scanExpression(arrow + 1, stop, owner, scope);
 		return block ? stop + 1 : stop;
 	}
 
 	/** `([attributes] [modifiers] [T] name [= default], ...)` */
 	private lambdaParameters(open: number, close: number, owner: RawDeclaration, scope: Scope): void {
-		const angles: AnglePairs = this.typeAngles(open + 1, close);
-		for (const segment of this.commaSegments(open + 1, close, angles)) {
-			const name = this.findParameterName(segment.start, segment.end, angles);
-			if (!this.isDesignation(name)) continue;
-			const first = this.nextSignificant(segment.start, segment.end);
-			const last = this.previousSignificant(segment.end, first);
-			const typeSpan = this.spanBeforeName(this.bracketedSectionsEnd(segment.start, name), name);
-			this.declareLocal(name, first, last, owner, typeSpan, undefined, scope, "lambdaParameter");
+		const angles: AnglePairs = this.context.typeReader.typeAngles(open + 1, close);
+		for (const segment of this.context.typeReader.commaSegments(open + 1, close, angles)) {
+			const name = this.context.signatures.findParameterName(segment.start, segment.end, angles);
+			if (!this.context.locals.isDesignation(name)) continue;
+			const first = this.context.tokenStream.nextSignificant(segment.start, segment.end);
+			const last = this.context.tokenStream.previousSignificant(segment.end, first);
+			const typeSpan = this.context.typeReader.spanBeforeName(
+				this.context.attributes.bracketedSectionsEnd(segment.start, name),
+				name,
+			);
+			this.context.locals.declareLocal(name, first, last, owner, typeSpan, undefined, scope, "lambdaParameter");
 		}
 	}
 
 	/** `delegate [(...)] { ... }` */
 	private anonymousMethod(keyword: number, end: number, owner: RawDeclaration): number {
-		let body = this.nextSignificant(keyword + 1, end);
+		let body = this.context.tokenStream.nextSignificant(keyword + 1, end);
 		let parameters = -1;
-		if (this.value(body) === "(") {
+		if (this.context.tokenStream.value(body) === "(") {
 			parameters = body;
-			const close = this.matching(body, "(", ")", end);
+			const close = this.context.tokenStream.matching(body, "(", ")", end);
 			if (close < 0) return keyword + 1;
-			body = this.nextSignificant(close + 1, end);
+			body = this.context.tokenStream.nextSignificant(close + 1, end);
 		}
-		if (this.value(body) !== "{") return keyword + 1;
-		const close = this.matching(body, "{", "}", end);
+		if (this.context.tokenStream.value(body) !== "{") return keyword + 1;
+		const close = this.context.tokenStream.matching(body, "{", "}", end);
 		const stop = close < 0 ? end : close;
 		if (parameters >= 0)
-			this.lambdaParameters(parameters, this.matching(parameters, "(", ")", end), owner, {
+			this.lambdaParameters(parameters, this.context.tokenStream.matching(parameters, "(", ")", end), owner, {
 				from: keyword,
 				to: stop,
 			});
-		this.statements(body + 1, stop, owner, { from: body, to: stop });
+		this.context.statements.statements(body + 1, stop, owner, { from: body, to: stop });
 		return close < 0 ? end : close + 1;
 	}
 
 	/** `out T x` or `out var x`, as an argument. */
 	private outVariable(keyword: number, end: number, owner: RawDeclaration, scope: Scope): number {
-		const first = this.nextSignificant(keyword + 1, end);
-		const shape = first >= 0 && this.startsType(first) ? this.typeShape(first, end) : undefined;
-		const name = shape === undefined ? -1 : this.nextSignificant(shape.end, end);
-		if (shape === undefined || !this.isDesignation(name)) return keyword + 1;
-		const follower = this.nextSignificant(name + 1, end);
-		if (follower >= 0 && this.value(follower) !== "," && this.value(follower) !== ")") return keyword + 1;
+		const first = this.context.tokenStream.nextSignificant(keyword + 1, end);
+		const shape =
+			first >= 0 && this.context.locals.startsType(first)
+				? this.context.typeReader.typeShape(first, end)
+				: undefined;
+		const name = shape === undefined ? -1 : this.context.tokenStream.nextSignificant(shape.end, end);
+		if (shape === undefined || !this.context.locals.isDesignation(name)) return keyword + 1;
+		const follower = this.context.tokenStream.nextSignificant(name + 1, end);
+		if (
+			follower >= 0 &&
+			this.context.tokenStream.value(follower) !== "," &&
+			this.context.tokenStream.value(follower) !== ")"
+		)
+			return keyword + 1;
 		const typeSpan =
-			this.value(first) === "var" && shape.end === first + 1 ? undefined : { start: first, end: name };
-		this.declareLocal(name, first, name, owner, typeSpan, this.header(first, name + 1), scope);
+			this.context.tokenStream.value(first) === "var" && shape.end === first + 1
+				? undefined
+				: { start: first, end: name };
+		this.context.locals.declareLocal(
+			name,
+			first,
+			name,
+			owner,
+			typeSpan,
+			this.context.typeReader.header(first, name + 1),
+			scope,
+		);
 		return name + 1;
 	}
 
 	/** A switch expression's `pattern [when condition] => result` arms, each its own scope. */
 	private switchArms(open: number, end: number, owner: RawDeclaration): number {
-		const close = this.matching(open, "{", "}", end);
+		const close = this.context.tokenStream.matching(open, "{", "}", end);
 		if (close < 0) return end;
-		for (const arm of this.commaSegments(open + 1, close)) {
-			const scope: Scope = { from: arm.start, to: this.lastBefore(arm.end, arm.start) };
-			const arrow = this.findTopLevelValue(arm.start, arm.end, "=>");
+		for (const arm of this.context.typeReader.commaSegments(open + 1, close)) {
+			const scope: Scope = { from: arm.start, to: this.context.locals.lastBefore(arm.end, arm.start) };
+			const arrow = this.context.tokenStream.findTopLevelValue(arm.start, arm.end, "=>");
 			if (arrow < 0) {
 				this.scanExpression(arm.start, arm.end, owner, scope);
 				continue;
 			}
-			const past = this.readPattern(arm.start, arrow, owner, scope);
-			const when = this.nextSignificant(past, arrow);
-			if (this.value(when) === "when") this.scanExpression(when + 1, arrow, owner, scope);
+			const past = this.context.patterns.readPattern(arm.start, arrow, owner, scope);
+			const when = this.context.tokenStream.nextSignificant(past, arrow);
+			if (this.context.tokenStream.value(when) === "when") this.scanExpression(when + 1, arrow, owner, scope);
 			this.scanExpression(arrow + 1, arm.end, owner, scope);
 		}
 		return close + 1;
@@ -224,7 +256,7 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 	/** A query, its range variables scoped to it; answers where it ends. */
 	private query(keyword: number, end: number, owner: RawDeclaration): number {
 		const stop = this.queryEnd(keyword, end);
-		const last = this.lastBefore(stop, keyword);
+		const last = this.context.locals.lastBefore(stop, keyword);
 		const scope: Scope = { from: keyword, to: last };
 		const clauses = new Set<number>();
 		// Each variable's scope: from the next clause after its source or initializer, or a join's from
@@ -235,9 +267,14 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 		let joining: Scope | undefined;
 		let clause = "";
 		let previous = -1;
-		for (let current = keyword; current >= 0 && current < stop; current = this.nextSignificant(current + 1, stop)) {
-			const value = this.value(current) ?? "";
-			if (QUERY_WORDS.has(value)) this.ignoredOffsets.add((this.token(current) as Token).startOffset);
+		for (
+			let current = keyword;
+			current >= 0 && current < stop;
+			current = this.context.tokenStream.nextSignificant(current + 1, stop)
+		) {
+			const value = this.context.tokenStream.value(current) ?? "";
+			if (QUERY_WORDS.has(value))
+				this.context.recorder.ignore((this.context.tokenStream.token(current) as Token).startOffset);
 			if (current > keyword && QUERY_CLAUSES.has(value)) {
 				for (const item of [...waiting, ...(joining === undefined ? [] : [joining])]) item.from = current;
 				waiting = [];
@@ -248,11 +285,11 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 				joining = undefined;
 			}
 			if (value === "into" && clause === "join" && join !== undefined) {
-				join.to = this.lastBefore(current, join.from);
+				join.to = this.context.locals.lastBefore(current, join.from);
 				join = undefined;
 			} else if (value === "into") {
-				for (const item of region) item.to = this.lastBefore(current, item.from);
-				if (join !== undefined) join.to = Math.min(join.to, this.lastBefore(current, join.from));
+				for (const item of region) item.to = this.context.locals.lastBefore(current, item.from);
+				if (join !== undefined) join.to = Math.min(join.to, this.context.locals.lastBefore(current, join.from));
 				region = [];
 				join = undefined;
 			}
@@ -269,15 +306,15 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 					region.push(own);
 					if (value !== "into") waiting.push(own);
 				}
-				const first = this.nextSignificant(current + 1, stop);
+				const first = this.context.tokenStream.nextSignificant(current + 1, stop);
 				const typeSpan = first === name ? undefined : { start: first, end: name };
-				this.declareLocal(
+				this.context.locals.declareLocal(
 					name,
 					first,
 					name,
 					owner,
 					typeSpan,
-					this.header(first, name + 1),
+					this.context.typeReader.header(first, name + 1),
 					own,
 					"rangeVariable",
 				);
@@ -294,15 +331,18 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 
 	/** The name a range clause declares, `in`, `=` or nothing following it; -1 when none. */
 	private rangeVariableName(keyword: number, end: number, follower: string): number {
-		const first = this.nextSignificant(keyword + 1, end);
+		const first = this.context.tokenStream.nextSignificant(keyword + 1, end);
 		const followed = (name: number): boolean => {
-			if (!this.isDesignation(name)) return false;
-			return follower === "" || this.value(this.nextSignificant(name + 1, end)) === follower;
+			if (!this.context.locals.isDesignation(name)) return false;
+			return (
+				follower === "" ||
+				this.context.tokenStream.value(this.context.tokenStream.nextSignificant(name + 1, end)) === follower
+			);
 		};
 		if (followed(first)) return first;
-		if (follower !== "in" || first < 0 || !this.startsType(first)) return -1;
-		const shape = this.typeShape(first, end);
-		const name = shape === undefined ? -1 : this.nextSignificant(shape.end, end);
+		if (follower !== "in" || first < 0 || !this.context.locals.startsType(first)) return -1;
+		const shape = this.context.typeReader.typeShape(first, end);
+		const name = shape === undefined ? -1 : this.context.tokenStream.nextSignificant(shape.end, end);
 		return followed(name) ? name : -1;
 	}
 
@@ -310,14 +350,14 @@ export abstract class CsharpExpressionReader extends CsharpPatternReader {
 	private queryEnd(keyword: number, end: number): number {
 		let ordering = false;
 		let previous = -1;
-		let current = this.nextSignificant(keyword + 1, end);
+		let current = this.context.tokenStream.nextSignificant(keyword + 1, end);
 		while (current >= 0 && current < end) {
-			const value = this.value(current) ?? "";
+			const value = this.context.tokenStream.value(current) ?? "";
 			if (EXPRESSION_ENDS.has(value) && !(value === "," && ordering)) return current;
 			if (QUERY_CLAUSES.has(value)) ordering = value === "orderby";
 			current = this.skipGroup(current, previous, end);
 			previous = current;
-			current = this.nextSignificant(current + 1, end);
+			current = this.context.tokenStream.nextSignificant(current + 1, end);
 		}
 		return end;
 	}

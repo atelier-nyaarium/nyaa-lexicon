@@ -74,8 +74,7 @@ export interface TypeHierarchyItem {
  *
  * Anything absent falls to Variable rather than to a guess: an editor renders an unknown number as
  * nothing at all, so a wrong-but-plausible kind is worse than the dullest correct one.
- */
-/**
+ *
  * Keyed by SymbolKind, so a new kind fails the build here instead of rendering as something else.
  *
  * LSP has no heading, and editors' markdown servers settle on String, so an outline of a document

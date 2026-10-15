@@ -9,7 +9,7 @@ import type {
 	WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
-import type { ImportSyntax } from "./project.js";
+import type { ImportSyntax } from "./specifier-resolution.js";
 
 ////////////////////////////////
 //  Interfaces & Types

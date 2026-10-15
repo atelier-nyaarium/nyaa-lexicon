@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
-import { parseSource, reachedCalls } from "@nyaa-lexicon/protocol/ast";
+import { callsTo, declarationNamed, nodesIn, parseSource, reachedCalls } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 
 /**
  * Holds protocol/src/boundedChild.ts as the one owner of a bounded, reaped child process.
@@ -37,10 +38,6 @@ const MEMBERS = new Set(["spawn", "execFile", "spawnSync", "execFileSync"]);
 const ALLOWED = new Map<string, string>([
 	["core/src/supervisor.ts", "spawns long-lived providers; a different lifecycle than a bounded run"],
 	["client/src/discover.ts", "spawns the daemon, detached and unref'd to outlive the caller; a different lifecycle"],
-	[
-		"protocol/src/conformance/runner.ts",
-		"spawns a long-lived provider connection for a conformance run; a different lifecycle",
-	],
 	["core/src/__tests__/gitFixture.ts", "test fixture execFile via promisify, not the hand-copied reap machinery"],
 	[
 		"protocol/src/__tests__/source-bytes-residue.test.ts",
@@ -69,6 +66,36 @@ const ALLOWED = new Map<string, string>([
 	["scripts/__tests__/snapshot.test.ts", "test-only snapshot CLI fixture"],
 ]);
 
+const DECLARATION_ALLOWED = new Map([
+	["ProviderSession.open", "opens a long-lived provider connection for a conformance run"],
+]);
+
+function ownerName(node: ts.Node): string | undefined {
+	let method: string | undefined;
+	for (let at = node.parent; at !== undefined; at = at.parent) {
+		if (ts.isClassDeclaration(at) && at.name && method !== undefined) return `${at.name.text}.${method}`;
+		if (ts.isMethodDeclaration(at) && at.name && ts.isIdentifier(at.name) && method === undefined) {
+			method = at.name.text;
+		}
+	}
+	return undefined;
+}
+
+function sessionOpen(): ts.Node | undefined {
+	for (const dir of SWEPT) {
+		for (const file of sourceFiles(dir, SKIP_DIRS)) {
+			const text = readSwept(file);
+			if (text === null) continue;
+			const source = parseSource(file, text).source;
+			const session = nodesIn(source).find(
+				(node) => ts.isClassDeclaration(node) && node.name?.text === "ProviderSession",
+			);
+			if (session !== undefined) return declarationNamed(session, "open");
+		}
+	}
+	return undefined;
+}
+
 ////////////////////////////////
 //  Tests
 
@@ -83,6 +110,11 @@ describe("one owner spawns and reaps a bounded child", () => {
 		expect(reachedCalls(parsed.source, MODULES, MEMBERS).length).toBeGreaterThan(0);
 	});
 
+	it("finds the long-lived session exception by declaration", () => {
+		const open = sessionOpen();
+		expect(open !== undefined && callsTo(open, "spawn").length).toBe(1);
+	});
+
 	it("routes bounded child calls through the owner", () => {
 		const offenders: string[] = [];
 		for (const dir of SWEPT) {
@@ -93,6 +125,7 @@ describe("one owner spawns and reaps a bounded child", () => {
 				if (source === null) continue;
 				const parsed = parseSource(file, source);
 				for (const reach of reachedCalls(parsed.source, MODULES, MEMBERS)) {
+					if (DECLARATION_ALLOWED.has(ownerName(reach.call) ?? "")) continue;
 					offenders.push(`${here}: ${reach.name}`);
 				}
 			}

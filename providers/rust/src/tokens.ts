@@ -8,6 +8,9 @@ import {
 	isWhitespace,
 } from "./characters.js";
 import type { CommentSpan } from "./model.js";
+import { isRustKeyword } from "./vocabulary.js";
+
+export { KEYWORDS } from "./vocabulary.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -60,48 +63,6 @@ export interface ScanResult {
 ////////////////////////////////
 //  Constants
 
-export const KEYWORDS = new Set([
-	"as",
-	"async",
-	"await",
-	"break",
-	"const",
-	"continue",
-	"crate",
-	"dyn",
-	"else",
-	"enum",
-	"extern",
-	"false",
-	"fn",
-	"for",
-	"if",
-	"impl",
-	"in",
-	"let",
-	"loop",
-	"match",
-	"mod",
-	"move",
-	"mut",
-	"pub",
-	"ref",
-	"return",
-	"self",
-	"Self",
-	"static",
-	"struct",
-	"super",
-	"trait",
-	"true",
-	"type",
-	"unsafe",
-	"use",
-	"where",
-	"while",
-	"yield",
-]);
-
 /** Keywords that still end an operand. */
 export const OPERAND_WORDS = new Set(["self", "Self", "true", "false", "crate", "super", "await"]);
 
@@ -139,7 +100,7 @@ export function isValueToken(token: RustToken | undefined, value: string): boole
 
 /** A keyword as written, never a raw identifier spelling one. */
 export function isKeyword(token: RustToken | undefined): boolean {
-	return token?.kind === "identifier" && token.raw === token.value && KEYWORDS.has(token.value);
+	return token?.kind === "identifier" && token.raw === token.value && isRustKeyword(token.value);
 }
 
 export function tokenAt(tokens: readonly RustToken[], index: number): RustToken | undefined {

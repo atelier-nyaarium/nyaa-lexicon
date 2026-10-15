@@ -101,7 +101,7 @@ lookups use `store.get(key)`, not provider-owned maps.
 - The kit stages each `parseFile` and settles it from `moduleAdmission`. Admission makes the parse
   the base value. A refusal preserves a prior admitted value. If none exists, it drops any fill and
   blocks fills of the refused bytes.
-- `probeFile` (protocol 3.12.0), `renameEdits` and `moveEdits` use transient layers. The kit removes
+- `probeFile`, `renameEdits` and `moveEdits` use transient layers. The kit removes
   each layer on return or throw. The core probes candidate text it does not index. Probes are not
   staged and consume no verdict. The server handles requests in arrival order, including async
   handlers. The kit removes each layer before the next request runs, even if the daemon timed out
@@ -777,5 +777,5 @@ Every stateful provider uses the kit's module store.
 
 Negotiated at initialize and additive-only within a major, so an older provider keeps working
 against a newer core for the methods it implements; a method a later minor adds needs a provider
-update. A major mismatch is refused rather than attempted. 5.0.0 is one: `resolveImport` answers a
+update. A major mismatch is refused rather than attempted. For imports, `resolveImport` answers a
 landing, and an import is a list of edges.

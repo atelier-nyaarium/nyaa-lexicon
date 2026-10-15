@@ -1,9 +1,17 @@
 import { expect, test } from "bun:test";
-import { tokenize } from "../tokens.js";
+import { isKeyword, tokenize } from "../tokens.js";
 
 function values(text: string) {
 	return tokenize(text).tokens.map((token) => ({ kind: token.kind, value: token.value }));
 }
+
+test("classifies reserved words as keywords and raw identifiers as names", () => {
+	const tokens = tokenize("abstract r#abstract").tokens;
+
+	expect(isKeyword(tokens[0])).toBe(true);
+	expect(tokens[1]?.value).toBe("abstract");
+	expect(isKeyword(tokens[1])).toBe(false);
+});
 
 test("recognizes the Rust literal families without splitting their delimiters", () => {
 	const result = tokenize(`

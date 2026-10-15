@@ -1426,6 +1426,69 @@ test("binds autoload reads to the registered script root", () => {
 	});
 });
 
+test("infers same-named methods through their owning class scope", () => {
+	const provider = started();
+	const text = `func choose(value):
+	if value:
+		return "outer"
+	return "fallback"
+var outer_value = choose(true)
+func use_outer():
+	return choose(true)
+class Inner:
+	var inner_value = choose()
+	func choose():
+		return 2
+	func use_inner():
+		return choose()
+`;
+	const facts = provider.parseFile({ module: "scoped_methods.gd", contentHash: "scoped", text });
+	const inner = facts.declarations.find((declaration) => declaration.name === "Inner");
+	const root = facts.declarations.find((declaration) => declaration.languageKind === "script");
+	const declaration = (name: string, containerId: string | undefined) =>
+		facts.declarations.find((candidate) => candidate.name === name && candidate.containerId === containerId);
+	const typeOf = (name: string, containerId: string | undefined) => {
+		const candidate = declaration(name, containerId);
+		return provider.typeOf({ symbolId: candidate?.symbolId ?? "" });
+	};
+
+	expect(typeOf("choose", root?.symbolId)).toEqual({
+		status: "inferred",
+		display: 'String ("outer" | "fallback")',
+		basis: "2 return statements",
+	});
+	expect(typeOf("choose", inner?.symbolId)).toEqual({
+		status: "inferred",
+		display: "int (2)",
+		basis: "1 return statement",
+	});
+	expect(typeOf("outer_value", root?.symbolId)).toMatchObject({ status: "inferred", display: "String" });
+	expect(typeOf("inner_value", inner?.symbolId)).toMatchObject({ status: "inferred", display: "int" });
+	expect(typeOf("use_outer", root?.symbolId)).toMatchObject({
+		status: "inferred",
+		display: 'String ("outer" | "fallback")',
+	});
+	expect(typeOf("use_inner", inner?.symbolId)).toMatchObject({ status: "inferred", display: "int (2)" });
+});
+
+test("keeps unqualified calls unknown when their class scope is ambiguous", () => {
+	const provider = started();
+	const text = `func choose():
+	return 1
+func choose():
+	return "two"
+func call():
+	return choose()
+`;
+	const facts = provider.parseFile({ module: "ambiguous_methods.gd", contentHash: "ambiguous", text });
+	const call = facts.declarations.find((declaration) => declaration.name === "call");
+
+	expect(provider.typeOf({ symbolId: call?.symbolId ?? "" })).toMatchObject({
+		status: "unknown",
+		reason: "NotImplemented",
+	});
+});
+
 test("reports declared annotation types without inferring initializers", () => {
 	const provider = started();
 	const text = `class_name Types

@@ -13,8 +13,8 @@ import { EXPORT_EQUALS } from "./extract.js";
 import { scriptKindOf } from "./file-types.js";
 import { importOf } from "./imports.js";
 import { append, blockedSite, type LandingKey, type PlannedImport, syntaxOf } from "./move-imports.js";
-import type { SpecifierRenderer } from "./project.js";
 import { isDeclarationName, isQualifiedReference, meaningAt } from "./references.js";
+import type { SpecifierRenderer } from "./specifier-resolution.js";
 
 ////////////////////////////////
 //  Interfaces & Types

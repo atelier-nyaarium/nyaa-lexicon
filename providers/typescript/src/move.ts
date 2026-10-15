@@ -61,7 +61,7 @@ import {
 	relativeStyle,
 	type SpecifierRenderer,
 	type SpecifierRenderResult,
-} from "./project.js";
+} from "./specifier-resolution.js";
 import { parseDiagnostics } from "./syntax.js";
 
 ////////////////////////////////

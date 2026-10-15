@@ -2,8 +2,9 @@
 
 import { defined } from "@nyaa-lexicon/protocol";
 import type { CsharpImport, Leading, ModifierInfo, RawDeclaration, Segment } from "./model.js";
+import type { CsharpParseContext } from "./parseContext.js";
 import { positionRange, type Token } from "./tokens.js";
-import { CsharpTypeParser, earliest } from "./types.js";
+import { earliest } from "./types.js";
 import { isIdentifier, isTrivia, MODIFIERS, RESERVED_WORDS, syntaxValue } from "./words.js";
 
 ////////////////////////////////
@@ -20,9 +21,11 @@ function joinTokenValues(tokens: Token[]): string {
 ////////////////////////////////
 //  Classes
 
-export abstract class CsharpDeclarationParser extends CsharpTypeParser {
-	protected parseScope(start: number, end: number, parent: RawDeclaration | undefined): void {
-		this.nested(start, () => this.scopeMembers(start, end, parent));
+export class CsharpDeclarationParser {
+	constructor(private readonly context: CsharpParseContext) {}
+
+	public parseScope(start: number, end: number, parent: RawDeclaration | undefined): void {
+		this.context.tokenStream.nested(start, () => this.scopeMembers(start, end, parent));
 	}
 
 	private scopeMembers(start: number, end: number, parent: RawDeclaration | undefined): void {
@@ -31,7 +34,7 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		let attributes: number | undefined;
 		let lastDocumentationLine = -2;
 		while (index < end) {
-			const current = this.token(index);
+			const current = this.context.tokenStream.token(index);
 			if (current === undefined) return;
 			if (current.kind === "doc") {
 				if (current.start.line !== lastDocumentationLine + 1) documentationStart = undefined;
@@ -55,7 +58,7 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 				index++;
 				continue;
 			}
-			const section = this.attributeSectionAt(index, end);
+			const section = this.context.attributes.attributeSectionAt(index, end);
 			if (section !== undefined) {
 				if (section.close < 0) return;
 				if (section.attached) attributes ??= section.open;
@@ -64,7 +67,7 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 			}
 			const leadingStart = earliest(
 				documentationStart,
-				attributes === undefined ? undefined : this.token(attributes),
+				attributes === undefined ? undefined : this.context.tokenStream.token(attributes),
 			);
 			const parsed = this.parseAt(
 				index,
@@ -73,7 +76,7 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 				leadingStart === undefined ? undefined : { start: leadingStart, attributes },
 			);
 			if (parsed <= index) {
-				if (parent === undefined) this.skippedFileScope = true;
+				if (parent === undefined) this.context.recorder.markSkippedFileScope();
 				index = this.skipUnknown(index, end);
 			} else {
 				index = parsed;
@@ -87,12 +90,12 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 	private modifiersAt(index: number, end: number): ModifierInfo {
 		const start = index;
 		const modifiers = new Set<string>();
-		let current = this.nextSignificant(index, end);
+		let current = this.context.tokenStream.nextSignificant(index, end);
 		while (current >= 0 && current < end) {
-			const item = this.token(current);
+			const item = this.context.tokenStream.token(current);
 			if (!isIdentifier(item) || !MODIFIERS.has(syntaxValue(item) as string)) break;
 			modifiers.add(item.value);
-			current = this.nextSignificant(current + 1, end);
+			current = this.context.tokenStream.nextSignificant(current + 1, end);
 		}
 		return { index: current < 0 ? end : current, start, modifiers };
 	}
@@ -103,28 +106,46 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		parent: RawDeclaration | undefined,
 		leading: Leading | undefined,
 	): number {
-		const first = this.nextSignificant(index, end);
+		const first = this.context.tokenStream.nextSignificant(index, end);
 		if (first < 0) return end;
-		const item = this.token(first);
+		const item = this.context.tokenStream.token(first);
 		if (item === undefined) return end;
-		const afterGlobal = syntaxValue(item) === "global" ? this.nextSignificant(first + 1, end) : -1;
-		if (this.value(afterGlobal) === "using") return this.parseUsing(afterGlobal, item, end, true, parent);
+		const afterGlobal =
+			syntaxValue(item) === "global" ? this.context.tokenStream.nextSignificant(first + 1, end) : -1;
+		if (this.context.tokenStream.value(afterGlobal) === "using")
+			return this.parseUsing(afterGlobal, item, end, true, parent);
 		if (syntaxValue(item) === "using") return this.parseUsing(first, item, end, false, parent);
 		if (syntaxValue(item) === "namespace") return this.parseNamespace(first, first, end, parent, leading);
 		const modifiers = this.modifiersAt(first, end);
-		const keyword = this.value(modifiers.index);
+		const keyword = this.context.tokenStream.value(modifiers.index);
 		if (keyword === "namespace") return this.parseNamespace(modifiers.index, modifiers.start, end, parent, leading);
 		if (keyword !== undefined && isTypeDeclarationWord(keyword)) {
-			return this.parseType(modifiers.index, modifiers.start, end, parent, leading, modifiers.modifiers);
+			return this.context.types.parseType(
+				modifiers.index,
+				modifiers.start,
+				end,
+				parent,
+				leading,
+				modifiers.modifiers,
+			);
 		}
 		if (keyword === "delegate")
-			return this.parseDelegate(modifiers.index, modifiers.start, end, parent, leading, modifiers.modifiers);
+			return this.context.types.parseDelegate(
+				modifiers.index,
+				modifiers.start,
+				end,
+				parent,
+				leading,
+				modifiers.modifiers,
+			);
 		if (parent?.kind === "class" || parent?.kind === "struct" || parent?.kind === "interface") {
 			const extension =
 				keyword === "extension" && modifiers.index === first
-					? this.parseExtension(first, end, parent, leading)
+					? this.context.types.parseExtension(first, end, parent, leading)
 					: -1;
-			return extension >= 0 ? extension : this.parseMember(first, modifiers, end, parent, leading);
+			return extension >= 0
+				? extension
+				: this.context.members.parseMember(first, modifiers, end, parent, leading);
 		}
 		return -1;
 	}
@@ -136,27 +157,27 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		global: boolean,
 		scope: RawDeclaration | undefined,
 	): number {
-		const usingToken = this.token(index);
+		const usingToken = this.context.tokenStream.token(index);
 		if (usingToken === undefined) return -1;
-		let current = this.nextSignificant(index + 1, end);
+		let current = this.context.tokenStream.nextSignificant(index + 1, end);
 		let isStatic = false;
-		if (this.value(current) === "static") {
+		if (this.context.tokenStream.value(current) === "static") {
 			isStatic = true;
-			current = this.nextSignificant(current + 1, end);
+			current = this.context.tokenStream.nextSignificant(current + 1, end);
 		}
-		const statementEnd = this.findSemicolon(current, end);
+		const statementEnd = this.context.tokenStream.findSemicolon(current, end);
 		if (statementEnd < 0) {
-			this.report("Using directive has no terminating semicolon.", usingToken);
+			this.context.tokenStream.report("Using directive has no terminating semicolon.", usingToken);
 			return end;
 		}
 		const significant: number[] = [];
 		for (let cursor = current; cursor < statementEnd; cursor++) {
-			if (!isTrivia(this.token(cursor))) significant.push(cursor);
+			if (!isTrivia(this.context.tokenStream.token(cursor))) significant.push(cursor);
 		}
 		if (significant.length === 0) return statementEnd + 1;
 		let aliasIndex = -1;
 		for (const candidate of significant) {
-			if (this.value(candidate) === "=") {
+			if (this.context.tokenStream.value(candidate) === "=") {
 				aliasIndex = candidate;
 				break;
 			}
@@ -164,22 +185,23 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		const target = this.usingTarget(aliasIndex < 0 ? current : aliasIndex + 1, statementEnd);
 		// The alias and the target's names are no references; its type arguments are type uses.
 		for (const candidate of significant) {
-			const item = this.token(candidate);
+			const item = this.context.tokenStream.token(candidate);
 			if (item?.kind !== "identifier") continue;
 			if (target.lists.some(([open, close]) => candidate > open && candidate < close)) continue;
-			this.ignoredOffsets.add(item.startOffset);
+			this.context.recorder.ignore(item.startOffset);
 		}
-		for (const [open, close] of target.lists) this.addTypeReference(open + 1, close - 1, "typeUse");
+		for (const [open, close] of target.lists)
+			this.context.recorder.addTypeReference(open + 1, close - 1, "typeUse");
 		const names = target.names;
 		// An alias of a tuple, pointer or predefined type names nothing to import.
 		if (names.length === 0) {
-			if (aliasIndex < 0) this.report("Using directive has no namespace.", usingToken);
+			if (aliasIndex < 0) this.context.tokenStream.report("Using directive has no namespace.", usingToken);
 			return statementEnd + 1;
 		}
 		const specifier = joinTokenValues(names);
 		const firstName = names[0] as Token;
 		const lastName = names[names.length - 1] as Token;
-		const aliasToken = aliasIndex < 0 ? undefined : this.token(significant[0] as number);
+		const aliasToken = aliasIndex < 0 ? undefined : this.context.tokenStream.token(significant[0] as number);
 		const directive: CsharpImport = {
 			specifier,
 			...(aliasToken?.kind === "identifier"
@@ -189,12 +211,11 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 			global,
 			target: target.segments,
 			...defined({ qualifier: target.qualifier }),
-			span: { start: opener.start, end: this.token(statementEnd)?.end ?? lastName.end },
+			span: { start: opener.start, end: this.context.tokenStream.token(statementEnd)?.end ?? lastName.end },
 			specifierToken: firstName,
 			nameToken: lastName,
 		};
-		this.rawImports.push(directive);
-		if (scope !== undefined) this.importScopes.set(directive, scope);
+		this.context.recorder.addImport(directive, scope);
 		return statementEnd + 1;
 	}
 
@@ -212,27 +233,35 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 			qualifier: undefined as string | undefined,
 			lists: [] as [number, number][],
 		};
-		let current = this.nextSignificant(start, end);
-		const joint = this.nextSignificant(current + 1, end);
-		const alias = this.token(current);
-		if (isIdentifier(alias) && this.value(joint) === "::") {
+		let current = this.context.tokenStream.nextSignificant(start, end);
+		const joint = this.context.tokenStream.nextSignificant(current + 1, end);
+		const alias = this.context.tokenStream.token(current);
+		if (isIdentifier(alias) && this.context.tokenStream.value(joint) === "::") {
 			target.qualifier = alias.value;
-			current = this.nextSignificant(joint + 1, end);
+			current = this.context.tokenStream.nextSignificant(joint + 1, end);
 		}
 		while (current >= 0 && current < end) {
-			const token = this.token(current);
-			if (!isIdentifier(token) || RESERVED_WORDS.has(this.value(current) ?? "")) break;
-			let next = this.nextSignificant(current + 1, end);
-			const close = this.value(next) === "<" ? this.listClose(next, end) : -1;
-			const arity = close < 0 ? 0 : this.commaSegments(next + 1, close, this.typeAngles(next + 1, close)).length;
+			const token = this.context.tokenStream.token(current);
+			if (!isIdentifier(token) || RESERVED_WORDS.has(this.context.tokenStream.value(current) ?? "")) break;
+			let next = this.context.tokenStream.nextSignificant(current + 1, end);
+			const close =
+				this.context.tokenStream.value(next) === "<" ? this.context.typeReader.listClose(next, end) : -1;
+			const arity =
+				close < 0
+					? 0
+					: this.context.typeReader.commaSegments(
+							next + 1,
+							close,
+							this.context.typeReader.typeAngles(next + 1, close),
+						).length;
 			if (close >= 0) {
 				target.lists.push([next, close]);
-				next = this.nextSignificant(close + 1, end);
+				next = this.context.tokenStream.nextSignificant(close + 1, end);
 			}
 			target.names.push(token);
 			target.segments.push({ name: token.value, arity });
-			if (this.value(next) !== "." && this.value(next) !== "::") break;
-			current = this.nextSignificant(next + 1, end);
+			if (this.context.tokenStream.value(next) !== "." && this.context.tokenStream.value(next) !== "::") break;
+			current = this.context.tokenStream.nextSignificant(next + 1, end);
 		}
 		return target;
 	}
@@ -244,17 +273,17 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 		parent: RawDeclaration | undefined,
 		leading: Leading | undefined,
 	): number {
-		const keyword = this.token(keywordIndex);
+		const keyword = this.context.tokenStream.token(keywordIndex);
 		if (keyword === undefined) return -1;
 		const names: Token[] = [];
-		let current = this.nextSignificant(keywordIndex + 1, end);
+		let current = this.context.tokenStream.nextSignificant(keywordIndex + 1, end);
 		while (current >= 0 && current < end) {
-			const item = this.token(current);
+			const item = this.context.tokenStream.token(current);
 			if (item?.kind === "identifier") {
 				names.push(item);
-				current = this.nextSignificant(current + 1, end);
-				if (this.value(current) === ".") {
-					current = this.nextSignificant(current + 1, end);
+				current = this.context.tokenStream.nextSignificant(current + 1, end);
+				if (this.context.tokenStream.value(current) === ".") {
+					current = this.context.tokenStream.nextSignificant(current + 1, end);
 					continue;
 				}
 				break;
@@ -262,70 +291,74 @@ export abstract class CsharpDeclarationParser extends CsharpTypeParser {
 			break;
 		}
 		if (names.length === 0) {
-			this.report("Namespace declaration needs a name.", keyword);
+			this.context.tokenStream.report("Namespace declaration needs a name.", keyword);
 			return -1;
 		}
 		const namespaceName = joinTokenValues(names);
-		const parentNamespace = this.namespaceName(parent);
+		const parentNamespace = this.context.recorder.namespaceName(parent);
 		const fullName = parentNamespace === "" ? namespaceName : `${parentNamespace}.${namespaceName}`;
-		const next = this.nextSignificant(current, end);
+		const next = this.context.tokenStream.nextSignificant(current, end);
 		const nameStart = names[0] as Token;
 		const nameEnd = names[names.length - 1] as Token;
-		for (const item of names) this.ignoredOffsets.add(item.startOffset);
-		if (this.value(next) === ";") {
-			const namespace = this.addDeclaration({
+		for (const item of names) this.context.recorder.ignore(item.startOffset);
+		if (this.context.tokenStream.value(next) === ";") {
+			const namespace = this.context.recorder.addDeclaration({
 				kind: "namespace",
 				languageKind: "fileScopedNamespace",
 				name: namespaceName,
 				parent,
-				startToken: leading?.start ?? this.token(codeStartIndex) ?? keyword,
-				endToken: this.tokens[this.tokens.length - 1] as Token,
+				startToken: leading?.start ?? this.context.tokenStream.token(codeStartIndex) ?? keyword,
+				endToken: this.context.tokenStream.tokens[this.context.tokenStream.tokens.length - 1] as Token,
 				selectionStart: nameStart,
 				selectionEnd: nameEnd,
-				codeStart: this.token(codeStartIndex) ?? keyword,
+				codeStart: this.context.tokenStream.token(codeStartIndex) ?? keyword,
 				visibility: "public",
 				exported: true,
-				signature: this.header(codeStartIndex, next),
-				memberInsertLine: this.lineAfterLast(next, end),
+				signature: this.context.typeReader.header(codeStartIndex, next),
+				memberInsertLine: this.context.tokenStream.lineAfterLast(next, end),
 				nameTokenOffsets: names.map((item) => item.startOffset),
 			});
-			this.namespaceNames.add(fullName);
+			this.context.recorder.markNamespaceName(fullName);
 			this.parseScope(next + 1, end, namespace);
 			return end;
 		}
-		if (this.value(next) !== "{") {
-			this.report("Namespace declaration needs a body or semicolon.", this.token(next) ?? keyword);
+		if (this.context.tokenStream.value(next) !== "{") {
+			this.context.tokenStream.report(
+				"Namespace declaration needs a body or semicolon.",
+				this.context.tokenStream.token(next) ?? keyword,
+			);
 			return -1;
 		}
-		const close = this.matching(next, "{", "}", end);
-		if (close < 0) this.report("Namespace body is not closed.", this.token(next));
+		const close = this.context.tokenStream.matching(next, "{", "}", end);
+		if (close < 0)
+			this.context.tokenStream.report("Namespace body is not closed.", this.context.tokenStream.token(next));
 		const bodyEnd = close < 0 ? end : close;
-		const namespace = this.addDeclaration({
+		const namespace = this.context.recorder.addDeclaration({
 			kind: "namespace",
 			languageKind: "blockNamespace",
 			name: namespaceName,
 			parent,
-			startToken: leading?.start ?? this.token(codeStartIndex) ?? keyword,
-			endToken: this.token(close >= 0 ? close : bodyEnd - 1) ?? keyword,
+			startToken: leading?.start ?? this.context.tokenStream.token(codeStartIndex) ?? keyword,
+			endToken: this.context.tokenStream.token(close >= 0 ? close : bodyEnd - 1) ?? keyword,
 			selectionStart: nameStart,
 			selectionEnd: nameEnd,
-			codeStart: this.token(codeStartIndex) ?? keyword,
+			codeStart: this.context.tokenStream.token(codeStartIndex) ?? keyword,
 			visibility: "public",
 			exported: true,
-			signature: this.header(codeStartIndex, next),
-			memberInsertLine: this.closerLine(close),
+			signature: this.context.typeReader.header(codeStartIndex, next),
+			memberInsertLine: this.context.tokenStream.closerLine(close),
 			nameTokenOffsets: names.map((item) => item.startOffset),
 		});
-		this.namespaceNames.add(fullName);
+		this.context.recorder.markNamespaceName(fullName);
 		this.parseScope(next + 1, bodyEnd, namespace);
 		return close < 0 ? end : close + 1;
 	}
 
 	private skipUnknown(start: number, end: number): number {
-		const first = this.nextSignificant(start, end);
+		const first = this.context.tokenStream.nextSignificant(start, end);
 		if (first < 0) return end;
-		const boundary = this.findMemberBoundary(first, end);
+		const boundary = this.context.members.findMemberBoundary(first, end);
 		if (boundary === undefined) return Math.min(end, first + 1);
-		return this.advanceBoundary(boundary, end);
+		return this.context.members.advanceBoundary(boundary, end);
 	}
 }

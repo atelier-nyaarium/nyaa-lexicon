@@ -227,17 +227,15 @@ async function pythonModuleAvailable(python3: Python3Dispatch, moduleName: strin
 	return parsed.found;
 }
 
-function externalPackageExists(root: string, specifier: string): boolean {
-	const parts = specifier.split(".").filter(Boolean);
-	if (parts.length === 0) return false;
-	const packageParts = specifier.startsWith(".") ? parts : parts.slice(0, 1);
+function externalPackageExists(root: string, packageName: string): boolean {
+	if (packageName.length === 0) return false;
 	const roots = [
 		["site-packages"],
 		[".venv", "lib", "python3.12", "site-packages"],
 		["venv", "lib", "python3.12", "site-packages"],
 	];
 	return roots.some((rootParts) => {
-		const packageRoot = workspaceFile(root, [...rootParts, ...packageParts].join("/"));
+		const packageRoot = workspaceFile(root, [...rootParts, packageName].join("/"));
 		return packageRoot !== null && existsSync(packageRoot);
 	});
 }
@@ -421,7 +419,7 @@ export class PythonProvider {
 			if (stdlibModuleNames === null) {
 				return notImplementedImport(this.python3.unavailableDetail);
 			}
-			if (stdlibModuleNames.has(packageName) || externalPackageExists(root, params.specifier)) {
+			if (stdlibModuleNames.has(packageName) || externalPackageExists(root, packageName)) {
 				return { status: "external" as const, packageName };
 			}
 			const moduleAvailable = await pythonModuleAvailable(this.python3, packageName);

@@ -4,6 +4,7 @@ import { Imports } from "./imports.js";
 import type { RustDescriptor } from "./model.js";
 import { primitiveTypeForLiteral } from "./numbers.js";
 import { isKeyword, isNameToken, isValueToken, type RustToken, TYPE_WORDS, tokenAt } from "./tokens.js";
+import { isRustPathHead } from "./vocabulary.js";
 
 ////////////////////////////////
 //  Constants
@@ -12,9 +13,6 @@ const RETURN_TYPE_END = new Set(["where", "{"]);
 
 /** Words before a type's name that are not it. */
 const TYPE_PREFIX_WORDS = new Set(["const", "mut", "ref", "dyn", "impl", "for", "where"]);
-
-/** Keywords that can start a path. */
-const PATH_HEADS = new Set(["Self", "crate", "self", "super"]);
 
 const EQUALS = new Set(["="]);
 
@@ -159,7 +157,7 @@ export abstract class TypePaths extends Imports {
 	/** An initializer that is all `Type { .. }`, its path, or all one call `path(..)`, its callee's offset. */
 	protected builtPath(start: number, end: number): { literal?: string[]; call?: number } | undefined {
 		const head = this.tokens[start];
-		if (!isNameToken(head) || (isKeyword(head) && !PATH_HEADS.has(head.raw))) return undefined;
+		if (!isNameToken(head) || (isKeyword(head) && !isRustPathHead(head.raw))) return undefined;
 		let last = start;
 		while (isValueToken(this.tokens[last + 1], "::") && isNameToken(this.tokens[last + 2])) last += 2;
 		const open = last + 1;

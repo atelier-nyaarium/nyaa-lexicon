@@ -1,10 +1,13 @@
 import {
+	type ConditionalBranchSpan,
 	type CursorMark,
 	type Diagnostic,
+	decodeEscapedLiteral,
 	defined,
 	type OffsetRange,
 	type Position,
 	type Range,
+	resolveConditionalGroups,
 	SourceCursor,
 	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
@@ -91,25 +94,9 @@ interface ConditionalDirective {
 	keywordIndex: number;
 }
 
-interface ConditionalBranch {
-	start: number;
-	end: number;
-}
-
-interface AlternativeSpan extends ConditionalBranch {
+interface AlternativeSpan extends ConditionalBranchSpan {
 	group: number;
 	branch: number;
-}
-
-interface ConditionalGroup {
-	ifIndex: number;
-	branches: ConditionalBranch[];
-	parent: ConditionalGroup | undefined;
-	closed: boolean;
-	/** Past its `#endif` line. */
-	end: number;
-	/** The brackets its kept branches leave unmatched, once resolved. */
-	kept?: string[];
 }
 
 const OPERATORS = [
@@ -149,15 +136,6 @@ const STRING_PREFIXES = ["u8R", "u8", "uR", "UR", "LR", "R", "u", "U", "L"];
 
 const PREFIX_STARTS: ReadonlySet<string> = new Set(STRING_PREFIXES.map((prefix) => prefix[0] as string));
 
-/** Each closing bracket's opener. */
-const CLOSING: ReadonlyMap<string, string> = new Map([
-	[")", "("],
-	["]", "["],
-	["}", "{"],
-]);
-
-const BRACKETS: ReadonlySet<string> = new Set(["(", "[", "{", ")", "]", "}"]);
-
 /** Not code, so a comment after it has none before it. */
 const BYTE_ORDER_MARK = String.fromCodePoint(0xfeff);
 
@@ -179,37 +157,6 @@ function prefixAt(cursor: SourceCursor): { prefix: string; quote: string } | nul
 		if (ahead.startsWith(prefix) && (quote === '"' || quote === "'")) return { prefix, quote };
 	}
 	return null;
-}
-
-function decodeString(value: string): string {
-	let decoded = "";
-	let escaped = false;
-	for (const character of value) {
-		if (!escaped) {
-			if (character === "\\") {
-				escaped = true;
-			} else {
-				decoded += character;
-			}
-			continue;
-		}
-		const replacements: Record<string, string> = {
-			"0": "\0",
-			b: "\b",
-			f: "\f",
-			n: "\n",
-			r: "\r",
-			t: "\t",
-			v: "\v",
-			"\\": "\\",
-			'"': '"',
-			"'": "'",
-		};
-		decoded += replacements[character] ?? character;
-		escaped = false;
-	}
-	if (escaped) decoded += "\\";
-	return decoded;
 }
 
 /** A CRLF carriage return ends the line, so it is not comment text. */
@@ -369,9 +316,9 @@ function readQuoted(
 		guard = cursor.offset;
 		if (cursor.peek() === quote) {
 			cursor.next();
-			return { value: decodeString(value), closed: true };
+			return { value: decodeEscapedLiteral(value, "cpp"), closed: true };
 		}
-		if (cursor.peek() === "\n") return { value: decodeString(value), closed: false };
+		if (cursor.peek() === "\n") return { value: decodeEscapedLiteral(value, "cpp"), closed: false };
 		if (continuesLine(cursor)) {
 			takeSplices(cursor, splices);
 			continue;
@@ -385,7 +332,7 @@ function readQuoted(
 		takeSplices(cursor, splices);
 		if (cursor.good()) value += character + cursor.next();
 	}
-	return { value: decodeString(value), closed: false };
+	return { value: decodeEscapedLiteral(value, "cpp"), closed: false };
 }
 
 /** A pp-number: digits, name characters, separators, periods, and a sign after an exponent letter. */
@@ -594,42 +541,6 @@ function firstConditionIsZero(tokens: Token[], directive: ConditionalDirective):
 	return next >= directive.end;
 }
 
-/** Adds a bracket to a run, cancelling it against the opener it closes; a balanced run is empty. */
-function extendRun(run: string[], bracket: string): void {
-	const opener = CLOSING.get(bracket);
-	if (opener !== undefined && run.at(-1) === opener) run.pop();
-	else run.push(bracket);
-}
-
-/**
- * The brackets a branch leaves unmatched. A nested group, already resolved, adds what its kept
- * branches leave, so no token is read twice.
- */
-function bracketRun(
-	tokens: Token[],
-	branch: ConditionalBranch,
-	directiveTokens: Set<number>,
-	groupAt: ReadonlyMap<number, ConditionalGroup>,
-	meter?: WorkMeter,
-): string[] {
-	const run: string[] = [];
-	for (let index = branch.start; index < branch.end; index++) {
-		if (meter !== undefined) meter.steps++;
-		const inner = groupAt.get(index);
-		if (inner?.kept !== undefined) {
-			for (const bracket of inner.kept) extendRun(run, bracket);
-			index = inner.end - 1;
-			continue;
-		}
-		if (directiveTokens.has(index)) continue;
-		// A string or comment spelling a bracket is content, not a delimiter.
-		const token = tokens[index];
-		const value = token?.kind === "punctuation" ? token.value : "";
-		if (BRACKETS.has(value)) extendRun(run, value);
-	}
-	return run;
-}
-
 function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[], meter?: WorkMeter): Token[] {
 	const directives = directivesIn(tokens);
 	const directiveByIndex = new Map(directives.map((directive) => [directive.start, directive]));
@@ -640,91 +551,45 @@ function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[], meter?:
 		if (!["if", "ifdef", "ifndef", "elif", "else", "endif"].includes(directive.keyword)) continue;
 		for (let index = directive.start; index < directive.end; index++) protectedTokens.add(index);
 	}
-	const groups: ConditionalGroup[] = [];
-	const stack: ConditionalGroup[] = [];
-	for (const directive of directives) {
-		if (["if", "ifdef", "ifndef"].includes(directive.keyword)) {
-			const group: ConditionalGroup = {
-				ifIndex: directive.start,
-				branches: [{ start: directive.end, end: tokens.length }],
-				parent: stack.at(-1),
-				closed: false,
-				end: tokens.length,
-			};
-			groups.push(group);
-			stack.push(group);
-			continue;
-		}
-		if (["elif", "else"].includes(directive.keyword)) {
-			const group = stack.at(-1);
-			if (group === undefined) {
-				diagnostics.push({
-					severity: "error",
-					message: `Unexpected #${directive.keyword} outside a conditional.`,
-					range: rangeOfToken(tokens[directive.start] as Token),
-				});
-				continue;
-			}
-			(group.branches.at(-1) as ConditionalBranch).end = directive.start;
-			group.branches.push({ start: directive.end, end: tokens.length });
-			continue;
-		}
-		if (directive.keyword === "endif") {
-			const group = stack.pop();
-			if (group === undefined) {
-				diagnostics.push({
-					severity: "error",
-					message: "Unexpected #endif outside a conditional.",
-					range: rangeOfToken(tokens[directive.start] as Token),
-				});
-				continue;
-			}
-			(group.branches.at(-1) as ConditionalBranch).end = directive.start;
-			group.closed = true;
-			group.end = directive.end;
-		}
+	const resolution = resolveConditionalGroups({
+		directives,
+		tokenCount: tokens.length,
+		directiveTokens,
+		firstConditionIsZero: (index) =>
+			firstConditionIsZero(tokens, directiveByIndex.get(index) as ConditionalDirective),
+		delimiterAt: (index) => {
+			const token = tokens[index];
+			return token?.kind === "punctuation" ? token.value : "";
+		},
+		...(meter === undefined
+			? {}
+			: {
+					onStep: () => {
+						meter.steps++;
+					},
+				}),
+	});
+	for (const issue of resolution.issues) {
+		const message =
+			issue.kind === "unexpected-branch"
+				? `Unexpected #${issue.keyword} outside a conditional.`
+				: issue.kind === "unexpected-end"
+					? "Unexpected #endif outside a conditional."
+					: "Conditional directive is not closed.";
+		diagnostics.push({ severity: "error", message, range: rangeOfToken(tokens[issue.index] as Token) });
 	}
-	for (const group of stack) {
-		diagnostics.push({
-			severity: "error",
-			message: "Conditional directive is not closed.",
-			range: rangeOfToken(tokens[group.ifIndex] as Token),
-		});
-	}
-	// Innermost groups first, so each branch reads a nested group through its summary.
-	const groupAt = new Map<number, ConditionalGroup>();
-	const removedSpans: ConditionalBranch[] = [];
 	const alternativeSpans: AlternativeSpan[] = [];
-	// An unclosed group anywhere above leaves a group's branches as they are.
-	const closedThroughout = new Set<ConditionalGroup>();
-	for (const group of groups)
-		if (group.closed && (group.parent === undefined || closedThroughout.has(group.parent)))
-			closedThroughout.add(group);
-	for (const group of groups.toReversed()) {
-		groupAt.set(group.ifIndex, group);
-		if (!closedThroughout.has(group)) continue;
-		const directive = directiveByIndex.get(group.ifIndex) as ConditionalDirective;
-		const activeBranch = firstConditionIsZero(tokens, directive) ? 1 : 0;
-		const runs = group.branches.map((branch) => bracketRun(tokens, branch, directiveTokens, groupAt, meter));
-		const allWhole = runs.every((run) => run.length === 0);
-		const kept: string[] = [];
-		const keptBranches: number[] = [];
-		for (const [branch, segment] of group.branches.entries()) {
-			const keep = allWhole ? !(activeBranch === 1 && branch === 0) : branch === activeBranch;
-			if (!keep) {
-				removedSpans.push(segment);
-				continue;
-			}
-			keptBranches.push(branch);
-			for (const bracket of runs[branch] ?? []) extendRun(kept, bracket);
-		}
-		group.kept = kept;
-		if (keptBranches.length < 2) continue;
-		for (const branch of keptBranches)
-			alternativeSpans.push({ ...(group.branches[branch] as ConditionalBranch), group: group.ifIndex, branch });
+	for (const group of resolution.groups) {
+		if ((group.keptBranches?.length ?? 0) < 2) continue;
+		for (const branch of group.keptBranches ?? [])
+			alternativeSpans.push({
+				...(group.branches[branch] as ConditionalBranchSpan),
+				group: group.ifIndex,
+				branch,
+			});
 	}
 	for (const index of directiveTokens) (tokens[index] as Token).directive = true;
-	const removed = spanned(tokens.length, removedSpans);
+	const removed = spanned(tokens.length, resolution.removedBranches);
 	markAlternatives(tokens, alternativeSpans);
 	const kept: Token[] = [];
 	let hidden = false;
@@ -741,7 +606,7 @@ function resolveConditionals(tokens: Token[], diagnostics: Diagnostic[], meter?:
 }
 
 /** Which of `count` indexes some span covers, 1 or 0, in one sweep. */
-function spanned(count: number, spans: readonly ConditionalBranch[]): Uint8Array {
+function spanned(count: number, spans: readonly ConditionalBranchSpan[]): Uint8Array {
 	const starts = new Int32Array(count + 1);
 	for (const span of spans) {
 		starts[span.start] = (starts[span.start] as number) + 1;

@@ -1,6 +1,7 @@
 // Token access, delimiter matching and diagnostics under every C# parse layer.
 
 import { type Diagnostic, type HeaderSpan, NestingGauge, renderHeader, type WorkMeter } from "@nyaa-lexicon/protocol";
+import type { CsharpTokenAccess } from "./parseContext.js";
 import { type LexedSource, lastLine, positionRange, type Token, tokenize } from "./tokens.js";
 import { isTrivia, syntaxValue } from "./words.js";
 
@@ -28,12 +29,12 @@ interface SemicolonIndex {
 ////////////////////////////////
 //  Classes
 
-export class CsharpTokenStream {
-	protected readonly lexed: LexedSource;
+export class CsharpTokenStream implements CsharpTokenAccess {
+	public readonly lexed: LexedSource;
 
-	protected readonly tokens: Token[];
+	public readonly tokens: Token[];
 
-	protected readonly diagnostics: Diagnostic[];
+	public readonly diagnostics: Diagnostic[];
 
 	private readonly reportedDiagnostics = new Set<string>();
 
@@ -47,10 +48,10 @@ export class CsharpTokenStream {
 	private semicolons: SemicolonIndex | undefined;
 
 	/** Counts every recursive reader's depth, so deep nesting is one problem, never a stack overflow. */
-	protected readonly gauge = new NestingGauge();
+	public readonly gauge = new NestingGauge();
 
 	/** Where the gauge last opened, for the problem it may raise. */
-	protected deepest = 0;
+	public deepest = 0;
 
 	constructor(
 		protected readonly module: string,
@@ -132,24 +133,24 @@ export class CsharpTokenStream {
 	}
 
 	/** The first comma in the group opening at `open`, outside its inner groups; -1 when none. */
-	protected firstComma(open: number): number {
+	public firstComma(open: number): number {
 		this.commas ??= this.findCommas();
 		const comma = this.commas[open] ?? -1;
 		const close = this.partners[open] ?? -1;
 		return comma >= 0 && comma < close ? comma : -1;
 	}
 
-	protected token(index: number): Token | undefined {
+	public token(index: number): Token | undefined {
 		return this.tokens[index];
 	}
 
 	/** A header over the source, which no layer above reads directly. */
-	protected render(span: HeaderSpan): string | undefined {
+	public render(span: HeaderSpan): string | undefined {
 		return renderHeader(this.text, span, this.meter);
 	}
 
 	/** Runs `read` one nesting level deeper, at `index`. */
-	protected nested<T>(index: number, read: () => T): T {
+	public nested<T>(index: number, read: () => T): T {
 		this.deepest = index;
 		this.gauge.open();
 		try {
@@ -159,12 +160,12 @@ export class CsharpTokenStream {
 		}
 	}
 
-	protected value(index: number): string | undefined {
+	public value(index: number): string | undefined {
 		return syntaxValue(this.token(index));
 	}
 
 	/** The first significant token at or after `index`; -1 for none, or for a negative `index`. */
-	protected nextSignificant(index: number, end = this.tokens.length): number {
+	public nextSignificant(index: number, end = this.tokens.length): number {
 		if (index < 0) return -1;
 		let current = index;
 		while (current < end && isTrivia(this.token(current))) {
@@ -174,7 +175,7 @@ export class CsharpTokenStream {
 		return current < end ? current : -1;
 	}
 
-	protected previousSignificant(index: number, start = 0): number {
+	public previousSignificant(index: number, start = 0): number {
 		let current = index - 1;
 		while (current >= start && isTrivia(this.token(current))) {
 			if (this.meter !== undefined) this.meter.steps++;
@@ -184,7 +185,7 @@ export class CsharpTokenStream {
 	}
 
 	/** The closer of the `open` at `index`, before `end`; -1 when none. */
-	protected matching(index: number, open: string, close: string, end = this.tokens.length): number {
+	public matching(index: number, open: string, close: string, end = this.tokens.length): number {
 		const item = this.token(index);
 		if (item?.kind === "punctuation" && item.value === open && CLOSED_BY.get(close) === open) {
 			const partner = this.partners[index] as number;
@@ -205,13 +206,13 @@ export class CsharpTokenStream {
 	}
 
 	/** The opener the `closer` at `close` closes; -1 when none. */
-	protected opener(close: number, open: string, closer: string): number {
+	public opener(close: number, open: string, closer: string): number {
 		const item = this.token(close);
 		if (item?.kind !== "punctuation" || item.value !== closer || CLOSED_BY.get(closer) !== open) return -1;
 		return this.partners[close] as number;
 	}
 
-	protected report(message: string, token: Token | undefined): void {
+	public report(message: string, token: Token | undefined): void {
 		if (token === undefined) return;
 		const key = `${message}:${token.startOffset}`;
 		if (this.reportedDiagnostics.has(key)) return;
@@ -219,7 +220,7 @@ export class CsharpTokenStream {
 		this.diagnostics.push({ severity: "error", message, range: positionRange(token) });
 	}
 
-	protected checkDelimiters(): void {
+	public checkDelimiters(): void {
 		const opens = new Map<string, string>([
 			["(", ")"],
 			["[", "]"],
@@ -248,7 +249,7 @@ export class CsharpTokenStream {
 		for (const item of stack) this.report(`Opening delimiter ${item.value} is not closed.`, item);
 	}
 
-	protected findTopLevelValue(start: number, end: number, value: string): number {
+	public findTopLevelValue(start: number, end: number, value: string): number {
 		let parentheses = 0;
 		let brackets = 0;
 		let braces = 0;
@@ -268,7 +269,7 @@ export class CsharpTokenStream {
 	}
 
 	/** The first `;` in `[start, end)` where each bracket kind's opens and closes since `start` cancel; -1 when none. */
-	protected findSemicolon(start: number, end: number): number {
+	public findSemicolon(start: number, end: number): number {
 		this.semicolons ??= this.indexSemicolons();
 		const from = Math.min(Math.max(0, start), this.tokens.length);
 		const key = this.semicolons.depths.map((depth) => depth[from]).join(",");
@@ -284,7 +285,7 @@ export class CsharpTokenStream {
 		return semicolon !== undefined && semicolon < end ? semicolon : -1;
 	}
 
-	protected lastIdentifier(start: number, end: number): number {
+	public lastIdentifier(start: number, end: number): number {
 		let found = -1;
 		for (let current = start; current < end; current++) {
 			if (this.token(current)?.kind === "identifier") found = current;
@@ -292,12 +293,12 @@ export class CsharpTokenStream {
 		return found;
 	}
 
-	protected sourceSpan(start: Token, end: Token): string {
+	public sourceSpan(start: Token, end: Token): string {
 		return this.lexed.cursor.textOf(start.startOffset, end.endOffset).trim();
 	}
 
 	/** Its line when nothing precedes it there. */
-	protected closerLine(close: number): number | undefined {
+	public closerLine(close: number): number | undefined {
 		const closer = close < 0 ? undefined : this.token(close);
 		if (closer === undefined) return undefined;
 		let previous = close - 1;
@@ -307,7 +308,7 @@ export class CsharpTokenStream {
 	}
 
 	/** Past the line break after the last code in the span. */
-	protected lineAfterLast(from: number, end: number): number | undefined {
+	public lineAfterLast(from: number, end: number): number | undefined {
 		let last = from;
 		for (let index = from + 1; index < end; index++) {
 			const kind = this.token(index)?.kind;

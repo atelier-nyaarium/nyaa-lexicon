@@ -3,6 +3,7 @@
 import type { OffsetRange } from "@nyaa-lexicon/protocol";
 import type { ImportBinding, ParsedFile, RawDeclaration, RustDescriptor } from "./model.js";
 import { moduleFileOf, type RustProjectResolver } from "./project.js";
+import { isRustPathHead, isRustTypeKind } from "./vocabulary.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -43,8 +44,6 @@ interface ResolvedImpl {
 ////////////////////////////////
 //  Constants
 
-const TYPE_KINDS: ReadonlySet<string> = new Set(["struct", "enum", "interface", "class"]);
-
 /** Containers whose items and imports a name inside them sees. */
 export const ITEM_SCOPES: ReadonlySet<string> = new Set(["module", "function", "method"]);
 
@@ -53,9 +52,6 @@ const IMPORT_HOPS = 8;
 
 /** Aliases followed to a type, at most. */
 const ALIAS_HOPS = 8;
-
-/** Path heads that name a module relative to the current one, never a crate. */
-const PATH_KEYWORDS: ReadonlySet<string> = new Set(["crate", "self", "super", "Self"]);
 
 ////////////////////////////////
 //  Functions & Helpers
@@ -279,7 +275,7 @@ export class ScopeResolver {
 		trail: readonly ImportBinding[] = [],
 	): string | undefined {
 		const first = names[0];
-		if (first === undefined || (!absolute && PATH_KEYWORDS.has(first))) return undefined;
+		if (first === undefined || (!absolute && isRustPathHead(first))) return undefined;
 		if (!absolute && this.scoped(facts, first, site, trail) !== undefined) return undefined;
 		return this.resolver.externCrate(facts.module, first)?.kind === "external" ? first : undefined;
 	}
@@ -380,7 +376,7 @@ export class ScopeResolver {
 	/** `Self` in an impl whose target is its own generic: the impl's items, else that generic's traits. */
 	private genericSelf(facts: ParsedFile, site: Site): Tiers | undefined {
 		const holder = containersAround(facts, site.containerId).find(
-			(candidate) => candidate.memberPath !== undefined || TYPE_KINDS.has(candidate.declaration.kind),
+			(candidate) => candidate.memberPath !== undefined || isRustTypeKind(candidate.declaration.kind),
 		);
 		const target = holder?.valueType?.[0];
 		if (holder?.memberPath === undefined || target === undefined) return undefined;
@@ -425,7 +421,7 @@ export class ScopeResolver {
 	private child(place: Place, name: string, trail: readonly ImportBinding[]): Lookup {
 		const found = this.itemsIn(place, name, trail).filter(({ raw }) =>
 			place.kind === "module"
-				? TYPE_KINDS.has(raw.declaration.kind) || raw.declaration.kind === "module"
+				? isRustTypeKind(raw.declaration.kind) || raw.declaration.kind === "module"
 				: raw.declaration.languageKind === "variant",
 		);
 		const places = found.map(({ facts, raw }) => placeOf(facts, raw));
@@ -499,7 +495,7 @@ export class ScopeResolver {
 		const candidates: Array<{ block: OffsetRange | undefined; lookup: () => Lookup }> = [];
 		for (const raw of facts.byName.get(name) ?? []) {
 			if (raw.declaration.containerId !== scopeId || raw.scope !== undefined) continue;
-			if (!TYPE_KINDS.has(raw.declaration.kind) && raw.declaration.kind !== "module") continue;
+			if (!isRustTypeKind(raw.declaration.kind) && raw.declaration.kind !== "module") continue;
 			if (raw.block !== undefined && !within(raw.block, offset)) continue;
 			candidates.push({ block: raw.block, lookup: () => placeOf(facts, raw) });
 		}
@@ -574,7 +570,7 @@ export class ScopeResolver {
 	/** The type `Self` names: the nearest impl's target, or the trait or type around the site. */
 	private selfType(facts: ParsedFile, site: Site): Lookup {
 		const holder = containersAround(facts, site.containerId).find(
-			(candidate) => candidate.memberPath !== undefined || TYPE_KINDS.has(candidate.declaration.kind),
+			(candidate) => candidate.memberPath !== undefined || isRustTypeKind(candidate.declaration.kind),
 		);
 		if (holder === undefined) return undefined;
 		return holder.memberPath === undefined ? placeOf(facts, holder) : this.implTarget(facts, holder);

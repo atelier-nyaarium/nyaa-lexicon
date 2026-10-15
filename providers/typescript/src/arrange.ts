@@ -24,7 +24,7 @@ import { sameModulePath } from "./move-dependencies.js";
 import { blockedSite } from "./move-imports.js";
 import { settleBlankLines } from "./move-layout.js";
 import { type Leaving, orphanedImports, repointLeavingExports } from "./move-sites.js";
-import type { ModuleResolver, SpecifierRenderer } from "./project.js";
+import type { ModuleResolver, SpecifierRenderer } from "./specifier-resolution.js";
 import { parseDiagnostics } from "./syntax.js";
 
 ////////////////////////////////

@@ -1,7 +1,7 @@
 import { type Declaration, defined, type FileRole, type Metrics, type Range } from "@nyaa-lexicon/protocol";
 import { InnermostSweep, type Interval } from "./innermost.js";
 import type { DeclarationMeta, RawDeclaration, Scope } from "./model.js";
-import { CsharpStatementParser } from "./statements.js";
+import type { CsharpParseContext } from "./parseContext.js";
 import type { Token } from "./tokens.js";
 import { isIdentifier, LAMBDA_ATTRIBUTE_CONTEXT, MODIFIERS, STATEMENT_BOUNDARY, syntaxValue } from "./words.js";
 
@@ -34,36 +34,38 @@ interface BodyWalk {
 ////////////////////////////////
 //  Classes
 
-export abstract class CsharpDeclarationPass extends CsharpStatementParser {
+export class CsharpDeclarationPass {
+	constructor(private readonly context: CsharpParseContext) {}
+
 	/** Whether each `?` asked about opens a conditional. */
 	private readonly conditionals = new Map<number, boolean>();
 
-	protected fileRole(declarations: Declaration[], metadata: Map<string, DeclarationMeta>): FileRole {
+	public fileRole(declarations: Declaration[], metadata: Map<string, DeclarationMeta>): FileRole {
 		const main = declarations.find((declaration) => {
 			if (declaration.kind !== "method" || declaration.name !== "Main") return false;
 			return metadata.get(declaration.symbolId)?.isStatic === true;
 		});
 		if (main !== undefined) return { kind: "entry", how: "main", symbolId: main.symbolId };
-		if (this.skippedFileScope) return { kind: "unknown", reason: "NotImplemented" };
+		if (this.context.recorder.hasSkippedFileScope()) return { kind: "unknown", reason: "NotImplemented" };
 		return { kind: "library" };
 	}
 
 	/** Statement-boundary runs are attributes only inside method-shaped bodies. At expression starts,
 	 * only runs before lambdas, anonymous methods, or their parameter lists are attributes.
 	 */
-	protected scanNestedAttributes(metadata: Map<string, DeclarationMeta>): void {
-		const end = this.tokens.length;
+	public scanNestedAttributes(metadata: Map<string, DeclarationMeta>): void {
+		const end = this.context.tokenStream.tokens.length;
 		const bodies = new InnermostSweep(this.runningBodyRanges(metadata));
 		for (let current = 0; current < end; current++) {
-			if (this.value(current) !== "[") continue;
-			const previous = this.previousSignificant(current);
-			const previousValue = this.value(previous);
+			if (this.context.tokenStream.value(current) !== "[") continue;
+			const previous = this.context.tokenStream.previousSignificant(current);
+			const previousValue = this.context.tokenStream.value(previous);
 			if (previousValue === undefined) continue;
-			const token = this.token(current) as Token;
+			const token = this.context.tokenStream.token(current) as Token;
 			const boundary = STATEMENT_BOUNDARY.has(previousValue) && bodies.at(token.startOffset) !== undefined;
 			const anonymousMethodParameter = previousValue === "(" && this.precededByDelegateKeyword(previous);
 			if (!boundary && !anonymousMethodParameter && !LAMBDA_ATTRIBUTE_CONTEXT.has(previousValue)) continue;
-			const after = this.bracketedSectionsEnd(current, end);
+			const after = this.context.attributes.bracketedSectionsEnd(current, end);
 			if (after === current) continue;
 			const verified = anonymousMethodParameter
 				? true
@@ -73,7 +75,7 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 			if (!verified) continue;
 			let mark = current;
 			while (mark < after) {
-				const section = this.attributeSectionAt(mark, end);
+				const section = this.context.attributes.attributeSectionAt(mark, end);
 				if (section === undefined || section.close < 0) break;
 				mark = section.close + 1;
 			}
@@ -81,67 +83,86 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 	}
 
 	protected looksLikeLambdaSignature(index: number, end: number): boolean {
-		let current = this.nextSignificant(index, end);
-		while (this.value(current) === "static" || this.value(current) === "async") {
-			current = this.nextSignificant(current + 1, end);
+		let current = this.context.tokenStream.nextSignificant(index, end);
+		while (
+			this.context.tokenStream.value(current) === "static" ||
+			this.context.tokenStream.value(current) === "async"
+		) {
+			current = this.context.tokenStream.nextSignificant(current + 1, end);
 		}
-		if (this.value(current) === "delegate") {
-			const afterKeyword = this.nextSignificant(current + 1, end);
-			if (this.value(afterKeyword) !== "(") return this.value(afterKeyword) === "{";
-			const close = this.matching(afterKeyword, "(", ")", end);
-			return close >= 0 && this.value(this.nextSignificant(close + 1, end)) === "{";
+		if (this.context.tokenStream.value(current) === "delegate") {
+			const afterKeyword = this.context.tokenStream.nextSignificant(current + 1, end);
+			if (this.context.tokenStream.value(afterKeyword) !== "(")
+				return this.context.tokenStream.value(afterKeyword) === "{";
+			const close = this.context.tokenStream.matching(afterKeyword, "(", ")", end);
+			return (
+				close >= 0 &&
+				this.context.tokenStream.value(this.context.tokenStream.nextSignificant(close + 1, end)) === "{"
+			);
 		}
-		if (this.value(current) === "(") {
-			const close = this.matching(current, "(", ")", end);
-			return close >= 0 && this.value(this.nextSignificant(close + 1, end)) === "=>";
+		if (this.context.tokenStream.value(current) === "(") {
+			const close = this.context.tokenStream.matching(current, "(", ")", end);
+			return (
+				close >= 0 &&
+				this.context.tokenStream.value(this.context.tokenStream.nextSignificant(close + 1, end)) === "=>"
+			);
 		}
-		return isIdentifier(this.token(current)) && this.value(this.nextSignificant(current + 1, end)) === "=>";
+		return (
+			isIdentifier(this.context.tokenStream.token(current)) &&
+			this.context.tokenStream.value(this.context.tokenStream.nextSignificant(current + 1, end)) === "=>"
+		);
 	}
 
 	/** Whether `(` opens an anonymous method's own parameter list. */
 	protected precededByDelegateKeyword(parenIndex: number): boolean {
-		let current = this.previousSignificant(parenIndex);
-		while (this.value(current) === "static" || this.value(current) === "async") {
-			current = this.previousSignificant(current);
+		let current = this.context.tokenStream.previousSignificant(parenIndex);
+		while (
+			this.context.tokenStream.value(current) === "static" ||
+			this.context.tokenStream.value(current) === "async"
+		) {
+			current = this.context.tokenStream.previousSignificant(current);
 		}
-		return this.value(current) === "delegate";
+		return this.context.tokenStream.value(current) === "delegate";
 	}
 
 	/** Whether a local function signature follows, never a bare call. */
 	protected looksLikeLocalFunctionSignature(index: number, end: number): boolean {
-		let current = this.nextSignificant(index, end);
-		while (isIdentifier(this.token(current)) && MODIFIERS.has(this.value(current) ?? "")) {
-			current = this.nextSignificant(current + 1, end);
+		let current = this.context.tokenStream.nextSignificant(index, end);
+		while (
+			isIdentifier(this.context.tokenStream.token(current)) &&
+			MODIFIERS.has(this.context.tokenStream.value(current) ?? "")
+		) {
+			current = this.context.tokenStream.nextSignificant(current + 1, end);
 		}
 		let sawType = false;
 		for (;;) {
-			if (!isIdentifier(this.token(current))) return false;
-			current = this.nextSignificant(current + 1, end);
+			if (!isIdentifier(this.context.tokenStream.token(current))) return false;
+			current = this.context.tokenStream.nextSignificant(current + 1, end);
 			while (current >= 0 && current < end) {
-				const value = this.value(current);
+				const value = this.context.tokenStream.value(current);
 				if (value === "<") {
-					const close = this.listClose(current, end);
+					const close = this.context.typeReader.listClose(current, end);
 					if (close < 0) return false;
-					current = this.nextSignificant(close + 1, end);
+					current = this.context.tokenStream.nextSignificant(close + 1, end);
 					continue;
 				}
 				if (value === "[") {
-					const close = this.matching(current, "[", "]", end);
+					const close = this.context.tokenStream.matching(current, "[", "]", end);
 					if (close < 0) return false;
-					current = this.nextSignificant(close + 1, end);
+					current = this.context.tokenStream.nextSignificant(close + 1, end);
 					continue;
 				}
 				if (value === "?" || value === "." || value === "::") {
-					current = this.nextSignificant(current + 1, end);
+					current = this.context.tokenStream.nextSignificant(current + 1, end);
 					continue;
 				}
 				break;
 			}
-			if (this.value(current) === "(") {
+			if (this.context.tokenStream.value(current) === "(") {
 				if (!sawType) return false;
-				const close = this.matching(current, "(", ")", end);
+				const close = this.context.tokenStream.matching(current, "(", ")", end);
 				if (close < 0) return false;
-				const after = this.value(this.nextSignificant(close + 1, end));
+				const after = this.context.tokenStream.value(this.context.tokenStream.nextSignificant(close + 1, end));
 				return after === "{" || after === "=>";
 			}
 			sawType = true;
@@ -150,7 +171,9 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 
 	/** Body spans a local function could sit among. */
 	private runningBodyRanges(metadata: Map<string, DeclarationMeta>): Interval<true>[] {
-		const ranges: Interval<true>[] = this.accessorBodyRanges.map((range) => ({ ...range, value: true }));
+		const ranges: Interval<true>[] = this.context.recorder
+			.accessorBodyRangesSnapshot()
+			.map((range) => ({ ...range, value: true }));
 		for (const item of metadata.values()) {
 			if (item.bodyStartOffset === undefined || item.bodyEndOffset === undefined) continue;
 			const kind = item.declaration.kind;
@@ -166,14 +189,14 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 	 * second part in the file, takes its occurrence in source order.
 	 */
 	private separateSiblings(arity: ReadonlyMap<RawDeclaration, number>): void {
-		for (const raw of this.rawDeclarations) {
+		for (const raw of this.context.recorder.declarations()) {
 			const count = arity.get(raw) ?? 0;
 			if (raw.descriptor?.kind === "type" && raw.descriptor.disambiguator === undefined && count > 0)
 				raw.descriptor = { ...raw.descriptor, disambiguator: String(count) };
 		}
-		const order = new Map(this.rawDeclarations.map((raw, index) => [raw, index]));
+		const order = new Map(this.context.recorder.declarations().map((raw, index) => [raw, index]));
 		const groups = new Map<string, RawDeclaration[]>();
-		for (const raw of this.rawDeclarations) {
+		for (const raw of this.context.recorder.declarations()) {
 			if (raw.descriptor === undefined) continue;
 			const { kind, name, disambiguator } = raw.descriptor;
 			const parent = raw.parent === undefined ? -1 : order.get(raw.parent);
@@ -191,22 +214,22 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 	/** Each generic declaration's count of type parameters. */
 	private arities(): Map<RawDeclaration, number> {
 		const arity = new Map<RawDeclaration, number>();
-		for (const raw of this.rawDeclarations)
+		for (const raw of this.context.recorder.declarations())
 			if (raw.kind === "typeParameter" && raw.parent !== undefined)
 				arity.set(raw.parent, (arity.get(raw.parent) ?? 0) + 1);
 		return arity;
 	}
 
-	protected finalizeDeclarations(): { declarations: Declaration[]; metadata: Map<string, DeclarationMeta> } {
+	public finalizeDeclarations(): { declarations: Declaration[]; metadata: Map<string, DeclarationMeta> } {
 		const arity = this.arities();
 		this.separateSiblings(arity);
 		const cache = new Map<RawDeclaration, string>();
 		const declarations: Declaration[] = [];
 		const metadata = new Map<string, DeclarationMeta>();
 		const bodies = this.walkBodies();
-		for (const raw of this.rawDeclarations) {
-			const symbolId = this.pathFor(raw, cache);
-			const containerId = raw.parent === undefined ? undefined : this.pathFor(raw.parent, cache);
+		for (const raw of this.context.recorder.declarations()) {
+			const symbolId = this.context.recorder.pathFor(raw, cache);
+			const containerId = raw.parent === undefined ? undefined : this.context.recorder.pathFor(raw.parent, cache);
 			const lines = raw.endToken.end.line - raw.startToken.start.line + 1;
 			const metrics: Metrics = { lines: Math.max(1, lines) };
 			if (raw.parameterCount !== undefined) metrics.parameters = raw.parameterCount;
@@ -232,8 +255,8 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 				declaration,
 				startOffset: raw.startToken.startOffset,
 				endOffset: raw.endToken.endOffset,
-				namespaceName: this.namespaceName(raw.parent),
-				typePath: this.typePath(raw.parent, arity),
+				namespaceName: this.context.recorder.namespaceName(raw.parent),
+				typePath: this.context.recorder.typePath(raw.parent, arity),
 				...defined({ parentId: containerId }),
 				...defined({
 					typeText: raw.typeText,
@@ -262,16 +285,16 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 	}
 
 	private scopeRange(scope: Scope): Range {
-		const last = this.tokens.length - 1;
-		const from = this.token(Math.min(last, scope.from)) as Token;
-		const to = this.token(Math.min(last, Math.max(scope.from, scope.to))) as Token;
+		const last = this.context.tokenStream.tokens.length - 1;
+		const from = this.context.tokenStream.token(Math.min(last, scope.from)) as Token;
+		const to = this.context.tokenStream.token(Math.min(last, Math.max(scope.from, scope.to))) as Token;
 		return { start: from.start, end: to.end };
 	}
 
 	/** Every body's walk, inner bodies first, so each token is walked once however deep bodies nest. */
 	private walkBodies(): Map<RawDeclaration, BodyWalk> {
 		const bodies: { raw: RawDeclaration; first: number; stop: number }[] = [];
-		for (const raw of this.rawDeclarations) {
+		for (const raw of this.context.recorder.declarations()) {
 			if (raw.bodyStartToken === undefined || raw.bodyEndToken === undefined) continue;
 			const first = this.firstTokenAfter(raw.bodyStartToken.endOffset);
 			bodies.push({ raw, first, stop: Math.max(first, this.firstTokenAfter(raw.bodyEndToken.startOffset - 1)) });
@@ -309,7 +332,7 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 				index = inner.stop - 1;
 				continue;
 			}
-			const item = this.tokens[index] as Token;
+			const item = this.context.tokenStream.tokens[index] as Token;
 			if (item.hole === true) continue;
 			const value = syntaxValue(item) ?? "";
 			if (value === "{") {
@@ -350,14 +373,18 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 	/** From a `?`: true at its `:`, false where its expression ends first, or the next `?` at its depth. */
 	private conditionalEnd(question: number): boolean | number {
 		let guard = -1;
-		for (let index = question + 1; index < this.tokens.length; index++) {
+		for (let index = question + 1; index < this.context.tokenStream.tokens.length; index++) {
 			if (index <= guard) throw new Error("conditional scan failed to advance");
 			guard = index;
-			const value = this.value(index);
+			const value = this.context.tokenStream.value(index);
 			if (value === ":") return true;
 			if (value === "?") return index;
 			if (value === "(" || value === "[" || value === "{") {
-				const close = this.matching(index, value, value === "(" ? ")" : value === "[" ? "]" : "}");
+				const close = this.context.tokenStream.matching(
+					index,
+					value,
+					value === "(" ? ")" : value === "[" ? "]" : "}",
+				);
 				if (close < 0) return false;
 				index = close;
 			} else if (value !== undefined && CONDITIONAL_ENDS.has(value)) {
@@ -370,10 +397,10 @@ export abstract class CsharpDeclarationPass extends CsharpStatementParser {
 	/** First token starting past `offset`. */
 	private firstTokenAfter(offset: number): number {
 		let low = 0;
-		let high = this.tokens.length;
+		let high = this.context.tokenStream.tokens.length;
 		while (low < high) {
 			const middle = (low + high) >> 1;
-			if ((this.tokens[middle] as Token).startOffset <= offset) low = middle + 1;
+			if ((this.context.tokenStream.tokens[middle] as Token).startOffset <= offset) low = middle + 1;
 			else high = middle;
 		}
 		return low;

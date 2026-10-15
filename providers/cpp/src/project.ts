@@ -3,12 +3,24 @@
 // reaches is read with, once per entry building it; without one, the includer's directory, then
 // workspace directories named `include`, then the root.
 
-import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { type IncludeSearch, readCompileCommands } from "@nyaa-lexicon/formats/compile-commands";
-import { type Diagnostic, hashContent, type ReadPolicy, workspaceFile, workspaceModule } from "@nyaa-lexicon/protocol";
-import { type ExcludedDirectories, excludesDirectory } from "@nyaa-lexicon/protocol/excludedDirectories";
+import {
+	type Diagnostic,
+	discoverCompileDatabases,
+	discoverIncludeDirectories,
+	findWorkspaceInclude,
+	forcedIncludeDirectories,
+	hashContent,
+	type IncludeKind,
+	includeSearchDirectories,
+	type FoundInclude as ProtocolFoundInclude,
+	type ReadPolicy,
+	workspaceModule,
+} from "@nyaa-lexicon/protocol";
+import type { ExcludedDirectories } from "@nyaa-lexicon/protocol/excludedDirectories";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -45,58 +57,13 @@ export interface CppProject {
  */
 export type SearchContext = readonly number[] | "fallback";
 
-export type IncludeKind = "quoted" | "angle";
+export type { IncludeKind } from "@nyaa-lexicon/protocol";
 
 /** Where an include was found: a workspace module, or a file outside the workspace. */
-export type FoundInclude = { module: string } | { outside: true };
-
-////////////////////////////////
-//  Constants
-
-const DATABASE = "compile_commands.json";
+export type FoundInclude = ProtocolFoundInclude;
 
 ////////////////////////////////
 //  Functions & Helpers
-
-function isFile(file: string): boolean {
-	return existsSync(file) && statSync(file).isFile();
-}
-
-/** The root's database, then each top directory's whose name starts `build`, in name order. */
-function databaseFiles(root: string): string[] {
-	const builds = readdirSync(root, { withFileTypes: true })
-		.filter((entry) => entry.isDirectory() && entry.name.startsWith("build"))
-		.map((entry) => entry.name)
-		.sort();
-	return [path.join(root, DATABASE), ...builds.map((build) => path.join(root, build, DATABASE))].filter(isFile);
-}
-
-/**
- * Workspace directories named `include`, absolute and sorted, outside `excluded` ones, links and what
- * `policy` denies. A directory that cannot be listed is skipped.
- */
-function includeDirectories(root: string, excluded: ExcludedDirectories, policy: ReadPolicy): string[] {
-	const found: string[] = [];
-	const pending = [root];
-	for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
-		let entries: Dirent[];
-		try {
-			entries = readdirSync(directory, { withFileTypes: true });
-		} catch {
-			continue;
-		}
-		const names = entries.map((entry) => entry.name);
-		for (const entry of entries) {
-			if (!entry.isDirectory() || excludesDirectory(excluded, entry.name, directory === root, () => names))
-				continue;
-			const child = path.join(directory, entry.name);
-			if (!policy.readable(child)) continue;
-			if (entry.name === "include") found.push(child);
-			pending.push(child);
-		}
-	}
-	return found.sort();
-}
 
 /** The databases the scope lets be read, and the search lists they and the tree give. */
 export function discoverCppProject(root: string, excluded: ExcludedDirectories, policy: ReadPolicy): CppProject {
@@ -107,7 +74,7 @@ export function discoverCppProject(root: string, excluded: ExcludedDirectories, 
 	const described = new Map<string, Set<string>>();
 	const databases: string[] = [];
 	const diagnostics: Diagnostic[] = [];
-	for (const file of databaseFiles(root)) {
+	for (const file of discoverCompileDatabases(root)) {
 		const module = workspaceModule(root, file);
 		if (module === null || !policy.readable(file)) continue;
 		databases.push(module);
@@ -139,7 +106,7 @@ export function discoverCppProject(root: string, excluded: ExcludedDirectories, 
 			units.set(unit, entries);
 		}
 	}
-	const fallback = searches.length === 0 ? [...includeDirectories(root, excluded, policy), root] : [];
+	const fallback = searches.length === 0 ? [...discoverIncludeDirectories(root, excluded, policy), root] : [];
 	const digest = {
 		units: [...described]
 			.map(([unit, descriptions]) => [unit, [...descriptions].sort()] as const)
@@ -195,10 +162,7 @@ function searchDirectories(
 	includer: string,
 	kind: IncludeKind,
 ): string[] {
-	const directory = path.dirname(path.join(project.root, includer));
-	if (search === undefined) return kind === "quoted" ? [directory, ...project.fallback] : [...project.fallback];
-	const listed = [...(kind === "quoted" ? search.quote : []), ...search.user, ...search.system, ...search.after];
-	return kind === "quoted" && search.includerDirectory ? [directory, ...listed] : listed;
+	return includeSearchDirectories(project.root, project.fallback, search, includer, kind);
 }
 
 /**
@@ -217,10 +181,7 @@ export function searchOrders(
 
 /** Where an entry's forced include is looked for: its working directory, then its quoted search. */
 export function forcedDirectories(project: CppProject, entry: CppEntry): string[] {
-	const search = project.searches[entry.search];
-	return search === undefined
-		? [entry.directory]
-		: [entry.directory, ...search.quote, ...search.user, ...search.system, ...search.after];
+	return forcedIncludeDirectories(entry.directory, project.searches[entry.search]);
 }
 
 /** The first of `directories` holding exactly `name` that `policy` lets be read, or undefined when none does. */
@@ -230,14 +191,5 @@ export function findInclude(
 	directories: readonly string[],
 	name: string,
 ): FoundInclude | undefined {
-	for (const directory of directories) {
-		const candidate = path.resolve(directory, name);
-		// A denied file is not looked at.
-		if (!policy.readable(candidate)) continue;
-		const module = workspaceModule(project.root, candidate);
-		const absolute = module === null ? candidate : workspaceFile(project.root, module);
-		if (absolute === null || !isFile(absolute)) continue;
-		return module === null ? { outside: true } : { module };
-	}
-	return undefined;
+	return findWorkspaceInclude(project.root, policy, directories, name);
 }

@@ -1412,6 +1412,28 @@ test("reads a string spelling a keyword as a string, not as the keyword", () => 
 	);
 });
 
+test("does not treat reserved words as names but accepts their raw form", () => {
+	const text = "fn abstract() {} fn caller() { abstract; r#abstract(); } fn r#abstract() {}";
+	const { facts } = parse(text);
+
+	expect(facts.declarations.map((candidate) => candidate.name)).toEqual(["caller", "abstract"]);
+	expect(
+		facts.references.filter((reference) => reference.name === "abstract").map((reference) => reference.role),
+	).toEqual(["call"]);
+});
+
+test("keeps weak keywords and the 2024-only gen as names", () => {
+	const text = "fn union() {} fn gen() {} fn caller() { union(); gen(); }";
+	const { facts } = parse(text);
+
+	expect(facts.declarations.map((candidate) => candidate.name)).toEqual(["union", "gen", "caller"]);
+	expect(
+		facts.references
+			.filter((reference) => reference.name === "union" || reference.name === "gen")
+			.map((reference) => reference.role),
+	).toEqual(["call", "call"]);
+});
+
 test("reports mismatched and missing delimiters as syntax errors", () => {
 	const mismatched = parse("fn broken() { let value = (1; }", "mismatch.rs").facts;
 	const missing = parse("struct Broken { value: i32", "missing.rs").facts;

@@ -3,13 +3,13 @@
 
 import {
 	type BlockedSite,
-	comparePositions,
 	type coordinatesOf,
 	planEdits,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	type RenameSite,
 	rangeInRange,
+	sameRange,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import type * as A from "../syntax/ast.js";
@@ -75,14 +75,6 @@ function isIdentifier(name: string): boolean {
 	);
 }
 
-function contains(outer: Range, inner: Range): boolean {
-	return rangeInRange(outer, inner);
-}
-
-function sameRange(left: Range, right: Range): boolean {
-	return comparePositions(left.start, right.start) === 0 && comparePositions(left.end, right.end) === 0;
-}
-
 function rangeKey(range: Range): string {
 	return `${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
 }
@@ -142,11 +134,11 @@ function matches(
 	oldName: string,
 ): boolean {
 	if (STRING_KINDS.has(candidate.kind)) {
-		if (!contains(candidate.range, site) && !sameRange(candidate.range, site)) return false;
+		if (!rangeInRange(candidate.range, site) && !sameRange(candidate.range, site)) return false;
 		const text = coordinates.sliceRange(site);
 		return text !== undefined && (candidate.name === oldName || text.includes(oldName));
 	}
-	return candidate.name === oldName && (sameRange(candidate.range, site) || contains(site, candidate.range));
+	return candidate.name === oldName && (sameRange(candidate.range, site) || rangeInRange(site, candidate.range));
 }
 
 /** The edit a site makes, or why it makes none; undefined when it already reads the new name. */
@@ -207,7 +199,7 @@ function ownerCall(analyzer: Analyzer, owner: Range): A.Call | undefined {
 	for (const node of walk(analyzer.tree)) {
 		if (node.type !== "Call") continue;
 		const range = analyzer.source.rangeOf(node);
-		if (!contains(range, owner) && !contains(owner, range)) continue;
+		if (!rangeInRange(range, owner) && !rangeInRange(owner, range)) continue;
 		const span: [number, number] = [range.end.line - range.start.line, range.end.character - range.start.character];
 		if (best === undefined || span[0] < best.span[0] || (span[0] === best.span[0] && span[1] < best.span[1])) {
 			best = { span, call: node };
@@ -412,7 +404,7 @@ class RenameVisitor extends NodeVisitor {
 		const range = this.source.rangeOf(node);
 		let kind: CandidateKind = "stringLiteral";
 		if (this.allStrings.has(node)) kind = "allString";
-		else if (this.annotationRanges.some((annotation) => contains(annotation, range))) kind = "stringAnnotation";
+		else if (this.annotationRanges.some((annotation) => rangeInRange(annotation, range))) kind = "stringAnnotation";
 		this.add(node.value.value, range, kind);
 	}
 }

@@ -1,12 +1,9 @@
 // Every question answered from the index alone.
 //
-// A store and nothing else, held by a residue test. A query that could start a provider or touch
-// the disk would stop being knowably cheap.
+// A store-backed facade, held by a residue test. Queries never start providers or touch the disk.
 
 import {
 	type CallHierarchy,
-	type CallHierarchyEdge,
-	type CommentAnchor,
 	type CommentQuery,
 	type CommentsResult,
 	type DescribeResult,
@@ -17,13 +14,9 @@ import {
 	type GraphSummary,
 	type LiteralQuery,
 	type LiteralsResult,
-	languageOf,
 	type ModuleExclusion,
 	type MostReferencedResult,
-	ProvenanceSchema,
-	type Range,
 	type ReferencesResult,
-	type ReferenceUse,
 	type ScopeSymbol,
 	type ScopeSymbols,
 	type SearchSymbolsResult,
@@ -31,17 +24,20 @@ import {
 	type SymbolEdges,
 	type SymbolSummary,
 	type TypeHierarchy,
-	UnknownReasonSchema,
-	type UseFrom,
 	type UsesFromResult,
 } from "@nyaa-lexicon/protocol";
-import { isEdgeRole, NameCount, type NamespaceTarget, PeerTally } from "./edges.js";
+import type { NamespaceTarget } from "./edges.js";
+import { GraphReadModel } from "./graphReads.js";
 import { inSourceOrder } from "./locals.js";
-import { type Paged, pageCounted, pageProbed, pageScanned, wire } from "./paging.js";
-import { proseHit } from "./proseText.js";
+import { pageProbed, pageScanned, wire } from "./paging.js";
 import { ReadContext, toSummary } from "./readContext.js";
-import { contains, filterFor, resolveScope, strictlyContains } from "./scope.js";
-import { compileSearchRegex } from "./search.js";
+import {
+	DEFAULT_COMMENT_LIMIT,
+	DEFAULT_LITERAL_LIMIT,
+	DEFAULT_REFERENCE_LIMIT,
+	REGEX_SCAN_LIMIT,
+} from "./readLimits.js";
+import { filterFor, resolveScope, strictlyContains } from "./scope.js";
 import {
 	type FileNotes,
 	HiddenModules,
@@ -49,9 +45,8 @@ import {
 	type StoredComment,
 	type StoredDeclaration,
 	type StoredDoc,
-	type StoredLiteral,
-	type StoredReference,
 } from "./store.js";
+import { TextFactReadModel } from "./textFactReads.js";
 
 export type {
 	AnswerTier,
@@ -76,115 +71,33 @@ export type {
 	UsesFromResult,
 } from "@nyaa-lexicon/protocol";
 
+export {
+	DEFAULT_COMMENT_LIMIT,
+	DEFAULT_LITERAL_LIMIT,
+	DEFAULT_REFERENCE_LIMIT,
+	MAX_COMMENT_LIMIT,
+	REGEX_SCAN_LIMIT,
+} from "./readLimits.js";
+
 ////////////////////////////////
 //  Constants & Helpers
 
-/**
- * How many literals a regex search will read before giving up.
- *
- * SQLite has no REGEXP here, so a regex is matched in application code and the read is what
- * costs. Stopping is fine; stopping SILENTLY is not, which is why the result carries a flag saying
- * the scan did not finish.
- */
-export const REGEX_SCAN_LIMIT = 20_000;
-
-/** Default page for a reference list. A hub symbol would otherwise flood a caller's context. */
-export const DEFAULT_REFERENCE_LIMIT = 50;
-
-/** Page for a literal search. Literals outnumber symbols by a lot, so this is the tighter cap. */
-export const DEFAULT_LITERAL_LIMIT = 50;
-
-/** Page for a comment search, matching literals. */
-export const DEFAULT_COMMENT_LIMIT = 50;
-
-/** Clamped here rather than only at the surfaces, so no entry point can ask for more. */
-export const MAX_COMMENT_LIMIT = 200;
-
 /** Notes shown on describe. A long body's asides would otherwise crowd out its structure. */
 const DESCRIBE_NOTE_LIMIT = 10;
-
-/** Lines of a comment carried back. A banner runs to hundreds and no caller asked for them. */
-const COMMENT_PREVIEW_LINES = 8;
-
-/** And a width, because a minified file's one comment is a single line of tens of thousands. */
-const COMMENT_PREVIEW_WIDTH = 200;
-
-/**
- * Capped, and says how much it cut, so a caller never reads a preview as the whole comment.
- *
- * Bounded by width as well as by lines. A minified file's single comment can be one line and
- * tens of thousands of characters, which a line cap does nothing about.
- */
-function preview(raw: string): string {
-	const lines = raw.split("\n");
-	const kept = lines
-		.slice(0, COMMENT_PREVIEW_LINES)
-		.map((line) => (line.length > COMMENT_PREVIEW_WIDTH ? `${line.slice(0, COMMENT_PREVIEW_WIDTH)}...` : line));
-	const rest = lines.length - kept.length;
-	const body = kept.join("\n");
-	return rest === 0 ? body : `${body}\n... ${rest} more line${rest === 1 ? "" : "s"}`;
-}
-
-/**
- * Uses the paging strategy's count; capped results report a lower bound.
- */
-function page(query: LiteralQuery, paged: Paged<StoredLiteral>): LiteralsResult {
-	return { query, literals: paged.items, ...wire(paged) };
-}
-
-/** The query echoed, with `excluded` only when one ran. */
-function asked<Q extends { excluded?: true | undefined }>(query: Q, exclude: ModuleExclusion | undefined): Q {
-	const { excluded: _echo, ...rest } = query;
-	return (exclude === undefined ? rest : { ...rest, excluded: true }) as Q;
-}
-
-/** A provenance when bound or ambiguous; a reason when not. */
-function bindingOf(reference: StoredReference): Pick<UseFrom, "status" | "reason"> {
-	if (reference.targetId !== null) return { status: "bound" };
-	if (ProvenanceSchema.safeParse(reference.provenance).success) return { status: "ambiguous" };
-	const reason = UnknownReasonSchema.safeParse(reference.provenance);
-	return { status: "unbound", ...(reason.success ? { reason: reason.data } : {}) };
-}
-
-/** Locals' evidence belongs to their owner. */
-function ownerOf(context: ReadContext, reference: StoredReference): StoredDeclaration | null {
-	return reference.fromId === null ? null : context.ownerIn(reference.module, reference.fromId);
-}
-
-/** A use's owner is read in the use's own file. */
-function topLevelOf(context: ReadContext, reference: StoredReference): StoredDeclaration | null {
-	return reference.fromId === null ? null : context.topLevelIn(reference.module, reference.fromId);
-}
-
-function anchorOf(context: ReadContext, symbolId: string): CommentAnchor | null {
-	const declaration = context.declaration(symbolId);
-	if (declaration === null) return null;
-	return {
-		symbolId,
-		name: declaration.name,
-		kind: declaration.kind,
-		...defined({ signature: declaration.signature }),
-		line: declaration.range.start.line,
-	};
-}
-
-function useOf(context: ReadContext, reference: StoredReference): ReferenceUse {
-	const top = topLevelOf(context, reference);
-	// Target head is file head; daemon-protocol.md holds why.
-	const language = languageOf(reference.fromId ?? reference.targetId ?? "");
-	return {
-		...reference,
-		...(top === null ? {} : { topLevel: toSummary(top) }),
-		...(language === null ? {} : { language }),
-	};
-}
 
 ////////////////////////////////
 //  Class
 
 /** Read queries against one index. Usable alone by anything holding a store. */
 export class IndexReadModel {
-	constructor(private readonly store: IndexStore) {}
+	private readonly textFacts: TextFactReadModel;
+	private readonly graph: GraphReadModel;
+
+	constructor(private readonly store: IndexStore) {
+		// Initialize readers from the facade's store.
+		this.textFacts = new TextFactReadModel(store);
+		this.graph = new GraphReadModel(store);
+	}
 
 	/** Symbols matching a name, so a caller holding a name rather than an id can start. */
 	findByName(name: string, module?: string): SymbolSummary[] {
@@ -378,575 +291,70 @@ export class IndexReadModel {
 		};
 	}
 
-	/** Who uses a symbol, import and export lines left out. Capped, and the caller is told when it was. */
 	findReferences(
 		symbolId: string,
 		limit = DEFAULT_REFERENCE_LIMIT,
 		within?: string,
 		module?: string,
 	): ReferencesResult {
-		const context = new ReadContext(this.store);
-		const scope = within === undefined ? undefined : resolveScope(context, within);
-		// A use at module level sits inside no symbol, so no scope holds it.
-		const all = this.store.usesTo(symbolId);
-		const filtered = all.filter(
-			(reference) =>
-				(scope === undefined || (reference.fromId !== null && contains(scope, reference.fromId))) &&
-				(module === undefined || reference.module === module || reference.module.startsWith(`${module}/`)),
-		);
-		return {
-			symbolId,
-			references: filtered.slice(0, limit).map((reference) => useOf(context, reference)),
-			total: filtered.length,
-			truncated: filtered.length > limit,
-			tier: "bound",
-		};
+		return this.graph.findReferences(symbolId, limit, within, module);
 	}
 
-	/** What a symbol and everything declared inside it reference, bound or not, in source order. */
 	usesFrom(symbolId: string, limit = DEFAULT_REFERENCE_LIMIT): UsesFromResult {
-		const context = new ReadContext(this.store);
-		const declaration = context.declaration(symbolId);
-		if (declaration === null) return { symbolId, references: [], total: 0, truncated: false, tier: "bound" };
-		const inside = context.descendantIds(symbolId);
-		const written = this.store
-			.usesIn(declaration.module)
-			.filter((reference) => reference.fromId !== null && inside.has(reference.fromId));
-		return {
-			symbolId,
-			references: written.slice(0, limit).map((reference): UseFrom => {
-				const target = reference.targetId === null ? null : context.summaryOf(reference.targetId);
-				return {
-					...useOf(context, reference),
-					...(target === null ? {} : { target }),
-					...bindingOf(reference),
-				};
-			}),
-			total: written.length,
-			truncated: written.length > limit,
-			tier: "bound",
-		};
+		return this.graph.usesFrom(symbolId, limit);
 	}
 
-	/**
-	 * Find literal values: an exact one, a regex, or a numeric range.
-	 *
-	 * This is the tier that makes text searchable as facts. A name inside a string is not a
-	 * reference and never was, so it appears in no other table: a rename could leave `__all__`
-	 * stale and a GDScript signal reached by `connect("name")` was invisible entirely.
-	 *
-	 * An exact value and a numeric range are indexed reads. A regex is not, because SQLite has no
-	 * REGEXP here, so it reads a bounded page and says when it stopped early.
-	 */
 	findLiterals(query: LiteralQuery, limit = DEFAULT_LITERAL_LIMIT, exclude?: ModuleExclusion): LiteralsResult {
-		const context = new ReadContext(this.store);
-		const scope = query.within === undefined ? undefined : resolveScope(context, query.within);
-		const scoped = scope === undefined ? undefined : filterFor(scope);
-		const base = {
-			kind: query.kind,
-			key: query.key,
-			module: query.module,
-			scope: scoped,
-			hidden: this.store.hiddenModules(exclude),
-		};
-		const echo = asked(query, exclude);
-		const ways = [query.value, query.regex, query.min ?? query.max].filter((each) => each !== undefined);
-		if (ways.length > 1) throw new Error("give one of a value, a regex, or a numeric range, not several");
-		if (query.value !== undefined) {
-			const found = this.store.literalsWhere(
-				{ ...base, value: query.value },
-				scope === undefined ? limit : REGEX_SCAN_LIMIT,
-			);
-			const matched =
-				scope === undefined ? found : found.filter((literal) => context.literalWithin(scope, literal));
-			return page(
-				echo,
-				scope === undefined
-					? pageCounted(matched, limit, this.store.countLiteralsWhere({ ...base, value: query.value }))
-					: pageScanned(matched, limit, { read: found.length, cap: REGEX_SCAN_LIMIT }),
-			);
-		}
-
-		if (query.min !== undefined || query.max !== undefined) {
-			const low = query.min ?? Number.NEGATIVE_INFINITY;
-			const high = query.max ?? Number.POSITIVE_INFINITY;
-			const found = this.store.literalsWhere(
-				{ ...base, low, high },
-				scope === undefined ? limit : REGEX_SCAN_LIMIT,
-			);
-			const matched =
-				scope === undefined ? found : found.filter((literal) => context.literalWithin(scope, literal));
-			return page(
-				echo,
-				scope === undefined
-					? pageCounted(matched, limit, this.store.countLiteralsWhere({ ...base, low, high }))
-					: pageScanned(matched, limit, { read: found.length, cap: REGEX_SCAN_LIMIT }),
-			);
-		}
-
-		if (query.regex !== undefined) {
-			const expression = compileSearchRegex(query.regex);
-			const scanned = this.store.literalsWhere({ ...base, kind: query.kind ?? "string" }, REGEX_SCAN_LIMIT);
-			const matched = scanned.filter(
-				(literal) =>
-					expression.test(literal.value) && (scope === undefined || context.literalWithin(scope, literal)),
-			);
-			return page(echo, pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }));
-		}
-
-		// The refusal shows the shapes, because naming the parameters alone was measured to fail: a
-		// caller trying `text:` read the naming sentence and still never found `value`.
-		throw new Error(
-			'give a value, a regex, or a numeric range, e.g. { value: "cycleCheckpoint" } or { regex: "/^cycle/" } or { min: 0, max: 100 }',
-		);
+		return this.textFacts.findLiterals(query, limit, exclude);
 	}
 
-	/**
-	 * Find what was WRITTEN about the code, by substring or regex over the normalized text.
-	 *
-	 * The tier that makes doctrine reachable. Every other tier answers "what is this code"; this one
-	 * answers "what did someone say about it", which was the question that always fell back to grep.
-	 *
-	 * Substring is an indexed-ish read; a regex is not, because SQLite has no REGEXP here, so it
-	 * reads a bounded page and says when it stopped early.
-	 */
 	findComments(query: CommentQuery, requested = DEFAULT_COMMENT_LIMIT, exclude?: ModuleExclusion): CommentsResult {
-		// Both is not a narrower search, it is two searches, and answering one of them silently
-		// picks a winner the caller never chose.
-		if (query.text !== undefined && query.regex !== undefined) {
-			throw new Error("give a text or a regex, not both");
-		}
-		// Rounded and NaN-guarded, not just bounded: a fractional limit reaches SQLite as a type it
-		// refuses, and the caller sees a datatype error where a clamp belonged.
-		const limit = Number.isFinite(requested)
-			? Math.min(Math.max(Math.floor(requested), 1), MAX_COMMENT_LIMIT)
-			: DEFAULT_COMMENT_LIMIT;
-		const filter = {
-			...defined({ form: query.form, module: query.module }),
-			hidden: this.store.hiddenModules(exclude),
-		};
-		const echo = asked(query, exclude);
-		const context = new ReadContext(this.store);
-		const scope = query.within === undefined ? undefined : resolveScope(context, query.within);
-
-		if (query.text !== undefined) {
-			// The same substring match as the unscoped read, so a scope never changes what text means.
-			if (scope !== undefined) {
-				const scanned = this.store.commentsContaining(query.text, REGEX_SCAN_LIMIT, filter);
-				const matched = scanned.filter(
-					(comment) => comment.anchorId !== null && contains(scope, comment.anchorId),
-				);
-				return this.pageComments(
-					context,
-					echo,
-					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
-				);
-			}
-			const found = this.store.commentsContaining(query.text, limit, filter);
-			const total = this.store.countCommentsContaining(query.text, filter);
-			return this.pageComments(context, echo, pageCounted(found, limit, total));
-		}
-
-		if (query.regex !== undefined) {
-			const expression = compileSearchRegex(query.regex);
-			const scanned = this.store.commentsToScan(REGEX_SCAN_LIMIT, filter);
-			const matched = scanned.filter(
-				(comment) =>
-					expression.test(comment.normalized) &&
-					(scope === undefined || (comment.anchorId !== null && contains(scope, comment.anchorId))),
-			);
-			return this.pageComments(
-				context,
-				echo,
-				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
-			);
-		}
-
-		// Neither given: the whole tier, filtered. Useful for "every comment in this module".
-		if (query.form !== undefined || query.module !== undefined || query.within !== undefined) {
-			if (scope !== undefined) {
-				const scanned = this.store.commentsToScan(REGEX_SCAN_LIMIT, filter);
-				const matched = scanned.filter(
-					(comment) => comment.anchorId !== null && contains(scope, comment.anchorId),
-				);
-				return this.pageComments(
-					context,
-					echo,
-					pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
-				);
-			}
-			const found = this.store.commentsToScan(limit, filter);
-			return this.pageComments(context, echo, pageCounted(found, limit, this.store.countComments(filter)));
-		}
-
-		throw new Error('give a text or a regex, e.g. { text: "refuses rather than" } or { regex: "/TODO|FIXME/" }');
+		return this.textFacts.findComments(query, requested, exclude);
 	}
 
-	private pageComments(context: ReadContext, query: CommentQuery, paged: Paged<StoredComment>): CommentsResult {
-		const shown = paged.items.map((comment) => ({
-			factId: comment.factId,
-			module: comment.module,
-			range: comment.range,
-			form: comment.form,
-			placement: comment.placement,
-			raw: preview(comment.raw),
-			anchor: comment.anchorId === null ? null : anchorOf(context, comment.anchorId),
-		}));
-		return { query, comments: shown, ...wire(paged) };
-	}
-
-	/**
-	 * Find what a document SAYS, by substring or regex over the normalized text.
-	 *
-	 * Separate from `findComments` because the ANSWER differs, not the data: a comment result names
-	 * the symbol it documents, and this one names the heading path it was found under.
-	 */
 	findDocs(query: DocQuery, requested = DEFAULT_COMMENT_LIMIT, exclude?: ModuleExclusion): DocsResult {
-		if (query.text !== undefined && query.regex !== undefined) {
-			throw new Error("give a text or a regex, not both");
-		}
-		const limit = Number.isFinite(requested)
-			? Math.min(Math.max(Math.floor(requested), 1), MAX_COMMENT_LIMIT)
-			: DEFAULT_COMMENT_LIMIT;
-		const filter = {
-			...defined({ fenced: query.fenced, module: query.module }),
-			hidden: this.store.hiddenModules(exclude),
-		};
-		const echo = asked(query, exclude);
-
-		if (query.text !== undefined) {
-			const found = this.store.docsContaining(query.text, limit, filter);
-			const total = this.store.countDocsContaining(query.text, filter);
-			return this.pageDocs(echo, pageCounted(found, limit, total));
-		}
-
-		if (query.regex !== undefined) {
-			const expression = compileSearchRegex(query.regex);
-			const scanned = this.store.docsToScan(REGEX_SCAN_LIMIT, filter);
-			const matched = scanned.filter((region) => expression.test(region.normalized));
-			return this.pageDocs(
-				echo,
-				pageScanned(matched, limit, { read: scanned.length, cap: REGEX_SCAN_LIMIT }),
-				expression,
-			);
-		}
-
-		// Neither given: the whole tier, filtered. Useful for "every region in this document".
-		if (query.fenced !== undefined || query.module !== undefined) {
-			const found = this.store.docsToScan(limit, filter);
-			return this.pageDocs(echo, pageCounted(found, limit, this.store.countDocs(filter)));
-		}
-
-		throw new Error('give a text or a regex, e.g. { text: "band-aid" } or { regex: "/TODO|FIXME/" }');
+		return this.textFacts.findDocs(query, requested, exclude);
 	}
 
-	private pageDocs(
-		query: DocQuery,
-		paged: Paged<StoredDoc>,
-		pattern?: { find(text: string): string | null },
-	): DocsResult {
-		const context = new ReadContext(this.store);
-		const paths = new Map<string, string[]>();
-		const shown = paged.items.map((region) => {
-			const anchor = region.anchorId;
-			if (anchor !== null && !paths.has(anchor)) paths.set(anchor, this.headingPathIn(context, anchor));
-			const match = query.text ?? pattern?.find(region.normalized) ?? undefined;
-			const relative = match === undefined ? undefined : proseHit(region.raw, match);
-			const hit =
-				relative === undefined
-					? undefined
-					: {
-							line: region.range.start.line + relative.line,
-							character:
-								relative.line === 0
-									? region.range.start.character + relative.character
-									: relative.character,
-						};
-			return {
-				factId: region.factId,
-				module: region.module,
-				range: region.range,
-				fenced: region.fenced,
-				raw: preview(region.raw),
-				headingPath: anchor === null ? [] : (paths.get(anchor) ?? []),
-				...defined({ hit }),
-			};
-		});
-		return { query, docs: shown, ...wire(paged) };
-	}
-
-	/**
-	 * The headings above a symbol, outermost first. Owned here so no renderer rebuilds the walk.
-	 *
-	 * HEADINGS only, and only from ONE module. An anchor is any string on the wire, so a provider
-	 * naming a function, or a container in another file, would otherwise put either inside something
-	 * called a heading path: the answer being wrong rather than absent. Stopping keeps what is real.
-	 *
-	 * The context's walk is bounded, so an id containing itself stops rather than hanging.
-	 */
 	headingPath(symbolId: string): string[] {
-		return this.headingPathIn(new ReadContext(this.store), symbolId);
-	}
-
-	private headingPathIn(context: ReadContext, symbolId: string): string[] {
-		const start = context.declaration(symbolId);
-		if (start === null || start.kind !== "heading") return [];
-		const above = context.ancestorsOf(
-			start,
-			(container) => container.kind === "heading" && container.module === start.module,
-		);
-		return [start, ...above].map((heading) => heading.name).reverse();
+		return this.textFacts.headingPath(symbolId);
 	}
 
 	/** The prose of one section, which is how describe answers about a heading. */
 	docsFor(symbolId: string): StoredDoc[] {
-		return this.store.docsAnchoredTo(symbolId);
+		return this.textFacts.docsFor(symbolId);
 	}
 
 	/** Values written in more than one file, which is the strongest textual signal of a relationship. */
 	sharedLiterals(minimumFiles = 2, limit = DEFAULT_LITERAL_LIMIT, exclude?: ModuleExclusion): SharedLiteralsResult {
-		const rows = this.store.sharedLiterals(minimumFiles, limit, this.store.hiddenModules(exclude));
-		return exclude === undefined ? rows : rows.map((row) => ({ ...row, excluded: true }));
+		return this.textFacts.sharedLiterals(minimumFiles, limit, exclude);
 	}
 
-	/**
-	 * Fan-in and fan-out.
-	 *
-	 * Every number here is bounded by what binding reached, so it is a fact about the INDEX rather
-	 * than about the code. A caller told otherwise would read a low fan-in as "barely used" when it
-	 * may only mean "barely resolved".
-	 */
 	private graphSummary(context: ReadContext, symbolId: string): GraphSummary {
-		// Members counted too, because a reference inside a method belongs to the METHOD. Asking a
-		// class for its own fan-out returned zero however much it used, since nothing is written
-		// directly in a class body, and a reader takes zero as "depends on nothing".
-		const members = context.declaredChildren(symbolId);
-		// A local's references belong to its owner.
-		const owners = [symbolId, ...members.map((m) => m.symbolId)].flatMap((id) => context.ownedIds(id));
-		const uses = new Set<string>();
-		for (const owner of owners) {
-			for (const reference of this.store.usesFrom(owner)) {
-				if (reference.targetId !== null) uses.add(reference.targetId);
-			}
-		}
-
-		const incoming = this.store.usesTo(symbolId);
-		const dependents = new Set(
-			incoming.map((reference) => topLevelOf(context, reference)?.symbolId ?? `module ${reference.module}`),
-		);
-
-		return {
-			symbolId,
-			fanOut: uses.size,
-			fanIn: incoming.length,
-			...(members.length === 0 ? {} : { viaMembers: members.length }),
-			dependents: dependents.size,
-		};
+		return this.graph.graphSummaryForDescribe(context, symbolId);
 	}
 
-	/**
-	 * What this type extends and what extends it.
-	 *
-	 * Built from `extends` and `implements` reference rows rather than from a new provider method,
-	 * because those rows already exist in every provider and the reference index is dual: the two
-	 * directions are the same table read through two indexes.
-	 *
-	 * An unresolved heritage name is REPORTED rather than dropped. `extends Node2D` in GDScript names
-	 * an engine class that is genuinely outside the workspace, and a hierarchy that silently omitted
-	 * it would read as "this extends nothing".
-	 */
 	typeHierarchy(symbolId: string, maxDepth = 16): TypeHierarchy {
-		return this.hierarchyOf(new ReadContext(this.store), symbolId, maxDepth);
+		return this.graph.typeHierarchy(symbolId, maxDepth);
 	}
 
 	private hierarchyOf(context: ReadContext, symbolId: string, maxDepth = 16): TypeHierarchy {
-		const isHeritage = (role: string) => role === "extends" || role === "implements";
-
-		const supertypeIdsOf = (id: string) =>
-			this.store
-				.usesFrom(id)
-				.filter((reference) => isHeritage(reference.role))
-				.map((reference) => reference.targetId)
-				.filter((target): target is string => target !== null);
-
-		const summariesOf = (ids: string[]) =>
-			[...new Set(ids)]
-				.map((id) => context.summaryOf(id))
-				.filter((found): found is SymbolSummary => found !== null);
-
-		const supertypes = summariesOf(supertypeIdsOf(symbolId));
-		const subtypes = summariesOf(
-			this.store
-				.usesTo(symbolId)
-				.filter((reference) => isHeritage(reference.role) && reference.fromId !== null)
-				.map((reference) => reference.fromId as string),
-		);
-
-		// Guarded rather than trusted: a cyclic hierarchy does not compile in any of these languages,
-		// but the index holds what a provider reported, which is not the same as what compiles.
-		const seen = new Set<string>([symbolId]);
-		const ancestors: string[] = [];
-		let frontier = supertypeIdsOf(symbolId);
-		for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
-			const next: string[] = [];
-			for (const id of frontier) {
-				if (seen.has(id)) continue;
-				seen.add(id);
-				ancestors.push(id);
-				next.push(...supertypeIdsOf(id));
-			}
-			frontier = next;
-		}
-
-		// usesFrom excludes unbound rows.
-		const declaration = context.declaration(symbolId);
-		const unresolved =
-			declaration === null
-				? []
-				: this.store
-						.usesIn(declaration.module)
-						.filter(
-							(reference) =>
-								isHeritage(reference.role) &&
-								reference.fromId === symbolId &&
-								reference.targetId === null,
-						)
-						.map((reference) => reference.name);
-
-		return {
-			symbolId,
-			supertypes,
-			subtypes,
-			ancestors: summariesOf(ancestors),
-			unboundSupertypes: [...new Set(unresolved)],
-		};
+		return this.graph.hierarchyForDescribe(context, symbolId, maxDepth);
 	}
 
-	/**
-	 * Who calls this, and what it calls, with the exact spans of each call.
-	 *
-	 * The same rows as the type hierarchy read through the `call` role instead of the heritage ones.
-	 * Grouped by the symbol at the other end, because an editor draws one row per caller however many
-	 * times that caller calls it, and the individual spans are what it highlights inside that row.
-	 */
 	callHierarchy(symbolId: string): CallHierarchy {
-		const context = new ReadContext(this.store);
-		const spansBy = (
-			rows: StoredReference[],
-			endOf: (reference: StoredReference) => string | null,
-		): Map<string, Range[]> => {
-			const byPeer = new Map<string, Range[]>();
-			for (const reference of rows) {
-				if (reference.role !== "call") continue;
-				const peer = endOf(reference);
-				if (peer === null) continue;
-				const ranges = byPeer.get(peer) ?? [];
-				ranges.push({
-					start: { line: reference.startLine, character: reference.startCharacter },
-					end: { line: reference.endLine, character: reference.endCharacter },
-				});
-				byPeer.set(peer, ranges);
-			}
-			return byPeer;
-		};
-		const edges = (byPeer: Map<string, Range[]>): CallHierarchyEdge[] => {
-			const found: CallHierarchyEdge[] = [];
-			for (const [peer, ranges] of byPeer) {
-				const symbol = context.summaryOf(peer);
-				if (symbol !== null) found.push({ symbol, ranges });
-			}
-			return found;
-		};
-
-		const callers = this.store.usesTo(symbolId);
-		// Local calls belong to their owner.
-		const callerOf = (reference: StoredReference) => ownerOf(context, reference)?.symbolId ?? null;
-		// A top-level call has no calling symbol, so it groups by the module it sits in.
-		const fromModules = spansBy(callers, (reference) => (callerOf(reference) === null ? reference.module : null));
-		const written = context
-			.ownedIds(symbolId)
-			.flatMap((id) => this.store.usesFrom(id))
-			.sort((a, b) => a.startLine - b.startLine || a.startCharacter - b.startCharacter);
-		return {
-			symbolId,
-			incoming: edges(spansBy(callers, callerOf)),
-			outgoing: edges(spansBy(written, (reference) => reference.targetId)),
-			incomingFromModules: [...fromModules].map(([module, ranges]) => ({ module, ranges })),
-		};
+		return this.graph.callHierarchy(symbolId);
 	}
 
-	/**
-	 * Count sites before caps.
-	 * Service resolves namespace targets.
-	 */
 	symbolEdges(
 		symbolId: string,
 		namespaces: ReadonlyMap<string, NamespaceTarget>,
 		limit = DEFAULT_REFERENCE_LIMIT,
 	): SymbolEdges {
-		const context = new ReadContext(this.store);
-		const focus = context.declaration(symbolId);
-		const empty = { names: [], total: 0 };
-		if (focus === null) {
-			return {
-				symbolId,
-				incoming: { groups: [], internal: 0 },
-				outgoing: { groups: [], internal: 0, modules: [], library: empty, unresolved: empty },
-			};
-		}
-		const inside = context.descendantIds(symbolId);
-
-		const users = new PeerTally(focus.module);
-		let self = 0;
-		for (const reference of this.store.usesTo(symbolId)) {
-			if (!isEdgeRole(reference.role)) continue;
-			const owner = ownerOf(context, reference);
-			if (owner !== null && inside.has(owner.symbolId)) {
-				self++;
-				continue;
-			}
-			users.add(owner === null ? null : toSummary(owner), reference.module, reference.role);
-		}
-
-		const used = new PeerTally(focus.module);
-		const internal = new Set<string>();
-		const modules = new NameCount();
-		const library = new NameCount();
-		const unresolved = new NameCount();
-		for (const reference of this.store.usesIn(focus.module)) {
-			if (reference.fromId === null || !inside.has(reference.fromId) || !isEdgeRole(reference.role)) continue;
-			const holder = ownerOf(context, reference)?.symbolId;
-			const target = reference.targetId === null ? null : context.summaryOf(reference.targetId);
-			if (reference.targetId !== null && inside.has(reference.targetId)) internal.add(reference.targetId);
-			else if (target !== null) used.add(target, target.module, reference.role, holder);
-			else if (bindingOf(reference).status === "ambiguous") unresolved.add(reference.name);
-			else {
-				const landed = namespaces.get(reference.name);
-				if (landed !== undefined && "module" in landed) modules.add(landed.module);
-				else if (landed !== undefined || bindingOf(reference).reason === "ExternalDependency") {
-					library.add(reference.name);
-				} else unresolved.add(reference.name);
-			}
-		}
-
-		return {
-			symbolId,
-			incoming: { groups: users.groups(limit, false), internal: self },
-			outgoing: {
-				groups: used.groups(limit, true),
-				internal: internal.size,
-				modules: modules.entries().map(([module, sites]) => ({ module, sites })),
-				library: library.tally(limit),
-				unresolved: unresolved.tally(limit),
-			},
-		};
+		return this.graph.symbolEdges(symbolId, namespaces, limit);
 	}
 
-	/** The most-referenced symbols, which is hub rank. */
 	mostReferenced(limit = 20): MostReferencedResult {
-		const context = new ReadContext(this.store);
-		return this.store
-			.mostReferenced(limit)
-			.map((row) => ({ ...row, declaration: context.summaryOf(row.symbolId) }));
+		return this.graph.mostReferenced(limit);
 	}
 }

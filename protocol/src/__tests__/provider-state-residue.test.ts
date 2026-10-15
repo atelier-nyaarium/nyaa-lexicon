@@ -25,6 +25,9 @@ const ALLOWED_READS: Record<string, string> = {
 	"typescript/src/project.ts": "tsconfig and package.json",
 };
 
+/** Reads package metadata while resolving a specifier. */
+const DECLARATION_READS = new Map([["nearestPackage", "reads package.json for package resolution"]]);
+
 const COLLECTIONS = new Set(["Map", "Set", "WeakMap", "WeakSet", "Array"]);
 
 const MUTATORS = new Set([
@@ -76,6 +79,15 @@ function contentReads(parsed: ParsedSource): Array<{ node: ts.Node; name: string
 		.filter(({ call }) => !seen.has(call))
 		.map(({ call, name }) => ({ node: call, name }));
 	return [...named, ...imported];
+}
+
+function enclosingFunctionName(node: ts.Node): string | undefined {
+	for (let at = node.parent; at !== undefined; at = at.parent) {
+		if ((ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) && at.name && ts.isIdentifier(at.name)) {
+			return at.name.text;
+		}
+	}
+	return undefined;
 }
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
@@ -196,10 +208,16 @@ describe("provider state lives in the kit's module store", () => {
 	it("reads no module text off disk outside the kit", () => {
 		const offenders: string[] = [];
 		const reading = new Set<string>();
+		const declarationReads: string[] = [];
 		for (const { files } of parsedProviders()) {
 			for (const parsed of files) {
 				const file = relative(PROVIDERS, parsed.file);
 				for (const { node, name } of contentReads(parsed)) {
+					const declaration = enclosingFunctionName(node);
+					if (declaration !== undefined && DECLARATION_READS.has(declaration)) {
+						declarationReads.push(declaration);
+						continue;
+					}
 					if (Object.hasOwn(ALLOWED_READS, file)) reading.add(file);
 					else offenders.push(`${where(parsed, node)} ${name}`);
 				}
@@ -210,6 +228,7 @@ describe("provider state lives in the kit's module store", () => {
 			[],
 		);
 		expect(Object.keys(ALLOWED_READS).filter((file) => !reading.has(file))).toEqual([]);
+		expect(declarationReads).toEqual(["nearestPackage"]);
 	});
 
 	it("keeps no other state beside the store", () => {

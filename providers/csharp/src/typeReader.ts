@@ -2,7 +2,7 @@
 
 import { defined, type HeaderFold, type OffsetRange } from "@nyaa-lexicon/protocol";
 import type { AnglePairs, BracketWalk, HeaderSkip, LeadingType, TypeFacts, TypeShape, TypeSpan } from "./model.js";
-import { CsharpTokenStream } from "./tokenStream.js";
+import type { CsharpParseContext } from "./parseContext.js";
 import type { Token } from "./tokens.js";
 import {
 	BUILTIN_TYPES,
@@ -24,26 +24,28 @@ import {
 ////////////////////////////////
 //  Classes
 
-export class CsharpTypeReader extends CsharpTokenStream {
+export class CsharpTypeReader {
+	constructor(private readonly context: CsharpParseContext) {}
+
 	/** Type argument list openers known to stay open up to this index. */
 	private readonly openLists = new Map<number, number>();
 
 	/** Closer of the group or type argument list at `index`; `index` when none opens, `end` when unclosed. */
 	private closeOf(index: number, angles: AnglePairs, end: number): number {
-		const value = this.value(index);
+		const value = this.context.tokenStream.value(index);
 		if (value === "<") return angles.get(index) ?? index;
 		const closer = value === undefined ? undefined : GROUP_CLOSERS.get(value);
 		if (value === undefined || closer === undefined) return index;
-		const close = this.matching(index, value, closer, end);
+		const close = this.context.tokenStream.matching(index, value, closer, end);
 		return close < 0 ? end : close;
 	}
 
 	/** Split at the commas outside groups and type argument lists. */
-	protected commaSegments(start: number, end: number, angles: AnglePairs = this.typeAngles(start, end)): TypeSpan[] {
+	public commaSegments(start: number, end: number, angles: AnglePairs = this.typeAngles(start, end)): TypeSpan[] {
 		const segments: TypeSpan[] = [];
 		let segmentStart = start;
 		for (let current = start; current < end; current = this.closeOf(current, angles, end) + 1) {
-			if (this.value(current) !== ",") continue;
+			if (this.context.tokenStream.value(current) !== ",") continue;
 			segments.push({ start: segmentStart, end: current });
 			segmentStart = current + 1;
 		}
@@ -52,42 +54,42 @@ export class CsharpTypeReader extends CsharpTokenStream {
 	}
 
 	/** First `value` outside groups and type argument lists. */
-	protected topLevelValue(start: number, end: number, value: string, angles: AnglePairs): number {
+	public topLevelValue(start: number, end: number, value: string, angles: AnglePairs): number {
 		for (let current = start; current < end; current = this.closeOf(current, angles, end) + 1) {
-			if (this.value(current) === value) return current;
+			if (this.context.tokenStream.value(current) === value) return current;
 		}
 		return -1;
 	}
 
 	/** The outermost type argument list `close` ends; -1 when none. */
-	protected listEndingAt(close: number, angles: AnglePairs): number {
+	public listEndingAt(close: number, angles: AnglePairs): number {
 		let found = -1;
 		for (const [open, end] of angles) if (end === close && (found < 0 || open < found)) found = open;
 		return found;
 	}
 
-	protected findDeclaratorName(start: number, end: number, angles: AnglePairs): number {
+	public findDeclaratorName(start: number, end: number, angles: AnglePairs): number {
 		for (let current = start; current < end; current = this.closeOf(current, angles, end) + 1) {
-			if (!isIdentifier(this.token(current))) continue;
-			const next = this.nextSignificant(current + 1, end);
-			const nextValue = this.value(next);
+			if (!isIdentifier(this.context.tokenStream.token(current))) continue;
+			const next = this.context.tokenStream.nextSignificant(current + 1, end);
+			const nextValue = this.context.tokenStream.value(next);
 			if (next < 0 || nextValue === "=" || nextValue === "[" || nextValue === ",") return current;
 		}
 		return -1;
 	}
 
-	protected spanBeforeName(start: number, nameIndex: number): TypeSpan | undefined {
-		let first = this.nextSignificant(start, nameIndex);
-		while (first >= 0 && first < nameIndex && MODIFIERS.has(this.value(first) ?? "")) {
-			first = this.nextSignificant(first + 1, nameIndex);
+	public spanBeforeName(start: number, nameIndex: number): TypeSpan | undefined {
+		let first = this.context.tokenStream.nextSignificant(start, nameIndex);
+		while (first >= 0 && first < nameIndex && MODIFIERS.has(this.context.tokenStream.value(first) ?? "")) {
+			first = this.context.tokenStream.nextSignificant(first + 1, nameIndex);
 		}
-		const last = this.previousSignificant(nameIndex, first < 0 ? start : first);
+		const last = this.context.tokenStream.previousSignificant(nameIndex, first < 0 ? start : first);
 		if (first < 0 || last < first || last >= nameIndex) return undefined;
 		return { start: first, end: last + 1 };
 	}
 
 	/** Undefined when no type starts here. */
-	protected typeShape(start: number, end: number, depth = 0): TypeShape | undefined {
+	public typeShape(start: number, end: number, depth = 0): TypeShape | undefined {
 		if (depth > MAX_TYPE_DEPTH) return undefined;
 		const shape: TypeShape = {
 			end: -1,
@@ -98,11 +100,11 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			arity: 0,
 			elementNames: [],
 		};
-		let current = this.nextSignificant(start, end);
+		let current = this.context.tokenStream.nextSignificant(start, end);
 		let expectName = true;
 		let qualifiable = false;
 		while (current >= 0 && current < end) {
-			const item = this.token(current);
+			const item = this.context.tokenStream.token(current);
 			const value = syntaxValue(item);
 			let next = current + 1;
 			if (expectName) {
@@ -113,7 +115,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 					const opens =
 						shape.segments.length === 0 &&
 						shape.qualifier === undefined &&
-						this.value(this.nextSignificant(next, end)) === "::";
+						this.context.tokenStream.value(this.context.tokenStream.nextSignificant(next, end)) === "::";
 					if (opens) shape.qualifier = item.value;
 					else shape.segments.push({ name: item.value, arity: 0 });
 					qualifiable = true;
@@ -126,7 +128,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			} else if (value === "*" && syntaxValue(shape.name) === "delegate") {
 				shape.composed = true;
 				// Function pointer signature.
-				const open = this.findTopLevelValue(next, end, "<");
+				const open = this.context.tokenStream.findTopLevelValue(next, end, "<");
 				const pairs = open < 0 ? EMPTY_MAP : this.listWalk(open, end, depth + 1);
 				const close = pairs.get(open) ?? -1;
 				if (close < 0) break;
@@ -153,21 +155,21 @@ export class CsharpTypeReader extends CsharpTokenStream {
 				shape.composed = true;
 				qualifiable = false;
 			} else if (value === "[") {
-				const close = this.matching(current, "[", "]", end);
+				const close = this.context.tokenStream.matching(current, "[", "]", end);
 				if (close < 0) break;
 				shape.composed = true;
 				next = close + 1;
 				qualifiable = false;
 			} else break;
 			if (!expectName) shape.end = next;
-			current = this.nextSignificant(next, end);
+			current = this.context.tokenStream.nextSignificant(next, end);
 		}
 		return shape.end < 0 ? undefined : shape;
 	}
 
 	/** -1 when not a tuple type. */
 	private tupleClose(open: number, end: number, names: number[], depth: number): number {
-		const close = this.matching(open, "(", ")", end);
+		const close = this.context.tokenStream.matching(open, "(", ")", end);
 		if (close < 0) return -1;
 		const segments = this.commaSegments(open + 1, close, this.typeAngles(open + 1, close, false, depth));
 		if (segments.length < 2) return -1;
@@ -176,9 +178,13 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			const element = this.typeShape(segment.start, segment.end, depth);
 			if (element === undefined) return -1;
 			found.push(...element.elementNames);
-			const name = this.nextSignificant(element.end, segment.end);
+			const name = this.context.tokenStream.nextSignificant(element.end, segment.end);
 			if (name < 0) continue;
-			if (!isIdentifier(this.token(name)) || this.nextSignificant(name + 1, segment.end) >= 0) return -1;
+			if (
+				!isIdentifier(this.context.tokenStream.token(name)) ||
+				this.context.tokenStream.nextSignificant(name + 1, segment.end) >= 0
+			)
+				return -1;
 			found.push(name);
 		}
 		names.push(...found);
@@ -193,28 +199,30 @@ export class CsharpTypeReader extends CsharpTokenStream {
 	}
 
 	/** Past modifier words. */
-	protected leadingType(span: TypeSpan): LeadingType | undefined {
-		let first = this.nextSignificant(span.start, span.end);
-		while (first >= 0 && TYPE_PREFIXES.has(this.value(first) ?? ""))
-			first = this.nextSignificant(first + 1, span.end);
+	public leadingType(span: TypeSpan): LeadingType | undefined {
+		let first = this.context.tokenStream.nextSignificant(span.start, span.end);
+		while (first >= 0 && TYPE_PREFIXES.has(this.context.tokenStream.value(first) ?? ""))
+			first = this.context.tokenStream.nextSignificant(first + 1, span.end);
 		const shape = first < 0 ? undefined : this.typeShape(first, span.end);
 		return shape === undefined ? undefined : { first, shape };
 	}
 
-	protected declaredType(span: TypeSpan | undefined): TypeFacts {
+	public declaredType(span: TypeSpan | undefined): TypeFacts {
 		if (span === undefined) return {};
 		return this.typeFacts(this.leadingType(span));
 	}
 
 	/** `var` declares neither. */
-	protected typeFacts(leading: LeadingType | undefined): TypeFacts {
+	public typeFacts(leading: LeadingType | undefined): TypeFacts {
 		if (leading === undefined) return {};
-		const first = this.token(leading.first) as Token;
-		const last = this.token(this.previousSignificant(leading.shape.end, leading.first)) as Token;
+		const first = this.context.tokenStream.token(leading.first) as Token;
+		const last = this.context.tokenStream.token(
+			this.context.tokenStream.previousSignificant(leading.shape.end, leading.first),
+		) as Token;
 		if (first === last && syntaxValue(first) === "var") return {};
 		const { name, segments, qualifier, composed } = leading.shape;
 		return {
-			typeText: this.sourceSpan(first, last),
+			typeText: this.context.tokenStream.sourceSpan(first, last),
 			...(name === undefined || BUILTIN_TYPES.has(syntaxValue(name) ?? "") || segments.length === 0
 				? {}
 				: { typeSegments: segments, ...defined({ typeQualifier: qualifier }) }),
@@ -223,17 +231,17 @@ export class CsharpTypeReader extends CsharpTokenStream {
 	}
 
 	/** Searched past the type. */
-	protected firstDeclaratorName(start: number, end: number, angles: AnglePairs): number {
+	public firstDeclaratorName(start: number, end: number, angles: AnglePairs): number {
 		const type = this.typeShape(start, end);
 		const name = type === undefined ? -1 : this.findDeclaratorName(type.end, end, angles);
 		return name >= 0 ? name : this.findDeclaratorName(start, end, angles);
 	}
 
 	/** Token `first` through the last significant token before `end`, on one line. */
-	protected header(first: number, end: number, skip?: HeaderSkip): string | undefined {
-		const last = this.previousSignificant(end, first);
-		const head = this.token(first);
-		const tail = this.token(last);
+	public header(first: number, end: number, skip?: HeaderSkip): string | undefined {
+		const last = this.context.tokenStream.previousSignificant(end, first);
+		const head = this.context.tokenStream.token(first);
+		const tail = this.context.tokenStream.token(last);
 		if (last < first || head === undefined || tail === undefined) return undefined;
 		const folds: HeaderFold[] = [];
 		/** Opener index to closer index. */
@@ -245,17 +253,17 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		let previous: Token | undefined;
 		let before = -1;
 		for (let index = first; index <= last; index++) {
-			if (this.meter !== undefined) this.meter.steps++;
-			const item = this.tokens[index] as Token;
+			if (this.context.meter !== undefined) this.context.meter.steps++;
+			const item = this.context.tokenStream.tokens[index] as Token;
 			if (index === skip?.from) {
-				const shared = this.token(before);
+				const shared = this.context.tokenStream.token(before);
 				if (shared !== undefined) lead = { start, end: shared.endOffset };
-				start = (this.tokens[skip.to] as Token).startOffset;
+				start = (this.context.tokenStream.tokens[skip.to] as Token).startOffset;
 				index = skip.to - 1;
 				previous = undefined;
 				continue;
 			}
-			if (previous !== undefined && this.lexed.droppedBefore.has(item))
+			if (previous !== undefined && this.context.tokenStream.lexed.droppedBefore.has(item))
 				omit.push({ start: previous.endOffset, end: item.startOffset });
 			previous = item;
 			if (item.kind === "comment" || item.kind === "doc" || item.kind === "directive") {
@@ -263,15 +271,20 @@ export class CsharpTypeReader extends CsharpTokenStream {
 				continue;
 			}
 			if (item.kind === "newline") continue;
-			const whole = item.kind === "string" ? this.lexed.interpolated.get(item.startOffset) : undefined;
+			const whole =
+				item.kind === "string" ? this.context.tokenStream.lexed.interpolated.get(item.startOffset) : undefined;
 			if (whole !== undefined) {
 				// An interpolated string reads as written, its holes' groups never walked.
 				verbatim.push({ start: whole.startOffset, end: whole.endOffset });
-				while (index < last && (this.tokens[index + 1] as Token).startOffset < whole.endOffset) {
+				while (
+					index < last &&
+					(this.context.tokenStream.tokens[index + 1] as Token).startOffset < whole.endOffset
+				) {
 					index++;
-					if (this.value(index) === "{") folded.set(index, this.matching(index, "{", "}", last + 1));
+					if (this.context.tokenStream.value(index) === "{")
+						folded.set(index, this.context.tokenStream.matching(index, "{", "}", last + 1));
 				}
-				previous = this.tokens[index] as Token;
+				previous = this.context.tokenStream.tokens[index] as Token;
 				before = index;
 				continue;
 			}
@@ -279,7 +292,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 				verbatim.push({ start: item.startOffset, end: item.endOffset });
 			const close = this.valueContainerEnd(index, before, last);
 			if (close > index) {
-				const closeToken = this.tokens[close] as Token;
+				const closeToken = this.context.tokenStream.tokens[close] as Token;
 				folds.push({ start: item.startOffset, end: closeToken.endOffset });
 				folded.set(index, close);
 				index = close;
@@ -287,7 +300,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 			}
 			before = index;
 		}
-		return this.render({
+		return this.context.tokenStream.render({
 			...(lead === undefined ? {} : { lead }),
 			start,
 			end: tail.endOffset,
@@ -311,20 +324,23 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		for (const [open, close] of [...walk.pairs].sort((left, right) => right[0] - left[0])) {
 			const half = halves.get(close) ?? 0;
 			halves.set(close, half + 1);
-			offsets.push((this.tokens[open] as Token).startOffset, (this.tokens[close] as Token).startOffset + half);
+			offsets.push(
+				(this.context.tokenStream.tokens[open] as Token).startOffset,
+				(this.context.tokenStream.tokens[close] as Token).startOffset + half,
+			);
 		}
 		return offsets;
 	}
 
 	/** The type bracket pairs of a span that starts as a type, or as a value. */
-	protected typeAngles(start: number, end: number, value = false, depth = 0): AnglePairs {
+	public typeAngles(start: number, end: number, value = false, depth = 0): AnglePairs {
 		const walk: BracketWalk = { pairs: new Map(), folded: EMPTY_MAP };
 		this.bracketsIn(start, end, value, walk, depth);
 		return walk.pairs;
 	}
 
 	/** The `>` or `>>` closing the type argument list opening at `open`; -1 when none does before `end`. */
-	protected listClose(open: number, end: number): number {
+	public listClose(open: number, end: number): number {
 		return this.listWalk(open, end, 0).get(open) ?? -1;
 	}
 
@@ -356,12 +372,12 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		let afterColon = false;
 		let previous = -1;
 		for (
-			let current = this.nextSignificant(start, end);
+			let current = this.context.tokenStream.nextSignificant(start, end);
 			current >= 0 && current < end;
-			current = this.nextSignificant(current + 1, end)
+			current = this.context.tokenStream.nextSignificant(current + 1, end)
 		) {
-			if (this.meter !== undefined) this.meter.steps++;
-			const item = this.token(current) as Token;
+			if (this.context.meter !== undefined) this.context.meter.steps++;
+			const item = this.context.tokenStream.token(current) as Token;
 			const text = syntaxValue(item);
 			const typed = lists.length > 0 || !inValue;
 			if (opened !== undefined && !isIdentifier(item) && !TYPE_LIST_PUNCTUATION.has(text ?? "")) break;
@@ -376,14 +392,18 @@ export class CsharpTypeReader extends CsharpTokenStream {
 				if (lists.length === 0 && opened !== undefined) return;
 			} else if (text === "operator" && typed) {
 				// Its symbol, `>>>` being two tokens.
-				let symbol = this.nextSignificant(current + 1, end);
-				while (this.token(symbol)?.kind === "punctuation" && this.value(symbol) !== "(") {
+				let symbol = this.context.tokenStream.nextSignificant(current + 1, end);
+				while (
+					this.context.tokenStream.token(symbol)?.kind === "punctuation" &&
+					this.context.tokenStream.value(symbol) !== "("
+				) {
 					current = symbol;
-					symbol = this.nextSignificant(symbol + 1, end);
+					symbol = this.context.tokenStream.nextSignificant(symbol + 1, end);
 				}
 			} else if (text === "(" || text === "[" || text === "{") {
 				const fold = walk.folded.get(current);
-				const close = fold ?? this.matching(current, text, GROUP_CLOSERS.get(text) as string, end);
+				const close =
+					fold ?? this.context.tokenStream.matching(current, text, GROUP_CLOSERS.get(text) as string, end);
 				if (close < 0) break;
 				const holdsValue = this.groupHoldsValue(text, previous, typed, afterColon, lists.length > 0);
 				if (fold === undefined) this.bracketsIn(current + 1, close, holdsValue, walk, depth + 1);
@@ -399,19 +419,22 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		for (const open of lists) this.openLists.set(open, Math.max(this.openLists.get(open) ?? -1, end));
 	}
 
-	protected opensTypeList(previous: number, open: number, end: number, typed: boolean, depth: number): boolean {
-		const before = this.token(previous);
+	public opensTypeList(previous: number, open: number, end: number, typed: boolean, depth: number): boolean {
+		const before = this.context.tokenStream.token(previous);
 		if (!typed) return isIdentifier(before) && this.expressionTypeArguments(open, end, depth);
 		if (isIdentifier(before)) return true;
 		// A function pointer, `delegate*` or `delegate* unmanaged[...]`.
 		let star = previous;
 		if (syntaxValue(before) === "]") {
-			const bracket = this.opener(previous, "[", "]");
-			const convention = bracket < 0 ? -1 : this.previousSignificant(bracket);
-			if (this.value(convention) !== "unmanaged") return false;
-			star = this.previousSignificant(convention);
+			const bracket = this.context.tokenStream.opener(previous, "[", "]");
+			const convention = bracket < 0 ? -1 : this.context.tokenStream.previousSignificant(bracket);
+			if (this.context.tokenStream.value(convention) !== "unmanaged") return false;
+			star = this.context.tokenStream.previousSignificant(convention);
 		}
-		return this.value(star) === "*" && this.value(this.previousSignificant(star)) === "delegate";
+		return (
+			this.context.tokenStream.value(star) === "*" &&
+			this.context.tokenStream.value(this.context.tokenStream.previousSignificant(star)) === "delegate"
+		);
 	}
 
 	/** Types only, then a follower that keeps the list. */
@@ -422,9 +445,10 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		if (close === undefined) return false;
 		for (const segment of this.commaSegments(open + 1, close, pairs)) {
 			const shape = this.typeShape(segment.start, segment.end, depth + 1);
-			if (shape === undefined || this.nextSignificant(shape.end, segment.end) >= 0) return false;
+			if (shape === undefined || this.context.tokenStream.nextSignificant(shape.end, segment.end) >= 0)
+				return false;
 		}
-		const follower = this.token(this.nextSignificant(close + 1));
+		const follower = this.context.tokenStream.token(this.context.tokenStream.nextSignificant(close + 1));
 		return follower?.kind === "eof" || TYPE_ARGUMENT_FOLLOWERS.has(syntaxValue(follower) ?? "");
 	}
 
@@ -437,7 +461,7 @@ export class CsharpTypeReader extends CsharpTokenStream {
 		inList: boolean,
 	): boolean {
 		if (open === "{") return true;
-		const before = this.value(previous) ?? "";
+		const before = this.context.tokenStream.value(previous) ?? "";
 		if (open === "[") return !(typed && before === "this");
 		if (!typed) return !TYPE_OPERATORS.has(before);
 		// Base and constructor initializer arguments.
@@ -446,29 +470,39 @@ export class CsharpTypeReader extends CsharpTokenStream {
 
 	/** Where a literal container opening at `index` closes; -1 when none does. */
 	private valueContainerEnd(index: number, before: number, last: number): number {
-		const value = this.value(index);
-		if (value === "{") return this.matching(index, "{", "}", last + 1);
-		const opener = this.value(before);
+		const value = this.context.tokenStream.value(index);
+		if (value === "{") return this.context.tokenStream.matching(index, "{", "}", last + 1);
+		const opener = this.context.tokenStream.value(before);
 		if (opener === undefined || !VALUE_OPENERS.has(opener)) return -1;
 		if (value === "[") {
-			const close = this.matching(index, "[", "]", last + 1);
+			const close = this.context.tokenStream.matching(index, "[", "]", last + 1);
 			if (close < 0 || this.declaresAfter(close, last)) return -1;
 			// `a?[0]` indexes; `c ? [0] : d` is a branch.
-			return opener === "?" && this.value(this.nextSignificant(close + 1, last + 1)) !== ":" ? -1 : close;
+			return opener === "?" &&
+				this.context.tokenStream.value(this.context.tokenStream.nextSignificant(close + 1, last + 1)) !== ":"
+				? -1
+				: close;
 		}
 		if (value !== "(") return -1;
-		if (opener === "(" && TYPE_OPERATORS.has(this.value(this.previousSignificant(before)) ?? "")) return -1;
-		const close = this.matching(index, "(", ")", last + 1);
-		if (close < 0 || this.firstComma(index) < 0) return -1;
+		if (
+			opener === "(" &&
+			TYPE_OPERATORS.has(
+				this.context.tokenStream.value(this.context.tokenStream.previousSignificant(before)) ?? "",
+			)
+		)
+			return -1;
+		const close = this.context.tokenStream.matching(index, "(", ")", last + 1);
+		if (close < 0 || this.context.tokenStream.firstComma(index) < 0) return -1;
 		// The comma may sit inside type arguments.
 		if (this.commaSegments(index + 1, close, this.typeAngles(index + 1, close, true)).length < 2) return -1;
-		const after = this.value(this.nextSignificant(close + 1, last + 1)) ?? "";
+		const after =
+			this.context.tokenStream.value(this.context.tokenStream.nextSignificant(close + 1, last + 1)) ?? "";
 		return NOT_TUPLE_FOLLOWERS.has(after) || this.declaresAfter(close, last) ? -1 : close;
 	}
 
 	/** A name or type after `close` makes the brackets an attribute or a tuple type. */
 	private declaresAfter(close: number, last: number): boolean {
-		const next = this.token(this.nextSignificant(close + 1, last + 1));
+		const next = this.context.tokenStream.token(this.context.tokenStream.nextSignificant(close + 1, last + 1));
 		if (isIdentifier(next)) return !VALUE_FOLLOWERS.has(syntaxValue(next) as string);
 		const value = syntaxValue(next);
 		return value === "(" || value === "[" || value === "?";

@@ -33,11 +33,47 @@ import {
 	includedFiles,
 } from "./fileScope.js";
 import { importTarget } from "./imports.js";
+import {
+	ensurePumping as coordinateEnsurePumping,
+	payOwed as coordinatePayOwed,
+	pump as coordinatePump,
+	pumpTurns as coordinatePumpTurns,
+	rebindStep as coordinateRebindStep,
+	recover as coordinateRecover,
+	recoverLater as coordinateRecoverLater,
+	requestFull as coordinateRequestFull,
+	startRun as coordinateStartRun,
+	upgradeOne as coordinateUpgradeOne,
+	upgradeRemaining as coordinateUpgradeRemaining,
+	type IndexPumpContext,
+} from "./indexPump.js";
 import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation, UNCHANGED_REASON } from "./invalidation.js";
 import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarations.js";
 import { patternDigests } from "./patternDigest.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
+import {
+	type ImporterIndex,
+	RESOLVE_RETRY_MS,
+	type RebindSchedulerContext,
+	dependentsOf as scheduleDependentsOf,
+	holdRebind as scheduleHoldRebind,
+	importIndex as scheduleImportIndex,
+	oweDependents as scheduleOweDependents,
+	pendingMoves as schedulePendingMoves,
+	processOf as scheduleProcessOf,
+	queueRebinds as scheduleQueueRebinds,
+	readAfter as scheduleReadAfter,
+	readImports as scheduleReadImports,
+	readWhole as scheduleReadWhole,
+	rebindable as scheduleRebindable,
+	rebindDependents as scheduleRebindDependents,
+	rebindOne as scheduleRebindOne,
+	retryResolving as scheduleRetryResolving,
+	settle as scheduleSettle,
+	settleProjections as scheduleSettleProjections,
+	UNREAD,
+} from "./rebindScheduler.js";
 import type { ResultCache } from "./resultCache.js";
 import type { Route } from "./routing.js";
 import {
@@ -48,20 +84,19 @@ import {
 	type SourceReader,
 	unreadableReason,
 } from "./sourceRead.js";
-import {
-	BatchFailed,
-	type FileNote,
-	type IndexStore,
-	lostRetryMs,
-	resolutionKey,
-	type SurfaceChange,
-} from "./store.js";
+import { BatchFailed, type FileNote, type IndexStore, resolutionKey, type SurfaceChange } from "./store.js";
 import type { ModulePresence, SweepReport } from "./subjects.js";
 import { ProviderUnavailableError } from "./supervisor.js";
 import type { WatchScope } from "./watcher.js";
 import type { WorkspaceGate } from "./workspaceGate.js";
+import {
+	scanWorkspace as coordinateScanWorkspace,
+	runWorkspaceScan as coordinateWorkspaceScan,
+	type WorkspaceScanContext,
+} from "./workspaceScan.js";
 
 export type { IndexOutcome, IndexStatus } from "@nyaa-lexicon/protocol";
+export { REBIND_CAP, RESOLVE_RETRY_MS, UNREAD } from "./rebindScheduler.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -111,17 +146,6 @@ function settledDepth(depth: IndexDepth | undefined): IndexDepth | undefined {
 	return depth === "outline" ? "full" : depth;
 }
 
-/** Each row's module under the key it was read by. */
-function grouped<T extends { module: string }>(rows: readonly T[], keyOf: (row: T) => string): Map<string, string[]> {
-	const by = new Map<string, string[]>();
-	for (const row of rows) {
-		const list = by.get(keyOf(row));
-		if (list === undefined) by.set(keyOf(row), [row.module]);
-		else list.push(row.module);
-	}
-	return by;
-}
-
 /** A synchronous scope read reached before any admission ever ran. A caller ordering bug, not a user's. */
 export class ScopeNotComputedError extends Error {
 	constructor() {
@@ -134,14 +158,6 @@ export const NAMED_FAILURES = 3;
 
 /** Subjects one sweep examines across both passes; a capped sweep resumes from its cursor. */
 export const ORPHAN_SWEEP_CAP = 200;
-
-/** Dependents one batch parses again itself; the rest wait for the background pump. */
-export const REBIND_CAP = 64;
-
-/** The first wait before asking again after a resolver fault left moves pending; it doubles to the cap. */
-export const RESOLVE_RETRY_MS = 1_000;
-
-const RESOLVE_RETRY_MAX_MS = 60_000;
 
 /**
  * Two questions with two lifetimes: a cached query result dies the moment any fact moves; where a
@@ -175,18 +191,6 @@ type Step = <T>(work: () => Promise<T>) => Promise<T>;
 
 /** Already exclusive: the caller took the gate around a unit larger than one file. */
 const held: Step = (work) => work();
-
-/** Import targets both ways, so a write refreshes its own module's entries alone. */
-interface ImporterIndex {
-	generation: number;
-	byTarget: Map<string, Set<string>>;
-	targetsOf: Map<string, Set<string>>;
-	/** Settles once the whole read that built it has; undefined only while it is being made. */
-	ready: Promise<void> | undefined;
-}
-
-/** Outcomes that leave a module's facts unread under the reading asked for. */
-export const UNREAD: ReadonlySet<IndexCause | undefined> = new Set(["parseFailed", "providerDown", "fault"]);
 
 /** What `followImports` needs beyond the frontier, so no positional default decides the gate. */
 interface ImportWalk {
@@ -227,6 +231,274 @@ export class WorkspaceIndexer {
 		// A provider process starting again may answer what its predecessor failed or refused.
 		supervisor.respawnedFrom(() => this.queueRebinds());
 		this.entries = directoryEntries(workspaceRoot);
+		// Collaborators share a live view; this class retains ownership of the state.
+		this.workspaceScanContext = this.createWorkspaceScanContext();
+		this.pumpContext = this.createPumpContext();
+		this.rebindContext = this.createRebindContext();
+	}
+
+	private createWorkspaceScanContext(): WorkspaceScanContext {
+		const owner = this;
+		return {
+			get store() {
+				return owner.store;
+			},
+			get supervisor() {
+				return owner.supervisor;
+			},
+			get caches() {
+				return owner.caches;
+			},
+			get newInPass() {
+				return owner.newInPass;
+			},
+			set newInPass(value) {
+				owner.newInPass = value;
+			},
+			get status() {
+				return owner.status;
+			},
+			set status(value) {
+				owner.status = value;
+			},
+			get coverage() {
+				return owner.coverage;
+			},
+			set coverage(value) {
+				owner.coverage = value;
+			},
+			get discovered() {
+				return owner.discovered;
+			},
+			get configFiles() {
+				return owner.configFiles;
+			},
+			set configFiles(value) {
+				owner.configFiles = value;
+			},
+			get restated() {
+				return owner.restated;
+			},
+			set restated(value) {
+				owner.restated = value;
+			},
+			get roots() {
+				return owner.roots;
+			},
+			set roots(value) {
+				owner.roots = value;
+			},
+			get depths() {
+				return owner.depths;
+			},
+			set depths(value) {
+				owner.depths = value;
+			},
+			get generated() {
+				return owner.generated;
+			},
+			alone: (work) => owner.alone(work),
+			pass: (work) => owner.pass(work),
+			discoveryScope: () => owner.discoveryScope(),
+			discover: (providerId, scope) => owner.discover(providerId, scope),
+			rootModules: () => owner.rootModules(),
+			scanDepth: (module, floor) => owner.scanDepth(module, floor),
+			writeScanSummary: (outlined) => owner.writeScanSummary(outlined),
+			fileStat: (module) => owner.fileStat(module),
+			indexOne: owner.indexOne.bind(owner),
+			faultOutcome: (module, error) => owner.faultOutcome(module, error),
+			noteReached: (module, firstStats) => owner.noteReached(module, firstStats),
+			followImports: (seen, walk) => owner.followImports(seen, walk),
+			prune: (seen) => owner.prune(seen),
+			sweepAfterPrune: (reachable) => owner.sweepAfterPrune(reachable),
+			readAllUnder: (providerId, outcomes, also) => owner.readAllUnder(providerId, outcomes, also),
+			pendingMoves: (modules) => owner.pendingMoves(modules),
+			oweDependents: (moves, order, stale) => owner.oweDependents(moves, order, stale),
+			settle: (moves, owed) => owner.settle(moves, owed),
+			queueRebinds: () => owner.queueRebinds(),
+			scanWorkspace: (floor, onProgress) => owner.scanWorkspace(floor, onProgress),
+		};
+	}
+
+	private createPumpContext(): IndexPumpContext {
+		const owner = this;
+		return {
+			get store() {
+				return owner.store;
+			},
+			get clock() {
+				return owner.clock;
+			},
+			get orders() {
+				return owner.orders;
+			},
+			get pumping() {
+				return owner.pumping;
+			},
+			set pumping(value) {
+				owner.pumping = value;
+			},
+			get upgradeWanted() {
+				return owner.upgradeWanted;
+			},
+			set upgradeWanted(value) {
+				owner.upgradeWanted = value;
+			},
+			get unasked() {
+				return owner.unasked;
+			},
+			get rebindQueued() {
+				return owner.rebindQueued;
+			},
+			set rebindQueued(value) {
+				owner.rebindQueued = value;
+			},
+			get recovering() {
+				return owner.recovering;
+			},
+			set recovering(value) {
+				owner.recovering = value;
+			},
+			get recovery() {
+				return owner.recovery;
+			},
+			set recovery(value) {
+				owner.recovery = value;
+			},
+			get losses() {
+				return owner.losses;
+			},
+			set losses(value) {
+				owner.losses = value;
+			},
+			get upgradeFailed() {
+				return owner.upgradeFailed;
+			},
+			get rebindCursor() {
+				return owner.rebindCursor;
+			},
+			set rebindCursor(value) {
+				owner.rebindCursor = value;
+			},
+			get resolvePending() {
+				return owner.resolvePending;
+			},
+			get depths() {
+				return owner.depths;
+			},
+			get scope() {
+				return owner.scope;
+			},
+			get status() {
+				return owner.status;
+			},
+			set status(value) {
+				owner.status = value;
+			},
+			ensurePumping: () => owner.ensurePumping(),
+			pump: () => owner.pump(),
+			pass: (work) => owner.pass(work),
+			startRun: () => owner.startRun(),
+			pumpTurns: () => owner.pumpTurns(),
+			recoverLater: () => owner.recoverLater(),
+			recover: () => owner.recover(),
+			during: (doing, work) => owner.during(doing, work),
+			upgradeOne: (module) => owner.upgradeOne(module),
+			rebindStep: () => owner.rebindStep(),
+			processOf: (providerId) => owner.processOf(providerId),
+			alone: (work) => owner.alone(work),
+			pendingMoves: (modules) => owner.pendingMoves(modules),
+			oweDependents: (moves, order) => owner.oweDependents(moves, order),
+			rebindOne: (module) => owner.rebindOne(module),
+			queueRebinds: () => owner.queueRebinds(),
+			currentScope: () => owner.currentScope(),
+			indexOne: owner.indexOne.bind(owner),
+			faultOutcome: (module, error) => owner.faultOutcome(module, error),
+			holdRebind: (module, outcome) => owner.holdRebind(module, outcome),
+		};
+	}
+
+	private createRebindContext(): RebindSchedulerContext {
+		const owner = this;
+		return {
+			get store() {
+				return owner.store;
+			},
+			get supervisor() {
+				return owner.supervisor;
+			},
+			get caches() {
+				return owner.caches;
+			},
+			get clock() {
+				return owner.clock;
+			},
+			get epoch() {
+				return owner.epoch;
+			},
+			resolve: (fromModule, specifier, mode) => owner.resolve(fromModule, specifier, mode),
+			get importers() {
+				return owner.importers;
+			},
+			set importers(value) {
+				owner.importers = value;
+			},
+			get importsWritten() {
+				return owner.importsWritten;
+			},
+			get projected() {
+				return owner.projected;
+			},
+			get resolvePending() {
+				return owner.resolvePending;
+			},
+			get resolveRetry() {
+				return owner.resolveRetry;
+			},
+			set resolveRetry(value) {
+				owner.resolveRetry = value;
+			},
+			get resolveRetryMs() {
+				return owner.resolveRetryMs;
+			},
+			set resolveRetryMs(value) {
+				owner.resolveRetryMs = value;
+			},
+			get rebindQueued() {
+				return owner.rebindQueued;
+			},
+			set rebindQueued(value) {
+				owner.rebindQueued = value;
+			},
+			get depths() {
+				return owner.depths;
+			},
+			get scope() {
+				return owner.scope;
+			},
+			alone: (work) => owner.alone(work),
+			ensurePumping: () => owner.ensurePumping(),
+			queueRebinds: () => owner.queueRebinds(),
+			settleProjections: () => owner.settleProjections(),
+			pendingMoves: (modules) => owner.pendingMoves(modules),
+			settle: (moves, owed) => owner.settle(moves, owed),
+			retryResolving: (moved) => owner.retryResolving(moved),
+			holdRebind: (module, outcome) => owner.holdRebind(module, outcome),
+			processOf: (providerId) => owner.processOf(providerId),
+			rebindDependents: (outcomes, shouldAbandon) => owner.rebindDependents(outcomes, shouldAbandon),
+			oweDependents: (moves, order, stale) => owner.oweDependents(moves, order, stale),
+			readAfter: (module, moves, order, stale) => owner.readAfter(module, moves, order, stale),
+			dependentsOf: (moves) => owner.dependentsOf(moves),
+			importIndex: () => owner.importIndex(),
+			readWhole: (index) => owner.readWhole(index),
+			readImports: (index, module, occurrences) => owner.readImports(index, module, occurrences),
+			rebindable: (module) => owner.rebindable(module),
+			rebindOne: (module) => owner.rebindOne(module),
+			parseAndStore: (module, depth) => owner.parseAndStore(module, depth),
+			faultOutcome: (module, error) => owner.faultOutcome(module, error),
+			currentScope: () => owner.currentScope(),
+			indexOne: owner.indexOne.bind(owner),
+		};
 	}
 
 	/** What a workspace directory holds, for a marker beside an output directory. Renewed by each admission. */
@@ -289,6 +561,9 @@ export class WorkspaceIndexer {
 	private importers: ImporterIndex | null = null;
 	/** Modules whose import rows were written since the index last read them. */
 	private readonly importsWritten = new Set<string>();
+	private readonly workspaceScanContext: WorkspaceScanContext;
+	private readonly pumpContext: IndexPumpContext;
+	private readonly rebindContext: RebindSchedulerContext;
 
 	/**
 	 * One step of a self-driven road, alone.
@@ -667,141 +942,14 @@ export class WorkspaceIndexer {
 		floor: "full" | "outline",
 		onProgress?: (done: number, total: number) => void,
 	): Promise<IndexOutcome[]> {
-		this.store.beginProjectIndexing();
-		const outcomes = await this.pass(() => this.scanWorkspace(floor, onProgress));
-		if (!outcomes.some((outcome) => outcome.cause === "providerDown")) this.store.markProjectIndexed();
-		return outcomes;
+		return coordinateWorkspaceScan.call(this.workspaceScanContext, floor, onProgress);
 	}
 
 	private async scanWorkspace(
 		floor: "full" | "outline",
 		onProgress?: (done: number, total: number) => void,
 	): Promise<IndexOutcome[]> {
-		if (floor === "outline") this.coverage = { state: "discovering" };
-		this.status = { state: "discovering", done: 0, total: 0 };
-		try {
-			this.newInPass = new Set();
-			// Kept until each provider states its project again, so an excluded file it named stays
-			// claimed meanwhile. One no longer running names nothing.
-			const running = new Set(this.supervisor.running().map((claims) => claims.providerId));
-			for (const providerId of this.discovered.keys())
-				if (!running.has(providerId)) this.discovered.delete(providerId);
-			this.configFiles = new Map();
-			// The workspace is being re-learned, so nothing a previous pass was told still vouches
-			// for itself. Once, rather than per file: a scan reads what is already on disk.
-			this.caches.resolutions.invalidate();
-			const fingerprints = new Map<string, string>();
-			const scope = await this.discoveryScope();
-			for (const provider of this.supervisor.running()) {
-				const project = await this.discover(provider.providerId, scope);
-				if (project.fingerprint !== undefined) fingerprints.set(provider.providerId, project.fingerprint);
-			}
-			this.restated = new Set(
-				[...fingerprints]
-					.filter(([providerId, fingerprint]) => fingerprint !== this.store.projectFingerprint(providerId))
-					.map(([providerId]) => providerId),
-			);
-
-			// One hold: the summary must not describe a root set another road has already moved past.
-			const pending = await this.alone(async () => {
-				this.roots = await this.rootModules();
-				this.depths = new Map([...this.roots].map((module) => [module, this.scanDepth(module, floor)]));
-				// Roots with no row at any depth; a failed root has none and is attempted again here.
-				const missing = new Set([...this.roots].filter((module) => this.store.depthOf(module) === null));
-				// A completed mark survives a rescan only while nothing is missing.
-				this.writeScanSummary(missing.size === 0 && this.store.readScanSummary()?.outlined === true);
-				return missing;
-			});
-			// Each file as the scan first looked at it, so a change during the scan is seen at its end: a
-			// root as the scan began, an imported module once a module importing it was parsed.
-			const firstStats = new Map([...this.roots].map((module) => [module, this.fileStat(module)]));
-			if (floor === "outline") {
-				this.coverage =
-					pending.size === 0 ? { state: "covered" } : { state: "outlining", pending, attempting: new Set() };
-			}
-			const modules = [...this.roots];
-
-			const outcomes: IndexOutcome[] = [];
-			const seen = new Set<string>();
-			const scanning = floor === "outline" ? "warming" : "indexing";
-			this.status = { state: scanning, done: 0, total: modules.length };
-			for (const [done, module] of modules.entries()) {
-				if (floor === "outline" && this.coverage.state === "outlining") {
-					this.coverage.pending.delete(module);
-					this.coverage.attempting.add(module);
-				}
-				const outcome = await this.alone(async () => {
-					try {
-						return await this.indexOne(module, undefined, floor === "outline");
-					} catch (error) {
-						return this.faultOutcome(module, error);
-					}
-				});
-				if (floor === "outline" && this.coverage.state === "outlining") this.coverage.attempting.delete(module);
-				await this.noteReached(module, firstStats);
-				outcomes.push(outcome);
-				if (outcome.action === "forgotten") this.roots.delete(module);
-				else seen.add(module);
-				this.status = { state: scanning, done: done + 1, total: modules.length };
-				onProgress?.(done + 1, modules.length);
-			}
-
-			outcomes.push(
-				...(await this.followImports(seen, {
-					indexExisting: true,
-					floor,
-					step: (work) => this.alone(work),
-					reached: (module) => this.noteReached(module, firstStats),
-				})),
-			);
-			// An outage is a file value, not a workspace refusal, but the summary cannot claim a full outline.
-			const outaged = outcomes.some((outcome) => outcome.cause === "providerDown");
-			// Read before the sweep clears it.
-			const newInPass = new Set(this.newInPass);
-			// One hold: nothing may read an index half pruned of what this pass no longer reaches.
-			outcomes.push(
-				...(await this.alone(async () => {
-					this.store.syncGenerated(this.generated);
-					const pruned = this.prune(seen);
-					this.sweepAfterPrune(seen);
-					this.writeScanSummary(!outaged);
-					// Recorded only where every module was admitted under it; an outage, a refusal or a
-					// fault leaves the old one, so the next scan restates again.
-					for (const [providerId, fingerprint] of fingerprints) {
-						if (!this.readAllUnder(providerId, outcomes)) continue;
-						this.store.recordProjectFingerprint(providerId, fingerprint);
-						this.restated.delete(providerId);
-					}
-					return pruned;
-				})),
-			);
-			// A module whose bytes moved while nothing watched leaves its unchanged dependents stale, and
-			// so does a move a stopped daemon never answered. Read whole, inside a hold.
-			const moves = await this.alone(async () => this.pendingMoves(null));
-			const order = new Map<string, number>();
-			for (const [at, outcome] of outcomes.entries())
-				if (outcome.action !== "skipped") order.set(outcome.module, at);
-			// A provider reads from disk a module it holds no parse of, so only a module that held a surface
-			// before this pass, or whose file changed after the scan first looked at it, since a provider may
-			// have read it for an earlier dependent, can have left a module this scan wrote earlier reading a
-			// stale one. A projection that moved only because the pass wrote its sources after it is neither.
-			const stale = (module: string, change: SurfaceChange) =>
-				(change.heldBefore && !newInPass.has(module)) ||
-				(firstStats.has(module) && this.fileStat(module) !== firstStats.get(module));
-			const unwritten = this.store.indexedFiles().some((module) => !order.has(module));
-			if (unwritten || [...moves].some(([module, change]) => stale(module, change)))
-				await this.oweDependents(moves, order, stale);
-			else this.settle(moves, []);
-			// Debt a stopped daemon left owed is the pump's to pay.
-			if (this.store.owedRebindAfter(null) !== null) this.queueRebinds();
-			this.status = { state: "ready", done: outcomes.length, total: outcomes.length };
-			this.coverage = { state: "covered" };
-			return outcomes;
-		} catch (error) {
-			if (floor === "outline")
-				this.coverage = { state: "failed", reason: error instanceof Error ? error.message : String(error) };
-			throw error;
-		}
+		return coordinateScanWorkspace.call(this.workspaceScanContext, floor, onProgress);
 	}
 
 	/** What git admits, so no provider walks what the scope ignores; a walk scope has no list to give. */
@@ -875,70 +1023,25 @@ export class WorkspaceIndexer {
 
 	/** Queues full parses ahead of the background upgrade. */
 	requestFull(modules: string[]): Promise<void> {
-		const owed = modules.filter((module) => {
-			const depth = this.store.depthOf(module);
-			return depth === "outline";
-		});
-		if (owed.length === 0) return Promise.resolve();
-		return new Promise<void>((resolve, reject) => {
-			this.orders.push({ modules: owed, resolve, reject });
-			this.ensurePumping();
-		});
+		return coordinateRequestFull.call(this.pumpContext, modules);
 	}
 
 	/** Starts paying owed parses, as after a restart that left some. */
 	payOwed(): void {
-		if (this.store.owedRebindAfter(null) !== null) this.queueRebinds();
+		coordinatePayOwed.call(this.pumpContext);
 	}
 
 	/** Drains the outline backlog, yielding between files. */
 	upgradeRemaining(): Promise<void> {
-		this.upgradeWanted = true;
-		this.ensurePumping();
-		return this.pumping ?? Promise.resolve();
+		return coordinateUpgradeRemaining.call(this.pumpContext);
 	}
 
 	private ensurePumping(): void {
-		if (this.pumping !== null) return;
-		// The pump is its own pass, never part of the one that happened to start it.
-		const run = this.store
-			.detached(() => this.pump())
-			.finally(() => {
-				this.pumping = null;
-				// Restart if work arrived before completion; background work waits out a lost batch's backoff.
-				const background = this.unasked.size > 0 || this.rebindQueued || this.upgradeWanted || this.recovering;
-				if (this.orders.length === 0 && (!background || this.recovery !== null)) return;
-				this.ensurePumping();
-				// Awaited, so a caller waiting on this run waits for the work it found still to do.
-				return this.pumping;
-			});
-		// Whoever awaits the run hears its fault; a run nobody awaits must not surface as unhandled.
-		run.catch(() => {});
-		this.pumping = run;
+		coordinateEnsurePumping.call(this.pumpContext);
 	}
 
-	/**
-	 * The one background parse loop. Orders first, then who binds against what single-file roads
-	 * wrote, then owed rebinds, then the store's outline backlog, one file per turn.
-	 *
-	 * A fault no parse caught, such as a store closed under the run, ends it and rejects it, and
-	 * nothing restarts it: what is owed stays in the store for the next start. A lost batch keeps what
-	 * the run still meant to do, for the recovery it arms.
-	 */
 	private async pump(): Promise<void> {
-		try {
-			this.startRun();
-			await this.pass(() => this.pumpTurns());
-		} catch (error) {
-			if (!(error instanceof BatchFailed)) {
-				this.upgradeWanted = false;
-				this.unasked.clear();
-				this.rebindQueued = false;
-				this.recovering = false;
-			}
-			for (const order of this.orders.splice(0)) order.reject(error);
-			throw error;
-		}
+		return coordinatePump.call(this.pumpContext);
 	}
 
 	/** An index pass; a lost batch arms the recovery that reads again what the committed store owes. */
@@ -953,130 +1056,28 @@ export class WorkspaceIndexer {
 		}
 	}
 
-	/** Arms one recovery, on a backoff that doubles with each loss in a row. */
 	private recoverLater(): void {
-		if (this.recovery !== null) return;
-		this.recovery = this.clock.setTimer(
-			() => {
-				this.recovery = null;
-				this.recovering = true;
-				this.ensurePumping();
-			},
-			lostRetryMs(this.losses++),
-		);
+		coordinateRecoverLater.call(this.pumpContext);
 	}
 
-	/**
-	 * The committed store is what a lost batch left. Every move it still holds owes its dependents
-	 * again, since a lost settlement or payment took the debt for them; owed rebinds and the outline
-	 * backlog are read from it each turn already. A module held back for a failure the store no
-	 * longer records is let back into the backlog.
-	 */
 	private async recover(): Promise<void> {
-		this.recovering = false;
-		for (const module of this.upgradeFailed) {
-			if (this.store.parseFailureOf(module) === null) this.upgradeFailed.delete(module);
-		}
-		const moves = await this.alone(async () => this.pendingMoves(null));
-		await this.oweDependents(moves, new Map());
+		return coordinateRecover.call(this.pumpContext);
 	}
 
-	/** Each run tries every payable debt once; a provider or daemon that restarted since a parse failed is asked again. */
 	private startRun(): void {
-		this.rebindCursor = null;
-		this.rebindQueued = false;
-		const restarted = this.store
-			.blockedRebinds()
-			.filter((debt) => debt.blockedIn !== this.processOf(debt.blockedBy))
-			.map((debt) => debt.module);
-		if (restarted.length > 0) this.store.unblockRebinds(restarted);
-		for (const module of this.resolvePending) this.unasked.add(module);
-		this.resolvePending.clear();
+		coordinateStartRun.call(this.pumpContext);
 	}
 
 	private async pumpTurns(): Promise<void> {
-		while (true) {
-			if (this.recovering) {
-				await this.during({ kind: "rebind" }, () => this.recover());
-				continue;
-			}
-			const order = this.orders.shift();
-			if (order !== undefined) {
-				try {
-					for (const module of order.modules) {
-						// Cheap skip before the hold; `upgradeOne` re-reads it inside.
-						if (this.store.depthOf(module) !== "outline") continue;
-						await this.during({ kind: "upgrade" }, () => this.upgradeOne(module));
-					}
-					order.resolve();
-				} catch (error) {
-					order.reject(error);
-				}
-				continue;
-			}
-
-			if (await this.during({ kind: "rebind" }, () => this.rebindStep())) continue;
-
-			if (!this.upgradeWanted) return;
-			const backlog = this.store.outlineModules().filter((module) => !this.upgradeFailed.has(module));
-			const next = backlog[0];
-			if (next === undefined) {
-				this.upgradeWanted = false;
-				this.status = { state: "ready", done: this.status.total, total: this.status.total };
-				return;
-			}
-			this.status = {
-				state: "upgrading",
-				done: Math.max(0, this.status.total - backlog.length),
-				total: Math.max(this.status.total, backlog.length),
-			};
-			await this.during(
-				{ kind: "upgrade", counts: () => ({ done: this.status.done, total: this.status.total }) },
-				() => this.upgradeOne(next),
-			);
-		}
+		return coordinatePumpTurns.call(this.pumpContext);
 	}
 
-	/** One turn of rebind work: who binds against single-file writes, else one owed module. False when idle. */
 	private async rebindStep(): Promise<boolean> {
-		if (this.unasked.size > 0) {
-			// Read inside a hold, so the road that wrote them has let go of every module it wrote.
-			const { written, moves } = await this.alone(async () => {
-				const modules = [...this.unasked];
-				this.unasked.clear();
-				return { written: modules, moves: this.pendingMoves(modules) };
-			});
-			// In the order that road wrote them.
-			await this.oweDependents(moves, new Map(written.map((module, at) => [module, at])));
-			return true;
-		}
-		const owed = this.store.owedRebindAfter(this.rebindCursor);
-		if (owed === null) return false;
-		this.rebindCursor = owed;
-		await this.rebindOne(owed);
-		return true;
+		return coordinateRebindStep.call(this.pumpContext);
 	}
 
-	/** Attempts one outline module without discarding stored facts on failure. */
 	private async upgradeOne(module: string): Promise<void> {
-		await this.alone(async () => {
-			// Read inside the hold: a batch waiting on it may have upgraded or forgotten the module,
-			// and the backlog was listed before this road's turn came around.
-			if (this.store.depthOf(module) !== "outline") return;
-			this.depths.set(module, "full");
-			try {
-				// A restarted daemon may be asked to upgrade before any scan computed the scope.
-				if (this.scope === null) await this.currentScope();
-				const outcome = await this.indexOne(module, "full");
-				// A row skipped for scope or ownership stays outline in the store, so it must leave the
-				// backlog or the pump spins on it forever.
-				if (outcome.action === "skipped") this.upgradeFailed.add(module);
-			} catch (error) {
-				this.faultOutcome(module, error);
-			}
-		});
-		// An outline may hold fewer declarations than the full parse that replaced it.
-		await this.oweDependents(this.pendingMoves([module]), new Map([[module, 0]]));
+		return coordinateUpgradeOne.call(this.pumpContext, module);
 	}
 
 	/** The mark is carried forward unless a caller says otherwise. */
@@ -1391,321 +1392,86 @@ export class WorkspaceIndexer {
 		return removed;
 	}
 
-	/**
-	 * The moves still pending for `modules`, or for every module when null, with every module whose
-	 * exports a settlement moved since. Read, not taken: a road acknowledges them only with the debt it
-	 * owes for them, so a stop in between loses neither.
-	 */
 	private pendingMoves(modules: Iterable<string> | null): Map<string, SurfaceChange> {
-		this.settleProjections();
-		const asked = modules === null ? null : [...modules, ...this.projected];
-		this.projected.clear();
-		return this.store.surfaceMovesOf(asked);
+		return schedulePendingMoves.call(this.rebindContext, modules);
 	}
 
-	/** Recomputes the export projections writes owe, so a route read or a rebind sees what they moved. */
 	private settleProjections(): void {
-		for (const module of this.store.settleProjections()) this.projected.add(module);
+		scheduleSettleProjections.call(this.rebindContext);
 	}
 
-	/** Writes the debt and acknowledges the moves it answers in one transaction, then starts the pump. */
 	private settle(moves: ReadonlyMap<string, SurfaceChange>, owed: readonly string[]): void {
-		this.store.settleMoves(moves, owed);
-		if (owed.length > 0) this.queueRebinds();
+		scheduleSettle.call(this.rebindContext, moves, owed);
 	}
 
 	private queueRebinds(): void {
-		this.rebindQueued = true;
-		this.ensurePumping();
+		scheduleQueueRebinds.call(this.rebindContext);
 	}
 
-	/**
-	 * Keeps moves a resolver fault left unanswered pending, and arms one retry: a run then asks again.
-	 * Each retry that finds them still pending waits twice as long, to a cap, so a provider that stays
-	 * down is not asked in a loop.
-	 */
 	private retryResolving(moved: Iterable<string>): void {
-		for (const module of moved) this.resolvePending.add(module);
-		if (this.resolveRetry !== null) return;
-		const wait = this.resolveRetryMs;
-		this.resolveRetryMs = Math.min(wait * 2, RESOLVE_RETRY_MAX_MS);
-		this.resolveRetry = this.clock.setTimer(() => {
-			this.resolveRetry = null;
-			// Queued rather than only started, so a run already going starts another after it.
-			this.queueRebinds();
-		}, wait);
+		scheduleRetryResolving.call(this.rebindContext, moved);
 	}
 
-	/**
-	 * Holds a failed rebind back: an outage until its provider answers again, a refusal until its own
-	 * file parses; either until the daemon or the provider restarts.
-	 */
 	private holdRebind(module: string, outcome: IndexOutcome): void {
-		const route = this.supervisor.route(module);
-		if (!route.owned) return;
-		const reason = outcome.cause === "parseFailed" ? "refusal" : "outage";
-		this.store.blockRebind(module, route.providerId, reason, this.processOf(route.providerId));
+		scheduleHoldRebind.call(this.rebindContext, module, outcome);
 	}
 
-	/** This daemon and the provider process answering now, so a restart of either reads as new. */
 	private processOf(providerId: string): string {
-		return `${this.epoch}:${this.supervisor.incarnationOf(providerId) ?? "none"}`;
+		return scheduleProcessOf.call(this.rebindContext, providerId);
 	}
 
-	/**
-	 * Parses again the modules that bind against a surface this batch moved, so their references see
-	 * it without an edit of their own. One hop, and a further one only from a dependent whose own
-	 * surface moved. Past `REBIND_CAP` parses, the rest wait for the pump, as does every module with
-	 * only an unresolved use of a moved name, so a common name never holds the gate.
-	 *
-	 * Caller-held, inside `applyBatch`.
-	 */
 	private async rebindDependents(
 		outcomes: readonly IndexOutcome[],
 		shouldAbandon?: () => boolean,
 	): Promise<IndexOutcome[]> {
-		const rebound: IndexOutcome[] = [];
-		// Where each module the batch wrote stands in its order of writes.
-		const order = new Map<string, number>();
-		for (const [at, outcome] of outcomes.entries()) if (outcome.action !== "skipped") order.set(outcome.module, at);
-		const answered = new Map<string, SurfaceChange>();
-		const owed: string[] = [];
-		let budget = REBIND_CAP;
-		// A move stays pending until the run settles, so a module parsed again would report it again.
-		const asked = new Map<string, string>();
-		const unasked = (found: ReadonlyMap<string, SurfaceChange>) => {
-			const left = new Map([...found].filter(([module, change]) => asked.get(module) !== JSON.stringify(change)));
-			for (const [module, change] of left) asked.set(module, JSON.stringify(change));
-			return left;
-		};
-		let moves = unasked(this.pendingMoves(outcomes.map((outcome) => outcome.module)));
-		while (moves.size > 0) {
-			const { modules, unbound, complete } = await this.dependentsOf(moves);
-			if (complete) for (const [module, change] of moves) answered.set(module, change);
-			else this.retryResolving(moves.keys());
-			for (const module of unbound) {
-				if (!this.readAfter(module, moves, order) && this.rebindable(module)) owed.push(module);
-			}
-			const hop: string[] = [];
-			for (const module of modules) {
-				if (this.readAfter(module, moves, order) || !this.rebindable(module)) continue;
-				if (budget === 0 || shouldAbandon?.() === true) {
-					owed.push(module);
-					continue;
-				}
-				budget--;
-				let outcome: IndexOutcome;
-				try {
-					outcome = await this.parseAndStore(module, this.store.depthOf(module) ?? undefined);
-				} catch (error) {
-					outcome = this.faultOutcome(module, error);
-				}
-				order.set(module, outcomes.length + rebound.length);
-				rebound.push(outcome);
-				// Owed until a parse is admitted: an outage or a refusal waits, never dropped.
-				if (UNREAD.has(outcome.cause)) this.holdRebind(module, outcome);
-				hop.push(module);
-			}
-			moves = unasked(this.pendingMoves(hop));
-		}
-		this.settle(answered, owed);
-		return rebound;
+		return scheduleRebindDependents.call(this.rebindContext, outcomes, shouldAbandon);
 	}
 
-	/**
-	 * Leaves to the pump every module binding against these moves, but for one written after the last
-	 * of them, which read them already. A move `stale` does not name counts as before everything. A
-	 * resolver fault leaves the moves pending for a later run.
-	 */
 	private async oweDependents(
 		moves: ReadonlyMap<string, SurfaceChange>,
 		order: ReadonlyMap<string, number>,
 		stale: (module: string, change: SurfaceChange) => boolean = () => true,
 	): Promise<void> {
-		const { modules, unbound, complete } = await this.dependentsOf(moves);
-		const owed = [...modules, ...unbound].filter(
-			(module) => !this.readAfter(module, moves, order, stale) && this.rebindable(module),
-		);
-		if (!complete) this.retryResolving(moves.keys());
-		else if (this.resolvePending.size === 0) this.resolveRetryMs = RESOLVE_RETRY_MS;
-		this.settle(complete ? moves : new Map(), owed);
+		return scheduleOweDependents.call(this.rebindContext, moves, order, stale);
 	}
 
-	/**
-	 * Whether a module was written after every move here, so it bound against each of them. A move no
-	 * road here wrote, or one that could have left no stale parse behind, came first.
-	 */
 	private readAfter(
 		module: string,
 		moves: ReadonlyMap<string, SurfaceChange>,
 		order: ReadonlyMap<string, number>,
 		stale: (module: string, change: SurfaceChange) => boolean = () => true,
 	): boolean {
-		const written = order.get(module);
-		if (written === undefined) return false;
-		return [...moves].every(([moved, change]) => written > (stale(moved, change) ? (order.get(moved) ?? -1) : -1));
+		return scheduleReadAfter.call(this.rebindContext, module, moves, order, stale);
 	}
 
-	/**
-	 * Who binds against these moved surfaces: modules importing one, now or when they were written,
-	 * and modules bound into what one held. `unbound` holds the rest with an unresolved use of a name
-	 * one gained or lost, which only may bind now. Each in module order. Incomplete when a resolver
-	 * fault left an importer unread. A module is never its own dependent, and only that: one whose
-	 * projection moved with another's still reads that other's surface.
-	 */
 	private async dependentsOf(
 		moves: ReadonlyMap<string, SurfaceChange>,
 	): Promise<{ modules: string[]; unbound: string[]; complete: boolean }> {
-		if (moves.size === 0) return { modules: [], unbound: [], complete: true };
-		const { importersOf, complete } = await this.importIndex();
-		const changes = [...moves.values()];
-		// The import index answers where specifiers land now; a module that went, or that a specifier
-		// stopped landing on, is still named by the import written against it.
-		const landedOn = grouped(this.store.importersLandedOn([...moves.keys()]), (row) => row.target);
-		// A scope it joined or left is read by every import landing on that scope.
-		const scopeReaders = grouped(
-			this.store.importersOfScopes(changes.flatMap((change) => change.scopes)),
-			(row) => row.scope,
-		);
-		const unboundUsers = grouped(
-			this.store.modulesWithUnbound(changes.flatMap((change) => [...change.gained, ...change.lost])),
-			(row) => row.name,
-		);
-		const importers = new Set<string>();
-		const unbound = new Set<string>();
-		for (const [moved, change] of moves) {
-			const reached = new Set([
-				...importersOf(moved),
-				...(landedOn.get(moved) ?? []),
-				...change.scopes.flatMap((scope) => scopeReaders.get(scope) ?? []),
-				...change.boundInto,
-			]);
-			reached.delete(moved);
-			for (const module of reached) importers.add(module);
-			for (const name of [...change.gained, ...change.lost])
-				for (const module of unboundUsers.get(name) ?? []) if (module !== moved) unbound.add(module);
-		}
-		return {
-			modules: [...importers].sort(),
-			unbound: [...unbound].filter((module) => !importers.has(module)).sort(),
-			complete,
-		};
+		return scheduleDependentsOf.call(this.rebindContext, moves);
 	}
 
-	/**
-	 * Who imports a module, by where specifiers land now. The index is read whole once per resolution
-	 * generation, then each written module's own rows alone, so a run of writes costs their imports,
-	 * not the workspace's each time. A module whose resolution faulted is read again next time.
-	 */
 	private async importIndex(): Promise<{ importersOf: (target: string) => ReadonlySet<string>; complete: boolean }> {
-		const generation = this.caches.resolutions.stats().generation;
-		let index = this.importers;
-		if (index?.generation !== generation) {
-			const building: ImporterIndex = { generation, byTarget: new Map(), targetsOf: new Map(), ready: undefined };
-			building.ready = this.readWhole(building);
-			index = building;
-			this.importers = building;
-		}
-		// Another road's build of this generation is read only once it is whole.
-		await index.ready;
-		const unread: string[] = [];
-		for (const module of [...this.importsWritten]) {
-			this.importsWritten.delete(module);
-			if (!(await this.readImports(index, module, this.store.importsIn(module)))) unread.push(module);
-		}
-		for (const module of unread) this.importsWritten.add(module);
-		const read = index;
-		// Resolutions turned over, or another road replaced the index, while this read ran: what it
-		// found answers an older generation.
-		const current = this.importers === index && this.caches.resolutions.stats().generation === generation;
-		return {
-			importersOf: (target) => read.byTarget.get(target) ?? new Set(),
-			complete: unread.length === 0 && current,
-		};
+		return scheduleImportIndex.call(this.rebindContext);
 	}
 
-	/** Reads every module's import rows into a fresh index; one the resolver faulted on is read again. */
 	private async readWhole(index: ImporterIndex): Promise<void> {
-		// Cleared before the read: a module written while it runs is read again next time.
-		this.importsWritten.clear();
-		const specifiers = new Map<string, Array<{ specifier: string; resolutionMode?: ResolutionMode }>>();
-		for (const { module, ...occurrence } of this.store.importEdges()) {
-			const listed = specifiers.get(module);
-			if (listed === undefined) specifiers.set(module, [occurrence]);
-			else listed.push(occurrence);
-		}
-		for (const [module, listed] of specifiers) {
-			if (!(await this.readImports(index, module, listed))) this.importsWritten.add(module);
-		}
+		return scheduleReadWhole.call(this.rebindContext, index);
 	}
 
-	/**
-	 * Replaces one module's entries with where its specifiers land now, through the cached resolver.
-	 * A resolver fault is no answer, so the module keeps what it held and answers false.
-	 */
 	private async readImports(
 		index: ImporterIndex,
 		module: string,
 		occurrences: ReadonlyArray<{ specifier: string; resolutionMode?: ResolutionMode | undefined }>,
 	): Promise<boolean> {
-		const targets = new Set<string>();
-		const distinct = new Map(
-			occurrences.map((each) => [resolutionKey(each.specifier, each.resolutionMode), each] as const),
-		);
-		for (const { specifier, resolutionMode } of distinct.values()) {
-			let landed: ImportResolution;
-			try {
-				landed = await this.resolve(module, specifier, resolutionMode);
-			} catch {
-				return false;
-			}
-			const target = importTarget(landed);
-			if (target !== null) targets.add(target.module);
-		}
-		for (const target of index.targetsOf.get(module) ?? []) index.byTarget.get(target)?.delete(module);
-		index.targetsOf.set(module, targets);
-		for (const target of targets) {
-			const importers = index.byTarget.get(target);
-			if (importers === undefined) index.byTarget.set(target, new Set([module]));
-			else importers.add(module);
-		}
-		return true;
+		return scheduleReadImports.call(this.rebindContext, index, module, occurrences);
 	}
 
-	/**
-	 * Whether a module is worth parsing again for its bindings. An outline holds no references to
-	 * rebind, and a refused parse is about the file's own bytes.
-	 */
 	private rebindable(module: string): boolean {
-		const depth = this.store.depthOf(module);
-		return depth !== null && depth !== "outline" && this.store.parseFailureOf(module) === null;
+		return scheduleRebindable.call(this.rebindContext, module);
 	}
 
-	/** One owed module; a failure holds it for its provider or its own file. */
 	private async rebindOne(module: string): Promise<void> {
-		await this.alone(async () => {
-			const depth = this.store.depthOf(module);
-			// Nothing held has nothing to rebind.
-			if (depth === null) {
-				this.store.clearRebind(module);
-				return;
-			}
-			// An outline pays its debt with the full parse it owes anyway.
-			if (depth === "outline") this.depths.set(module, "full");
-			let outcome: IndexOutcome;
-			try {
-				// A restarted daemon's pump can run before any scan computed the scope.
-				if (this.scope === null) await this.currentScope();
-				outcome = await this.indexOne(module, depth === "outline" ? "full" : depth);
-			} catch (error) {
-				outcome = this.faultOutcome(module, error);
-			}
-			if (UNREAD.has(outcome.cause)) this.holdRebind(module, outcome);
-			// Gone or no longer owned: nothing left for a later run to pay.
-			else if (outcome.action !== "indexed") this.store.clearRebind(module);
-		});
-		// A dependent whose own surface moved owes its dependents one more hop.
-		await this.oweDependents(this.pendingMoves([module]), new Map([[module, 0]]));
+		return scheduleRebindOne.call(this.rebindContext, module);
 	}
 
 	/**

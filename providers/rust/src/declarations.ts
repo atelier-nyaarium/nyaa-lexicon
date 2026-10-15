@@ -2,13 +2,12 @@ import { composeSymbolId, type Declaration, defined, type OffsetRange } from "@n
 import type { Generics, RawDeclaration, RustDescriptor, TypeAnswer } from "./model.js";
 import { Prefixes } from "./prefixes.js";
 import type { RustToken } from "./tokens.js";
+import { isRustTypeKind } from "./vocabulary.js";
 
 ////////////////////////////////
 //  Constants
 
 const LANGUAGE = "rust";
-
-const TYPE_KINDS = new Set(["struct", "enum", "interface", "class"]);
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -127,7 +126,7 @@ export abstract class Declarations extends Prefixes {
 		};
 		this.rawDeclarations.push(raw);
 		const key = descriptorKey(descriptorPath);
-		if (!input.local && TYPE_KINDS.has(input.kind) && !this.typesByPath.has(key)) this.typesByPath.set(key, raw);
+		if (!input.local && isRustTypeKind(input.kind) && !this.typesByPath.has(key)) this.typesByPath.set(key, raw);
 		this.declarationNameTokens.add(input.nameIndex);
 		if (this.depth !== "outline" && input.typeDisplay !== undefined) {
 			this.typeAnswers.set(symbolId, {

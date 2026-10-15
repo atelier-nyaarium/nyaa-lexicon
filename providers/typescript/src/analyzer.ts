@@ -35,8 +35,7 @@ import { exportedAs, makeImportEdits } from "./import-edits.js";
 import { aliasEdgeSpan } from "./imports.js";
 import type { TypeScriptProject, TypeScriptStore, TypeScriptValue } from "./module.js";
 import { makeMoveEdits } from "./move.js";
-import type { ModuleResolver, SpecifierRenderer } from "./project.js";
-import { groupOf, optionsForFile, overlaidSystem, runsAsEsm, runtimeOf, toModule } from "./project.js";
+import { groupOf, optionsForFile, overlaidSystem, runsAsEsm, runtimeOf } from "./project.js";
 import {
 	contextualPropertySymbol,
 	destructuredElement,
@@ -45,6 +44,8 @@ import {
 	memberRoute,
 } from "./references.js";
 import { makeRenameEdits } from "./rename.js";
+import type { ModuleResolver, SpecifierRenderer } from "./specifier-resolution.js";
+import { toModule } from "./specifier-resolution.js";
 import { extractSurfaceFile } from "./surface.js";
 import { parseDiagnostics } from "./syntax.js";
 

@@ -2,21 +2,14 @@ import {
 	type CommentSpan,
 	type CursorMark,
 	type Diagnostic,
+	decodeEscapedLiteral,
 	defined,
 	type OffsetRange,
 	type Position,
 	type Range,
 	SourceCursor,
 } from "@nyaa-lexicon/protocol";
-import {
-	isDigit,
-	isHexDigit,
-	isHorizontalWhitespace,
-	isIdentifierPart,
-	isIdentifierStart,
-	isNumberPart,
-	isOctalDigit,
-} from "./characters.js";
+import { isDigit, isHorizontalWhitespace, isIdentifierPart, isIdentifierStart, isNumberPart } from "./characters.js";
 import { resolveConditionals } from "./conditionals.js";
 import { tokenRange, widened } from "./tokenWalk.js";
 
@@ -111,64 +104,11 @@ function diagnostic(path: string, message: string, start: CursorMark, end: Curso
 	};
 }
 
-/** Up to `limit` characters `accepts` takes, read one at a time. */
-function readUpTo(cursor: SourceCursor, limit: number, accepts: (character: string) => boolean): string {
-	let digits = "";
-	let guard = -1;
-	while (digits.length < limit && accepts(cursor.peek())) {
-		if (cursor.offset <= guard) throw new Error("C escape scan failed to advance");
-		guard = cursor.offset;
-		digits += cursor.next();
-	}
-	return digits;
-}
-
-/** The character a numeric escape names, or its spelling when none can. */
-function codePointOf(value: number, spelling: string): string {
-	return Number.isInteger(value) && value >= 0 && value <= 0x10ffff ? String.fromCodePoint(value) : spelling;
-}
-
-function decodeEscape(cursor: SourceCursor): string {
-	const escaped = cursor.next();
-	if (escaped === "") return "";
-	const simple: Record<string, string> = {
-		a: "\x07",
-		b: "\b",
-		e: "\x1b",
-		f: "\f",
-		n: "\n",
-		r: "\r",
-		t: "\t",
-		v: "\v",
-		"\\": "\\",
-		'"': '"',
-		"'": "'",
-		"?": "?",
-	};
-	const replacement = simple[escaped];
-	if (replacement !== undefined) return replacement;
-	if (escaped === "x") {
-		const digits = cursor.readWhile(isHexDigit);
-		return digits === "" ? "\\x" : codePointOf(Number.parseInt(digits, 16), `\\x${digits}`);
-	}
-	if (escaped === "u" || escaped === "U") {
-		const width = escaped === "u" ? 4 : 8;
-		const digits = readUpTo(cursor, width, isHexDigit);
-		const spelling = `\\${escaped}${digits}`;
-		return digits.length === width ? codePointOf(Number.parseInt(digits, 16), spelling) : spelling;
-	}
-	if (isOctalDigit(escaped)) {
-		const digits = escaped + readUpTo(cursor, 2, isOctalDigit);
-		return codePointOf(Number.parseInt(digits, 8), `\\${digits}`);
-	}
-	return `\\${escaped}`;
-}
-
 function readQuoted(
 	cursor: SourceCursor,
 	quote: "'" | '"',
 ): { value: string; terminated: boolean; splices: OffsetRange[] } {
-	const value: string[] = [];
+	let value = "";
 	const splices: OffsetRange[] = [];
 	let terminated = false;
 	let guard = -1;
@@ -186,13 +126,13 @@ function readQuoted(
 			continue;
 		}
 		if (cursor.peek() === "\\") {
-			cursor.next();
-			value.push(decodeEscape(cursor));
+			value += cursor.next();
+			if (cursor.good()) value += cursor.next();
 			continue;
 		}
-		value.push(cursor.next());
+		value += cursor.next();
 	}
-	return { value: value.join(""), terminated, splices };
+	return { value: decodeEscapedLiteral(value, "c"), terminated, splices };
 }
 
 ////////////////////////////////

@@ -4,6 +4,7 @@ import { defined, type Literal, type Reference } from "@nyaa-lexicon/protocol";
 import type { ImportBinding, RawDeclaration, RawReference } from "./model.js";
 import { numericValue } from "./numbers.js";
 import { isKeyword, isNameToken, isValueToken, type RustToken, TYPE_WORDS, tokenAt } from "./tokens.js";
+import { isRustTypeKind } from "./vocabulary.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -41,8 +42,6 @@ const ASSIGNMENT_OPERATORS = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "
 
 /** Kinds whose references belong to their container. */
 const HELD_KINDS = new Set(["variable", "field", "constant"]);
-
-const TYPE_KINDS = new Set(["struct", "enum", "interface", "class"]);
 
 /** Previous tokens after which a name is a type. */
 const TYPE_LEADS = new Set([":", "->", "as", "impl", "dyn", "where"]);
@@ -125,7 +124,7 @@ class ReferenceScan {
 		this.used = this.paintRanges(marks.useRanges);
 		this.typeNames = new Set(
 			this.rawDeclarations
-				.filter((raw) => TYPE_KINDS.has(raw.declaration.kind))
+				.filter((raw) => isRustTypeKind(raw.declaration.kind))
 				.map((raw) => raw.declaration.name),
 		);
 	}

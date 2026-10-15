@@ -76,8 +76,8 @@ answers, before spawning the install's own, since a daemon that cannot be asked 
 hold its workspace until it lingered out.
 
 A daemon already asked to stop by someone else answers `refactorStatus` with its own `the daemon
-is stopping` rather than a transaction verdict, `code: "stopping"` on the frame from protocol
-3.6.0 on; `retire` reads the code first, falling back to the message matching that text exactly
+is stopping` rather than a transaction verdict, `code: "stopping"` on the frame; `retire` reads the
+code first, falling back to the message matching that text exactly
 (never as a substring, so the longer lock-lost refusal below never reads the same way) for a
 daemon too old to send one. Either way this is the same bounded wait `ensureDaemon` gives a
 clearing lock, never a refusal to retire; a delete that claims the slot while it waits is waited

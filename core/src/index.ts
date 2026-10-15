@@ -8,18 +8,20 @@ export { type Clock, systemClock, type TimerHandle } from "./clock.js";
 export { type DaemonOptions, type Handle, type RunningDaemon, type StartOutcome, startDaemon } from "./daemon.js";
 export { DAEMON_USAGE, type DaemonArgs, type ParsedDaemonArgs, parseDaemonArgs } from "./daemonArgs.js";
 export {
-	type Collector,
-	type CollectorOptions,
 	type Diagnostics,
 	DiagnosticsSchema,
-	HEAP_SNAPSHOT_ENV,
 	type Incident,
 	listReports,
-	pruneReports,
 	type ReadDiagnostics,
 	type ReportSummary,
 	readDiagnostics,
 	type SampleContext,
+} from "./diagnosticFiles.js";
+export {
+	type Collector,
+	type CollectorOptions,
+	HEAP_SNAPSHOT_ENV,
+	pruneReports,
 	startDiagnostics,
 } from "./diagnostics.js";
 export { createDispatch, daemonHandlers } from "./dispatch.js";

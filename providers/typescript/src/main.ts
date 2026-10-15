@@ -46,20 +46,22 @@ import {
 import { isValidTargetModule } from "./move.js";
 import {
 	type LoadedProject,
-	landingOf,
 	loadProject,
-	type ModuleResolver,
 	optionsForFile,
 	overlaidSystem,
 	projectFingerprint,
 	readableSystem,
+	runtimeOf,
+} from "./project.js";
+import {
+	landingOf,
+	type ModuleResolver,
 	renderSpecifier,
 	resolveSpecifier,
-	runtimeOf,
 	type SpecifierRenderer,
 	syntaxMode,
 	toModule,
-} from "./project.js";
+} from "./specifier-resolution.js";
 import { extractSurfaceFile } from "./surface.js";
 
 ////////////////////////////////

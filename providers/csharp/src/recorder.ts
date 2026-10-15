@@ -11,8 +11,8 @@ import {
 	segmentKey,
 	type TypeSpan,
 } from "./model.js";
+import type { CsharpParseContext } from "./parseContext.js";
 import type { Token } from "./tokens.js";
-import { CsharpTypeReader } from "./typeReader.js";
 import { isIdentifier, MODIFIERS, SKIPPED_WORDS, syntaxValue } from "./words.js";
 
 ////////////////////////////////
@@ -31,80 +31,164 @@ function uniqueStrings(values: string[]): string[] {
 ////////////////////////////////
 //  Classes
 
-export abstract class CsharpRecorder extends CsharpTypeReader {
-	protected readonly rawDeclarations: RawDeclaration[] = [];
+export class CsharpRecorder {
+	constructor(private readonly context: CsharpParseContext) {}
 
-	protected readonly rawImports: CsharpImport[] = [];
+	private readonly rawDeclarationsValue: RawDeclaration[] = [];
+
+	private readonly rawImportsValue: CsharpImport[] = [];
 
 	/** The declaration whose body holds each using directive not at the compilation unit. */
-	protected readonly importScopes = new Map<CsharpImport, RawDeclaration>();
+	private readonly importScopes = new Map<CsharpImport, RawDeclaration>();
 
-	protected readonly typeTokenIndices = new Set<number>();
+	private readonly typeTokenIndices = new Set<number>();
 
-	protected readonly roleByOffset = new Map<number, Reference["role"]>();
+	private readonly roleByOffset = new Map<number, Reference["role"]>();
 
-	protected readonly ignoredOffsets = new Set<number>();
+	private readonly ignoredOffsets = new Set<number>();
 
-	protected readonly namespaceNames = new Set<string>();
+	private readonly namespaceNames = new Set<string>();
 
-	protected readonly attributeNames = new Set<string>();
+	private readonly attributeNames = new Set<string>();
 
-	protected readonly baseListNames = new Set<string>();
+	private readonly baseListNames = new Set<string>();
 
-	protected readonly accessorBodyRanges: Array<{ start: number; end: number }> = [];
+	private readonly accessorBodyRanges: Array<{ start: number; end: number }> = [];
 
 	private readonly scopeCounts = new Map<RawDeclaration | undefined, Map<string, number>>();
 
-	protected skippedFileScope = false;
+	private skippedFileScope = false;
 
 	private localOrdinal = 0;
 
-	protected addTypeReference(start: number, end: number, role: Reference["role"]): void {
+	public addTypeReference(start: number, end: number, role: Reference["role"]): void {
 		if (end < start) return;
 		for (let current = start; current <= end; current++) {
-			const item = this.token(current);
+			const item = this.context.tokenStream.token(current);
 			if (isIdentifier(item) && !SKIPPED_WORDS.has(syntaxValue(item) as string)) {
-				this.typeTokenIndices.add(current);
-				this.roleByOffset.set(item.startOffset, role);
+				this.markTypeToken(current);
+				this.markRole(item.startOffset, role);
 			}
 		}
 	}
 
 	/** Gives each of a statement's declarators its own span, when there are several. */
-	protected ownDeclarators(declared: readonly Declarator[]): void {
+	public ownDeclarators(declared: readonly Declarator[]): void {
 		if (declared.length < 2) return;
 		for (const item of declared)
 			item.declaration.declarator = {
-				start: this.token(item.start) as Token,
-				end: this.token(item.end) as Token,
+				start: this.context.tokenStream.token(item.start) as Token,
+				end: this.context.tokenStream.token(item.end) as Token,
 			};
 	}
 
 	/** The type of a literal initializing the name at `nameIndex`. */
-	protected initializerType(end: number, nameIndex: number): string | undefined {
-		const equals = this.nextSignificant(nameIndex + 1, end);
-		if (this.value(equals) !== "=") return undefined;
-		return this.token(this.nextSignificant(equals + 1, end))?.literalType;
+	public initializerType(end: number, nameIndex: number): string | undefined {
+		const equals = this.context.tokenStream.nextSignificant(nameIndex + 1, end);
+		if (this.context.tokenStream.value(equals) !== "=") return undefined;
+		return this.context.tokenStream.token(this.context.tokenStream.nextSignificant(equals + 1, end))?.literalType;
 	}
 
 	/** Element names are not references; an outline keeps only the declared type. */
-	protected recordTypeSpan(span: TypeSpan | undefined, declaration: RawDeclaration): void {
+	public recordTypeSpan(span: TypeSpan | undefined, declaration: RawDeclaration): void {
 		if (span === undefined) return;
-		const leading = this.leadingType(span);
-		if (declaration.typeText === undefined) Object.assign(declaration, this.typeFacts(leading));
-		if (this.outline) return;
+		const leading = this.context.typeReader.leadingType(span);
+		if (declaration.typeText === undefined) Object.assign(declaration, this.context.typeReader.typeFacts(leading));
+		if (this.context.outline) return;
 		// Explicit interface qualifier.
-		const qualifier = leading === undefined ? undefined : this.typeShape(leading.shape.end, span.end);
+		const qualifier =
+			leading === undefined ? undefined : this.context.typeReader.typeShape(leading.shape.end, span.end);
 		const elementNames = new Set([...(leading?.shape.elementNames ?? []), ...(qualifier?.elementNames ?? [])]);
 		for (let current = span.start; current < span.end; current++) {
-			const item = this.token(current);
+			const item = this.context.tokenStream.token(current);
 			if (!isIdentifier(item) || MODIFIERS.has(syntaxValue(item) as string)) continue;
-			if (elementNames.has(current)) this.ignoredOffsets.add(item.startOffset);
-			else this.typeTokenIndices.add(current);
+			if (elementNames.has(current)) this.ignore(item.startOffset);
+			else this.markTypeToken(current);
 		}
 	}
 
-	protected addDeclaration(input: RawDeclarationInput): RawDeclaration {
+	public declarations(): readonly RawDeclaration[] {
+		return this.rawDeclarationsValue;
+	}
+
+	public imports(): readonly CsharpImport[] {
+		return this.rawImportsValue;
+	}
+
+	public importScope(directive: CsharpImport): RawDeclaration | undefined {
+		return this.importScopes.get(directive);
+	}
+
+	public addImport(directive: CsharpImport, scope: RawDeclaration | undefined): void {
+		this.rawImportsValue.push(directive);
+		if (scope !== undefined) this.importScopes.set(directive, scope);
+	}
+
+	public markTypeToken(index: number): void {
+		this.typeTokenIndices.add(index);
+	}
+
+	public hasTypeToken(index: number): boolean {
+		return this.typeTokenIndices.has(index);
+	}
+
+	public markRole(offset: number, role: Reference["role"]): void {
+		this.roleByOffset.set(offset, role);
+	}
+
+	public roleAt(offset: number): Reference["role"] | undefined {
+		return this.roleByOffset.get(offset);
+	}
+
+	public ignore(offset: number): void {
+		this.ignoredOffsets.add(offset);
+	}
+
+	public isIgnored(offset: number): boolean {
+		return this.ignoredOffsets.has(offset);
+	}
+
+	public markNamespaceName(name: string): void {
+		this.namespaceNames.add(name);
+	}
+
+	public namespaceNamesSnapshot(): string[] {
+		return [...this.namespaceNames];
+	}
+
+	public markAttributeName(name: string): void {
+		this.attributeNames.add(name);
+	}
+
+	public attributeNamesSnapshot(): Set<string> {
+		return new Set(this.attributeNames);
+	}
+
+	public markBaseListName(name: string): void {
+		this.baseListNames.add(name);
+	}
+
+	public baseListNamesSnapshot(): Set<string> {
+		return new Set(this.baseListNames);
+	}
+
+	public addAccessorBodyRange(range: { start: number; end: number }): void {
+		this.accessorBodyRanges.push(range);
+	}
+
+	public accessorBodyRangesSnapshot(): readonly { start: number; end: number }[] {
+		return this.accessorBodyRanges;
+	}
+
+	public markSkippedFileScope(): void {
+		this.skippedFileScope = true;
+	}
+
+	public hasSkippedFileScope(): boolean {
+		return this.skippedFileScope;
+	}
+
+	public addDeclaration(input: RawDeclarationInput): RawDeclaration {
 		const key = `${input.kind}:${input.name}`;
 		const counts = this.scopeCounts.get(input.parent);
 		const scope = counts ?? new Map<string, number>();
@@ -152,23 +236,23 @@ export abstract class CsharpRecorder extends CsharpTypeReader {
 				...(input.languageKind === "extension" && ordinal > 0 ? { disambiguator: String(ordinal) } : {}),
 			};
 		}
-		this.rawDeclarations.push(raw);
+		this.rawDeclarationsValue.push(raw);
 		return raw;
 	}
 
-	protected pathFor(raw: RawDeclaration, cache: Map<RawDeclaration, string>): string {
+	public pathFor(raw: RawDeclaration, cache: Map<RawDeclaration, string>): string {
 		const cached = cache.get(raw);
 		if (cached !== undefined) return cached;
 		const id =
 			raw.localOrdinal === undefined
 				? composeSymbolId({
 						language: LANGUAGE,
-						module: this.module,
+						module: this.context.module,
 						descriptors: this.descriptorPath(raw, cache),
 					})
 				: composeSymbolId({
 						language: LANGUAGE,
-						module: this.module,
+						module: this.context.module,
 						descriptors: [],
 						local: raw.localOrdinal,
 					});
@@ -183,7 +267,7 @@ export abstract class CsharpRecorder extends CsharpTypeReader {
 				...qualifierDescriptors(
 					raw.qualifier,
 					(name) =>
-						this.rawDeclarations.find(
+						this.rawDeclarationsValue.find(
 							(item) =>
 								item.name === name &&
 								(item.kind === "class" ||
@@ -197,7 +281,7 @@ export abstract class CsharpRecorder extends CsharpTypeReader {
 		return path;
 	}
 
-	protected namespaceName(raw: RawDeclaration | undefined): string {
+	public namespaceName(raw: RawDeclaration | undefined): string {
 		const names: string[] = [];
 		let current = raw;
 		while (current !== undefined) {
@@ -208,7 +292,7 @@ export abstract class CsharpRecorder extends CsharpTypeReader {
 	}
 
 	/** The types around a declaration, each with its type parameters, by `segmentKey`. */
-	protected typePath(raw: RawDeclaration | undefined, arity: ReadonlyMap<RawDeclaration, number>): string {
+	public typePath(raw: RawDeclaration | undefined, arity: ReadonlyMap<RawDeclaration, number>): string {
 		const segments: Segment[] = [];
 		let current = raw;
 		while (current !== undefined) {

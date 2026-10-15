@@ -1,11 +1,9 @@
 // Owns GDScript declaration extraction and declaration spans.
 
-import { defined, type Metrics, type Position, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
+import { defined, type Position, type Range, type TextCoordinates } from "@nyaa-lexicon/protocol";
 import {
 	type Blocks,
-	blockHeader,
 	bodyEndLine,
-	hasCode,
 	headerEndLine,
 	inBracket,
 	indentedBodyEnd,
@@ -17,6 +15,8 @@ import {
 import { HeaderReader, type HeaderRequest, type HeaderStop } from "./header.js";
 import { withMemberInsertLines } from "./layout.js";
 import { annotationLine, basenameOf, declarationStart, parseLineHeads } from "./line-syntax.js";
+import { metricsForDeclaration } from "./metrics.js";
+import { parameterList, parameterNameAndEnd, parameterSegments } from "./parameters.js";
 import type {
 	ActiveFunctionHeader,
 	ComposeSymbolId,
@@ -239,79 +239,6 @@ function makeImplicitClass(
 		visibility: visibilityOf(name, false),
 		...defined({ signature }),
 	};
-}
-
-interface ParameterSegment {
-	start: number;
-	end: number;
-}
-
-function parameterSegments(tokens: ReferenceToken[], start: number, end: number): ParameterSegment[] {
-	const segments: ParameterSegment[] = [];
-	let segmentStart = start;
-	let parentheses = 0;
-	let brackets = 0;
-	let braces = 0;
-	for (let index = start; index < end; index++) {
-		const value = (tokens[index] as ReferenceToken).value;
-		if (value === "(") parentheses++;
-		else if (value === ")") parentheses--;
-		else if (value === "[") brackets++;
-		else if (value === "]") brackets--;
-		else if (value === "{") braces++;
-		else if (value === "}") braces--;
-		else if (value === "," && parentheses === 0 && brackets === 0 && braces === 0) {
-			segments.push({ start: segmentStart, end: index });
-			segmentStart = index + 1;
-		}
-	}
-	segments.push({ start: segmentStart, end });
-	return segments;
-}
-
-/** The parentheses right after a function's name. */
-function parameterList(
-	lexed: LexedSource,
-	declaration: Pick<DeclarationFact, "selectionRange">,
-): { open: number; close: number } | undefined {
-	const { start } = declaration.selectionRange;
-	const name = tokenAt(lexed, start.line, start.character);
-	if (name < 0) return undefined;
-	const open = nextReferenceToken(lexed.tokens, name);
-	if (open < 0 || (lexed.tokens[open] as ReferenceToken).value !== "(") return undefined;
-	const close = matchingReferenceToken(lexed.tokens, open, "(", ")");
-	return close < 0 ? undefined : { open, close };
-}
-
-function parameterNameAndEnd(
-	tokens: ReferenceToken[],
-	segment: ParameterSegment,
-): { name: ReferenceToken; end: ReferenceToken } | null {
-	let name: ReferenceToken | null = null;
-	let defaultIndex = segment.end;
-	let parentheses = 0;
-	let brackets = 0;
-	let braces = 0;
-	for (let index = segment.start; index < segment.end; index++) {
-		const token = tokens[index] as ReferenceToken;
-		const value = token.value;
-		if (name === null && token.kind === "identifier") name = token;
-		if (value === "(") parentheses++;
-		else if (value === ")") parentheses--;
-		else if (value === "[") brackets++;
-		else if (value === "]") brackets--;
-		else if (value === "{") braces++;
-		else if (value === "}") braces--;
-		else if (parentheses === 0 && brackets === 0 && braces === 0 && (value === "=" || value === ":=")) {
-			defaultIndex = index;
-			break;
-		}
-	}
-	if (name === null) return null;
-	let endIndex = defaultIndex - 1;
-	while (endIndex >= segment.start && (tokens[endIndex] as ReferenceToken).kind === "newline") endIndex--;
-	const end = tokens[endIndex] as ReferenceToken | undefined;
-	return end === undefined ? null : { name, end };
 }
 
 function addFunctionParameters(
@@ -702,113 +629,6 @@ export function extractGdscript(script: ParsedScript): DeclarationFact[] {
 			: { ...declaration, range: rangeTo(coordinates, declaration.range.start, lineEnd(end)) };
 	});
 	return withMemberInsertLines(spanned, blocks, coordinates);
-}
-
-function functionParameterCount(lexed: LexedSource, declaration: DeclarationFact): number {
-	const list = parameterList(lexed, declaration);
-	if (list === undefined) return 0;
-	return parameterSegments(lexed.tokens, list.open + 1, list.close).filter((segment) =>
-		hasCode(lexed.tokens, segment),
-	).length;
-}
-
-const CONTROL_WORDS = new Set(["if", "elif", "else", "for", "while", "match"]);
-
-/** A body line: its indent and the code tokens starting on it. */
-interface BodyRow {
-	indent: number;
-	tokens: ReferenceToken[];
-}
-
-/** Lines in `start..end` holding code. */
-function bodyRows(lexed: LexedSource, start: number, end: number): BodyRow[] {
-	const rows: BodyRow[] = [];
-	for (let line = start; line < end; line++) {
-		if (isIgnorable(lexed, line)) continue;
-		rows.push({
-			indent: (lexed.lines[line] as SourceLine).indent,
-			tokens: (lexed.lineTokens[line] ?? []).map((index) => lexed.tokens[index] as ReferenceToken),
-		});
-	}
-	return rows;
-}
-
-function wordCount(tokens: ReferenceToken[], words: readonly string[]): number {
-	return tokens.filter((token) => token.kind === "identifier" && words.includes(token.value)).length;
-}
-
-function controlHeader(tokens: ReferenceToken[]): string | null {
-	const first = tokens[0];
-	return first?.kind === "identifier" && CONTROL_WORDS.has(first.value) ? first.value : null;
-}
-
-function hasTopLevelColon(tokens: ReferenceToken[]): boolean {
-	let depth = 0;
-	for (const { value } of tokens) {
-		if (value === "(" || value === "[" || value === "{") depth++;
-		else if (value === ")" || value === "]" || value === "}") depth--;
-		else if (value === ":" && depth === 0) return true;
-	}
-	return false;
-}
-
-function matchArmCount(rows: readonly BodyRow[]): number {
-	const matches: { indent: number; armIndent: number | null }[] = [];
-	let count = 0;
-	for (const { indent, tokens } of rows) {
-		while (matches.length > 0 && indent <= (matches[matches.length - 1] as { indent: number }).indent)
-			matches.pop();
-		const current = matches[matches.length - 1];
-		if (current !== undefined && indent > current.indent) {
-			if (current.armIndent === null) current.armIndent = indent;
-			if (indent === current.armIndent && hasTopLevelColon(tokens)) count++;
-		}
-		if (controlHeader(tokens) === "match") matches.push({ indent, armIndent: null });
-	}
-	return count;
-}
-
-function bodyMetrics(rows: readonly BodyRow[]): Pick<Metrics, "nesting" | "branches"> {
-	const controls: number[] = [];
-	let nesting = 0;
-	let branches = matchArmCount(rows);
-	for (const { indent, tokens } of rows) {
-		while (controls.length > 0 && indent <= (controls[controls.length - 1] as number)) controls.pop();
-		nesting = Math.max(nesting, controls.length);
-		const header = controlHeader(tokens);
-		if (header !== null) {
-			if (header !== "match") branches++;
-			controls.push(indent);
-			continue;
-		}
-		// A conditional expression, then each short-circuit.
-		if (wordCount(tokens, ["if"]) > 0 && wordCount(tokens, ["else"]) > 0) branches++;
-		branches += wordCount(tokens, ["and", "or"]);
-	}
-	return { nesting, branches: branches + 1 };
-}
-
-function metricsForDeclaration(blocks: Blocks, declaration: DeclarationFact): Metrics {
-	const metrics: Metrics = {
-		lines: declaration.range.end.line - declaration.range.start.line + 1,
-	};
-	if (declaration.kind !== "method") return metrics;
-	const lexed = blocks.lexed;
-	const headerEnd = headerEndLine(blocks, declaration);
-	const end = bodyEndLine(blocks, declaration);
-	const lastBodyLine = Math.max(headerEnd, end - 1);
-	metrics.lines = lastBodyLine - declaration.range.start.line + 1;
-	metrics.parameters = functionParameterCount(lexed, declaration);
-	const header = blockHeader(blocks, declaration);
-	if (header !== undefined && hasCode(lexed.tokens, header.inline)) {
-		const { start, end: stop } = header.inline;
-		const tokens = lexed.tokens.slice(start, stop).filter((token) => token.kind !== "newline");
-		Object.assign(metrics, bodyMetrics([{ indent: header.statement.indent, tokens }]));
-		return metrics;
-	}
-	const rows = bodyRows(lexed, headerEnd + 1, end);
-	if (rows.length > 0) Object.assign(metrics, bodyMetrics(rows));
-	return metrics;
 }
 
 function extractGeneric(script: ParsedScript): DeclarationFact[] {

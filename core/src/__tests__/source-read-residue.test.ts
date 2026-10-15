@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { basename, join } from "node:path";
 import { readSwept, sourceFiles } from "@nyaa-lexicon/protocol";
 import { calleeOf, callsIn, lineOf, parseSource, reachedCalls } from "@nyaa-lexicon/protocol/ast";
+import ts from "typescript";
 
 /**
  * Holds sourceRead.ts as the only module that reads a workspace file for indexing.
@@ -20,7 +21,6 @@ const ADAPTERS_SRC = join(import.meta.dirname, "..", "..", "..", "adapters");
 const OWNERS = new Set([
 	"sourceRead.ts",
 	"daemonLock.ts",
-	"diagnostics.ts",
 	"drift.ts",
 	"fileScope.ts",
 	"fingerprint.ts",
@@ -51,6 +51,18 @@ const READERS = new Set([
 	"openAsBlob",
 ]);
 
+/** Diagnostics read their own report files in these functions. */
+const DIAGNOSTIC_READERS = new Set(["readDiagnostics", "summarizeReport"]);
+
+function enclosingFunctionName(node: ts.Node): string | undefined {
+	for (let at = node.parent; at !== undefined; at = at.parent) {
+		if ((ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) && at.name && ts.isIdentifier(at.name)) {
+			return at.name.text;
+		}
+	}
+	return undefined;
+}
+
 ////////////////////////////////
 //  Tests
 
@@ -65,6 +77,21 @@ describe("one module reads workspace files", () => {
 		expect(files.map((file) => basename(file))).toContain("sourceRead.ts");
 	});
 
+	it("finds the diagnostic readers by declaration", () => {
+		const readers: string[] = [];
+		for (const file of files) {
+			const text = readSwept(file);
+			if (text === null) continue;
+			const parsed = parseSource(file, text);
+			for (const { call, name } of reachedCalls(parsed.source, FS_MODULES, READERS)) {
+				const owner = enclosingFunctionName(call);
+				if (owner !== undefined && DIAGNOSTIC_READERS.has(owner)) readers.push(`${owner}:${name}`);
+			}
+		}
+
+		expect(readers.sort()).toEqual(["readDiagnostics:readFileSync", "summarizeReport:readFileSync"]);
+	});
+
 	it("has no second reader outside the owner and the state readers", () => {
 		const offenders: string[] = [];
 		for (const file of files) {
@@ -73,6 +100,7 @@ describe("one module reads workspace files", () => {
 			if (text === null) continue;
 			const parsed = parseSource(file, text);
 			for (const { call, name } of reachedCalls(parsed.source, FS_MODULES, READERS)) {
+				if (DIAGNOSTIC_READERS.has(enclosingFunctionName(call) ?? "")) continue;
 				offenders.push(`${basename(file)}:${lineOf(parsed, call)} ${name}`);
 			}
 			// Bun's file reader arrives on a global rather than through an import.

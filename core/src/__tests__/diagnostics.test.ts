@@ -14,18 +14,15 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type PlatformEnv, processMemory, stateRoot, storePaths } from "@nyaa-lexicon/client";
+import { DiagnosticsSchema, listReports, readDiagnostics, type SampleContext } from "../diagnosticFiles";
 import {
 	type CollectorOptions,
-	DiagnosticsSchema,
 	HEAP_SNAPSHOT_ENV,
 	heapSnapshotWanted,
 	INCIDENT_RING,
-	listReports,
 	makeReportsDir,
 	pruneReports,
-	readDiagnostics,
 	SAMPLE_RING,
-	type SampleContext,
 	SELF_REPORT,
 	startDiagnostics,
 	writeHeapSnapshot,

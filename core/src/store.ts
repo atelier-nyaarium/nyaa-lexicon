@@ -11,10 +11,8 @@ import path from "node:path";
 import { storePaths } from "@nyaa-lexicon/client";
 import {
 	type AllList,
-	type ContentCounts,
 	type ContentTotals,
 	commentFactId,
-	compileExclusion,
 	type Declaration,
 	type DocRegion,
 	declarationFactId,
@@ -27,24 +25,19 @@ import {
 	type FileNote,
 	type FileNotes,
 	type FileRole,
-	FileRoleSchema,
 	hashContent,
 	type Import,
-	type ImportEdge,
 	type ImportResolution,
 	type IndexDepth,
 	importFactId,
 	type Landing,
 	type Literal,
 	literalFactId,
-	type Metrics,
 	type ModuleExclusion,
 	type OriginEdge,
 	ownerStarts,
-	parseFactId,
 	type Range,
 	type Reference,
-	type ReferenceOrigin,
 	type ReferenceRole,
 	type ResolutionMode,
 	referenceFactId,
@@ -60,42 +53,37 @@ import {
 	type StoredLiteral,
 	type StoredReference,
 } from "@nyaa-lexicon/protocol";
-import { z } from "zod";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
 import { Database } from "./database.js";
-import {
-	type EffectiveExport,
-	type ScopeLanding,
-	scopeKey,
-	scopeOfKey,
-	settleProjections,
-} from "./exportProjection.js";
+import { type EffectiveExport, type ScopeLanding, scopeKey, settleProjections } from "./exportProjection.js";
 import { admitFacts, spanKey } from "./factAdmission.js";
-import type { GeneratedReason, GeneratedVerdict } from "./fileScope.js";
-import {
-	installRevisionTriggers,
-	JOURNAL_DDL,
-	JOURNAL_TABLE_NAMES,
-	JOURNAL_TABLES,
-	type JournalTable,
-	keptBlobs,
-} from "./journalSchema.js";
+import type { GeneratedVerdict } from "./fileScope.js";
+import { installRevisionTriggers, JOURNAL_DDL, JOURNAL_TABLES, keptBlobs } from "./journalSchema.js";
 import { stampSeen } from "./lastSeen.js";
-import { insertNote, NoteRows } from "./noteRows.js";
+import { NoteRows } from "./noteRows.js";
 import type { PatternDigest } from "./patternDigest.js";
 import { ProjectIndexMarker } from "./projectIndexState.js";
 import { normalizeDocText } from "./proseText.js";
-import { insertRelation, orderedPair, RELATION_TABLES, RelationRows } from "./relationRows.js";
+import { RELATION_TABLES, RelationRows } from "./relationRows.js";
 import type { ScopeFilter } from "./scope.js";
-import { compileSearchRegex, searchTerm } from "./search.js";
+import { StoreFactQueries } from "./storeFactQueries.js";
+import {
+	columnExists,
+	liftAppliedRebinds,
+	restoreKnowledge,
+	salvageKnowledge,
+	tableExists,
+} from "./storeMigrations.js";
+import { StoreProjectionQueries } from "./storeProjections.js";
+import type { NoteRow, RoleRow } from "./storeRows.js";
+import { roleFromRow, rowToNote } from "./storeRows.js";
+import { FACT_TABLES, NOTES_TABLE, SCHEMA } from "./storeSchema.js";
+import { StoreSearchQueries } from "./storeSearchQueries.js";
 import {
 	joinNoteFields,
 	KNOWLEDGE_SCHEMA,
-	KNOWLEDGE_TABLES,
 	KnowledgeSubjects,
-	normalizeSalvaged,
-	restoreSubjects,
 	SWEEP_START,
 	type SweepCursor,
 	type SweepPass,
@@ -154,6 +142,8 @@ export interface DocFilter {
 	module?: string | undefined;
 	hidden: HiddenModules;
 }
+
+type EntryPoint = { module: string } & ({ how: "main"; symbolId: string } | { how: Exclude<EntryHow, "main"> });
 
 export interface ReplaceFileInput {
 	module: string;
@@ -265,429 +255,11 @@ interface PassState {
 	lost: BatchFailed | null;
 }
 
-/** Added in place, so IF NOT EXISTS. */
-const NOTES_TABLE = `
--- A provider's warnings and info for a file, replaced with its facts.
-CREATE TABLE IF NOT EXISTS notes (
-  module    TEXT NOT NULL,
-  ordinal   INTEGER NOT NULL,
-  severity  TEXT NOT NULL CHECK (severity IN ('warning', 'info')),
-  message   TEXT NOT NULL,
-  path      TEXT,
-  startLine INTEGER,
-  startChar INTEGER,
-  endLine   INTEGER,
-  endChar   INTEGER,
-  PRIMARY KEY (module, ordinal)
-);
-CREATE INDEX IF NOT EXISTS notes_module ON notes(module);
-`;
-
-// Every range is stored whole. Keeping only a start meant the index could say where something was
-// and never what text it occupied, which is the difference between navigating and editing.
-const SCHEMA = `
--- Facts about the index itself rather than about any file. Free-form because the alternative is a
--- schema bump for every new thing worth remembering, and these are all short strings.
-CREATE TABLE meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
-CREATE TABLE files (
-  module      TEXT PRIMARY KEY,
-  runtime     TEXT CHECK (runtime IN ('esm', 'cjs')),
-  contentHash TEXT NOT NULL,
-  indexedAt   INTEGER NOT NULL,
-  -- Outline rows require a full parse.
-  depth       TEXT NOT NULL DEFAULT 'full',
-  -- What the owning provider declared its files are; NULL on a row written before that was kept.
-  content     TEXT,
-  -- Provider id, or NULL when absent.
-  provider    TEXT,
-  -- Git's word: 'yes', 'no' or 'unknown' with its reason; NULL on a row written without asking.
-  generated        TEXT,
-  generatedReason  TEXT,
-  -- library, entry, or unknown; NULL when no role was reported.
-  role             TEXT,
-  roleHow          TEXT,
-  roleSymbolId     TEXT,
-  roleReason       TEXT,
-  -- Digest of what other modules can bind to; NULL on a row written before it was kept.
-  surface          TEXT,
-  -- 1 when the parse carried export facts; 0 is unknown coverage.
-  exportsKnown     INTEGER NOT NULL DEFAULT 0,
-  -- The star-export list as JSON; NULL when the language has none.
-  allList          TEXT
-);
-CREATE INDEX files_indexed_at ON files(indexedAt);
-CREATE INDEX files_depth ON files(depth);
-CREATE INDEX files_role ON files(role);
-
--- Parse failures persist until a successful parse or file removal.
-CREATE TABLE parse_failures (
-  module   TEXT PRIMARY KEY,
-  reason   TEXT NOT NULL,
-  failedAt INTEGER NOT NULL
-);
-${NOTES_TABLE}
--- What a write moved of a module's surface, until the road that wrote it has made durable the
--- dependents it owes. Written with the facts, so a daemon stopping first leaves the question here.
-CREATE TABLE surface_moves (
-  module    TEXT PRIMARY KEY,
-  -- JSON arrays: names gained, names lost, modules bound into what the module held.
-  gained     TEXT NOT NULL,
-  lost       TEXT NOT NULL,
-  boundInto  TEXT NOT NULL,
-  -- 1 when the module held a surface before, so a provider may still hold a parse of what it was.
-  heldBefore INTEGER NOT NULL CHECK (heldBefore IN (0, 1)),
-  -- JSON: the scope keys the module contributed to before or after.
-  scopes     TEXT NOT NULL DEFAULT '[]'
-);
-
--- Modules owed a parse because a move left their bindings stale, until a parse reading references
--- is admitted.
-CREATE TABLE rebind_owed (
-  module     TEXT PRIMARY KEY,
-  -- Null when payable now; else the provider a failed parse waits on.
-  blockedBy  TEXT,
-  -- 'outage' waits for that provider to answer again; 'refusal' for its own file or a restart.
-  blockedFor TEXT CHECK (blockedFor IN ('outage', 'refusal')),
-  -- The daemon and provider process that failed it; either restarting retries it.
-  blockedIn  TEXT
-);
--- Every admitted parse asks for its provider's outages, so the ask is an indexed read.
-CREATE INDEX rebind_owed_blocked ON rebind_owed(blockedBy, blockedFor);
-
-CREATE TABLE symbols (
-  symbolId    TEXT PRIMARY KEY,
-  -- Not the same thing as symbolId, deliberately. A symbol id names the SYMBOL and survives edits;
-  -- a fact id names this row as it currently reads, so a changed signature is a changed fact.
-  factId      TEXT NOT NULL,
-  module      TEXT NOT NULL,
-  name        TEXT NOT NULL,
-  kind        TEXT NOT NULL,
-  visibility  TEXT NOT NULL,
-  exported    INTEGER,
-  containerId TEXT,
-  signature   TEXT,
-  startLine   INTEGER NOT NULL,
-  startChar   INTEGER NOT NULL,
-  endLine     INTEGER NOT NULL,
-  endChar     INTEGER NOT NULL,
-  -- The name alone. A rename rewrites this span, never the declaration's whole range.
-  nameLine    INTEGER NOT NULL,
-  nameChar    INTEGER NOT NULL,
-  nameEndLine INTEGER NOT NULL,
-  nameEndChar INTEGER NOT NULL,
-  -- 1 when the name is nowhere in the source and the name columns hold the range start instead.
-  synthesizedName INTEGER,
-  -- All nullable. A metric a provider does not compute is absent, never zero, because zero
-  -- branches and "not measured" are different facts.
-  mLines      INTEGER,
-  mParameters INTEGER,
-  mNesting    INTEGER,
-  mBranches   INTEGER,
-  -- Evidence that a vanished declaration reappeared elsewhere; null before a full parse.
-  patternDigest   TEXT,
-  patternCoverage TEXT,
-  -- Null reads the kind.
-  contains        TEXT CHECK (contains IN ('members', 'locals')),
-  -- Null: the provider named no safe insertion line.
-  memberInsertLine INTEGER,
-  -- The provider's own word for the form, such as an extension or a trait method.
-  languageKind    TEXT
-);
-CREATE INDEX symbols_module ON symbols(module);
-CREATE INDEX symbols_name ON symbols(name);
-CREATE INDEX symbols_fact ON symbols(factId);
-
-CREATE TABLE refs (
-  factId     TEXT NOT NULL,
-  module     TEXT NOT NULL,
-  name       TEXT NOT NULL,
-  role       TEXT NOT NULL,
-  targetId   TEXT,
-  fromId     TEXT,
-  -- Null when the provider did not say.
-  qualified  INTEGER,
-  provenance TEXT NOT NULL,
-  startLine  INTEGER NOT NULL,
-  startChar  INTEGER NOT NULL,
-  endLine    INTEGER NOT NULL,
-  endChar    INTEGER NOT NULL,
-  -- The binding the use resolves through, when proved: declaration or import, with the import
-  -- edge's span and the member path as JSON.
-  originKind      TEXT,
-  originStartLine INTEGER,
-  originStartChar INTEGER,
-  originEndLine   INTEGER,
-  originEndChar   INTEGER,
-  originPath      TEXT
-);
-CREATE INDEX refs_module ON refs(module);
--- The whole reason for a database: this turns reverse lookup into an indexed read.
-CREATE INDEX refs_target ON refs(targetId);
-CREATE INDEX refs_from ON refs(fromId);
-CREATE INDEX refs_name ON refs(name);
--- Not unique, here or on any fact table. Two identical statements in one file are the same fact
--- written twice, so one id for both is the right answer rather than a collision to design around.
-CREATE INDEX refs_fact ON refs(factId);
-CREATE INDEX refs_origin ON refs(module, originStartLine, originStartChar);
-
--- One row per import EDGE, not one per statement: a name, a namespace, a wildcard, an injection or a
--- side effect. The edge column holds the whole protocol edge as JSON; the others are what queries read.
-CREATE TABLE imports (
-  factId     TEXT NOT NULL,
-  module     TEXT NOT NULL,
-  specifier  TEXT NOT NULL,
-  kind       TEXT NOT NULL,
-  loads      TEXT CHECK (loads IN ('static', 'deferred')),
-  elided     INTEGER CHECK (elided IN (0, 1)),
-  -- The source name and its span; null when the edge names no export.
-  name       TEXT,
-  startLine  INTEGER,
-  startChar  INTEGER,
-  endLine    INTEGER,
-  endChar    INTEGER,
-  -- The local binding and its span; null when the edge writes none.
-  localName      TEXT,
-  localStartLine INTEGER,
-  localStartChar INTEGER,
-  localEndLine   INTEGER,
-  localEndChar   INTEGER,
-  -- The edge as written, which export targets and reference origins name it by.
-  spanStartLine INTEGER NOT NULL,
-  spanStartChar INTEGER NOT NULL,
-  spanEndLine   INTEGER NOT NULL,
-  spanEndChar   INTEGER NOT NULL,
-  bindsLocally  INTEGER NOT NULL,
-  typeOnly      INTEGER NOT NULL DEFAULT 0,
-  edge          TEXT NOT NULL,
-  -- Where the specifier landed when written, as JSON; null when unresolved or external.
-  landing       TEXT,
-  -- A module landing's module.
-  target        TEXT,
-  -- A scope landing's key, JSON [providerId, kind, scopeId].
-  targetScope   TEXT,
-  -- An external resolution's indexable module: reachability only, never a landing.
-  surfaceTarget TEXT
-);
-CREATE INDEX imports_module ON imports(module);
-CREATE INDEX imports_name ON imports(name);
-CREATE INDEX imports_local ON imports(localName);
-CREATE INDEX imports_fact ON imports(factId);
-CREATE INDEX imports_target ON imports(target);
-CREATE INDEX imports_scope ON imports(targetScope);
-CREATE INDEX imports_surface ON imports(surfaceTarget);
-CREATE INDEX imports_span ON imports(module, spanStartLine, spanStartChar);
-
--- One row per export edge. The edge column holds the protocol edge as JSON; the others are what queries read.
-CREATE TABLE exports (
-  factId         TEXT NOT NULL,
-  module         TEXT NOT NULL,
-  form           TEXT NOT NULL,
-  name           TEXT,
-  targetKind     TEXT NOT NULL,
-  targetSymbolId TEXT,
-  edge           TEXT NOT NULL
-);
-CREATE INDEX exports_module ON exports(module);
-CREATE INDEX exports_name ON exports(name);
-CREATE INDEX exports_target ON exports(targetSymbolId);
-CREATE INDEX exports_fact ON exports(factId);
-
--- Each scope a module contributes to, empty contributions included, so a scope with no member is
--- told apart from one nothing admitted.
-CREATE TABLE scope_contributions (
-  module   TEXT NOT NULL,
-  scopeKey TEXT NOT NULL,
-  PRIMARY KEY (module, scopeKey)
-);
-CREATE INDEX scope_contributions_key ON scope_contributions(scopeKey);
-
-CREATE TABLE scope_members (
-  module   TEXT NOT NULL,
-  scopeKey TEXT NOT NULL,
-  memberId TEXT NOT NULL
-);
-CREATE INDEX scope_members_module ON scope_members(module);
-CREATE INDEX scope_members_key ON scope_members(scopeKey);
-
--- Advanced by every write a contributor makes, so a plan can tell its scope moved.
-CREATE TABLE scope_generations (
-  scopeKey   TEXT PRIMARY KEY,
-  generation INTEGER NOT NULL
-);
-
--- Each module's effective exports, from the export resolver: a name, its meaning and origin as
--- JSON, and its certainty. A null name is an unnamed route, such as unknown coverage.
-CREATE TABLE effective_exports (
-  module         TEXT NOT NULL,
-  name           TEXT,
-  meaning        TEXT,
-  origin         TEXT NOT NULL,
-  originSymbolId TEXT,
-  certainty      TEXT NOT NULL
-);
-CREATE INDEX effective_exports_module ON effective_exports(module);
-CREATE INDEX effective_exports_origin ON effective_exports(originSymbolId);
-
--- Modules whose effective exports a write may have moved, until settlement recomputes them.
--- heldBefore: the index held the module before the write that owed it.
-CREATE TABLE projection_debt (
-  module     TEXT PRIMARY KEY,
-  heldBefore INTEGER NOT NULL
-);
-
--- Text as facts rather than as bytes. A name inside a string is not a reference, so without this
--- table an __all__ entry and a connect("thing_happened") argument are in no index anywhere.
-CREATE TABLE literals (
-  factId      TEXT NOT NULL,
-  module      TEXT NOT NULL,
-  kind        TEXT NOT NULL,
-  value       TEXT NOT NULL,
-  -- Kept apart from value so a range query is arithmetic rather than a string comparison, where
-  -- "10" sorts before "9" and 0xFF never equals 255.
-  number      REAL,
-  containerId TEXT,
-  startLine   INTEGER NOT NULL,
-  startChar   INTEGER NOT NULL,
-  endLine     INTEGER NOT NULL,
-  endChar     INTEGER NOT NULL
-);
-CREATE INDEX literals_module ON literals(module);
-CREATE INDEX literals_value ON literals(value);
-CREATE INDEX literals_number ON literals(number);
-CREATE INDEX literals_fact ON literals(factId);
-CREATE INDEX literals_container ON literals(containerId);
-
--- Doctrine lives here. Every other fact table answers "what is this code", and this one answers
--- "what did someone say about it", which was the one question that always fell back to grep.
-CREATE TABLE comments (
-  factId     TEXT NOT NULL,
-  module     TEXT NOT NULL,
-  -- Verbatim, markers included, because a citation quoting a comment must quote the file.
-  raw        TEXT NOT NULL,
-  -- Markers and wrapping removed. Search runs over this so a phrase split across a line break is
-  -- still one phrase; display and citations use raw.
-  normalized TEXT NOT NULL,
-  form       TEXT NOT NULL,
-  placement  TEXT NOT NULL,
-  -- Null when the module is the container: a header, a licence, a banner. Absence is the answer
-  -- here rather than a missing one, which is why nothing guesses a symbol to put in it.
-  anchorId   TEXT,
-  startLine  INTEGER NOT NULL,
-  startChar  INTEGER NOT NULL,
-  endLine    INTEGER NOT NULL,
-  endChar    INTEGER NOT NULL
-);
-CREATE INDEX comments_module ON comments(module);
-CREATE INDEX comments_anchor ON comments(anchorId);
-CREATE INDEX comments_fact ON comments(factId);
-CREATE INDEX comments_form ON comments(form);
-
--- A document's prose. Separate from comments because the answer shape differs: a comment result
--- names the symbol it documents, and a doc result names the heading PATH it was found under.
-CREATE TABLE docs (
-  factId     TEXT NOT NULL,
-  module     TEXT NOT NULL,
-  -- Verbatim, so a citation quoting a region quotes the file.
-  raw        TEXT NOT NULL,
-  -- Whitespace collapsed. Search runs over this so a sentence wrapped across lines is one phrase.
-  normalized TEXT NOT NULL,
-  -- Constrained, because rowToDoc reads any non-zero as true and would launder a bad write.
-  fenced     INTEGER NOT NULL CHECK (fenced IN (0, 1)),
-  -- Null before the first heading and in a document with none, which is the region belonging to the
-  -- module. Absence is the answer, not a missing one, so nothing guesses a heading to put here.
-  anchorId   TEXT,
-  startLine  INTEGER NOT NULL,
-  startChar  INTEGER NOT NULL,
-  endLine    INTEGER NOT NULL,
-  endChar    INTEGER NOT NULL
-);
-CREATE INDEX docs_module ON docs(module);
-CREATE INDEX docs_anchor ON docs(anchorId);
-CREATE INDEX docs_fact ON docs(factId);
-
--- The knowledge layer's tables, keyed by subject and owned by subjects.ts.
-${KNOWLEDGE_SCHEMA}
-
-${RELATION_TABLES}
-
-${JOURNAL_DDL}
-`;
-
-/**
- * Every table a file contributes rows to, keyed by module.
- *
- * One list, because replaceFile and forgetFile must clear exactly the same set. Written out
- * separately, a table added to one and not the other leaves a deleted file's rows in the index
- * forever, still answering searches.
- */
-const FACT_TABLES = [
-	"refs",
-	"symbols",
-	"imports",
-	"exports",
-	"scope_contributions",
-	"scope_members",
-	"literals",
-	"comments",
-	"docs",
-	"notes",
-] as const;
-
-/** Classifies use vs mention. */
-const ROLE_CLASS: Readonly<Record<ReferenceRole, "use" | "mention">> = {
-	call: "use",
-	read: "use",
-	write: "use",
-	extends: "use",
-	implements: "use",
-	instantiate: "use",
-	typeUse: "use",
-	import: "mention",
-	export: "mention",
-};
-
-/** SQL form of ROLE_CLASS. */
-function useSql(alias: string): string {
-	const uses = Object.entries(ROLE_CLASS).filter(([, kind]) => kind === "use");
-	return `${alias}.role IN (${uses.map(([role]) => `'${role}'`).join(", ")})`;
-}
-
 /** Meta key for store compatibility. */
 const COMPATIBILITY_KEY = "storeCompatibility";
 
 /** Meta key: when notes began. */
 const NOTES_SINCE_KEY = "notesSince";
-
-interface NoteRow {
-	severity: "warning" | "info";
-	message: string;
-	path: string | null;
-	startLine: number | null;
-	startChar: number | null;
-	endLine: number | null;
-	endChar: number | null;
-}
-
-function rowToNote(row: NoteRow): FileNote {
-	const ranged = row.startLine !== null && row.startChar !== null && row.endLine !== null && row.endChar !== null;
-	return {
-		severity: row.severity,
-		message: row.message,
-		...(row.path === null ? {} : { path: row.path }),
-		...(ranged
-			? {
-					range: {
-						start: { line: row.startLine as number, character: row.startChar as number },
-						end: { line: row.endLine as number, character: row.endChar as number },
-					},
-				}
-			: {}),
-	};
-}
 
 /** Makes a held rebind debt payable again. */
 const UNBLOCK = "UPDATE rebind_owed SET blockedBy = NULL, blockedFor = NULL, blockedIn = NULL";
@@ -716,253 +288,6 @@ const LEDGER_KEY = "refactorLedger";
 
 /** When describe answers seeded notes. */
 const NOTES_SEEDED_KEY = "notesSeeded";
-
-/** 1 for a module under a test directory or named as a test, so a name search lists source first. */
-const TEST_PATH = `(module LIKE '%__tests__/%' OR module LIKE '%.test.%' OR module LIKE '%.spec.%'
- OR module LIKE 'test/%' OR module LIKE '%/test/%' OR module LIKE 'tests/%' OR module LIKE '%/tests/%')`;
-
-/** 1 for a module under a dependency directory, so a name search lists the workspace's own code first. */
-const VENDOR_PATH = `(module LIKE 'node_modules/%' OR module LIKE '%/node_modules/%' OR module LIKE 'vendor/%'
- OR module LIKE '%/vendor/%' OR module LIKE 'third_party/%' OR module LIKE '%/third_party/%')`;
-
-/** Preserve journals needed to recover disk edits. */
-const SALVAGED_JOURNAL: readonly string[] = JOURNAL_TABLE_NAMES.filter((table) => {
-	const entry: JournalTable = JOURNAL_TABLES[table];
-	return entry.salvage;
-});
-
-/** Tables a rebuild carries across, because no re-index can regenerate what is in them. */
-const SALVAGED_TABLES: readonly string[] = [...KNOWLEDGE_TABLES, ...SALVAGED_JOURNAL];
-
-/** What survives a rebuild, keyed by table so a new salvaged table needs no new field. */
-type SalvagedKnowledge = Record<string, Array<Record<string, unknown>>>;
-
-/**
- * Read by column NAME, so rows written under an older schema carry what they have.
- *
- * An unreadable knowledge table salvages empty. An unreadable JOURNAL table throws: its rows describe
- * files already on disk, and dropping them strands a half-applied refactor.
- */
-function salvageKnowledge(db: Database): SalvagedKnowledge {
-	const exists = new Set(
-		(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(
-			(row) => row.name,
-		),
-	);
-
-	const salvaged: SalvagedKnowledge = {};
-	for (const table of SALVAGED_TABLES) {
-		if (!exists.has(table)) {
-			salvaged[table] = [];
-			continue;
-		}
-		try {
-			salvaged[table] = db.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
-		} catch (error) {
-			if (SALVAGED_JOURNAL.includes(table)) {
-				throw new Error(
-					`the refactor journal in ${table} could not be read, so an unfinished refactor cannot be recovered: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-				);
-			}
-			salvaged[table] = [];
-		}
-	}
-	return salvaged;
-}
-
-/** How many rows found no subject, since another holds their address, and how many were unreadable. */
-interface RestoreReport {
-	unplaced: number;
-	dropped: number;
-}
-
-/** The salvaged knowledge put back: subjects as they were, every other row through the one placement. */
-function restoreKnowledge(
-	db: Database,
-	salvaged: SalvagedKnowledge,
-	now: number,
-	seededAt: number | null,
-): RestoreReport {
-	const rows = normalizeSalvaged(salvaged, now, seededAt);
-	restoreSubjects(db, rows.subjects);
-	const subjects = new KnowledgeSubjects(db);
-	let unplaced = 0;
-
-	// A note's links and proposal follow the note to wherever it was placed.
-	const notePlaced = new Map<string, string>();
-	for (const row of rows.notes) {
-		const placement = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
-		if (!placement.placed || notePlaced.has(placement.subjectId)) {
-			unplaced++;
-			continue;
-		}
-		if (row.subjectId !== null) notePlaced.set(row.subjectId, placement.subjectId);
-		insertNote(db, placement.subjectId, row, false);
-	}
-	const link = db.prepare(
-		`INSERT OR IGNORE INTO symbol_note_links (subjectId, proposed, written, target, targetDigest)
-		 VALUES (?, ?, ?, ?, ?)`,
-	);
-	for (const row of rows.noteLinks) {
-		const subjectId = notePlaced.get(row.subjectId);
-		if (subjectId === undefined) continue;
-		link.run(subjectId, row.proposed ? 1 : 0, row.written, row.target, row.targetDigest);
-	}
-	const proposal = db.prepare(
-		`INSERT OR IGNORE INTO symbol_note_proposals (subjectId, baseRevision, text, proposedBy, proposedAt)
-		 VALUES (?, ?, ?, ?, ?)`,
-	);
-	for (const row of rows.noteProposals) {
-		const subjectId = notePlaced.get(row.subjectId);
-		if (subjectId === undefined) continue;
-		proposal.run(subjectId, row.baseRevision, row.text, row.proposedBy, row.proposedAt);
-	}
-
-	// Both ends placed, or the relation stays out: two subjects never merge.
-	for (const row of rows.relations) {
-		const one = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
-		const other = subjects.placeRow({ subjectId: row.otherId, recordedAs: row.otherAs, at: now });
-		if (!one.placed || !other.placed || one.subjectId === other.subjectId) {
-			unplaced++;
-			continue;
-		}
-		const [first] = orderedPair(one.subjectId, other.subjectId);
-		const swapped = first !== one.subjectId;
-		insertRelation(db, swapped ? other.subjectId : one.subjectId, swapped ? one.subjectId : other.subjectId, {
-			...row,
-			recordedAs: swapped ? row.otherAs : row.recordedAs,
-			otherAs: swapped ? row.recordedAs : row.otherAs,
-			digest: swapped ? row.otherDigest : row.digest,
-			otherDigest: swapped ? row.digest : row.otherDigest,
-		});
-	}
-
-	for (const table of SALVAGED_JOURNAL) restoreByColumn(db, table, salvaged[table] ?? []);
-	return { unplaced, dropped: rows.dropped };
-}
-
-/**
- * Restores rows into whatever columns the new schema shares with the old ones.
- *
- * Column-wise rather than positional, so adding a journal column keeps old rows loadable instead
- * of dropping every one of them the first time the schema moves. A row losing a column it no
- * longer has is fine; a row losing its whole transaction is not. A column added later must allow
- * NULL or carry a default, or every older row fails the open.
- */
-function restoreByColumn(db: Database, table: string, rows: Array<Record<string, unknown>>): void {
-	if (rows.length === 0) return;
-
-	const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
-		(column) => column.name,
-	);
-
-	for (const row of rows) {
-		const present = columns.filter((column) => row[column] !== undefined);
-		if (present.length === 0) continue;
-		const statement = db.prepare(
-			`INSERT OR REPLACE INTO ${table} (${present.join(", ")}) VALUES (${present.map(() => "?").join(", ")})`,
-		);
-		statement.run(...present.map((column) => row[column] as string | number | null | Uint8Array));
-	}
-}
-
-/**
- * Copies applied rebinds from open legacy plans into the current journal. Returns how many entries
- * could not be preserved.
- */
-function liftAppliedRebinds(db: Database): number {
-	const steps = db
-		.prepare(
-			`SELECT s.transactionId, s.stepNo, s.plan FROM refactor_steps s
-			 JOIN refactor_transactions t ON t.id = s.transactionId
-			 WHERE t.state = 'open' AND s.plan IS NOT NULL`,
-		)
-		.all() as Array<{ transactionId: string; stepNo: number; plan: string }>;
-	const insert = db.prepare(
-		`INSERT INTO refactor_rebinds
-		 (transactionId, stepNo, ordinal, subjectId, fromSymbolId, toSymbolId,
-		  priorFrom, priorEvidence, priorBoundAt, priorState, priorOrphanedAt)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	);
-	let dropped = 0;
-	for (const step of steps) {
-		let applied: unknown;
-		try {
-			const parsed = LegacyPlanSchema.safeParse(JSON.parse(step.plan));
-			applied = parsed.success ? parsed.data.rebind?.applied : undefined;
-		} catch {
-			continue;
-		}
-		if (!Array.isArray(applied)) continue;
-		// A step named each move once; a repeat would read as moved on when the newer one retraced
-		// first, so it is lifted once, and a repeat disagreeing on the prior state is not a record.
-		const seen = new Map<string, string>();
-		applied.forEach((entry, ordinal) => {
-			const move = liftedMove(entry);
-			if (move === null) {
-				dropped++;
-				return;
-			}
-			const key = JSON.stringify([move.subjectId, move.from, move.to]);
-			const whole = JSON.stringify(move);
-			const earlier = seen.get(key);
-			if (earlier !== undefined) {
-				if (earlier !== whole) dropped++;
-				return;
-			}
-			seen.set(key, whole);
-			try {
-				insert.run(
-					step.transactionId,
-					step.stepNo,
-					ordinal,
-					move.subjectId,
-					move.from,
-					move.to,
-					move.priorFrom,
-					move.priorEvidence,
-					move.priorBoundAt,
-					move.priorState,
-					move.priorOrphanedAt,
-				);
-			} catch {
-				dropped++;
-			}
-		});
-	}
-	return dropped;
-}
-
-interface LiftedMove {
-	subjectId: string;
-	from: string;
-	to: string;
-	priorFrom: string | null;
-	priorEvidence: string;
-	priorBoundAt: number;
-	priorState: string;
-	priorOrphanedAt: number | null;
-}
-
-const LegacyMoveSchema = z.object({
-	subjectId: z.string().min(1),
-	from: z.string().min(1),
-	to: z.string().min(1),
-	priorFrom: z.string().min(1).nullable(),
-	priorEvidence: z.enum(["sameLocator", "journalMove", "journalRename", "batchExactMatch"]),
-	priorBoundAt: z.number().int(),
-	priorState: z.enum(["bound", "orphaned"]),
-	priorOrphanedAt: z.number().int().nullable(),
-});
-const LegacyPlanSchema = z.object({ rebind: z.object({ applied: z.array(z.unknown()).optional() }).optional() });
-
-/** Each field read as the type its column declares, never coerced; the closed values are the CHECKs' to refuse. */
-function liftedMove(entry: unknown): LiftedMove | null {
-	const parsed = LegacyMoveSchema.safeParse(entry);
-	return parsed.success ? parsed.data : null;
-}
 
 /** Null when the table is absent, which is the case on an index written before it existed. */
 function readMeta(db: Database, key: string): string | null {
@@ -1030,15 +355,6 @@ function sweepReportOf(value: unknown): SweepReport | null {
 		ambiguous: report.ambiguous as number,
 		stoppedEarly: report.stoppedEarly as boolean,
 	};
-}
-
-function tableExists(db: Database, name: string): boolean {
-	return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
-}
-
-function columnExists(db: Database, table: string, column: string): boolean {
-	const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-	return columns.some((row) => row.name === column);
 }
 
 /** A declaration another module may bind to, keyed by its id, kind, flavour and exposure. */
@@ -1122,6 +438,9 @@ export class IndexStore {
 	readonly notes: NoteRows;
 	/** Stated relations, feedback counts and discovery state. */
 	readonly relations: RelationRows;
+	private readonly factQueries: StoreFactQueries;
+	private readonly searchQueries: StoreSearchQueries;
+	private readonly projectionQueries: StoreProjectionQueries;
 
 	/** The newest stamp written or held, so no two commits share one. */
 	private newestStamp: number;
@@ -1165,6 +484,10 @@ export class IndexStore {
 		this.subjects = new KnowledgeSubjects(knowledge, (changed) => this.recordKnowledgeWrite(changed));
 		this.notes = new NoteRows(knowledge, (changed) => this.recordKnowledgeWrite(changed));
 		this.relations = new RelationRows(knowledge, (changed) => this.recordKnowledgeWrite(changed));
+		// Fact queries must exist before newestIndexedAt delegates to them.
+		this.factQueries = new StoreFactQueries(db);
+		this.searchQueries = new StoreSearchQueries(db, HiddenModules.none);
+		this.projectionQueries = new StoreProjectionQueries(db);
 		this.newestStamp = this.newestIndexedAt() ?? 0;
 	}
 
@@ -2131,10 +1454,7 @@ export class IndexStore {
 
 	/** The scope keys a module contributes to. */
 	scopeKeysOf(module: string): string[] {
-		const rows = this.db
-			.prepare("SELECT scopeKey FROM scope_contributions WHERE module = ? ORDER BY scopeKey")
-			.all(module) as Array<{ scopeKey: string }>;
-		return rows.map((row) => row.scopeKey);
+		return this.projectionQueries.scopeKeysOf(module);
 	}
 
 	/**
@@ -2203,93 +1523,41 @@ export class IndexStore {
 	}
 
 	fileOf(module: string): { exportsKnown: boolean; allList: AllList | null } | null {
-		const row = this.db.prepare("SELECT exportsKnown, allList FROM files WHERE module = ?").get(module) as
-			| { exportsKnown: number; allList: string | null }
-			| undefined;
-		if (row === undefined) return null;
-		return { exportsKnown: row.exportsKnown === 1, allList: row.allList === null ? null : JSON.parse(row.allList) };
+		return this.projectionQueries.fileOf(module);
 	}
 
 	exportsIn(module: string): StoredExport[] {
-		return this.db.prepare("SELECT * FROM exports WHERE module = ?").all(module).map(rowToExport);
+		return this.projectionQueries.exportsIn(module);
 	}
 
 	/** Export edges whose target is this declaration, or whose name a module exposes it under. */
 	exportsOf(symbolId: string): StoredExport[] {
-		return this.db
-			.prepare(
-				`SELECT * FROM exports WHERE targetSymbolId = ?
-				 UNION
-				 SELECT e.* FROM exports e JOIN effective_exports x ON x.module = e.module AND x.name = e.name
-				 WHERE x.originSymbolId = ?
-				 ORDER BY module`,
-			)
-			.all(symbolId, symbolId)
-			.map(rowToExport);
+		return this.projectionQueries.exportsOf(symbolId);
 	}
 
 	importEdgeAt(module: string, span: Range): StoredImport | null {
-		const row = this.db
-			.prepare(
-				`SELECT * FROM imports WHERE module = ? AND spanStartLine = ? AND spanStartChar = ?
-				 AND spanEndLine = ? AND spanEndChar = ?`,
-			)
-			.get(module, span.start.line, span.start.character, span.end.line, span.end.character);
-		return row === undefined ? null : rowToImport(row);
+		return this.projectionQueries.importEdgeAt(module, span);
 	}
 
 	exportedDeclarations(module: string): Array<{ symbolId: string; name: string }> {
-		return this.db
-			.prepare(
-				`SELECT symbolId, name FROM symbols
-				 WHERE module = ? AND containerId IS NULL AND visibility <> 'local' AND (exported IS NULL OR exported = 1)
-				 ORDER BY startLine, startChar`,
-			)
-			.all(module) as Array<{ symbolId: string; name: string }>;
+		return this.projectionQueries.exportedDeclarations(module);
 	}
 
 	scopeMembers(landing: ScopeLanding): Array<{ symbolId: string; name: string }> | null {
-		const key = scopeKey(landing);
-		if (this.db.prepare("SELECT 1 FROM scope_contributions WHERE scopeKey = ? LIMIT 1").get(key) === undefined) {
-			return null;
-		}
-		return this.db
-			.prepare(
-				`SELECT s.symbolId, s.name FROM scope_members m JOIN symbols s ON s.symbolId = m.memberId
-				 WHERE m.scopeKey = ? ORDER BY s.module, s.startLine`,
-			)
-			.all(key) as Array<{ symbolId: string; name: string }>;
+		return this.projectionQueries.scopeMembers(landing);
 	}
 
 	scopeExports(landing: ScopeLanding): Array<{ module: string; edge: StoredExport }> {
-		return this.db
-			.prepare(
-				`SELECT e.* FROM exports e JOIN scope_contributions c ON c.module = e.module
-				 WHERE c.scopeKey = ? AND json_extract(e.edge, '$.scopeId') = ? ORDER BY e.module`,
-			)
-			.all(scopeKey(landing), landing.scopeId)
-			.map(rowToExport)
-			.map((edge) => ({ module: edge.module, edge }));
+		return this.projectionQueries.scopeExports(landing);
 	}
 
 	/** The effective exports settlement last committed for a module. */
 	effectiveExportsOf(module: string): EffectiveExport[] {
-		const rows = this.db
-			.prepare("SELECT name, meaning, origin, certainty FROM effective_exports WHERE module = ? ORDER BY rowid")
-			.all(module) as Array<{ name: string | null; meaning: string | null; origin: string; certainty: string }>;
-		return rows.map((row) => ({
-			name: row.name,
-			...(row.meaning === null ? {} : { meaning: JSON.parse(row.meaning) }),
-			origin: JSON.parse(row.origin),
-			certainty: JSON.parse(row.certainty),
-		}));
+		return this.projectionQueries.effectiveExportsOf(module);
 	}
 
 	nextProjectionDebt(): string | null {
-		const row = this.db.prepare("SELECT module FROM projection_debt ORDER BY rowid LIMIT 1").get() as
-			| { module: string }
-			| undefined;
-		return row?.module ?? null;
+		return this.projectionQueries.nextProjectionDebt();
 	}
 
 	/**
@@ -2347,24 +1615,7 @@ export class IndexStore {
 		const owe = this.db.prepare(
 			"INSERT INTO projection_debt (module, heldBefore) VALUES (?, 1) ON CONFLICT(module) DO UPDATE SET heldBefore = 1",
 		);
-		for (const forwarder of this.forwardersOf(module, scopes)) owe.run(forwarder);
-	}
-
-	/** Modules whose export edges forward from an import landing on `module` or on one of `scopes`. */
-	private forwardersOf(module: string | null, scopes: readonly string[]): string[] {
-		const rows = this.db
-			.prepare(
-				`SELECT DISTINCT i.module FROM imports i
-				 JOIN exports e ON e.module = i.module AND e.targetKind = 'import'
-				  AND json_extract(e.edge, '$.target.span.start.line') = i.spanStartLine
-				  AND json_extract(e.edge, '$.target.span.start.character') = i.spanStartChar
-				  AND json_extract(e.edge, '$.target.span.end.line') = i.spanEndLine
-				  AND json_extract(e.edge, '$.target.span.end.character') = i.spanEndChar
-				 WHERE i.target = ? OR i.targetScope IN (SELECT value FROM json_each(?))
-				 ORDER BY i.module`,
-			)
-			.all(module, JSON.stringify(scopes)) as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+		for (const forwarder of this.projectionQueries.forwardersOf(module, scopes)) owe.run(forwarder);
 	}
 
 	/** Recomputes every owed projection to a fixpoint; answers the modules whose exports moved. */
@@ -2379,10 +1630,7 @@ export class IndexStore {
 
 	/** The first payable owed module after `after` in module order, or null. */
 	owedRebindAfter(after: string | null): string | null {
-		const row = this.db
-			.prepare("SELECT module FROM rebind_owed WHERE blockedBy IS NULL AND module > ? ORDER BY module LIMIT 1")
-			.get(after ?? "") as { module: string } | undefined;
-		return row?.module ?? null;
+		return this.projectionQueries.owedRebindAfter(after);
 	}
 
 	/** Holds a debt until `providerId` answers again, or `blockedIn` restarts, or the module's own parse lands. */
@@ -2397,20 +1645,12 @@ export class IndexStore {
 
 	/** Debts held back by a failed parse, with who failed them and in which process. */
 	blockedRebinds(): Array<{ module: string; blockedBy: string; blockedFor: string; blockedIn: string }> {
-		return this.db
-			.prepare("SELECT module, blockedBy, blockedFor, blockedIn FROM rebind_owed WHERE blockedBy IS NOT NULL")
-			.all() as Array<{ module: string; blockedBy: string; blockedFor: string; blockedIn: string }>;
+		return this.projectionQueries.blockedRebinds();
 	}
 
 	/** Which of these modules hold a debt their own refusal blocks. */
 	refusalBlocked(modules: readonly string[]): string[] {
-		const rows = this.db
-			.prepare(
-				`SELECT module FROM rebind_owed
-				 WHERE blockedFor = 'refusal' AND module IN (SELECT value FROM json_each(?)) ORDER BY module`,
-			)
-			.all(JSON.stringify(modules)) as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+		return this.projectionQueries.refusalBlocked(modules);
 	}
 
 	/** Makes these held debts payable again. */
@@ -2435,88 +1675,37 @@ export class IndexStore {
 
 	/** Modules with an import that landed on, or reaches through, one of `targets` when written, by target. */
 	importersLandedOn(targets: readonly string[]): Array<{ module: string; target: string }> {
-		if (targets.length === 0) return [];
-		const listed = JSON.stringify(targets);
-		return this.db
-			.prepare(
-				`SELECT DISTINCT module, target FROM imports WHERE target IN (SELECT value FROM json_each(?))
-				 UNION SELECT DISTINCT module, surfaceTarget FROM imports WHERE surfaceTarget IN (SELECT value FROM json_each(?))
-				 ORDER BY module`,
-			)
-			.all(listed, listed) as Array<{ module: string; target: string }>;
+		return this.projectionQueries.importersLandedOn(targets);
 	}
 
 	/** Modules with an import landing on one of these scopes, by scope. */
 	importersOfScopes(keys: readonly string[]): Array<{ module: string; scope: string }> {
-		if (keys.length === 0) return [];
-		return this.db
-			.prepare(
-				`SELECT DISTINCT module, targetScope AS scope FROM imports
-				 WHERE targetScope IN (SELECT value FROM json_each(?)) ORDER BY module`,
-			)
-			.all(JSON.stringify(keys)) as Array<{ module: string; scope: string }>;
+		return this.projectionQueries.importersOfScopes(keys);
 	}
 
 	/** Import edges that landed on `landing` when written: a module by its path, a scope by its key. */
 	importEdgesLandingOn(landing: Landing): StoredImport[] {
-		const order = "ORDER BY module, spanStartLine, spanStartChar";
-		const rows =
-			landing.kind === "module"
-				? this.db.prepare(`SELECT * FROM imports WHERE target = ? ${order}`).all(landing.module)
-				: this.db.prepare(`SELECT * FROM imports WHERE targetScope = ? ${order}`).all(scopeKey(landing));
-		return rows.map(rowToImport);
+		return this.projectionQueries.importEdgesLandingOn(landing);
 	}
 
 	/** Modules whose effective exports bind some name to this declaration. */
 	modulesExposing(symbolId: string): string[] {
-		const rows = this.db
-			.prepare("SELECT DISTINCT module FROM effective_exports WHERE originSymbolId = ? ORDER BY module")
-			.all(symbolId) as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+		return this.projectionQueries.modulesExposing(symbolId);
 	}
 
 	/** The scopes listing this declaration as a member. */
 	scopesHolding(symbolId: string): ScopeLanding[] {
-		const rows = this.db
-			.prepare("SELECT DISTINCT scopeKey FROM scope_members WHERE memberId = ? ORDER BY scopeKey")
-			.all(symbolId) as Array<{ scopeKey: string }>;
-		return rows.map((row) => scopeOfKey(row.scopeKey));
+		return this.projectionQueries.scopesHolding(symbolId);
 	}
 
 	/** Modules exposing `landing` under some name, as a namespace or a module value. */
 	modulesHoldingNamespace(landing: Landing): string[] {
-		const rows =
-			landing.kind === "module"
-				? this.db
-						.prepare(
-							`SELECT DISTINCT module FROM effective_exports
-							 WHERE (json_extract(origin, '$.kind') = 'namespace' AND json_extract(origin, '$.landing.kind') = 'module'
-							  AND json_extract(origin, '$.landing.module') = ?)
-							 OR (json_extract(origin, '$.kind') = 'moduleValue' AND json_extract(origin, '$.module') = ?)
-							 ORDER BY module`,
-						)
-						.all(landing.module, landing.module)
-				: this.db
-						.prepare(
-							`SELECT DISTINCT module FROM effective_exports
-							 WHERE json_extract(origin, '$.kind') = 'namespace' AND json_extract(origin, '$.landing.kind') = ?
-							  AND json_extract(origin, '$.landing.providerId') = ? AND json_extract(origin, '$.landing.scopeId') = ?
-							 ORDER BY module`,
-						)
-						.all(landing.kind, landing.providerId, landing.scopeId);
-		return (rows as Array<{ module: string }>).map((row) => row.module);
+		return this.projectionQueries.modulesHoldingNamespace(landing);
 	}
 
 	/** Modules with an unbound reference spelled as one of `names`, by name. */
 	modulesWithUnbound(names: readonly string[]): Array<{ module: string; name: string }> {
-		if (names.length === 0) return [];
-		return this.db
-			.prepare(
-				// The unary plus keeps the planner on refs_name: unbound rows are many, one name's are few.
-				`SELECT DISTINCT module, name FROM refs
-				 WHERE name IN (SELECT value FROM json_each(?)) AND +targetId IS NULL ORDER BY module`,
-			)
-			.all(JSON.stringify(names)) as Array<{ module: string; name: string }>;
+		return this.projectionQueries.modulesWithUnbound(names);
 	}
 
 	/** Every import edge that states a load and lands on a module, in one read. */
@@ -2528,44 +1717,12 @@ export class IndexStore {
 		elided?: boolean;
 		typeOnly: boolean;
 	}> {
-		const rows = this.db
-			.prepare(
-				`SELECT module, target, loads, elided, typeOnly, spanStartLine, spanStartChar, spanEndLine, spanEndChar
-				 FROM imports WHERE target IS NOT NULL AND loads IS NOT NULL ORDER BY module`,
-			)
-			.all() as Array<{
-			module: string;
-			target: string;
-			loads: "static" | "deferred";
-			elided: number | null;
-			typeOnly: number;
-			spanStartLine: number;
-			spanStartChar: number;
-			spanEndLine: number;
-			spanEndChar: number;
-		}>;
-		return rows.map((row) => ({
-			module: row.module,
-			target: row.target,
-			span: {
-				start: { line: row.spanStartLine, character: row.spanStartChar },
-				end: { line: row.spanEndLine, character: row.spanEndChar },
-			},
-			loads: row.loads,
-			...(row.elided === null ? {} : { elided: row.elided === 1 }),
-			typeOnly: row.typeOnly === 1,
-		}));
+		return this.projectionQueries.loadEdges();
 	}
 
 	/** Each module's distinct import specifiers and modes, for asking where each lands. */
 	importEdges(): Array<{ module: string; specifier: string; resolutionMode?: ResolutionMode }> {
-		const rows = this.db
-			.prepare(
-				`SELECT DISTINCT module, specifier, json_extract(edge, '$.resolutionMode') AS resolutionMode
-				 FROM imports ORDER BY module, specifier`,
-			)
-			.all() as Array<{ module: string; specifier: string; resolutionMode: ResolutionMode | null }>;
-		return rows.map(({ resolutionMode, ...row }) => (resolutionMode === null ? row : { ...row, resolutionMode }));
+		return this.projectionQueries.importEdges();
 	}
 
 	/** Everything a file contributed, gone. Used when a file is deleted rather than changed. */
@@ -2675,30 +1832,7 @@ export class IndexStore {
 		modules: readonly string[],
 		skip: readonly ReferenceRole[],
 	): Array<{ module: string; origin: Range; count: number }> {
-		const rows = this.db
-			.prepare(
-				`SELECT module, originStartLine, originStartChar, originEndLine, originEndChar, COUNT(*) AS count
-				 FROM refs r WHERE r.module IN (SELECT value FROM json_each(?)) AND r.originKind = 'import' AND ${useSql("r")}
-				 AND r.role NOT IN (SELECT value FROM json_each(?))
-				 GROUP BY module, originStartLine, originStartChar, originEndLine, originEndChar
-				 ORDER BY module, originStartLine, originStartChar`,
-			)
-			.all(JSON.stringify(modules), JSON.stringify(skip)) as Array<{
-			module: string;
-			originStartLine: number;
-			originStartChar: number;
-			originEndLine: number;
-			originEndChar: number;
-			count: number;
-		}>;
-		return rows.map((row) => ({
-			module: row.module,
-			origin: {
-				start: { line: row.originStartLine, character: row.originStartChar },
-				end: { line: row.originEndLine, character: row.originEndChar },
-			},
-			count: row.count,
-		}));
+		return this.factQueries.importUseCounts(modules, skip);
 	}
 
 	/** The first `limit` uses in `module` through the import edge spanning `origin`, roles in `skip` aside. */
@@ -2708,30 +1842,7 @@ export class IndexStore {
 		skip: readonly ReferenceRole[],
 		limit: number,
 	): Array<{ name: string; range: Range }> {
-		const rows = this.db
-			.prepare(
-				`SELECT name, startLine, startChar, endLine, endChar FROM refs r
-				 WHERE r.module = ? AND r.originKind = 'import' AND ${useSql("r")}
-				 AND r.originStartLine = ? AND r.originStartChar = ? AND r.originEndLine = ? AND r.originEndChar = ?
-				 AND r.role NOT IN (SELECT value FROM json_each(?))
-				 ORDER BY startLine, startChar LIMIT ?`,
-			)
-			.all(
-				module,
-				origin.start.line,
-				origin.start.character,
-				origin.end.line,
-				origin.end.character,
-				JSON.stringify(skip),
-				limit,
-			) as Array<{ name: string; startLine: number; startChar: number; endLine: number; endChar: number }>;
-		return rows.map((row) => ({
-			name: row.name,
-			range: {
-				start: { line: row.startLine, character: row.startChar },
-				end: { line: row.endLine, character: row.endChar },
-			},
-		}));
+		return this.factQueries.importUsesThrough(module, origin, skip, limit);
 	}
 
 	/** Null means no role was reported. */
@@ -2945,44 +2056,7 @@ export class IndexStore {
 	 * second hash to compare.
 	 */
 	factById(factId: string): StoredFact | null {
-		const parsed = parseFactId(factId);
-		if (parsed === null) return null;
-
-		// The id carries its kind, so this reads one table rather than searching every one.
-		switch (parsed.kind) {
-			case "declaration": {
-				const row = this.db.prepare("SELECT * FROM symbols WHERE factId = ?").get(factId);
-				return row ? { fact: "declaration", ...rowToDeclaration(row) } : null;
-			}
-			case "reference": {
-				const row = this.db.prepare("SELECT * FROM refs WHERE factId = ?").get(factId);
-				return row ? { fact: "reference", ...rowToReference(row) } : null;
-			}
-			case "import": {
-				const row = this.db.prepare("SELECT * FROM imports WHERE factId = ?").get(factId);
-				return row ? { fact: "import", ...rowToImport(row) } : null;
-			}
-			case "export": {
-				const row = this.db.prepare("SELECT * FROM exports WHERE factId = ?").get(factId);
-				return row ? { fact: "export", ...rowToExport(row) } : null;
-			}
-			case "literal": {
-				const row = this.db.prepare("SELECT * FROM literals WHERE factId = ?").get(factId);
-				return row ? { fact: "literal", ...rowToLiteral(row) } : null;
-			}
-			case "comment": {
-				const row = this.db.prepare("SELECT * FROM comments WHERE factId = ?").get(factId);
-				return row ? { fact: "comment", ...rowToComment(row) } : null;
-			}
-			case "doc": {
-				const row = this.db.prepare("SELECT * FROM docs WHERE factId = ?").get(factId);
-				return row ? { fact: "doc", ...rowToDoc(row) } : null;
-			}
-			default: {
-				const unreachable: never = parsed.kind;
-				return unreachable;
-			}
-		}
+		return this.factQueries.factById(factId);
 	}
 
 	////////////////////////////////
@@ -2995,170 +2069,91 @@ export class IndexStore {
 
 	/** A declaration's pattern digest and what it covers, or null before a full parse minted one. */
 	patternDigestOf(symbolId: string): { digest: string; coverage: string } | null {
-		const row = this.db
-			.prepare("SELECT patternDigest, patternCoverage FROM symbols WHERE symbolId = ?")
-			.get(symbolId) as { patternDigest: string | null; patternCoverage: string | null } | undefined;
-		if (row === undefined || row.patternDigest === null || row.patternCoverage === null) return null;
-		return { digest: row.patternDigest, coverage: row.patternCoverage };
+		return this.factQueries.patternDigestOf(symbolId);
 	}
 
 	/** Every symbol id the index holds for one module, which is the subtree a rename re-mints. */
 	symbolIdsIn(module: string): string[] {
-		const rows = this.db.prepare("SELECT symbolId FROM symbols WHERE module = ?").all(module) as Array<{
-			symbolId: string;
-		}>;
-		return rows.map((row) => row.symbolId);
+		return this.factQueries.symbolIdsIn(module);
 	}
 
 	////////////////////////////////
 	//  Reading
 
 	contentHashOf(module: string): string | null {
-		const row = this.db.prepare("SELECT contentHash FROM files WHERE module = ?").get(module) as
-			| { contentHash: string }
-			| undefined;
-		return row?.contentHash ?? null;
+		return this.factQueries.contentHashOf(module);
 	}
 
 	newestIndexedAt(): number | null {
-		const row = this.db.prepare("SELECT indexedAt FROM files ORDER BY indexedAt DESC LIMIT 1").get() as
-			| { indexedAt: number }
-			| undefined;
-		return row?.indexedAt ?? null;
+		return this.factQueries.newestIndexedAt();
 	}
 
 	declaration(symbolId: string): StoredDeclaration | null {
-		const row = this.db.prepare("SELECT * FROM symbols WHERE symbolId = ?").get(symbolId) as
-			| Record<string, unknown>
-			| undefined;
-		return row ? rowToDeclaration(row) : null;
+		return this.factQueries.declaration(symbolId);
 	}
 
 	declarationsIn(module: string): StoredDeclaration[] {
-		const rows = this.db
-			.prepare("SELECT * FROM symbols WHERE module = ? ORDER BY startLine, startChar")
-			.all(module);
-		return rows.map(rowToDeclaration);
+		return this.factQueries.declarationsIn(module);
 	}
 
 	/** Mentions included; see usesTo. */
 	referencesTo(symbolId: string): StoredReference[] {
-		const rows = this.db
-			.prepare("SELECT * FROM refs WHERE targetId = ? ORDER BY module, startLine, startChar")
-			.all(symbolId);
-		return rows.map(rowToReference);
+		return this.factQueries.referencesTo(symbolId);
 	}
 
 	/** Why the storage exists. */
 	usesTo(symbolId: string): StoredReference[] {
-		const rows = this.db
-			.prepare(
-				`SELECT * FROM refs r WHERE r.targetId = ? AND ${useSql("r")} ORDER BY module, startLine, startChar`,
-			)
-			.all(symbolId);
-		return rows.map(rowToReference);
+		return this.factQueries.usesTo(symbolId);
 	}
 
 	/** Use counts per declaration, in one read; unused is absent. */
 	useCountsIn(module: string): Map<string, number> {
-		const rows = this.db
-			.prepare(
-				`SELECT r.targetId AS symbolId, COUNT(*) AS n FROM refs r
-				 WHERE r.targetId IN (SELECT symbolId FROM symbols WHERE module = ?) AND ${useSql("r")}
-				 GROUP BY r.targetId`,
-			)
-			.all(module) as Array<{ symbolId: string; n: number }>;
-		return new Map(rows.map((row) => [row.symbolId, row.n]));
+		return this.factQueries.useCountsIn(module);
 	}
 
 	/** Distinct using declarations per symbol; top-level uses count their module, and unused symbols are absent. */
 	holderCounts(symbolIds: readonly string[]): Map<string, number> {
-		if (symbolIds.length === 0) return new Map();
-		const rows = this.db
-			.prepare(
-				`SELECT r.targetId AS symbolId, COUNT(DISTINCT COALESCE(r.fromId, 'module ' || r.module)) AS n
-				 FROM refs r WHERE r.targetId IN (SELECT value FROM json_each(?)) AND ${useSql("r")}
-				 GROUP BY r.targetId`,
-			)
-			.all(JSON.stringify(symbolIds)) as Array<{ symbolId: string; n: number }>;
-		return new Map(rows.map((row) => [row.symbolId, row.n]));
+		return this.factQueries.holderCounts(symbolIds);
 	}
 
 	/** Whether a module's path reads as a test, by the rule name searches rank with. */
 	testModule(module: string): boolean {
-		const row = this.db.prepare(`SELECT ${TEST_PATH} AS test FROM (SELECT ? AS module)`).get(module) as {
-			test: number;
-		};
-		return row.test === 1;
+		return this.factQueries.testModule(module);
 	}
 
 	/** Each other module using something `module` declares, with up to three of those, `except` aside. */
 	usesInto(module: string, except: string): Map<string, string[]> {
-		const rows = this.db
-			.prepare(
-				`SELECT DISTINCT r.module AS module, r.targetId AS targetId FROM refs r
-				 JOIN symbols s ON s.symbolId = r.targetId
-				 WHERE s.module = ? AND r.module <> ? AND r.targetId <> ? AND ${useSql("r")}
-				 ORDER BY r.module, r.targetId`,
-			)
-			.all(module, module, except) as Array<{ module: string; targetId: string }>;
-		const byModule = new Map<string, string[]>();
-		for (const row of rows) {
-			const held = byModule.get(row.module) ?? [];
-			if (held.length < 3) held.push(row.targetId);
-			byModule.set(row.module, held);
-		}
-		return byModule;
+		return this.factQueries.usesInto(module, except);
 	}
 
 	/** Whether `module` uses the symbol. */
 	moduleUses(module: string, symbolId: string): boolean {
-		return (
-			this.db
-				.prepare(`SELECT 1 FROM refs r WHERE r.module = ? AND r.targetId = ? AND ${useSql("r")} LIMIT 1`)
-				.get(module, symbolId) !== undefined
-		);
+		return this.factQueries.moduleUses(module, symbolId);
 	}
 
 	/** Use counts for a symbol, grouped by module. */
 	usingModules(symbolId: string): Map<string, number> {
-		const rows = this.db
-			.prepare(
-				`SELECT r.module AS module, COUNT(*) AS n FROM refs r WHERE r.targetId = ? AND ${useSql("r")}
-				 GROUP BY r.module`,
-			)
-			.all(symbolId) as Array<{ module: string; n: number }>;
-		return new Map(rows.map((row) => [row.module, row.n]));
+		return this.factQueries.usingModules(symbolId);
 	}
 
 	/** Distinct resolved import targets for a module. */
 	importTargets(module: string): string[] {
-		const rows = this.db
-			.prepare("SELECT DISTINCT target FROM imports WHERE module = ? AND target IS NOT NULL ORDER BY target")
-			.all(module) as Array<{ target: string }>;
-		return rows.map((row) => row.target);
+		return this.factQueries.importTargets(module);
 	}
 
 	/** Modules with at least one declaration marked exported by its provider. */
 	exportingModules(): string[] {
-		const rows = this.db
-			.prepare("SELECT DISTINCT module FROM symbols WHERE exported = 1 ORDER BY module")
-			.all() as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+		return this.factQueries.exportingModules();
 	}
 
 	/** Mentions included; see usesIn. */
 	referencesIn(module: string): StoredReference[] {
-		const rows = this.db.prepare("SELECT * FROM refs WHERE module = ? ORDER BY startLine, startChar").all(module);
-		return rows.map(rowToReference);
+		return this.factQueries.referencesIn(module);
 	}
 
 	/** Includes unbound rows too. */
 	usesIn(module: string): StoredReference[] {
-		const rows = this.db
-			.prepare(`SELECT * FROM refs r WHERE r.module = ? AND ${useSql("r")} ORDER BY startLine, startChar`)
-			.all(module);
-		return rows.map(rowToReference);
+		return this.factQueries.usesIn(module);
 	}
 
 	/**
@@ -3169,12 +2164,7 @@ export class IndexStore {
 	 * precisely why they are returned rather than filtered away.
 	 */
 	referencesSpelled(name: string, excludingTarget: string): StoredReference[] {
-		const rows = this.db
-			.prepare(
-				"SELECT * FROM refs WHERE name = ? AND (targetId IS NULL OR targetId != ?) ORDER BY module, startLine",
-			)
-			.all(name, excludingTarget);
-		return rows.map(rowToReference);
+		return this.factQueries.referencesSpelled(name, excludingTarget);
 	}
 
 	/**
@@ -3185,8 +2175,7 @@ export class IndexStore {
 	 * to answer about one symbol would be the wrong trade.
 	 */
 	importsNamed(name: string): StoredImport[] {
-		const rows = this.db.prepare("SELECT * FROM imports WHERE name = ? ORDER BY module, startLine").all(name);
-		return rows.map(rowToImport);
+		return this.factQueries.importsNamed(name);
 	}
 
 	/**
@@ -3197,39 +2186,21 @@ export class IndexStore {
 	 * two questions read the same table through different columns.
 	 */
 	importsBinding(localName: string): StoredImport[] {
-		const rows = this.db
-			.prepare(
-				`SELECT * FROM imports
-				 WHERE bindsLocally = 1 AND (localName = ? OR (localName IS NULL AND name = ?))
-				 ORDER BY module, spanStartLine`,
-			)
-			.all(localName, localName);
-		return rows.map(rowToImport);
+		return this.factQueries.importsBinding(localName);
 	}
 
 	importsIn(module: string): StoredImport[] {
-		const rows = this.db
-			.prepare("SELECT * FROM imports WHERE module = ? ORDER BY spanStartLine, spanStartChar")
-			.all(module);
-		return rows.map(rowToImport);
+		return this.factQueries.importsIn(module);
 	}
 
 	/** Each module whose effective exports name `name`, with what it binds to there. */
 	exposuresNamed(name: string): Array<{ module: string; originSymbolId: string | null }> {
-		return this.db
-			.prepare("SELECT module, originSymbolId FROM effective_exports WHERE name = ? ORDER BY module")
-			.all(name) as Array<{ module: string; originSymbolId: string | null }>;
+		return this.factQueries.exposuresNamed(name);
 	}
 
 	/** Where `specifier` landed from `module` in `mode` when it was written; null when unknown. */
 	importLanding(module: string, specifier: string, mode: ResolutionMode | undefined): Landing | null {
-		const row = this.db
-			.prepare(
-				`SELECT landing FROM imports WHERE module = ? AND specifier = ?
-				 AND json_extract(edge, '$.resolutionMode') IS ? AND landing IS NOT NULL LIMIT 1`,
-			)
-			.get(module, specifier, mode ?? null) as { landing: string } | undefined;
-		return row === undefined ? null : (JSON.parse(row.landing) as Landing);
+		return this.factQueries.importLanding(module, specifier, mode);
 	}
 
 	/**
@@ -3237,22 +2208,12 @@ export class IndexStore {
 	 * exports it, or it names a namespace or a module value.
 	 */
 	exportedSymbol(module: string, name: string): string | null {
-		const row = this.db
-			.prepare(
-				`SELECT originSymbolId FROM effective_exports
-				 WHERE module = ? AND name = ? AND originSymbolId IS NOT NULL ORDER BY rowid LIMIT 1`,
-			)
-			.get(module, name) as { originSymbolId: string } | undefined;
-		return row?.originSymbolId ?? null;
+		return this.factQueries.exportedSymbol(module, name);
 	}
 
 	/** Import rows for bounded application-side searches. */
 	importsForScan(scanLimit: number, hidden: HiddenModules): StoredImport[] {
-		const { clause, values } = importWhere(hidden);
-		const rows = this.db
-			.prepare(`SELECT * FROM imports ${clause} ORDER BY module, startLine LIMIT ?`)
-			.all(...values, scanLimit);
-		return rows.map(rowToImport);
+		return this.factQueries.importsForScan(scanLimit, hidden);
 	}
 
 	/** Search declarations by name substring or regular expression. */
@@ -3267,134 +2228,48 @@ export class IndexStore {
 			hidden: HiddenModules;
 		},
 	): StoredDeclaration[] {
-		const regex = options.regex === undefined ? undefined : compileSearchRegex(options.regex);
-		const clauses: string[] = [];
-		const values: Array<string | number> = [];
-		leaveOut(options.hidden, clauses, values);
-		if (text !== undefined) {
-			clauses.push("name LIKE ? ESCAPE '\\'");
-			values.push(`%${likePattern(text)}%`);
-		}
-		if (options.kind !== undefined) {
-			clauses.push("kind = ?");
-			values.push(options.kind);
-		}
-		if (options.module !== undefined) under("module", options.module, clauses, values);
-		if (options.scope?.module !== undefined) {
-			clauses.push("symbolId >= ? AND symbolId < ?");
-			values.push(options.scope.low as string, options.scope.high as string);
-		}
-		if (options.scope?.like !== undefined) {
-			clauses.push("symbolId LIKE ? ESCAPE '\\'");
-			values.push(`${options.scope.head}%${likePattern(options.scope.like)}%`);
-		}
-		if (clauses.length === 0) clauses.push("1 = 1");
-		// A scoped read is bounded even under a regex: the exact check runs after it and says so.
-		const bounded = regex === undefined || options.scope !== undefined;
-		const limit = bounded ? " LIMIT ?" : "";
-		if (bounded) values.push(options.limit);
-
-		const rows = this.db
-			.prepare(`SELECT * FROM symbols WHERE ${clauses.join(" AND ")} ORDER BY module, startLine${limit}`)
-			.all(...values)
-			.map(rowToDeclaration);
-		if (regex === undefined) return rows;
-
-		return rows.filter((row) => regex.test(row.name)).slice(0, options.limit);
+		return this.searchQueries.searchSymbols(text, options);
 	}
 
 	/** Declarations whose name contains `text`, any case: own code, then top-level, then exact names, then
 	 * prefixes, then shortest. */
 	symbolsNamedLike(text: string, limit: number, offset = 0, kinds?: readonly string[]): StoredDeclaration[] {
-		const kindClause = kinds === undefined ? "" : ` AND kind IN (${kinds.map(() => "?").join(", ")})`;
-		const escaped = likePattern(text);
-		return this.db
-			.prepare(
-				`SELECT * FROM symbols WHERE name LIKE ? ESCAPE '\\'${kindClause}
-				 ORDER BY ${VENDOR_PATH} ASC, (containerId IS NULL) DESC, (name = ? COLLATE NOCASE) DESC,
-				 (name LIKE ? ESCAPE '\\') DESC, ${TEST_PATH} ASC, length(name), module, startLine
-				 LIMIT ? OFFSET ?`,
-			)
-			.all(`%${escaped}%`, ...(kinds ?? []), text, `${escaped}%`, limit, offset)
-			.map(rowToDeclaration);
+		return this.searchQueries.symbolsNamedLike(text, limit, offset, kinds);
 	}
 
 	/** Indexed files whose path contains `text`, any case: own code, then a name starting with it, then shortest. */
 	filesNamedLike(text: string, limit: number): string[] {
-		const escaped = likePattern(text);
-		// The directory part is what rtrim leaves once every character but '/' is trimmed away.
-		const rows = this.db
-			.prepare(
-				`SELECT module FROM files WHERE module LIKE ? ESCAPE '\\'
-				 ORDER BY ${VENDOR_PATH} ASC, (substr(module, length(rtrim(module, replace(module, '/', ''))) + 1) LIKE ? ESCAPE '\\') DESC,
-				 ${TEST_PATH} ASC, length(module), module LIMIT ?`,
-			)
-			.all(`%${escaped}%`, `${escaped}%`, limit) as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+		return this.searchQueries.filesNamedLike(text, limit);
 	}
 
 	/** Imports whose specifier contains this text. "Which files import X", by the name as written. */
 	importsMatching(specifier: string, limit: number, hidden: HiddenModules): StoredImport[] {
-		const { clause, values } = importWhere(hidden, specifier);
-		const rows = this.db
-			.prepare(`SELECT * FROM imports ${clause} ORDER BY module, startLine LIMIT ?`)
-			.all(...values, limit);
-		return rows.map(rowToImport);
+		return this.searchQueries.importsMatching(specifier, limit, hidden);
 	}
 
 	/** Every module held by the index, including files with no declarations. */
 	indexedFiles(): string[] {
-		const rows = this.db.prepare("SELECT module FROM files ORDER BY module").all() as Array<{ module: string }>;
-		return rows.map((row) => row.module);
+		return this.searchQueries.indexedFiles();
 	}
 
 	/** Modules `exclude` hides, for this hold's searches. */
 	hiddenModules(exclude: ModuleExclusion | undefined): HiddenModules {
-		if (exclude === undefined) return HiddenModules.none;
-		return this.indexedFiles().filter(compileExclusion(exclude)) as readonly string[] as HiddenModules;
+		return this.searchQueries.hiddenModules(exclude);
 	}
 
 	/** Every module with facts, ordered by symbol count. Content is null on a row written before it was kept. */
 	moduleSummary(): Array<{ module: string; symbols: number; content: FileContent | null }> {
-		return this.db
-			.prepare(
-				`SELECT s.module AS module, COUNT(*) AS symbols, f.content AS content
-				 FROM symbols s LEFT JOIN files f ON f.module = s.module
-				 GROUP BY s.module ORDER BY symbols DESC`,
-			)
-			.all() as Array<{ module: string; symbols: number; content: FileContent | null }>;
+		return this.searchQueries.moduleSummary();
 	}
 
 	/** Files and symbols per content class, over the modules a live workspace predicate admits. */
 	contentTotals(includeModule: (module: string) => boolean): ContentTotals {
-		const rows = this.db
-			.prepare(
-				`SELECT f.module AS module, f.content AS content, COUNT(s.symbolId) AS symbols
-				 FROM files f LEFT JOIN symbols s ON s.module = f.module
-				 GROUP BY f.module`,
-			)
-			.all() as Array<{ module: string; content: FileContent | null; symbols: number }>;
-		const files: ContentCounts = { code: 0, data: 0, document: 0, text: 0, unknown: 0 };
-		const symbols: ContentCounts = { code: 0, data: 0, document: 0, text: 0, unknown: 0 };
-		for (const row of rows) {
-			if (!includeModule(row.module)) continue;
-			const key = row.content ?? "unknown";
-			files[key] += 1;
-			symbols[key] += row.symbols;
-		}
-		return { files, symbols };
+		return this.searchQueries.contentTotals(includeModule);
 	}
 
 	/** Counts for an overview, in one round trip rather than five. */
 	totals(): { files: number; symbols: number; references: number; imports: number; literals: number } {
-		const one = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
-		return {
-			files: one("SELECT COUNT(*) AS n FROM files"),
-			symbols: one("SELECT COUNT(*) AS n FROM symbols"),
-			references: one("SELECT COUNT(*) AS n FROM refs"),
-			imports: one("SELECT COUNT(*) AS n FROM imports"),
-			literals: one("SELECT COUNT(*) AS n FROM literals"),
-		};
+		return this.searchQueries.totals();
 	}
 
 	/**
@@ -3405,11 +2280,7 @@ export class IndexStore {
 	 * filtered, because which kinds are code is the caller's question and not this table's.
 	 */
 	symbolsByKind(): Record<string, number> {
-		const rows = this.db.prepare("SELECT kind, COUNT(*) AS n FROM symbols GROUP BY kind").all() as Array<{
-			kind: string;
-			n: number;
-		}>;
-		return Object.fromEntries(rows.map((row) => [row.kind, row.n]));
+		return this.searchQueries.symbolsByKind();
 	}
 
 	/** Counts facts whose modules satisfy a live workspace predicate. */
@@ -3420,54 +2291,28 @@ export class IndexStore {
 		imports: number;
 		literals: number;
 	} {
-		const count = (table: "files" | (typeof FACT_TABLES)[number]): number => {
-			const rows = this.db.prepare(`SELECT module, COUNT(*) AS n FROM ${table} GROUP BY module`).all() as Array<{
-				module: string;
-				n: number;
-			}>;
-			return rows.reduce((total, row) => (includeModule(row.module) ? total + row.n : total), 0);
-		};
-		return {
-			files: count("files"),
-			symbols: count("symbols"),
-			references: count("refs"),
-			imports: count("imports"),
-			literals: count("literals"),
-		};
+		return this.searchQueries.totalsForModules(includeModule);
 	}
 
 	/** Every symbol with a given name, across the workspace. The entry point for a name-only ask. */
 	declarationsNamed(name: string): StoredDeclaration[] {
-		const rows = this.db.prepare("SELECT * FROM symbols WHERE name = ? ORDER BY module, startLine").all(name);
-		return rows.map(rowToDeclaration);
+		return this.searchQueries.declarationsNamed(name);
 	}
 
 	////////////////////////////////
 	//  Literals
 
 	literalsWhere(filter: LiteralFilter, limit: number): StoredLiteral[] {
-		const { clause, values, join } = literalWhere(filter);
-		const rows = this.db
-			.prepare(
-				`SELECT l.*, s.name AS containerName, s.kind AS containerKind FROM literals l ${join} ${clause} ORDER BY l.module, l.startLine LIMIT ?`,
-			)
-			.all(...values, limit);
-		return rows.map(rowToLiteral);
+		return this.searchQueries.literalsWhere(filter, limit);
 	}
 
 	countLiteralsWhere(filter: LiteralFilter): number {
-		const { clause, values, join } = literalWhere(filter);
-		return (
-			this.db.prepare(`SELECT COUNT(*) AS n FROM literals l ${join} ${clause}`).get(...values) as { n: number }
-		).n;
+		return this.searchQueries.countLiteralsWhere(filter);
 	}
 
 	/** Every literal in one module, matching declarationsIn and referencesIn. */
 	literalsIn(module: string): StoredLiteral[] {
-		const rows = this.db
-			.prepare("SELECT * FROM literals WHERE module = ? ORDER BY startLine, startChar")
-			.all(module);
-		return rows.map(rowToLiteral);
+		return this.searchQueries.literalsIn(module);
 	}
 
 	////////////////////////////////
@@ -3475,78 +2320,57 @@ export class IndexStore {
 
 	/** Substring over the NORMALIZED text, so a phrase the writer wrapped still matches. */
 	commentsContaining(text: string, limit: number, filter: CommentFilter): StoredComment[] {
-		const { clause, values } = commentWhere(filter, text);
-		const rows = this.db.prepare(`SELECT * FROM comments ${clause} ${COMMENT_ORDER} LIMIT ?`).all(...values, limit);
-		return rows.map(rowToComment);
+		return this.searchQueries.commentsContaining(text, limit, filter);
 	}
 
 	/** The true count, so a page never reports its own cap as a total. */
 	countCommentsContaining(text: string, filter: CommentFilter): number {
-		const { clause, values } = commentWhere(filter, text);
-		return (this.db.prepare(`SELECT COUNT(*) AS n FROM comments ${clause}`).get(...values) as { n: number }).n;
+		return this.searchQueries.countCommentsContaining(text, filter);
 	}
 
 	/** Every comment a caller must match itself, for the same reason literals need one: no REGEXP. */
 	commentsToScan(scanLimit: number, filter: CommentFilter): StoredComment[] {
-		const { clause, values } = commentWhere(filter);
-		const rows = this.db
-			.prepare(`SELECT * FROM comments ${clause} ${COMMENT_ORDER} LIMIT ?`)
-			.all(...values, scanLimit);
-		return rows.map(rowToComment);
+		return this.searchQueries.commentsToScan(scanLimit, filter);
 	}
 
 	countComments(filter: CommentFilter): number {
-		const { clause, values } = commentWhere(filter);
-		return (this.db.prepare(`SELECT COUNT(*) AS n FROM comments ${clause}`).get(...values) as { n: number }).n;
+		return this.searchQueries.countComments(filter);
 	}
 
 	/** What is written about one symbol, which is how describe gets its documentation. */
 	commentsAnchoredTo(symbolId: string): StoredComment[] {
-		const rows = this.db
-			.prepare("SELECT * FROM comments WHERE anchorId = ? ORDER BY startLine, startChar")
-			.all(symbolId);
-		return rows.map(rowToComment);
+		return this.searchQueries.commentsAnchoredTo(symbolId);
 	}
 
 	/** Every comment in one module, matching declarationsIn and referencesIn. */
 	commentsIn(module: string): StoredComment[] {
-		const rows = this.db
-			.prepare("SELECT * FROM comments WHERE module = ? ORDER BY startLine, startChar")
-			.all(module);
-		return rows.map(rowToComment);
+		return this.searchQueries.commentsIn(module);
 	}
 
 	////////////////////////////////
 	//  Documents
 
 	docsContaining(text: string, limit: number, filter: DocFilter): StoredDoc[] {
-		const { clause, values } = docWhere(filter, text);
-		const rows = this.db.prepare(`SELECT * FROM docs ${clause} ${DOC_ORDER} LIMIT ?`).all(...values, limit);
-		return rows.map(rowToDoc);
+		return this.searchQueries.docsContaining(text, limit, filter);
 	}
 
 	/** The true count, so a page never reports its own cap as a total. */
 	countDocsContaining(text: string, filter: DocFilter): number {
-		const { clause, values } = docWhere(filter, text);
-		return (this.db.prepare(`SELECT COUNT(*) AS n FROM docs ${clause}`).get(...values) as { n: number }).n;
+		return this.searchQueries.countDocsContaining(text, filter);
 	}
 
 	/** Every region a caller must match itself, for the same reason comments need one: no REGEXP. */
 	docsToScan(scanLimit: number, filter: DocFilter): StoredDoc[] {
-		const { clause, values } = docWhere(filter);
-		const rows = this.db.prepare(`SELECT * FROM docs ${clause} ${DOC_ORDER} LIMIT ?`).all(...values, scanLimit);
-		return rows.map(rowToDoc);
+		return this.searchQueries.docsToScan(scanLimit, filter);
 	}
 
 	countDocs(filter: DocFilter): number {
-		const { clause, values } = docWhere(filter);
-		return (this.db.prepare(`SELECT COUNT(*) AS n FROM docs ${clause}`).get(...values) as { n: number }).n;
+		return this.searchQueries.countDocs(filter);
 	}
 
 	/** The prose of one section, which is how describe answers about a heading. */
 	docsAnchoredTo(symbolId: string): StoredDoc[] {
-		const rows = this.db.prepare(`SELECT * FROM docs WHERE anchorId = ? ${DOC_ORDER}`).all(symbolId);
-		return rows.map(rowToDoc);
+		return this.searchQueries.docsAnchoredTo(symbolId);
 	}
 
 	/**
@@ -3560,14 +2384,7 @@ export class IndexStore {
 		limit: number,
 		hidden: HiddenModules,
 	): Array<{ value: string; kind: string; files: number; uses: number }> {
-		const { clause, values } = sharedWhere(hidden);
-		const rows = this.db
-			.prepare(
-				`SELECT value, kind, COUNT(DISTINCT module) AS files, COUNT(*) AS uses
-				 FROM literals ${clause} GROUP BY value, kind HAVING files >= ? ORDER BY files DESC, uses DESC LIMIT ?`,
-			)
-			.all(...values, minimumFiles, limit) as Array<{ value: string; kind: string; files: number; uses: number }>;
-		return rows;
+		return this.searchQueries.sharedLiterals(minimumFiles, limit, hidden);
 	}
 
 	////////////////////////////////
@@ -3575,54 +2392,27 @@ export class IndexStore {
 
 	/** Bound rows only; fan-out. */
 	usesFrom(symbolId: string): StoredReference[] {
-		const rows = this.db
-			.prepare(
-				`SELECT * FROM refs r WHERE r.fromId = ? AND r.targetId IS NOT NULL AND ${useSql("r")} ORDER BY module, startLine, startChar`,
-			)
-			.all(symbolId);
-		return rows.map(rowToReference);
+		return this.searchQueries.usesFrom(symbolId);
 	}
 
 	/** Distinct bound targets used from any of `fromIds`, in one read however many there are. */
 	targetsFrom(fromIds: readonly string[]): Set<string> {
-		if (fromIds.length === 0) return new Set();
-		const rows = this.db
-			.prepare(
-				`SELECT DISTINCT r.targetId AS targetId FROM refs r
-				 WHERE r.fromId IN (SELECT value FROM json_each(?)) AND r.targetId IS NOT NULL AND ${useSql("r")}`,
-			)
-			.all(JSON.stringify(fromIds)) as Array<{ targetId: string }>;
-		return new Set(rows.map((row) => row.targetId));
+		return this.searchQueries.targetsFrom(fromIds);
 	}
 
 	/** Distinct bound targets a module's top level uses. */
 	topLevelTargets(module: string): Set<string> {
-		const rows = this.db
-			.prepare(
-				`SELECT DISTINCT r.targetId AS targetId FROM refs r
-				 WHERE r.module = ? AND r.fromId IS NULL AND r.targetId IS NOT NULL AND ${useSql("r")}`,
-			)
-			.all(module) as Array<{ targetId: string }>;
-		return new Set(rows.map((row) => row.targetId));
+		return this.searchQueries.topLevelTargets(module);
 	}
 
 	/** Most-used symbols first. Hub rank, which is fan-in sorted, ties by id so two runs agree. */
 	mostReferenced(limit: number): Array<{ symbolId: string; count: number }> {
-		return this.db
-			.prepare(
-				`SELECT targetId AS symbolId, COUNT(*) AS count FROM refs r
-				 WHERE targetId IS NOT NULL AND ${useSql("r")} GROUP BY targetId ORDER BY count DESC, targetId LIMIT ?`,
-			)
-			.all(limit) as Array<{ symbolId: string; count: number }>;
+		return this.searchQueries.mostReferenced(limit);
 	}
 
 	/** Git's word on a file as recorded; null on a row written without asking. */
 	generatedOf(module: string): GeneratedVerdict | null {
-		const row = this.db.prepare("SELECT generated, generatedReason FROM files WHERE module = ?").get(module) as
-			| { generated: string | null; generatedReason: string | null }
-			| undefined;
-		if (row === undefined || row.generated === null) return null;
-		return verdictFromRow(row.generated, row.generatedReason);
+		return this.searchQueries.generatedOf(module);
 	}
 
 	/** Every row takes the verdict admission just reached, so a file left unread keeps no stale one. */
@@ -3650,12 +2440,7 @@ export class IndexStore {
 
 	/** Symbols nothing references. Honest only as far as binding reaches, which the caller states. */
 	unreferencedSymbols(): StoredDeclaration[] {
-		const rows = this.db
-			.prepare(
-				"SELECT * FROM symbols WHERE symbolId NOT IN (SELECT targetId FROM refs WHERE targetId IS NOT NULL)",
-			)
-			.all();
-		return rows.map(rowToDeclaration);
+		return this.searchQueries.unreferencedSymbols();
 	}
 
 	close(): void {
@@ -3665,423 +2450,4 @@ export class IndexStore {
 			this.db.close();
 		}
 	}
-}
-
-////////////////////////////////
-//  Functions & Helpers
-
-/** A stored verdict read back; a pair the store never writes reads as none. */
-function verdictFromRow(status: string, reason: string | null): GeneratedVerdict | null {
-	if ((status === "yes" || status === "no") && reason === null) return { status };
-	if (status === "unknown" && (reason === "noGit" || reason === "gitFailed")) {
-		return { status, reason: reason as GeneratedReason };
-	}
-	return null;
-}
-
-interface RoleRow {
-	role: string | null;
-	roleHow: string | null;
-	roleSymbolId: string | null;
-	roleReason: string | null;
-}
-
-type EntryPoint = { module: string } & ({ how: "main"; symbolId: string } | { how: Exclude<EntryHow, "main"> });
-
-function roleFromRow(row: RoleRow): FileRole | null {
-	if (row.role === null) return null;
-	const parsed = FileRoleSchema.safeParse({
-		kind: row.role,
-		...defined({
-			how: row.roleHow ?? undefined,
-			symbolId: row.roleSymbolId ?? undefined,
-			reason: row.roleReason ?? undefined,
-		}),
-	});
-	return parsed.success ? parsed.data : null;
-}
-
-/** Row shapes, named so the mappers read as field access rather than a wall of casts. */
-interface SymbolRow {
-	symbolId: string;
-	factId: string;
-	module: string;
-	name: string;
-	kind: string;
-	visibility: string;
-	exported: number | null;
-	containerId: string | null;
-	signature: string | null;
-	startLine: number;
-	startChar: number;
-	endLine: number;
-	endChar: number;
-	nameLine: number;
-	nameChar: number;
-	nameEndLine: number;
-	nameEndChar: number;
-	synthesizedName: number | null;
-	mLines: number | null;
-	mParameters: number | null;
-	mNesting: number | null;
-	mBranches: number | null;
-	contains: string | null;
-	memberInsertLine: number | null;
-	languageKind: string | null;
-}
-
-/** Absent stays absent through the round trip, so "not measured" never arrives looking like zero. */
-function metricsOf(row: SymbolRow): { metrics?: Metrics } {
-	const metrics: Metrics = {
-		...(row.mLines === null ? {} : { lines: row.mLines }),
-		...(row.mParameters === null ? {} : { parameters: row.mParameters }),
-		...(row.mNesting === null ? {} : { nesting: row.mNesting }),
-		...(row.mBranches === null ? {} : { branches: row.mBranches }),
-	};
-	return Object.keys(metrics).length === 0 ? {} : { metrics };
-}
-
-interface RefRow {
-	factId: string;
-	module: string;
-	name: string;
-	role: string;
-	targetId: string | null;
-	fromId: string | null;
-	qualified: number | null;
-	provenance: string;
-	startLine: number;
-	startChar: number;
-	endLine: number;
-	endChar: number;
-	originKind: string | null;
-	originStartLine: number | null;
-	originStartChar: number | null;
-	originEndLine: number | null;
-	originEndChar: number | null;
-	originPath: string | null;
-}
-
-function rowToDeclaration(raw: unknown): StoredDeclaration {
-	const row = raw as SymbolRow;
-	return {
-		symbolId: row.symbolId,
-		factId: row.factId,
-		module: row.module,
-		name: row.name,
-		kind: row.kind as StoredDeclaration["kind"],
-		visibility: row.visibility as StoredDeclaration["visibility"],
-		range: {
-			start: { line: row.startLine, character: row.startChar },
-			end: { line: row.endLine, character: row.endChar },
-		},
-		// A row from before the flag reads as named, which every row then was.
-		...(row.synthesizedName === 1
-			? {}
-			: {
-					selectionRange: {
-						start: { line: row.nameLine, character: row.nameChar },
-						end: { line: row.nameEndLine, character: row.nameEndChar },
-					},
-				}),
-		...metricsOf(row),
-		// Omitted rather than stored as null, so an absent field stays absent through a round trip.
-		...(row.exported === null ? {} : { exported: row.exported === 1 }),
-		...(row.containerId === null ? {} : { containerId: row.containerId }),
-		...(row.signature === null ? {} : { signature: row.signature }),
-		...(row.contains === null ? {} : { contains: row.contains as StoredDeclaration["contains"] }),
-		...(row.memberInsertLine === null ? {} : { memberInsertLine: row.memberInsertLine }),
-		...(row.languageKind === null ? {} : { languageKind: row.languageKind }),
-	};
-}
-
-interface LiteralRow {
-	factId: string;
-	module: string;
-	kind: string;
-	value: string;
-	number: number | null;
-	containerId: string | null;
-	containerName?: string | null;
-	containerKind?: string | null;
-	startLine: number;
-	startChar: number;
-	endLine: number;
-	endChar: number;
-}
-
-/** Excludes hidden modules, bound as a JSON list. */
-function leaveOut(
-	hidden: HiddenModules,
-	where: string[],
-	values: Array<string | number>,
-	column: "module" | "l.module" = "module",
-): void {
-	if (hidden.length === 0) return;
-	where.push(`${column} NOT IN (SELECT value FROM json_each(?))`);
-	values.push(JSON.stringify(hidden));
-}
-
-function literalWhere(filter: LiteralFilter) {
-	const where: string[] = [];
-	const values: Array<string | number> = [];
-	// A key is an inner match: a literal with no container has no name to match.
-	const join =
-		filter.key === undefined
-			? "LEFT JOIN symbols s ON s.symbolId = l.containerId"
-			: "JOIN symbols s ON s.symbolId = l.containerId";
-	leaveOut(filter.hidden, where, values, "l.module");
-	if (filter.value !== undefined) {
-		where.push("l.value = ?");
-		values.push(filter.value);
-	}
-	if (filter.kind !== undefined) {
-		where.push("l.kind = ?");
-		values.push(filter.kind);
-	}
-	if (filter.low !== undefined || filter.high !== undefined) {
-		where.push("l.number IS NOT NULL AND l.number BETWEEN ? AND ?");
-		values.push(filter.low ?? Number.NEGATIVE_INFINITY, filter.high ?? Number.POSITIVE_INFINITY);
-	}
-	if (filter.key !== undefined) {
-		where.push("s.name = ?");
-		values.push(filter.key);
-	}
-	if (filter.module !== undefined) under("l.module", filter.module, where, values);
-	if (filter.scope?.module !== undefined) {
-		where.push("l.containerId >= ? AND l.containerId < ?");
-		values.push(filter.scope.low as string, filter.scope.high as string);
-	}
-	if (filter.scope?.like !== undefined) {
-		where.push("l.containerId LIKE ? ESCAPE '\\'");
-		values.push(`${filter.scope.head}%${likePattern(filter.scope.like)}%`);
-	}
-	return { join, clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
-}
-
-/** Escapes what LIKE treats as wildcards, so a search for `100%` is a search for `100%`. */
-function likePattern(text: string): string {
-	return searchTerm(text).replace(/[%_\\]/g, "\\$&");
-}
-
-/** A module path names that file, or every module in that folder. Case-sensitive, as LIKE is not. */
-function under(column: string, path: string, where: string[], values: Array<string | number>): void {
-	where.push(`(${column} = ? OR substr(${column}, 1, length(?)) = ?)`);
-	values.push(path, `${path}/`, `${path}/`);
-}
-
-/** Source order, and by column too: two comments can share a line. */
-const COMMENT_ORDER = "ORDER BY module, startLine, startChar";
-
-/** One place builds the clause, so a count and its page can never disagree about what matched. */
-function commentWhere(filter: CommentFilter, text?: string): { clause: string; values: Array<string | number> } {
-	const where: string[] = [];
-	const values: Array<string | number> = [];
-	leaveOut(filter.hidden, where, values);
-	if (text !== undefined) {
-		where.push("normalized LIKE ? ESCAPE '\\'");
-		values.push(`%${likePattern(text)}%`);
-	}
-	if (filter.form !== undefined) {
-		where.push("form = ?");
-		values.push(filter.form);
-	}
-	if (filter.module !== undefined) under("module", filter.module, where, values);
-	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
-}
-
-/** Document order, and by column too: a range can start where the previous one ended. */
-const DOC_ORDER = "ORDER BY module, startLine, startChar";
-
-/** One place builds the clause, so a count and its page can never disagree about what matched. */
-function docWhere(filter: DocFilter, text?: string): { clause: string; values: Array<string | number> } {
-	const where: string[] = [];
-	const values: Array<string | number> = [];
-	leaveOut(filter.hidden, where, values);
-	if (text !== undefined) {
-		where.push("normalized LIKE ? ESCAPE '\\'");
-		values.push(`%${likePattern(text)}%`);
-	}
-	if (filter.fenced !== undefined) {
-		where.push("fenced = ?");
-		values.push(filter.fenced ? 1 : 0);
-	}
-	if (filter.module !== undefined) under("module", filter.module, where, values);
-	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
-}
-
-function importWhere(hidden: HiddenModules, specifier?: string): { clause: string; values: Array<string | number> } {
-	const where: string[] = [];
-	const values: Array<string | number> = [];
-	leaveOut(hidden, where, values);
-	if (specifier !== undefined) {
-		where.push("specifier LIKE ? ESCAPE '\\'");
-		values.push(`%${likePattern(specifier)}%`);
-	}
-	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
-}
-
-function sharedWhere(hidden: HiddenModules): { clause: string; values: Array<string | number> } {
-	const where: string[] = [];
-	const values: Array<string | number> = [];
-	leaveOut(hidden, where, values);
-	return { clause: where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`, values };
-}
-
-interface DocRow {
-	factId: string;
-	module: string;
-	raw: string;
-	normalized: string;
-	fenced: number;
-	anchorId: string | null;
-	startLine: number;
-	startChar: number;
-	endLine: number;
-	endChar: number;
-}
-
-interface CommentRow {
-	factId: string;
-	module: string;
-	raw: string;
-	normalized: string;
-	form: string;
-	placement: string;
-	anchorId: string | null;
-	startLine: number;
-	startChar: number;
-	endLine: number;
-	endChar: number;
-}
-
-function rowToComment(raw: unknown): StoredComment {
-	const row = raw as CommentRow;
-	return {
-		factId: row.factId,
-		module: row.module,
-		raw: row.raw,
-		normalized: row.normalized,
-		form: row.form as StoredComment["form"],
-		placement: row.placement,
-		anchorId: row.anchorId,
-		range: {
-			start: { line: row.startLine, character: row.startChar },
-			end: { line: row.endLine, character: row.endChar },
-		},
-	};
-}
-
-/**
- * The one place a doc anchor is checked, before anything is written.
- *
- * An anchor is any non-empty string on the wire, so every reader downstream would otherwise
- * re-decide what it is allowed to be, and the third reader to forget is the one that ships a hit
- * in one file labelled with a heading from another.
- *
- * REFUSED rather than nulled: null already means the region sits under no heading, and reusing it
- * for "the provider named something we could not verify" would hide a contract violation behind a
- * legitimate answer. Refused before the transaction opens, so the file's previous facts survive.
- */
-function rowToDoc(raw: unknown): StoredDoc {
-	const row = raw as DocRow;
-	return {
-		factId: row.factId,
-		module: row.module,
-		raw: row.raw,
-		normalized: row.normalized,
-		fenced: row.fenced !== 0,
-		anchorId: row.anchorId,
-		range: {
-			start: { line: row.startLine, character: row.startChar },
-			end: { line: row.endLine, character: row.endChar },
-		},
-	};
-}
-
-function rowToLiteral(raw: unknown): StoredLiteral {
-	const row = raw as LiteralRow;
-	return {
-		factId: row.factId,
-		module: row.module,
-		kind: row.kind as StoredLiteral["kind"],
-		value: row.value,
-		number: row.number,
-		containerId: row.containerId,
-		...(row.containerName === null || row.containerName === undefined ? {} : { containerName: row.containerName }),
-		...(row.containerKind === null || row.containerKind === undefined ? {} : { containerKind: row.containerKind }),
-		range: {
-			start: { line: row.startLine, character: row.startChar },
-			end: { line: row.endLine, character: row.endChar },
-		},
-	};
-}
-
-interface ImportRow {
-	factId: string;
-	module: string;
-	specifier: string;
-	edge: string;
-	loads: string | null;
-	elided: number | null;
-	landing: string | null;
-}
-
-/** The edge as the provider sent it, with where its specifier landed. Written only by this store. */
-function rowToImport(raw: unknown): StoredImport {
-	const row = raw as ImportRow;
-	return {
-		...(JSON.parse(row.edge) as ImportEdge),
-		...(row.loads === null ? {} : { loads: row.loads as ImportEdge["loads"] }),
-		...(row.elided === null ? {} : { elided: row.elided === 1 }),
-		factId: row.factId,
-		module: row.module,
-		specifier: row.specifier,
-		landing: row.landing === null ? null : (JSON.parse(row.landing) as Landing),
-	};
-}
-
-interface ExportRow {
-	factId: string;
-	module: string;
-	edge: string;
-}
-
-function rowToExport(raw: unknown): StoredExport {
-	const row = raw as ExportRow;
-	return { ...(JSON.parse(row.edge) as Export), factId: row.factId, module: row.module };
-}
-
-function rowToReference(raw: unknown): StoredReference {
-	const row = raw as RefRow;
-	return {
-		factId: row.factId,
-		module: row.module,
-		name: row.name,
-		role: row.role as StoredReference["role"],
-		targetId: row.targetId,
-		fromId: row.fromId,
-		qualified: row.qualified === null ? null : row.qualified === 1,
-		provenance: row.provenance,
-		startLine: row.startLine,
-		startCharacter: row.startChar,
-		endLine: row.endLine,
-		endCharacter: row.endChar,
-		origin: originOf(row),
-	};
-}
-
-/** Null when unproved, which is unknown. */
-function originOf(row: RefRow): ReferenceOrigin | null {
-	if (row.originKind === "declaration") return { kind: "declaration" };
-	if (row.originKind !== "import" || row.originStartLine === null) return null;
-	const path = row.originPath === null ? undefined : (JSON.parse(row.originPath) as string[]);
-	return {
-		kind: "import",
-		span: {
-			start: { line: row.originStartLine, character: row.originStartChar ?? 0 },
-			end: { line: row.originEndLine ?? row.originStartLine, character: row.originEndChar ?? 0 },
-		},
-		...(path === undefined ? {} : { path }),
-	};
 }

@@ -15,7 +15,6 @@ import ts from "typescript";
  * verdict can detect afterwards. The upgrade walk and the warm scan were both outside the gate.
  */
 const CORE = join(import.meta.dirname, "..");
-const INDEXER = join(CORE, "indexer.ts");
 
 /** What opens an exclusive hold, whatever the receiver is called. */
 const HOLD_OPENERS = ["exclusive", "write"];
@@ -202,16 +201,17 @@ describe("one gate, every indexing road", () => {
 	});
 
 	it("parses a module only under a hold, or in a road whose caller holds one", () => {
-		const parsed = parseSource(INDEXER, readFileSync(INDEXER, "utf8"));
-		const stepped = regions(parsed, STEP_OPENERS);
+		const stepped = sources.flatMap((parsed) => regions(parsed, STEP_OPENERS));
 		expect(stepped.length).toBeGreaterThan(2);
 
 		const offenders: string[] = [];
-		for (const call of callsNamed(parsed, ["indexOne"])) {
-			if (inside(call, stepped, parsed)) continue;
-			const method = enclosingFunction(call);
-			if (method !== undefined && CALLER_HELD.has(method)) continue;
-			offenders.push(`indexer.ts:${lineOf(parsed, call)} parses in ${method ?? "a free function"}`);
+		for (const parsed of sources) {
+			for (const call of callsNamed(parsed, ["indexOne"])) {
+				if (inside(call, regions(parsed, STEP_OPENERS), parsed)) continue;
+				const method = enclosingFunction(call);
+				if (method !== undefined && CALLER_HELD.has(method)) continue;
+				offenders.push(`${shortName(parsed)}:${lineOf(parsed, call)} parses in ${method ?? "a free function"}`);
+			}
 		}
 
 		expect(

@@ -12,7 +12,7 @@ import type {
 import ts from "typescript";
 import { moduleBindings, sameModulePath } from "./move-dependencies.js";
 import { append, blockedSite, type PlannedImport, type Quote, quoted } from "./move-imports.js";
-import type { SpecifierRenderer, SpecifierRenderResult } from "./project.js";
+import type { SpecifierRenderer, SpecifierRenderResult } from "./specifier-resolution.js";
 
 ////////////////////////////////
 //  Interfaces & Types

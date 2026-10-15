@@ -190,7 +190,7 @@ export function importInsertion(
 export function useSiteBlocks(facts: PythonMoveFacts, sites: Range[]): BlockedSite[] {
 	return sites.map((site) => {
 		const literal = facts.literals.some(
-			(candidate) => candidate.kind === "string" && rangeContains(candidate.range, site),
+			(candidate) => candidate.kind === "string" && rangeInRange(candidate.range, site),
 		);
 		return blockedSite(
 			site,
@@ -225,7 +225,7 @@ export function locateImportSite(
 		(candidate) =>
 			candidate.kind === "from" &&
 			candidate.specifier === site.specifier &&
-			rangeContains(candidate.range, site.range),
+			rangeInRange(candidate.range, site.range),
 	);
 	if (statement === undefined) {
 		return {
@@ -287,7 +287,7 @@ export function rewriteStatement(
 	groups: Array<{ specifier: string; aliases: PythonImportAlias[] }>,
 	blockedRange: Range,
 ): { edit?: TextEdit; blocked?: BlockedSite } {
-	if (facts.comments.some((comment) => rangeContains(statement.range, comment.range))) {
+	if (facts.comments.some((comment) => rangeInRange(statement.range, comment.range))) {
 		return {
 			blocked: blockedSite(blockedRange, "NotImplemented", "the import holds a comment the rewrite would drop"),
 		};
@@ -304,7 +304,7 @@ function aliasMatches(alias: PythonImportAlias, site: MoveImportSite): boolean {
 	const ranges = [alias.importedRange, alias.localRange, alias.range].filter(
 		(range): range is Range => range !== undefined && range !== null,
 	);
-	return ranges.some((range) => rangeContains(range, site.range) || rangeContains(site.range, range));
+	return ranges.some((range) => rangeInRange(range, site.range) || rangeInRange(site.range, range));
 }
 
 function formatFromImport(specifier: string, aliases: PythonImportAlias[]): string {
@@ -488,14 +488,6 @@ export function declaresName(
 
 export function sameModule(left: string, right: string): boolean {
 	return path.posix.normalize(left.replace(/\\/g, "/")) === path.posix.normalize(right.replace(/\\/g, "/"));
-}
-
-////////////////////////////////
-//  Ranges
-
-// Inclusive at both ends.
-function rangeContains(outer: Range, inner: Range): boolean {
-	return rangeInRange(outer, inner);
 }
 
 ////////////////////////////////

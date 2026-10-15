@@ -93,7 +93,7 @@ which the daemon reads as `{}`. The answer is `{ kind: "response", id, ok: true,
 `{ kind: "response", id, ok: false, error }`, where `error` is the message of whatever the handler
 threw. An error frame may also carry `starting`, `retryInMs` and `waitingFor`, covered below.
 
-A request may carry `gateWaitMs` (protocol 6.1.0, at most 60 seconds): how long a read may wait to
+A request may carry `gateWaitMs` (at most 60 seconds): how long a read may wait to
 enter the workspace gate behind a batch or a step. Past it the read leaves the queue, never runs, and
 answers `code: "busy"`; zero admits only a read admissible now. One budget covers a read's
 pre-work and its entry: a symbol read stops waiting on its tree upgrade when the budget runs out and
@@ -150,7 +150,7 @@ control    no      no     no     answered               shutdown, answered even 
 
 A warming request answered `starting` still starts indexing once the handler lands. An unknown
 name is refused as `unknown method` before and after the handler, and starts nothing.
-`indexWorkspace` (protocol 3.9.0) starts indexing and answers the index status at once.
+`indexWorkspace` starts indexing and answers the index status at once.
 
 A daemon that finds its lock gone, or rewritten by another pid, refuses the request that noticed
 with `...; the daemon is stopping`, closes its server, and every client lands on its reconnect
@@ -161,7 +161,7 @@ method the table marks `mutates` may already have landed, so its loss is reporte
 `connectionLost` with the outcome unknown rather than repeated.
 
 Asked to stop, a daemon refuses every further request with the daemon's own `the daemon is
-stopping`, carrying `code: "stopping"` on the error frame (protocol 3.6.0), so a client retiring it
+stopping`, carrying `code: "stopping"` on the error frame, so a client retiring it
 waits on that lock the same way it waits on a delete's, rather than reading the refusal as final; a
 client meeting an older daemon with no `code` falls back to matching the message exactly. A live
 watcher batch under way when this happens is abandoned at its next file boundary rather than run to
@@ -268,13 +268,13 @@ declaration refuses when its indexed file hash differs from the current text. In
 uses the current text as its base. An identical block returns `present`. The block takes the
 anchor's indentation, except the later lines of a multiline literal, which stay as written unless
 the provider marks the literal `dedented` (its language strips that indentation). With
-`moduleText` (protocol 6.5.0), the anchor module's text as the caller holds it, unsaved edits
+`moduleText`, the anchor module's text as the caller holds it, unsaved edits
 included, that text is the base: the anchor and its siblings come from the owning provider's parse
 of it. It refuses an anchor the text no longer declares, one whose name it declares a different
 number of times (the id would name another copy), and a module gone from disk. `refactorInsert`
 takes no `moduleText`; it writes against disk.
 
-`previewReplace` (`{ module, contentHash, text }`, protocol 6.4.0) judges whole-module text against
+`previewReplace` (`{ module, contentHash, text }`) judges whole-module text against
 the stored text named by `contentHash`, as `refactorReplace` judges a symbol's. It returns `planned`
 with the base `contentHash` and issues raised across the index by the owning provider's parse of
 `text` (unbound names, orphaned uses, vanished symbols still in use), or `refused`. If the index no
@@ -585,18 +585,17 @@ These reads let a client draw what surrounds one symbol without walking the stor
 - **Notes:** `readNote`, `writeNote`, `confirmNote`, `doubtNote`, `resolveNoteProposal`,
   `noteBacklinks` and `searchRefs`; `knowledge-layer.md` holds them.
 
-Protocol 3.3.0 changed two answers an older client may count on. `describe.members` no longer lists
-parameters and locals. `referenceCount`, `findReferences`, `mostReferenced`, `graph.fanIn` and
-`graph.fanOut` no longer count import and export lines.
+`describe.members` does not list parameters and locals. `referenceCount`, `findReferences`,
+`mostReferenced`, `graph.fanIn` and `graph.fanOut` do not count import and export lines.
 
 ### Painting
 
-Two reads answer `PaintFacts` (protocol 3.5.0): a module's declarations, references, literals and
+Two reads answer `PaintFacts`: a module's declarations, references, literals and
 comments, shaped for a client that colors code itself rather than running a second parser. A
 declaration's range is its `selectionRange`, the name, never its body. A reference carries `bound`,
-`true` when it resolved to a target, and (protocol 6.1.0) `name`, the identifier as written, and
+`true` when it resolved to a target, and `name`, the identifier as written, and
 `target`, the bound symbol id or null, so a client compares two parses of a module by name and says
-which name stopped binding. An unbound reference carries (protocol 6.2.0) `reason`, its binding's
+which name stopped binding. An unbound reference carries `reason`, its binding's
 `UnknownReason`, `Ambiguous` for several candidates, so an `ExternalDependency` name reads apart from
 one that resolves to nothing. `words` is the owning provider's own vocabulary (keywords, builtins,
 literal words), which facts alone cannot give.
@@ -619,22 +618,22 @@ literal words), which facts alone cannot give.
 that deep yet: a module can sit at `outline` after warmup, whose rows hold neither, so a painter
 that needs references asks `parseFacts` when `moduleFacts`'s `depth` is `outline`.
 
-`parseFacts` reads under the gate. A candidate is one `probeFile` request (protocol 3.12.0): the
+`parseFacts` reads under the gate. A candidate is one `probeFile` request: the
 provider parses the handed text, answers, and puts back what the parse displaced, and the index
 rules on none of it. The last eight parsed candidates are kept by module, content hash and index
 generation, so asking again about unchanged text parses nothing while its candidate is kept.
 
-**`symbolAt`** (`{ module, position, contentHash?, text? }`, protocol 3.10.0) answers which symbol a
+**`symbolAt`** (`{ module, position, contentHash?, text? }`) answers which symbol a
 cursor means: the target of a bound reference under `position`, else the declaration an imported
 name under it imports, else the innermost declaration whose range holds it. An imported name, the
 source name or its local alias, follows the specifier's stored target through re-exports to a
 top-level declaration and answers `via: "reference"`. A declaration its provider marks unexported
 never answers, `export *` passes no default on, and a namespace import answers nothing. An
 unbound or ambiguous reference falls through; nothing is guessed by name. It reads under the gate,
-and the daemon decides the source (protocol 3.12.0):
+and the daemon decides the source:
 
 - A module the store lacks is final. It is `unowned` when no provider uniquely owns it (unclaimed
-  or contested, protocol 3.11.0); otherwise it is `notIndexed`. Handed text is not parsed.
+  or contested); otherwise it is `notIndexed`. Handed text is not parsed.
 - Without `contentHash` or `text`, or when they name the stored bytes, the stored facts answer.
 - Other bytes require a uniquely owning provider. The answer uses a kept candidate or `text` parsed
   like `parseFacts`. Otherwise the result is `unowned`. Handed `text` names its own bytes.
@@ -677,7 +676,7 @@ gate.
 
 ### Adding an import
 
-**`previewImport`** (`{ module, text, name, fromModule }`, protocol 6.3.0) plans the import that
+**`previewImport`** (`{ module, text, name, fromModule }`) plans the import that
 binds `name`, declared in `fromModule`, into the handed `text` of `module`, and writes nothing. The
 module's provider plans it through `importEdits`: the form `fromModule` exports the name in, the
 specifier, and the place, or a join into an import of the same module already there. It answers
@@ -690,7 +689,7 @@ An older daemon answers it as an unknown method.
 
 ## Relations
 
-Protocol 6.6.0. `docs/knowledge-layer.md` holds what a relation is; this is the wire.
+`docs/knowledge-layer.md` describes relations; this section describes their wire representation.
 
 **`relationsOf`** (`{ symbolId, limit?, kinds?, intent?, withDoubted? }`) answers the symbols
 related to one, each with `score` in [0, 1], its strongest `kind`, the five `parts` (`callers`,
@@ -793,9 +792,7 @@ that no longer serves this client. The rules, in the order they are applied:
 costs a protocol major: a client connects to a newer daemon on the premise that everything in its
 table is still answered. A daemon states how far back that holds as `OLDEST_CLIENT_MAJOR`, and a
 major that removes a method raises it, so an older client is told to update rather than meeting
-`unknown method`. Protocol 5.0.0 raised it to 5: a scope landing, the `export` fact kind and the
-rename issue kinds fail a 4.x client's parse. Protocol 7.0.0 raised it to 7, removing `cycles`. A
-new method or a new optional field is a minor.
+`unknown method`. A new method or a new optional field is a minor.
 `PROTOCOL_VERSION` and `oldestClientMajor` are what both rules read, and the welcome frame carries
 both so a client that reached the socket some other way still learns what it is talking to.
 

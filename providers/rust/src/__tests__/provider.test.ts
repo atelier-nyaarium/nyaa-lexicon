@@ -69,6 +69,9 @@ test("discovers Rust files and excludes generated directories", () => {
 	expect(info).not.toHaveProperty("filenames");
 	expect(info.tiers).toEqual(TIERS);
 	expect(info.referenceRoles).toEqual([...REFERENCE_ROLES]);
+	expect(info.words.keywords).toContain("abstract");
+	expect(info.words.keywords).toContain("gen");
+	expect(info.words.literals).toEqual(["false", "true"]);
 	expect(model.files).toEqual(["src/lib.rs", "src/util.rs"]);
 	expect(model.configFiles).toEqual(["Cargo.toml"]);
 	expect(model.diagnostics).toEqual([]);

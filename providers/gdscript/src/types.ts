@@ -75,12 +75,15 @@ interface InferenceContext {
 	tokens: ReferenceToken[];
 	lines: LogicalLine[];
 	declarations: Declaration[];
+	declarationsBySymbol: Map<string, Declaration>;
 	annotations: TypeAnnotationFact[];
 	moduleValues: Map<string, EvalResult>;
-	functions: Map<string, FunctionFact>;
+	functions: Map<string, FunctionFact[]>;
+	classFunctions: Map<string, Map<string, FunctionFact[]>>;
 	functionAnswers: Map<string, EvalResult>;
 	implicitReturns: Map<string, boolean>;
 	activeFunctions: Set<string>;
+	classScopes: (string | undefined)[];
 	depth: number;
 }
 
@@ -236,7 +239,11 @@ function evaluateCall(expression: Extract<Expression, { kind: "call" }>, context
 		const preloaded = context.resolver.resolvePreloadType(context.module, path);
 		if (preloaded !== undefined) return known(value(preloaded.name, undefined, preloaded.symbolId));
 	}
-	const functionFact = context.functions.get(callee.name);
+	const classScope = context.classScopes.at(-1);
+	const candidates = classScope === undefined ? [] : (context.classFunctions.get(classScope)?.get(callee.name) ?? []);
+	if (candidates.length > 1)
+		return unknownResult("NotImplemented", "the called function is ambiguous in its class scope");
+	const functionFact = candidates[0];
 	if (functionFact !== undefined) return inferFunction(functionFact, context);
 	if (callee.name === "preload")
 		return unknownResult("ExternalDependency", "the resource type is outside the indexed type database");
@@ -490,9 +497,9 @@ function headerLinesOf(context: Pick<InferenceContext, "tokens" | "lines">, decl
 
 function functionFacts(
 	context: Pick<InferenceContext, "tokens" | "lines" | "declarations">,
-): Map<string, FunctionFact> {
+): Map<string, FunctionFact[]> {
 	const { tokens, lines } = context;
-	const facts = new Map<string, FunctionFact>();
+	const facts = new Map<string, FunctionFact[]>();
 	for (const declaration of context.declarations) {
 		if (declaration.kind !== "method" || declaration.selectionRange === undefined) continue;
 		const name = tokenIndexAt(tokens, declaration.selectionRange.start);
@@ -503,15 +510,34 @@ function functionFacts(
 		const close = tokens[open]?.value === "(" ? matchingReferenceToken(tokens, open, "(", ")") : -1;
 		const colon = close < 0 ? -1 : blockColon(tokens, header, close + 1);
 		const bodyStart = headerIndex + 1;
-		facts.set(declaration.name, {
+		const fact: FunctionFact = {
 			declaration,
 			headerLines: { first: header.line, last: header.lastLine },
 			inline: { start: colon < 0 ? header.end : colon + 1, end: header.end },
 			bodyStart,
 			bodyEnd: blockEnd(lines, bodyStart, header.indent, lines.length),
-		});
+		};
+		const candidates = facts.get(declaration.symbolId);
+		if (candidates === undefined) facts.set(declaration.symbolId, [fact]);
+		else candidates.push(fact);
 	}
 	return facts;
+}
+
+function functionsByClass(functions: Map<string, FunctionFact[]>): Map<string, Map<string, FunctionFact[]>> {
+	const scopes = new Map<string, Map<string, FunctionFact[]>>();
+	for (const candidates of functions.values()) {
+		for (const fact of candidates) {
+			const classScope = fact.declaration.containerId;
+			if (classScope === undefined) continue;
+			const methods = scopes.get(classScope) ?? new Map<string, FunctionFact[]>();
+			const candidates = methods.get(fact.declaration.name);
+			if (candidates === undefined) methods.set(fact.declaration.name, [fact]);
+			else candidates.push(fact);
+			scopes.set(classScope, methods);
+		}
+	}
+	return scopes;
 }
 
 function declarationInitializer(declaration: Declaration, context: InferenceContext): TokenSpan | null {
@@ -572,7 +598,23 @@ function declarationValue(
 	const initializer = declarationInitializer(declaration, context);
 	return initializer === null
 		? unknownResult("DynamicallyTyped", `the ${scope} has no declared type or initializer`)
-		: inferExpression(initializer, context, environment);
+		: inferInDeclarationScope(initializer, declaration, context, environment);
+}
+
+function inferInDeclarationScope(
+	initializer: TokenSpan,
+	declaration: Declaration,
+	context: InferenceContext,
+	environment: Map<string, EvalResult>,
+): EvalResult {
+	const parent = context.declarationsBySymbol.get(declaration.containerId ?? "");
+	const classScope = parent?.kind === "method" ? parent.containerId : declaration.containerId;
+	context.classScopes.push(classScope);
+	try {
+		return inferExpression(initializer, context, environment);
+	} finally {
+		context.classScopes.pop();
+	}
 }
 
 function inferFunction(functionFact: FunctionFact, context: InferenceContext): EvalResult {
@@ -584,6 +626,7 @@ function inferFunction(functionFact: FunctionFact, context: InferenceContext): E
 	}
 	context.activeFunctions.add(symbolId);
 	context.depth++;
+	context.classScopes.push(functionFact.declaration.containerId);
 	const environment = localEnvironment(functionFact, context);
 	const hasBody = functionFact.bodyStart < functionFact.bodyEnd;
 	const bodyFlow = () =>
@@ -604,6 +647,7 @@ function inferFunction(functionFact: FunctionFact, context: InferenceContext): E
 	context.implicitReturns.set(symbolId, flow.fallsThrough);
 	if (flow.fallsThrough) flow.values.push(value("null", "null"));
 	const result: EvalResult = flow.unknown === undefined ? known(...flow.values) : flow.unknown;
+	context.classScopes.pop();
 	context.depth--;
 	context.activeFunctions.delete(symbolId);
 	context.functionAnswers.set(symbolId, result);
@@ -632,6 +676,8 @@ function inferFile(
 	const lexed = lexSource(text);
 	const tokens = lexed.tokens;
 	const lines = logicalLines(tokens, lexed.lines);
+	const functions = functionFacts({ tokens, lines, declarations });
+	const declarationsBySymbol = new Map(declarations.map((declaration) => [declaration.symbolId, declaration]));
 	const context: InferenceContext = {
 		module,
 		resolver,
@@ -639,12 +685,15 @@ function inferFile(
 		tokens,
 		lines,
 		declarations,
+		declarationsBySymbol,
 		annotations,
 		moduleValues: new Map(),
-		functions: functionFacts({ tokens, lines, declarations }),
+		functions,
+		classFunctions: functionsByClass(functions),
 		functionAnswers: new Map(),
 		implicitReturns: new Map(),
 		activeFunctions: new Set(),
+		classScopes: [],
 		depth: 0,
 	};
 	for (const declaration of declarations) {
@@ -656,16 +705,26 @@ function inferFile(
 			declarationValue(declaration, context, context.moduleValues, "declaration"),
 		);
 	}
-	for (const functionFact of context.functions.values()) {
-		inferFunction(functionFact, context);
+	for (const [symbolId, candidates] of context.functions) {
+		if (candidates.length > 1) {
+			context.functionAnswers.set(
+				symbolId,
+				unknownResult("NotImplemented", "the function is ambiguous in its class scope"),
+			);
+			continue;
+		}
+		const functionFact = candidates[0];
+		if (functionFact !== undefined) inferFunction(functionFact, context);
 	}
 	const inferred = new Map<string, TypeInfo>();
 	for (const declaration of declarations) {
 		if (annotationForDeclaration(declaration, annotations) !== undefined) continue;
 		if (declaration.kind === "method") {
 			const answer = context.functionAnswers.get(declaration.symbolId);
-			if (answer?.status === "known") {
-				const explicitReturns = countReturns(context.functions.get(declaration.name) as FunctionFact, context);
+			const candidates = context.functions.get(declaration.symbolId);
+			const functionFact = candidates?.length === 1 ? candidates[0] : undefined;
+			if (answer?.status === "known" && functionFact !== undefined) {
+				const explicitReturns = countReturns(functionFact, context);
 				const basis = `${explicitReturns} return statement${explicitReturns === 1 ? "" : "s"}${context.implicitReturns.get(declaration.symbolId) === true ? (explicitReturns === 0 ? " with implicit null" : " and implicit null") : ""}`;
 				inferred.set(declaration.symbolId, {
 					status: "inferred",

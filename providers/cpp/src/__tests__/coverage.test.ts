@@ -337,6 +337,9 @@ describe("C++ structural coverage", () => {
 			"literal-forms.cpp",
 			[
 				'const char* one = "a\\n b";',
+				'const char* octal = "\\012";',
+				'const char* hex = "\\x41";',
+				'const char* universal = "\\u00e9\\U0001F600";',
 				'const char* two = R"tag(raw value)tag";',
 				"int mask = 0xff;",
 				"auto suffixedHex = 0xFFFFFFFFull;",
@@ -353,7 +356,13 @@ describe("C++ structural coverage", () => {
 		);
 		const strings = facts.literals.filter((literal) => literal.kind === "string");
 
-		expect(strings.map((literal) => literal.value)).toEqual(["a\n b", "raw value"]);
+		expect(strings.map((literal) => literal.value)).toEqual([
+			"a\n b",
+			"\n",
+			"A",
+			`${String.fromCodePoint(0xe9)}${String.fromCodePoint(0x1f600)}`,
+			"raw value",
+		]);
 		expect(facts.literals.find((literal) => literal.value === "0xff")?.number).toBe(255);
 		expect(facts.literals.find((literal) => literal.value === "0xFFFFFFFFull")?.number).toBe(4294967295);
 		expect(facts.literals.find((literal) => literal.value === "0xffffffffu")?.number).toBe(4294967295);

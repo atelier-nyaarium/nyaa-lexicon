@@ -18,6 +18,14 @@ export {
 	walkChain,
 } from "./chain.js";
 export {
+	type ConditionalBranchSpan,
+	type ConditionalDirectiveSpan,
+	type ConditionalGroup,
+	type ConditionalIssue,
+	type ConditionalResolution,
+	resolveConditionalGroups,
+} from "./conditionalGroups.js";
+export {
 	comparePositions,
 	coordinatesOf,
 	type OffsetRange,
@@ -351,6 +359,7 @@ export {
 	TextEditSchema,
 	unionOf,
 } from "./edits.js";
+export { decodeEscapedLiteral, type EscapedLiteralDialect } from "./escapedLiteral.js";
 export {
 	commentFactId,
 	declarationFactId,
@@ -382,6 +391,16 @@ export {
 	type ImportRefusal,
 	ImportRefusalSchema,
 } from "./importEdits.js";
+export {
+	discoverCompileDatabases,
+	discoverIncludeDirectories,
+	type FoundInclude,
+	findWorkspaceInclude,
+	forcedIncludeDirectories,
+	type IncludeKind,
+	type IncludeSearchList,
+	includeSearchDirectories,
+} from "./includeSearch.js";
 export {
 	type JudgeLoadCycleAnswer,
 	JudgeLoadCycleAnswerSchema,

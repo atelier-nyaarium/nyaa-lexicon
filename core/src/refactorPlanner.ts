@@ -3,231 +3,35 @@
 // Nothing here writes or reindexes, so a plan is always safe to ask for. Providers only through
 // ProviderProbe, which restores its own state in a finally.
 
-import type {
-	FileFacts,
-	Meaning,
-	MoveAnchor,
-	MoveDependency,
-	MoveEditsRequest,
-	MoveImportSite,
-	Position,
-	Range,
-	RenameConcern,
-	RenameSite,
-	TextEdit,
-	UnknownReason,
-} from "@nyaa-lexicon/protocol";
-import {
-	applyEdits,
-	comparePositions,
-	composeSymbolId,
-	coordinatesOf,
-	defined,
-	hashContent,
-	isParameterSymbol,
-	isWithin,
-	normalizeModulePath,
-	ownerOf,
-	parseSymbolId,
-	positionInRange,
-	rangeInRange,
-	rebaseSymbolId,
-	sameRange,
-} from "@nyaa-lexicon/protocol";
-import type { FileEdits } from "./applyEdits.js";
-import { separatedRemoval } from "./arrangeLayout.js";
-import { mergeRemovals } from "./arrangeText.js";
-import { landingKey, narrowed } from "./exportProjection.js";
+import type { FileFacts, MoveAnchor, MoveDependency, Range, TextEdit } from "@nyaa-lexicon/protocol";
 import type { ImportResolver } from "./imports.js";
-import { promoteDependency, promotedFrom, unacknowledgedPromotions } from "./movePromotion.js";
+import { InsertPlanner } from "./insertPlanner.js";
+import { MovePlanner } from "./movePlanner.js";
+import { isDangling } from "./plannerCommon.js";
 import type { ProviderProbe } from "./providerProbe.js";
-import { type FactsSeen, factsMovedSince, type NestingReads, ReadContext, sentReads } from "./readContext.js";
+import { type FactsSeen, factsMovedSince, ReadContext } from "./readContext.js";
 import type { PlannedMove, PlannedRename, PlannedRenameEdits, RenameBlocker } from "./refusalSlots.js";
-import {
-	alreadyInModule,
-	alreadyNamed,
-	anchorCopiesMoved,
-	anchorNeedsTopLevel,
-	anchorNotInText,
-	anchorNotSibling,
-	anchorNotTopLevel,
-	baseMoved,
-	candidateDoesNotParse,
-	editsRefused,
-	landingUnchecked,
-	moduleChangedReindex,
-	moduleNotOnDisk,
-	moduleUnreadable,
-	nameAlreadyDeclared,
-	nameAlreadyImported,
-	nameNotInSource,
-	noInsertionPoint,
-	noProviderOwns,
-	noSingleLineName,
-	nothingToInsert,
-	notStored,
-	occurrencesBlocked,
-	oneAnchorOnly,
-	projectionsUnsettled,
-	providerRefused,
-	type Refusal,
-	replacementRenames,
-	routeChanged,
-	sharesId,
-	sharesSpan,
-	siteBlocked,
-	spanChanged,
-	staleSincePlanned,
-	subjectRefused,
-	unrepresentableModule,
-} from "./refusals.js";
-import { type ModuleTiers, mentionsOf, type ResolvedRoutes, resolveRoutes, startKey } from "./renameRoutes.js";
+import type { Refusal } from "./refusals.js";
+import { RenamePlanner } from "./renamePlanner.js";
 import { proveRename, type RenameCandidate } from "./renameValidation.js";
-import { writableText } from "./sourceRead.js";
-import type { SourceWorkspace, SymbolSource } from "./sourceWorkspace.js";
-import { type IndexStore, resolutionKey, type StoredDeclaration, type StoredImport } from "./store.js";
+import { ReplacementPlanner } from "./replacementPlanner.js";
+import type { SourceWorkspace } from "./sourceWorkspace.js";
+import type { IndexStore, StoredImport } from "./store.js";
 import type { RefactorIssue } from "./transactions.js";
 
 export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } from "@nyaa-lexicon/protocol";
+export { workspaceModule } from "./plannerCommon.js";
 
 ////////////////////////////////
-//  Functions & Helpers
+// Interfaces & Types
 
-function inside(range: Range, at: Position): boolean {
-	return positionInRange(range, at);
-}
-
-function contains(outer: Range, inner: Range): boolean {
-	return rangeInRange(outer, inner);
-}
-
-/** An id without its last occurrence, which every copy of its name path shares. */
-function copiesKey(symbolId: string): string {
-	const id = parseSymbolId(symbolId);
-	const last = id?.descriptors.at(-1);
-	if (id === null || id === undefined || last === undefined) return symbolId;
-	const { occurrence: _occurrence, ...bare } = last;
-	return composeSymbolId({ ...id, descriptors: [...id.descriptors.slice(0, -1), bare] });
-}
-
-/** Member type, or null. */
-function memberOwner(symbolId: string): string | null {
-	const id = parseSymbolId(symbolId);
-	if (id === null || id.local !== undefined || id.descriptors.at(-2)?.kind !== "type") return null;
-	return ownerOf(symbolId);
-}
-
-/** A module a plan may create or write, in its canonical spelling, or why not. */
-export function workspaceModule(raw: string): { module: string } | { refused: Refusal } {
-	try {
-		return { module: normalizeModulePath(raw) };
-	} catch (error) {
-		return { refused: unrepresentableModule(error instanceof Error ? error.message : String(error)) };
-	}
-}
-
-/**
- * Whether a name failing to bind means the code is broken, or merely outside the index.
- *
- * A standard library call answers ExternalDependency and a local answers NotIndexed, and both are
- * correct code. Reporting them would make every edit that calls a method look like breakage, which
- * is what a first run against a real file showed.
- */
-/**
- * A stored provenance back to the reason it came from.
- *
- * An unbound reference stores its reason in the provenance column. Anything else there belongs to
- * a binding that succeeded, which has no reason, so the honest answer is that the index does not
- * hold the target.
- */
-function unknownReasonOf(provenance: string): UnknownReason {
-	return UNKNOWN_REASONS.includes(provenance as UnknownReason) ? (provenance as UnknownReason) : "NotIndexed";
-}
-
-/**
- * Language kinds a use reaches only when the receiver's type has no member of the name: Kotlin and
- * C# extensions, Rust trait methods. Renaming one onto such a member's name moves those uses.
- */
-const REACHED_BY_RESOLUTION_ORDER: ReadonlySet<string> = new Set([
-	"extensionFunction",
-	"extensionProperty",
-	"extensionMethod",
-	"traitMethod",
-	"traitImplMethod",
-]);
-
-const UNKNOWN_REASONS: UnknownReason[] = [
-	"NotImplemented",
-	"DynamicallyTyped",
-	"ExternalDependency",
-	"ParseError",
-	"RecursionLimit",
-	"Ambiguous",
-	"RuntimeConstructed",
-	"BrokenImport",
-	"NotIndexed",
-];
-
-/** The issue kind a provider's rename refusal reads as. */
-const REFUSAL_KINDS: Readonly<Record<string, string>> = {
-	Collision: "NameTaken",
-	NotImplemented: "NotImplemented",
-	ParseError: "ParseError",
-};
-
-function isDangling(reason: string): boolean {
-	return reason !== "ExternalDependency" && reason !== "NotIndexed" && reason !== "DynamicallyTyped";
-}
-
-/** A removal alone on its lines takes them whole, with one blank line beside them. */
-function wholeLines<T extends Pick<MoveEditsRequest, "role">>(request: T, before: string): T {
-	const removal = request.role.removal;
-	if (removal === undefined) return request;
-	const coords = coordinatesOf(before);
-	const first = coords.lineText(removal.start.line);
-	const last = coords.lineText(removal.end.line);
-	if (first === undefined || last === undefined) return request;
-	if (first.slice(0, removal.start.character).trim() !== "" || last.slice(removal.end.character).trim() !== "") {
-		return { ...request, role: { ...request.role, removal: separatedRemoval(before, removal) } };
-	}
-	const blank = (line: number) => coords.lineText(line)?.trim() === "";
-	let start = removal.start.line;
-	let end = removal.end.line + 1;
-	if (blank(end) && coords.lineText(end + 1) !== undefined) end += 1;
-	else if (start > 0 && blank(start - 1)) start -= 1;
-	const to = coords.lineText(end) === undefined ? coords.positionAt(before.length) : { line: end, character: 0 };
-	if (to === undefined) return request;
-	return { ...request, role: { ...request.role, removal: { start: { line: start, character: 0 }, end: to } } };
-}
-
-/** An anchored insertion as whole lines, framed by a blank line where a neighbor is not blank; past the last line, the end. */
-function framed<T extends Pick<MoveEditsRequest, "role">>(request: T, before: string): T {
-	const insertion = request.role.insertion;
-	if (insertion?.position === undefined) return request;
-	const coords = coordinatesOf(before);
-	const { line } = insertion.position;
-	const at = coords.lineText(line);
-	const eol = before.includes("\r\n") ? "\r\n" : "\n";
-	// Past the last line: the text has no final line break, so the insertion ends that line first.
-	if (at === undefined) {
-		const end = coords.positionAt(before.length);
-		if (end === undefined) return request;
-		const text = `${eol}${eol}${insertion.text}`;
-		return { ...request, role: { ...request.role, insertion: { ...insertion, position: end, text } } };
-	}
-	const above = line === 0 ? undefined : coords.lineText(line - 1);
-	const leading = above !== undefined && above.trim().length > 0 ? eol : "";
-	const trailing = at.trim().length > 0 ? eol : "";
-	return {
-		...request,
-		role: { ...request.role, insertion: { ...insertion, text: `${leading}${insertion.text}${trailing}` } },
-	};
-}
-
-/** `text` with its last line ended, in the line ending it already uses. */
-function lineEnded(text: string): string {
-	if (text.endsWith("\n")) return text;
-	return `${text}${text.includes("\r\n") ? "\r\n" : "\n"}`;
+/** How many times one name in one role failed to bind, kept with the parts so nothing re-splits. */
+interface UnboundTally {
+	name: string;
+	role: string;
+	/** Why the provider could not bind it, so a report says more than "does not resolve". */
+	reason: string;
+	count: number;
 }
 
 /**
@@ -247,23 +51,6 @@ function countUnbound(rows: Array<{ name: string; role: string; reason: string }
 		else counts.set(key, { name: row.name, role: row.role, reason: row.reason, count: 1 });
 	}
 	return counts;
-}
-
-/** Routes not yet followed, mentions not yet counted. */
-function untraced(): Pick<PlannedRename, "routes" | "mentions"> {
-	return { routes: { edges: [], modules: [] }, mentions: { comments: 0, strings: 0, incomplete: true } };
-}
-
-////////////////////////////////
-//  Interfaces & Types
-
-/** How many times one name in one role failed to bind, kept with the parts so nothing re-splits. */
-interface UnboundTally {
-	name: string;
-	role: string;
-	/** Why the provider could not bind it, so a report says more than "does not resolve". */
-	reason: string;
-	count: number;
 }
 
 /**
@@ -336,28 +123,16 @@ export type InsertPlan =
 	| { state: "present"; module: string }
 	| { state: "refused"; reason: Refusal };
 
-/** Block lines inside a multiline literal: kept as written, or re-indented with the literal. */
-interface LiteralLines {
-	kept: Set<number>;
-	dedented: Set<number>;
-}
-
-/** Where an insert lands. `line` null means append at end of file. */
-interface SplicePoint {
-	module: string;
-	before: string;
-	created: boolean;
-	line: number | null;
-	indent: string;
-	/** Blank line between block and what follows; true only above a sibling. */
-	trailingBlank: boolean;
-}
-
 ////////////////////////////////
-//  Class
+// Class
 
 /** Reads a module it will write through `SourceWorkspace.writable`. */
 export class RefactorPlanner {
+	private readonly replacementPlanner: ReplacementPlanner;
+	private readonly insertPlanner: InsertPlanner;
+	private readonly movePlanner: MovePlanner;
+	private readonly renamePlanner: RenamePlanner;
+
 	constructor(
 		private readonly store: IndexStore,
 		private readonly imports: ImportResolver,
@@ -366,7 +141,25 @@ export class RefactorPlanner {
 		/** The candidate proof; a planner test that is not about it passes its own. */
 		private readonly prove: (candidate: RenameCandidate) => Promise<RenameBlocker[]> = (candidate) =>
 			proveRename(store, probe, candidate),
-	) {}
+	) {
+		this.replacementPlanner = new ReplacementPlanner(
+			this.store,
+			this.source,
+			this.probe,
+			(context, module, candidate) => this.impactWithin(context, module, candidate),
+			(providerId, module) => this.syntaxUnchecked(providerId, module),
+		);
+		this.insertPlanner = new InsertPlanner(
+			this.store,
+			this.source,
+			this.probe,
+			(context, module, candidate) => this.impactWithin(context, module, candidate),
+			(providerId, module) => this.syntaxUnchecked(providerId, module),
+		);
+		this.movePlanner = new MovePlanner(this.store, this.imports, this.source, this.probe);
+		// Keep the rename proof bound to this facade's store and probe.
+		this.renamePlanner = new RenamePlanner(this.store, this.imports, this.source, this.probe, this.prove);
+	}
 
 	/**
 	 * What replacing one symbol's text would do, without writing anything.
@@ -380,46 +173,7 @@ export class RefactorPlanner {
 		newText: string,
 		expectedSpanHash?: string,
 	): Promise<ReplacementPlan> {
-		const read = this.source.symbolSourceRead(address);
-		if (!read.found) return { ok: false, reason: read.reason };
-		const { fileText: before, ...source } = read;
-		const unwritable = writableText(source.module, newText);
-		if (unwritable !== null) return { ok: false, reason: unwritable };
-
-		const context = new ReadContext(this.store);
-		const guard = this.replacementGuard(context, address, source);
-		if (guard) return { ok: false, reason: guard };
-		if (expectedSpanHash !== undefined && source.spanHash !== expectedSpanHash) {
-			return { ok: false, reason: spanChanged(source.module, source.name), stale: true };
-		}
-
-		const spliced = applyEdits(before, [{ range: source.range, newText }]);
-		if ("problem" in spliced) return { ok: false, reason: editsRefused(spliced.problem) };
-
-		const owner = this.probe.owner(source.module);
-		if (!owner.owned) return { ok: false, reason: noProviderOwns(source.module) };
-
-		// The probe restores the provider's view of the module before it returns, on every path, so
-		// nothing below has to remember to.
-		const candidate = await this.probe.parseCandidate(source.module, spliced.text);
-		if (!candidate.parsed) return { ok: false, reason: candidateDoesNotParse("replacement", candidate.reason) };
-
-		const renamed = this.renamedDeclaration(context, address, candidate.facts, source);
-		if (renamed) return { ok: false, reason: renamed };
-
-		const issues = this.impactWithin(context, source.module, candidate.facts);
-		const unchecked = this.syntaxUnchecked(owner.providerId, source.module);
-		if (unchecked !== null) issues.push(unchecked);
-
-		return {
-			ok: true,
-			module: source.module,
-			text: spliced.text,
-			range: source.range,
-			baseHash: source.contentHash,
-			facts: context.seen(),
-			issues,
-		};
+		return this.replacementPlanner.planReplacement(address, newText, expectedSpanHash);
 	}
 
 	/** What writing `text` over a whole module would break, judged against the stored text; nothing is written. */
@@ -428,277 +182,130 @@ export class RefactorPlanner {
 		contentHash: string;
 		text: string;
 	}): Promise<WholeReplacementPlan> {
-		const stored = this.store.contentHashOf(args.module);
-		if (stored === null) return { ok: false, reason: notStored(args.module) };
-		if (stored !== args.contentHash) return { ok: false, reason: baseMoved(args.module), stale: true };
-		const unwritable = writableText(args.module, args.text);
-		if (unwritable !== null) return { ok: false, reason: unwritable };
-		const owner = this.probe.owner(args.module);
-		if (!owner.owned) return { ok: false, reason: noProviderOwns(args.module, owner.reason) };
-		const candidate = await this.probe.parseCandidate(args.module, args.text);
-		if (!candidate.parsed) return { ok: false, reason: candidateDoesNotParse("replacement", candidate.reason) };
+		return this.replacementPlanner.planWholeReplacement(args);
+	}
 
-		const issues = this.impactWithin(new ReadContext(this.store), args.module, candidate.facts);
-		const unchecked = this.syntaxUnchecked(owner.providerId, args.module);
-		if (unchecked !== null) issues.push(unchecked);
+	/** Owns insertion splice selection for `previewInsert`. See `docs/daemon-protocol.md`. */
+	async planInsert(args: InsertArgs): Promise<InsertPlan> {
+		return this.insertPlanner.planInsert(args);
+	}
 
-		return { ok: true, module: args.module, baseHash: args.contentHash, issues };
+	/** Importers are found from stored references and imports, each written by the provider owning the
+	 * file it is in. One claiming neither reported none, which is not the same as there being none. */
+	importersUnfound(modules: string[]): RefactorIssue[] {
+		return this.movePlanner.importersUnfound(modules);
+	}
+
+	/** Derives move facts for `previewMove` from one read context. See `docs/daemon-protocol.md`. */
+	planMove(
+		symbolId: string,
+		rawTarget: string,
+		context: ReadContext,
+		anchor?: MoveAnchor,
+		promote = false,
+	): PlannedMove {
+		return this.movePlanner.planMove(symbolId, rawTarget, context, anchor, promote);
+	}
+
+	/** Collects provider edits for `previewMove`. See `docs/daemon-protocol.md`. */
+	async moveEdits(plan: Extract<PlannedMove, { ok: true }>, context: ReadContext): Promise<MoveEditsOutcome> {
+		return this.movePlanner.moveEdits(plan, context);
+	}
+
+	/**
+	 * Whether the moved symbol is still reachable from everywhere that used it.
+	 *
+	 * Run after the reindex, because the question is about what the providers concluded rather than
+	 * what the edits looked like. A specifier that is syntactically fine and points nowhere produces
+	 * exactly this: an importer whose reference no longer binds.
+	 */
+	checkMoveLanded(name: string, modules: string[]): RefactorIssue[] {
+		return this.movePlanner.checkMoveLanded(name, modules);
+	}
+
+	/** Re-mints one id of a moved closure for its new module. */
+	rebaseIntoModule(id: string, movedId: string, toModule: string): string | null {
+		return this.movePlanner.rebaseIntoModule(id, movedId, toModule);
+	}
+
+	/**
+	 * Every name the moved body uses, with what the index proved about where it comes from.
+	 *
+	 * Walked over the whole closure rather than over references owned by the moved symbol, because
+	 * a moved class's body references belong to its METHODS and a top-level initializer may be
+	 * owned by nothing at all.
+	 */
+	dependenciesOf(module: string, closure: string[], symbolId: string, context: ReadContext): MoveDependency[] {
+		return this.movePlanner.dependenciesOf(module, closure, symbolId, context);
+	}
+
+	/**
+	 * Every id a rename re-mints, old to new.
+	 *
+	 * A member's id carries its container's descriptors, so renaming a class re-mints its methods
+	 * and their parameters too. Migrating only the class itself would strand everything written
+	 * about them under ids nothing resolves.
+	 */
+	renameIdMap(symbolId: string, newName: string, context: ReadContext): Map<string, string> {
+		return this.renamePlanner.renameIdMap(symbolId, newName, context);
+	}
+
+	/**
+	 * Modules whose stored facts name an id the rename re-mints, whether or not their text changes.
+	 *
+	 * A file calling a renamed class's METHOD contains no occurrence of the class name, so it gets
+	 * no edit, yet its reference rows point at ids that are about to stop existing. Left alone it
+	 * would keep answering with them.
+	 */
+	modulesBoundTo(ids: Iterable<string>, context: ReadContext): string[] {
+		return this.renamePlanner.modulesBoundTo(ids, context);
+	}
+
+	/**
+	 * What renaming a symbol would touch, and what stands in the way. Reads only.
+	 *
+	 * The whole reason this is separate from applying: a rename is honest only over a set that is
+	 * provably closed, and closedness is a question the index can answer without editing anything.
+	 * The occurrences come from bound edges and proved routes alone, because a name match is a guess
+	 * and a guess is acceptable in a reading tool and disqualifying in a writing one.
+	 */
+	async prepareRename(
+		symbolId: string,
+		newName: string,
+		context: ReadContext,
+		stops: readonly string[] = [],
+	): Promise<PlannedRename> {
+		return this.renamePlanner.prepareRename(symbolId, newName, context, stops);
+	}
+
+	/** Relied edges whose live landing differs from the stored one, or could not be checked. */
+	async landingsMoved(relied: readonly StoredImport[]): Promise<RenameBlocker[]> {
+		return this.renamePlanner.landingsMoved(relied);
+	}
+
+	/** Builds the complete edit set for `renameEdits`. See `docs/daemon-protocol.md`. */
+	async renameEdits(
+		symbolId: string,
+		newName: string,
+		context: ReadContext = new ReadContext(this.store),
+		stops: readonly string[] = [],
+	): Promise<PlannedRenameEdits> {
+		return this.renamePlanner.renameEdits(symbolId, newName, context, stops);
+	}
+
+	/** The edit set, proved against every provider's view of it, and the import edges a writer checks again. */
+	async planRenameEdits(
+		symbolId: string,
+		newName: string,
+		context: ReadContext,
+		stops: readonly string[] = [],
+	): Promise<{ edits: PlannedRenameEdits; relied: StoredImport[] }> {
+		return this.renamePlanner.planRenameEdits(symbolId, newName, context, stops);
 	}
 
 	/** Modules whose stored facts changed after the read context captured them. */
 	factsMoved(seen: FactsSeen[]): string[] {
 		return factsMovedSince(seen, this.store);
-	}
-
-	/** Owns insertion splice selection for `previewInsert`. See `docs/daemon-protocol.md`. */
-	async planInsert(args: InsertArgs): Promise<InsertPlan> {
-		const flush = args.text.replace(/\s+$/, "");
-		if (flush.trim().length === 0) return { state: "refused", reason: nothingToInsert() };
-		if ((args.after === undefined) === (args.module === undefined)) {
-			return { state: "refused", reason: oneAnchorOnly() };
-		}
-
-		const context = new ReadContext(this.store);
-		const sent = args.moduleText;
-		let reads: NestingReads = context;
-		if (args.after !== undefined && sent !== undefined) {
-			const anchor = context.declaration(args.after);
-			if (!anchor) return { state: "refused", reason: subjectRefused(args.after, this.store) };
-			const parsed = await this.parsedReads(anchor.module, sent);
-			if ("refused" in parsed) return { state: "refused", reason: parsed.refused };
-			// Copies of a name path number in source order, so one added or removed above shifts the id.
-			const key = copiesKey(args.after);
-			const copies = (rows: StoredDeclaration[]) => rows.filter((row) => copiesKey(row.symbolId) === key).length;
-			const held = parsed.declaration(args.after) !== null;
-			if (held && copies(context.heldIn(anchor.module)) !== copies(parsed.heldIn(anchor.module)))
-				return { state: "refused", reason: anchorCopiesMoved(args.after, anchor.module) };
-			reads = parsed;
-		}
-		const point =
-			args.after !== undefined
-				? this.afterPoint(context, reads, args.after, sent)
-				: this.endPoint(args.module as string, sent);
-		if ("refused" in point) return { state: "refused", reason: point.refused };
-		const unwritable = writableText(point.module, args.text);
-		if (unwritable !== null) return { state: "refused", reason: unwritable };
-
-		const lines = flush.split("\n");
-		const indented = ({ kept, dedented }: LiteralLines) =>
-			lines
-				.map((line, at) => {
-					if (kept.has(at)) return line;
-					// Whitespace a dedented literal holds beyond its indent is part of its value.
-					if (line.trim().length === 0 && !(dedented.has(at) && line.length > 0)) return "";
-					return point.indent + line;
-				})
-				.join("\n");
-		let block = indented({ kept: new Set(), dedented: new Set() });
-		// A multiline literal keeps its own lines, unless its language strips their indentation.
-		if (point.indent !== "") {
-			const literal = await this.literalLines(point, block, lines.length);
-			if (literal.kept.size > 0 || literal.dedented.size > 0) block = indented(literal);
-		}
-
-		if (this.blockPresent(point, block)) return { state: "present", module: point.module };
-
-		const spliced = this.spliceBlock(point, block);
-		if ("problem" in spliced) return { state: "refused", reason: editsRefused(spliced.problem) };
-		const candidate = spliced.text;
-
-		const owner = this.probe.owner(point.module);
-		if (!owner.owned) return { state: "refused", reason: noProviderOwns(point.module, owner.reason) };
-
-		const parsed = await this.probe.parseCandidate(point.module, candidate);
-		if (!parsed.parsed) return { state: "refused", reason: candidateDoesNotParse("insert", parsed.reason) };
-
-		const issues = this.impactWithin(context, point.module, parsed.facts);
-		const unchecked = this.syntaxUnchecked(owner.providerId, point.module);
-		if (unchecked !== null) issues.push(unchecked);
-		issues.push(...this.collisionWarnings(context, point.module, parsed.facts));
-
-		return {
-			state: "planned",
-			module: point.module,
-			created: point.created,
-			candidate,
-			edits: spliced.edits,
-			block,
-			baseHash: point.created ? null : hashContent(point.before),
-			facts: context.seen(),
-			issues,
-		};
-	}
-
-	/** The block's lines inside a multiline literal, by index, split by whether its language strips their indentation. */
-	private async literalLines(point: SplicePoint, block: string, count: number): Promise<LiteralLines> {
-		const lines: LiteralLines = { kept: new Set(), dedented: new Set() };
-		if (!this.probe.owner(point.module).owned) return lines;
-		const spliced = this.spliceBlock(point, block);
-		if ("problem" in spliced) return lines;
-		const first = spliced.line;
-		const parsed = await this.probe.parseCandidate(point.module, spliced.text);
-		if (!parsed.parsed) return lines;
-		for (const literal of parsed.facts.literals) {
-			const into = literal.dedented === true ? lines.dedented : lines.kept;
-			for (let line = literal.range.start.line + 1; line <= literal.range.end.line; line++) {
-				if (line - first >= 0 && line - first < count) into.add(line - first);
-			}
-		}
-		return lines;
-	}
-
-	/** Sent text's own declarations, standing in for the stored rows of its module. */
-	private async parsedReads(module: string, text: string): Promise<NestingReads | { refused: Refusal }> {
-		const owner = this.probe.owner(module);
-		if (!owner.owned) return { refused: noProviderOwns(module, owner.reason) };
-		const parsed = await this.probe.parseCandidate(module, text);
-		if (!parsed.parsed) return { refused: candidateDoesNotParse("sent text", parsed.reason) };
-		return sentReads(module, parsed.facts.declarations);
-	}
-
-	/** The splice for a sibling anchor, or an honest refusal where no sound point exists. */
-	private afterPoint(
-		context: ReadContext,
-		reads: NestingReads,
-		after: string,
-		sent: string | undefined,
-	): SplicePoint | { refused: Refusal } {
-		const stored = context.declaration(after);
-		if (!stored) return { refused: subjectRefused(after, this.store) };
-		const module = stored.module;
-		const current = this.source.writable(module);
-		if ("refused" in current) return current;
-		if (current.text === null) return { refused: moduleNotOnDisk(module) };
-		const before = sent ?? current.text;
-
-		// The stored ranges address ONE version of the file; a moved file makes them wrong lines.
-		const indexed = this.store.contentHashOf(module);
-		if (sent === undefined && indexed !== null && indexed !== hashContent(before)) {
-			return { refused: moduleChangedReindex(module) };
-		}
-		const anchor = reads.declaration(after);
-		if (!anchor) return { refused: anchorNotInText(after, module) };
-
-		// The name line is the declaration line; the range starts at leading comments, which may
-		// legally indent differently.
-		if (
-			anchor.selectionRange === undefined ||
-			anchor.selectionRange.start.line !== anchor.selectionRange.end.line
-		) {
-			return { refused: noSingleLineName(anchor.name) };
-		}
-		const coords = coordinatesOf(before);
-		const nameLine = coords.lineText(anchor.selectionRange.start.line);
-		if (nameLine === undefined) return { refused: moduleChangedReindex(module) };
-		const indent = /^[ \t]*/.exec(nameLine)?.[0] ?? "";
-
-		const shared = (who: string) => ({ refused: noInsertionPoint(who) });
-
-		const container = anchor.containerId === undefined ? null : reads.declaration(anchor.containerId);
-		if (anchor.containerId !== undefined && !container) {
-			return { refused: subjectRefused(anchor.containerId, this.store) };
-		}
-		// A member written outside its container's body, as a Rust impl method or a C++ out-of-line
-		// definition, sits in a block no fact here names.
-		if (container && !contains(container.range, anchor.range)) return shared(container.name);
-
-		// Only siblings inside the container's body: a member's follower cannot be top-level or in
-		// another block. Declarator and overload groups share ranges and never compete.
-		let next: StoredDeclaration | null = null;
-		for (const candidate of reads.heldBy(module, anchor.containerId)) {
-			if (candidate.symbolId === anchor.symbolId) continue;
-			if (isWithin(candidate.symbolId, anchor.symbolId)) continue;
-			if (sameRange(candidate.range, anchor.range)) continue;
-			if (comparePositions(candidate.range.start, anchor.range.end) < 0) continue;
-			if (container && !contains(container.range, candidate.range)) continue;
-			if (next === null || comparePositions(candidate.range.start, next.range.start) < 0) next = candidate;
-		}
-
-		if (next !== null) {
-			if (next.range.start.line === anchor.range.end.line) return shared(next.name);
-			return { module, before, created: false, line: next.range.start.line, indent, trailingBlank: true };
-		}
-
-		if (!container) return { module, before, created: false, line: null, indent, trailingBlank: false };
-		// The provider names the line; the anchor must end before it.
-		const line = container.memberInsertLine;
-		if (line === undefined || anchor.range.end.line >= line) return shared(container.name);
-		return { module, before, created: false, line, indent, trailingBlank: false };
-	}
-
-	private endPoint(rawModule: string, sent: string | undefined): SplicePoint | { refused: Refusal } {
-		// "Created if absent" must never mean created OUTSIDE the workspace.
-		const target = workspaceModule(rawModule);
-		if ("refused" in target) return target;
-		const module = target.module;
-		const current = this.source.writable(module);
-		if ("refused" in current) return current;
-		// Sent text is an open file's, so one gone from disk is not created.
-		if (sent !== undefined && current.text === null) return { refused: moduleNotOnDisk(module) };
-		return {
-			module,
-			before: sent ?? current.text ?? "",
-			created: current.text === null,
-			line: null,
-			indent: "",
-			trailingBlank: false,
-		};
-	}
-
-	/** The retry answer: true when the exact block already sits where the splice would put it. */
-	private blockPresent(point: SplicePoint, block: string): boolean {
-		if (point.line !== null) {
-			const start = coordinatesOf(point.before).offsetAt({ line: point.line, character: 0 });
-			if (start === undefined) return false;
-			const window = point.before.slice(start, start + block.length);
-			const following = point.before.slice(start + block.length, start + block.length + 1);
-			return window === block && (following === "\n" || following === "");
-		}
-		const trimmed = point.before.replace(/\n+$/, "");
-		if (!trimmed.endsWith(block)) return false;
-		return trimmed.length === block.length || trimmed[trimmed.length - block.length - 1] === "\n";
-	}
-
-	/** Whole-line splice, framed by blank lines where the neighbors are not already blank. `line` is the block's first. */
-	private spliceBlock(
-		point: SplicePoint,
-		block: string,
-	): { text: string; edits: TextEdit[]; line: number } | { problem: string } {
-		const splice = this.spliceEdit(point, block);
-		if ("problem" in splice) return splice;
-		const { edit, lead } = splice;
-		const applied = applyEdits(point.before, [edit]);
-		return "problem" in applied
-			? applied
-			: { text: applied.text, edits: [edit], line: edit.range.start.line + lead };
-	}
-
-	/** The edit, and how many newlines it writes before the block. */
-	private spliceEdit(point: SplicePoint, block: string): { edit: TextEdit; lead: number } | { problem: string } {
-		const coords = coordinatesOf(point.before);
-		if (point.line !== null) {
-			const above = point.line === 0 ? undefined : coords.lineText(point.line - 1);
-			const leadingBlank = above !== undefined && above.trim().length > 0 ? "\n" : "";
-			const at = { line: point.line, character: 0 };
-			return {
-				edit: {
-					range: { start: at, end: at },
-					newText: `${leadingBlank}${block}\n${point.trailingBlank ? "\n" : ""}`,
-				},
-				lead: leadingBlank.length,
-			};
-		}
-
-		const end = coords.positionAt(point.before.length);
-		if (end === undefined) return { problem: `the end of ${point.module} has no position` };
-		const range = { start: end, end };
-		if (point.before.length === 0) return { edit: { range, newText: `${block}\n` }, lead: 0 };
-		const newline = point.before.endsWith("\n") ? "" : "\n";
-		const separator = `${point.before}${newline}`.endsWith("\n\n") ? "" : "\n";
-		return {
-			edit: { range, newText: `${newline}${separator}${block}\n` },
-			lead: newline.length + separator.length,
-		};
 	}
 
 	/** Silence from a provider that never claimed syntax reporting is not approval. Said out loud,
@@ -710,541 +317,6 @@ export class RefactorPlanner {
 			detail: `the provider for ${module} does not report syntax errors, so the candidate was not checked`,
 			module,
 		};
-	}
-
-	/** Importers are found from stored references and imports, each written by the provider owning the
-	 * file it is in. One claiming neither reported none, which is not the same as there being none. */
-	importersUnfound(modules: string[]): RefactorIssue[] {
-		const issues: RefactorIssue[] = [];
-		for (const module of new Set(modules)) {
-			const owner = this.probe.owner(module);
-			if (!owner.owned) continue;
-			const missing = (["references", "imports"] as const).filter(
-				(tier) => !this.probe.declares(owner.providerId, tier),
-			);
-			if (missing.length === 0) continue;
-			issues.push({
-				kind: "ImportersUnchecked",
-				detail: `the provider for ${module} reports no ${missing.join(" and no ")}, so uses of the moved symbol there were not looked for`,
-				module,
-			});
-		}
-		return issues;
-	}
-
-	/** Insert is rename's mirror: a new binder lands among existing uses. Whether that captures
-	 * them is a language question core must not answer, so it is a warning, never a blocker. */
-	private collisionWarnings(context: ReadContext, module: string, candidate: FileFacts): RefactorIssue[] {
-		const warnings: RefactorIssue[] = [];
-
-		for (const minted of candidate.declarations) {
-			if (context.holds(module, minted.symbolId)) continue;
-			const declared = context
-				.heldBy(module, minted.containerId)
-				.filter((existing) => existing.name === minted.name);
-			// Imports are module-level, provably not inside a member container.
-			const imported =
-				minted.containerId === undefined
-					? context.importsBinding(minted.name).filter((entry) => entry.module === module)
-					: [];
-			if (declared.length === 0 && imported.length === 0) continue;
-			warnings.push({
-				kind: "NameAlreadyBound",
-				detail: `${minted.name} is already ${declared.length > 0 ? "declared" : "imported"} here; existing uses of the name may rebind to the inserted declaration`,
-				module,
-			});
-		}
-		return warnings;
-	}
-
-	/** Derives move facts for `previewMove` from one read context. See `docs/daemon-protocol.md`. */
-	planMove(
-		symbolId: string,
-		rawTarget: string,
-		context: ReadContext,
-		anchor?: MoveAnchor,
-		promote = false,
-	): PlannedMove {
-		const target = workspaceModule(rawTarget);
-		if ("refused" in target) return { ok: false, reason: target.refused };
-		const toModule = target.module;
-
-		const declaration = context.declaration(symbolId);
-		if (!declaration) return { ok: false, reason: subjectRefused(symbolId, this.store) };
-		// With an anchor the target may be the source: a reorder, with no import to write.
-		const reorder = declaration.module === toModule;
-		if (reorder && anchor === undefined) return { ok: false, reason: alreadyInModule(declaration.name, toModule) };
-
-		const source = this.source.symbolSourceRead({ symbolId });
-		if (!source.found) return { ok: false, reason: source.reason };
-
-		// The id grammar's own subtree, not the container walk: `isWithin` and `rebaseSymbolId`
-		// read the id string, never a stored containerId.
-		const closure = context.symbolIdsIn(declaration.module).filter((candidate) => isWithin(candidate, symbolId));
-		const placed =
-			anchor === undefined ? undefined : this.anchorLine(anchor, declaration, toModule, closure, context);
-		if (placed !== undefined && "refused" in placed) return { ok: false, reason: placed.refused };
-
-		// Declared at the target already, so nothing to import there.
-		const dependencies = this.dependenciesOf(declaration.module, closure, symbolId, context)
-			.filter(
-				(dependency) => dependency.origin.kind !== "workspaceModule" || dependency.origin.module !== toModule,
-			)
-			.map((dependency) => promoteDependency(dependency, promote));
-		const promoted = promotedFrom(dependencies);
-
-		// Modules whose imports name the moved symbol, plus the source itself when something left
-		// behind still uses it.
-		const referencing = new Set(
-			context
-				.referencesTo(symbolId)
-				.map((reference) => reference.module)
-				.filter((module) => module !== declaration.module),
-		);
-		const usedAtSource = context
-			.referencesTo(symbolId)
-			.some((reference) => reference.module === declaration.module && !this.inRange(reference, source.range));
-
-		return {
-			ok: true,
-			symbolId,
-			name: declaration.name,
-			fromModule: declaration.module,
-			toModule,
-			text: source.text,
-			removal: source.range,
-			closure,
-			dependencies: reorder ? [] : dependencies,
-			// Present only when promoting, so a plain plan answers as it always has.
-			...(reorder || promoted.length === 0 ? {} : { promoted }),
-			referencing: reorder ? [] : [...referencing],
-			usedAtSource: !reorder && usedAtSource,
-			exportsAtTarget: !reorder && (usedAtSource || referencing.size > 0) && declaration.exported === false,
-			baseHash: source.contentHash,
-			...defined({
-				insertion: placed === undefined ? undefined : { line: placed.line, character: 0 },
-				restore: this.restoreAnchor(declaration, context),
-			}),
-		};
-	}
-
-	/** The declarations a move may land beside: its siblings for a reorder, else the target's top level; null for a nested one leaving. */
-	private siblingsOf(moved: StoredDeclaration, toModule: string, context: ReadContext): StoredDeclaration[] | null {
-		const container = context.ancestorsOf(moved)[0];
-		if (container === undefined)
-			return context.heldBy(toModule, undefined).filter((each) => !context.isLocal(each));
-		return moved.module === toModule ? context.declaredChildren(container.symbolId) : null;
-	}
-
-	/** The whole line an anchored move lands on: the anchor's first line, or the one after its last. */
-	private anchorLine(
-		anchor: MoveAnchor,
-		moved: StoredDeclaration,
-		toModule: string,
-		closure: readonly string[],
-		context: ReadContext,
-	): { line: number } | { refused: Refusal } {
-		const siblings = this.siblingsOf(moved, toModule, context);
-		if (siblings === null) return { refused: anchorNeedsTopLevel(moved.name, toModule) };
-		const at = siblings.findIndex((sibling) => sibling.symbolId === anchor.symbolId);
-		if (at === -1 || closure.includes(anchor.symbolId)) {
-			const label = context.declaration(anchor.symbolId)?.name ?? anchor.symbolId;
-			const reorder = moved.module === toModule;
-			return {
-				refused: reorder ? anchorNotSibling(label, moved.name, toModule) : anchorNotTopLevel(label, toModule),
-			};
-		}
-		const read = this.source.symbolSourceRead({ symbolId: anchor.symbolId });
-		if (!read.found) return { refused: read.reason };
-		// A neighbor sharing the anchor's first or last line leaves no whole line between them.
-		if (anchor.side === "before") {
-			const previous = siblings[at - 1];
-			if (previous !== undefined && previous.range.end.line === read.range.start.line) {
-				return { refused: noInsertionPoint(previous.name) };
-			}
-			return { line: read.range.start.line };
-		}
-		const next = siblings[at + 1];
-		if (next !== undefined && next.range.start.line === read.range.end.line) {
-			return { refused: noInsertionPoint(next.name) };
-		}
-		return { line: read.range.end.line + 1 };
-	}
-
-	/** The anchor that puts a declaration back: its next sibling, else its previous. */
-	private restoreAnchor(declaration: StoredDeclaration, context: ReadContext): MoveAnchor | undefined {
-		const siblings = this.siblingsOf(declaration, declaration.module, context) ?? [];
-		const at = siblings.findIndex((sibling) => sibling.symbolId === declaration.symbolId);
-		if (at === -1) return undefined;
-		const next = siblings[at + 1];
-		if (next !== undefined) return { symbolId: next.symbolId, side: "before" };
-		const previous = siblings[at - 1];
-		return previous === undefined ? undefined : { symbolId: previous.symbolId, side: "after" };
-	}
-
-	/** Collects provider edits for `previewMove`. See `docs/daemon-protocol.md`. */
-	async moveEdits(plan: Extract<PlannedMove, { ok: true }>, context: ReadContext): Promise<MoveEditsOutcome> {
-		if (plan.fromModule !== plan.toModule) {
-			const sourceRead = this.source.writable(plan.fromModule);
-			if ("refused" in sourceRead) return { ok: false, issues: [], reason: sourceRead.refused };
-		}
-		const requests = await this.moveRequests(plan, context);
-		const files: Array<{ module: string; text: string; edits: TextEdit[] }> = [];
-		const bases: Array<{ module: string; hash: string | null }> = [];
-		const blocked: RefactorIssue[] = [];
-
-		for (const request of requests) {
-			const current = this.source.writable(request.module);
-			if ("refused" in current) return { ok: false, issues: [], reason: current.refused };
-			// Only the target may be absent, and is created.
-			if (current.text === null && request.module !== plan.toModule) {
-				return { ok: false, issues: [], reason: moduleNotOnDisk(request.module) };
-			}
-			bases.push({ module: request.module, hash: current.text === null ? null : hashContent(current.text) });
-			const before = current.text ?? "";
-			const answer = await this.probe.moveEdits(request.module, {
-				...framed(wholeLines(request, before), before),
-				text: before,
-				exists: current.text !== null,
-			});
-
-			if (answer.status === "refused") {
-				return { ok: false, issues: [], reason: providerRefused(request.module, answer.reason, answer.detail) };
-			}
-			if (request.exportInPlace?.length) {
-				blocked.push(
-					...unacknowledgedPromotions(
-						request.exportInPlace,
-						answer.exportedInPlace ?? [],
-						plan.promoted ?? [],
-						request.module,
-					),
-				);
-			}
-			for (const site of answer.blocked) {
-				blocked.push({
-					kind: site.reason,
-					detail: `${request.module}: ${site.detail ?? "cannot be rewritten safely"}`,
-					module: request.module,
-				});
-			}
-			if (answer.edits.length === 0) continue;
-
-			const edits = mergeRemovals(answer.edits);
-			const applied = applyEdits(before, edits);
-			if ("problem" in applied) {
-				return { ok: false, issues: [], reason: providerRefused(request.module, applied.problem) };
-			}
-			files.push({ module: request.module, text: applied.text, edits });
-		}
-
-		if (blocked.length > 0) {
-			return { ok: false, issues: blocked, reason: occurrencesBlocked() };
-		}
-		return { ok: true, files, bases, issues: this.importersUnfound([plan.fromModule, ...plan.referencing]) };
-	}
-
-	/** One request per involved module, each describing only that module's part; the read fills its text. */
-	private async moveRequests(
-		plan: Extract<PlannedMove, { ok: true }>,
-		context: ReadContext,
-	): Promise<Array<Omit<MoveEditsRequest, "text" | "exists">>> {
-		const shared = {
-			symbolId: plan.symbolId,
-			name: plan.name,
-			fromModule: plan.fromModule,
-			toModule: plan.toModule,
-		};
-
-		// A reorder: one module loses and takes the text, and every import stays right.
-		if (plan.fromModule === plan.toModule) {
-			const insertion = { text: lineEnded(plan.text), ...defined({ position: plan.insertion }) };
-			return [
-				{
-					...shared,
-					module: plan.fromModule,
-					role: { removal: plan.removal, insertion },
-					importSites: [],
-					dependencies: [],
-					sites: [],
-				},
-			];
-		}
-
-		const requests: Array<Omit<MoveEditsRequest, "text" | "exists">> = [
-			{
-				...shared,
-				module: plan.fromModule,
-				role: { removal: plan.removal },
-				importSites: [],
-				// The source keeps needing the symbol when something left behind still calls it.
-				dependencies: plan.usedAtSource
-					? [
-							{
-								name: plan.name,
-								origin: { kind: "workspaceModule", symbolId: plan.symbolId, module: plan.toModule },
-							},
-						]
-					: [],
-				...(plan.promoted?.length ? { exportInPlace: plan.promoted.map((item) => item.symbolId) } : {}),
-				sites: [],
-			},
-			{
-				...shared,
-				module: plan.toModule,
-				role: {
-					insertion: {
-						text: lineEnded(plan.text),
-						...defined({ position: plan.insertion }),
-						...(plan.exportsAtTarget ? { exported: true } : {}),
-					},
-				},
-				importSites: [],
-				dependencies: plan.dependencies,
-				sites: [],
-			},
-		];
-
-		// By what each specifier resolves to: a barrel's re-export follows, a same-named import from elsewhere stays.
-		const sitesIn = new Map<string, MoveImportSite[]>();
-		const sites = await this.imports.importSitesResolvingTo(plan.symbolId, plan.fromModule, plan.name, context);
-		for (const { module, site } of sites) {
-			sitesIn.set(module, [...(sitesIn.get(module) ?? []), site]);
-		}
-		for (const module of new Set([...plan.referencing, ...sitesIn.keys()])) {
-			const importSites = sitesIn.get(module) ?? [];
-			// A module already asked, the target importing what moves home, takes its sites in that one
-			// request, so its edits share one base and land as one write.
-			const asked = requests.find((request) => request.module === module);
-			if (asked !== undefined) asked.importSites = [...asked.importSites, ...importSites];
-			else requests.push({ ...shared, module, role: {}, importSites, dependencies: [], sites: [] });
-		}
-
-		return requests;
-	}
-
-	/**
-	 * Whether the moved symbol is still reachable from everywhere that used it.
-	 *
-	 * Run after the reindex, because the question is about what the providers concluded rather than
-	 * what the edits looked like. A specifier that is syntactically fine and points nowhere produces
-	 * exactly this: an importer whose reference no longer binds.
-	 */
-	checkMoveLanded(name: string, modules: string[]): RefactorIssue[] {
-		const issues: RefactorIssue[] = [];
-
-		for (const module of modules) {
-			for (const reference of this.store.referencesIn(module)) {
-				if (reference.name !== name) continue;
-				if (reference.targetId !== null) continue;
-				if (!isDangling(reference.provenance)) continue;
-
-				issues.push({
-					kind: "UnresolvedAfterMove",
-					detail: `${name} no longer resolves here: ${reference.provenance}`,
-					module,
-					line: reference.startLine + 1,
-				});
-			}
-		}
-
-		return issues;
-	}
-
-	/** Re-mints one id of a moved closure for its new module. */
-	rebaseIntoModule(id: string, movedId: string, toModule: string): string | null {
-		const parsed = parseSymbolId(movedId);
-		if (parsed === null) return null;
-		return rebaseSymbolId(id, movedId, composeSymbolId({ ...parsed, module: toModule }));
-	}
-
-	/** Whether a stored reference sits inside a range, which is how the moved body is bounded. */
-	private inRange(reference: { startLine: number; startCharacter: number }, range: Range): boolean {
-		return positionInRange(range, { line: reference.startLine, character: reference.startCharacter });
-	}
-
-	/**
-	 * Every name the moved body uses, with what the index proved about where it comes from.
-	 *
-	 * Walked over the whole closure rather than over references owned by the moved symbol, because
-	 * a moved class's body references belong to its METHODS and a top-level initializer may be
-	 * owned by nothing at all.
-	 */
-	dependenciesOf(module: string, closure: string[], symbolId: string, context: ReadContext): MoveDependency[] {
-		const inside = new Set(closure);
-		const source = this.source.symbolSource({ symbolId });
-		if (!source.found) return [];
-
-		const seen = new Set<string>();
-		const dependencies: MoveDependency[] = [];
-
-		for (const reference of context.referencesIn(module)) {
-			if (!this.inRange(reference, source.range)) continue;
-			const target = reference.targetId;
-			const declaration = target === null ? null : context.declaration(target);
-			// Members and receiver accesses need no import.
-			const held = declaration?.containerId !== undefined && !isWithin(symbolId, declaration.containerId);
-			if (reference.qualified === true || held) continue;
-			if (seen.has(reference.name)) continue;
-			seen.add(reference.name);
-
-			if (target !== null && inside.has(target)) {
-				dependencies.push({ name: reference.name, origin: { kind: "insideClosure", symbolId: target } });
-				continue;
-			}
-
-			if (target !== null) {
-				if (declaration?.module === module) {
-					dependencies.push({
-						name: reference.name,
-						origin: {
-							kind: "sourceModule",
-							symbolId: target,
-							name: declaration.name,
-							...defined({ exported: declaration.exported }),
-						},
-					});
-					continue;
-				}
-				if (declaration) {
-					const via = this.imports.importOriginFor(module, reference.name, context);
-					dependencies.push({
-						name: reference.name,
-						origin: {
-							kind: "workspaceModule",
-							symbolId: target,
-							module: declaration.module,
-							...(via === null ? {} : { via }),
-						},
-					});
-					continue;
-				}
-			}
-
-			const via = this.imports.importOriginFor(module, reference.name, context);
-			if (via !== null) {
-				dependencies.push({ name: reference.name, origin: { kind: "external", via } });
-				continue;
-			}
-
-			// A benign unbound reference is a builtin or an external the index never claims to place;
-			// listing it would make every provider block on `int` or `max`. Only reasons that mark a
-			// genuinely unplaceable name flow through, and the provider decides what those block.
-			const reason = unknownReasonOf(reference.provenance);
-			if (!isDangling(reason)) continue;
-
-			dependencies.push({
-				name: reference.name,
-				origin: { kind: "unresolved", reason },
-			});
-		}
-
-		return dependencies;
-	}
-
-	/**
-	 * Every id a rename re-mints, old to new.
-	 *
-	 * A member's id carries its container's descriptors, so renaming a class re-mints its methods
-	 * and their parameters too. Migrating only the class itself would strand everything written
-	 * about them under ids nothing resolves.
-	 */
-	renameIdMap(symbolId: string, newName: string, context: ReadContext): Map<string, string> {
-		const declaration = context.declaration(symbolId);
-		const map = new Map<string, string>();
-		if (!declaration) return map;
-
-		const parsed = parseSymbolId(symbolId);
-		if (parsed === null || parsed.local !== undefined) return map;
-
-		const last = parsed.descriptors.at(-1);
-		if (last === undefined) return map;
-		const renamed = composeSymbolId({
-			...parsed,
-			descriptors: [...parsed.descriptors.slice(0, -1), { ...last, name: newName }],
-		});
-
-		// The id grammar's own subtree, not the container walk: rebasing reads the id string.
-		for (const candidate of context.symbolIdsIn(declaration.module)) {
-			const rebased = rebaseSymbolId(candidate, symbolId, renamed);
-			if (rebased !== null) map.set(candidate, rebased);
-		}
-		return map;
-	}
-
-	/**
-	 * Modules whose stored facts name an id the rename re-mints, whether or not their text changes.
-	 *
-	 * A file calling a renamed class's METHOD contains no occurrence of the class name, so it gets
-	 * no edit, yet its reference rows point at ids that are about to stop existing. Left alone it
-	 * would keep answering with them.
-	 */
-	modulesBoundTo(ids: Iterable<string>, context: ReadContext): string[] {
-		const modules = new Set<string>();
-		for (const id of ids) {
-			for (const reference of context.referencesTo(id)) modules.add(reference.module);
-		}
-		return [...modules];
-	}
-
-	/** Reasons a replacement is refused before it is even parsed. */
-	private replacementGuard(
-		context: ReadContext,
-		address: { symbolId?: string | undefined },
-		source: Extract<SymbolSource, { found: true }>,
-	): Refusal | null {
-		if (address.symbolId === undefined) return null;
-		const held = context.heldIn(source.module);
-
-		// Two declarations sharing an id means the store kept one and discarded the other, so the
-		// address names something the index cannot tell apart.
-		const sharing = held.filter((declaration) => declaration.symbolId === address.symbolId);
-		if (sharing.length > 1) return sharesId(address.symbolId, source.module);
-
-		// One statement can declare several names, giving each the same span. Replacing that span
-		// would rewrite siblings the caller never addressed.
-		const overlapping = held.filter((declaration) => {
-			if (declaration.symbolId === address.symbolId) return false;
-			if (isWithin(declaration.symbolId, address.symbolId as string)) return false;
-			if (isWithin(address.symbolId as string, declaration.symbolId)) return false;
-			return sameRange(declaration.range, source.range);
-		});
-		if (overlapping.length > 0) {
-			return sharesSpan(source.name, overlapping.map((declaration) => declaration.name).join(", "));
-		}
-
-		return null;
-	}
-
-	/**
-	 * A replacement that renames its own declaration, which replace must not carry out.
-	 *
-	 * The id embeds the name, so the old symbol simply disappears and a new one takes its place.
-	 * Nothing would migrate the knowledge written about it or rewrite the callers, which is exactly
-	 * what rename exists to do.
-	 */
-	private renamedDeclaration(
-		context: ReadContext,
-		address: { symbolId?: string | undefined },
-		candidate: FileFacts,
-		source: Extract<SymbolSource, { found: true }>,
-	): Refusal | null {
-		if (address.symbolId === undefined) return null;
-		if (candidate.declarations.some((declaration) => declaration.symbolId === address.symbolId)) return null;
-
-		// The id is gone, which is either a rename or a deletion. Deleting is a real refactor and is
-		// allowed; the orphan check reports what still points at it. A rename is refused, because
-		// only rename rewrites the callers and carries the knowledge across.
-		const old = context.declaration(address.symbolId);
-		const replacement = candidate.declarations.find(
-			(declaration) =>
-				!context.holds(source.module, declaration.symbolId) &&
-				declaration.kind === old?.kind &&
-				declaration.containerId === old?.containerId,
-		);
-		if (!replacement) return null;
-
-		return replacementRenames(source.name, replacement.name);
 	}
 
 	/**
@@ -1301,466 +373,5 @@ export class RefactorPlanner {
 		}
 
 		return issues;
-	}
-
-	/**
-	 * What renaming a symbol would touch, and what stands in the way. Reads only.
-	 *
-	 * The whole reason this is separate from applying: a rename is honest only over a set that is
-	 * provably closed, and closedness is a question the index can answer without editing anything.
-	 * The occurrences come from bound edges and proved routes alone, because a name match is a guess
-	 * and a guess is acceptable in a reading tool and disqualifying in a writing one.
-	 */
-	async prepareRename(
-		symbolId: string,
-		newName: string,
-		context: ReadContext,
-		stops: readonly string[] = [],
-	): Promise<PlannedRename> {
-		return (await this.planRename(symbolId, newName, context, stops)).plan;
-	}
-
-	/** The plan, and the routes it was read from; null where it stops before tracing any. */
-	private async planRename(
-		symbolId: string,
-		newName: string,
-		context: ReadContext,
-		stops: readonly string[],
-	): Promise<{ plan: PlannedRename; routes: ResolvedRoutes | null }> {
-		// A write anywhere from here on moves the plan, an importer it never read included.
-		context.pinIndex();
-		const refused = (oldName: string, blocker: RenameBlocker) => ({
-			plan: {
-				symbolId,
-				oldName,
-				newName,
-				files: [],
-				occurrences: 0,
-				blockers: [blocker],
-				warnings: [],
-				...untraced(),
-			},
-			routes: null,
-		});
-		const declaration = context.declaration(symbolId);
-		if (!declaration) return refused("", { kind: "NotIndexed", detail: subjectRefused(symbolId, this.store) });
-
-		const oldName = declaration.name;
-		// A name that is nowhere in the source has no site to rewrite.
-		if (declaration.selectionRange === undefined) {
-			return refused(oldName, { kind: "NameNotInSource", detail: nameNotInSource(oldName) });
-		}
-		if (this.store.nextProjectionDebt() !== null) {
-			return refused(oldName, { kind: "RouteUnknown", detail: projectionsUnsettled() });
-		}
-		const tiers = (module: string) => this.tiersOf(module);
-		const routes = resolveRoutes({ subject: declaration, newName, stops: new Set(stops), tiers }, context);
-		const byModule = routes.sites;
-
-		// Renaming an owned symbol reaches its owner's CALLERS: a Python keyword argument names the
-		// parameter at a site that spells the function's name, so nothing searching for the old name
-		// can find it. Gathered here because who calls what is the index's question, not a provider's.
-		const ownerCalls = this.ownerCallsFor(symbolId, context);
-		// A file holding only owner calls still has to be visited, so it needs an entry even with no
-		// occurrence of the old name in it.
-		for (const module of ownerCalls.keys()) if (!byModule.has(module)) byModule.set(module, []);
-
-		// Absent and empty mean different things, and the difference is the whole contract here.
-		// EMPTY says the core gathered the owner's calls and none are in this file, which is the
-		// normal case for the declaring file. ABSENT says nothing was gathered, so a provider still
-		// has to refuse. Attaching the field only where calls happen to live conflates the two, and a
-		// parameter declared in a file that never calls its own function would refuse forever.
-		const owned = isParameterSymbol(symbolId);
-		const files = [...byModule.entries()].map(([module, sites]) => ({
-			module,
-			sites,
-			...(owned ? { ownerCalls: ownerCalls.get(module) ?? [] } : {}),
-		}));
-		// A kept site writes no new binding, so nothing captures it.
-		const renamed = new Map(
-			[...byModule].map(([module, sites]) => [module, sites.filter((site) => site.keep !== true)] as const),
-		);
-		// Every range a module's plan decides, which no mention counts.
-		const decided = new Map(
-			[...byModule].map(
-				([module, sites]) =>
-					[module, [...sites.map((site) => site.range), ...(routes.unchanged.get(module) ?? [])]] as const,
-			),
-		);
-		const blockers =
-			newName === oldName
-				? [{ kind: "SameName", detail: alreadyNamed(oldName) }]
-				: [
-						...routes.blockers,
-						...(await this.landingsMoved(routes.relied)),
-						...this.renameCollisions(symbolId, newName, renamed, routes.qualified, routes.inert, context),
-					];
-
-		return {
-			plan: {
-				symbolId,
-				oldName,
-				newName,
-				files,
-				occurrences: files.reduce((total, file) => total + file.sites.length, 0),
-				blockers,
-				warnings: [
-					...this.renameWarnings(declaration, oldName, newName, symbolId, context),
-					...this.ownerCallConcerns(symbolId, context),
-				],
-				routes: routes.routes,
-				mentions: mentionsOf(oldName, decided, context, tiers),
-			},
-			routes,
-		};
-	}
-
-	/** Relied edges whose live landing differs from the stored one, or could not be checked. */
-	async landingsMoved(relied: readonly StoredImport[]): Promise<RenameBlocker[]> {
-		const bySpecifier = new Map(
-			relied.map(
-				(edge) => [`${edge.module}\0${resolutionKey(edge.specifier, edge.resolutionMode)}`, edge] as const,
-			),
-		);
-		const checked = await Promise.all(
-			[...bySpecifier.values()].map(async (edge) => {
-				try {
-					const live = await this.imports.resolveLive(edge.module, edge.specifier, edge.resolutionMode);
-					const landing = live.status === "resolved" ? live.landing : null;
-					const same =
-						landing === null || edge.landing === null
-							? landing === edge.landing
-							: landingKey(landing) === landingKey(edge.landing);
-					return { edge, outcome: same ? ("same" as const) : ("moved" as const) };
-				} catch {
-					return { edge, outcome: "unchecked" as const };
-				}
-			}),
-		);
-		const at = (edge: StoredImport) => ({ module: edge.module, line: edge.span.start.line + 1 });
-		const moved = checked.filter((each) => each.outcome === "moved").map((each) => at(each.edge));
-		const blockers: RenameBlocker[] = checked
-			.filter((each) => each.outcome === "unchecked")
-			.map(({ edge }) => ({
-				kind: "RouteUnknown",
-				detail: landingUnchecked(edge.module, edge.specifier),
-				sites: [at(edge)],
-			}));
-		if (moved.length > 0) {
-			blockers.unshift({ kind: "RouteChanged", detail: routeChanged(moved.length), sites: moved.slice(0, 20) });
-		}
-		return blockers;
-	}
-
-	/** What the owning provider declares for keeping a name and reading prose; null when none owns it. */
-	private tiersOf(module: string): ModuleTiers | null {
-		const owner = this.probe.owner(module);
-		if (!owner.owned) return null;
-		const { providerId } = owner;
-		return {
-			renameKeep: this.probe.declares(providerId, "renameKeep"),
-			comments: this.probe.declares(providerId, "comments"),
-			literals: this.probe.declares(providerId, "literals"),
-		};
-	}
-
-	/**
-	 * Bound calls to the declaration that owns this symbol, grouped by file.
-	 *
-	 * Empty for anything that owns itself, which is nearly every rename. For a parameter it is the
-	 * set of call sites whose named arguments have to move with it, and the id grammar alone says
-	 * which declaration that is, so no language knowledge enters here.
-	 */
-	private ownerCallsFor(symbolId: string, context: ReadContext): Map<string, Range[]> {
-		const byModule = new Map<string, Range[]>();
-		if (!isParameterSymbol(symbolId)) return byModule;
-
-		const owner = ownerOf(symbolId);
-		if (owner === null) return byModule;
-
-		for (const reference of context.referencesTo(owner)) {
-			if (reference.role !== "call") continue;
-			const ranges = byModule.get(reference.module) ?? [];
-			ranges.push({
-				start: { line: reference.startLine, character: reference.startCharacter },
-				end: { line: reference.endLine, character: reference.endCharacter },
-			});
-			byModule.set(reference.module, ranges);
-		}
-		return byModule;
-	}
-
-	/**
-	 * What a rename of an owned symbol cannot see.
-	 *
-	 * A call that never bound may still pass the argument being renamed, and nothing here can tell a
-	 * genuinely different function from one binding could not follow. Reported rather than guessed,
-	 * which is the same rule the same-spelling warning already follows.
-	 */
-	private ownerCallConcerns(symbolId: string, context: ReadContext): RenameConcern[] {
-		if (!isParameterSymbol(symbolId)) return [];
-
-		const owner = ownerOf(symbolId);
-		const declaration = owner === null ? null : context.declaration(owner);
-		if (declaration === null) {
-			return [
-				{
-					kind: "OwnerNotIndexed",
-					detail: "the declaration this belongs to is not indexed, so its call sites cannot be found",
-				},
-			];
-		}
-
-		const unbound = context.referencesSpelled(declaration.name, declaration.symbolId);
-		if (unbound.length === 0) return [];
-		return [
-			{
-				kind: "OwnerCallsUnresolved",
-				detail: `${unbound.length} occurrence${unbound.length === 1 ? "" : "s"} of ${declaration.name} did not bind to it. If any is a call passing this argument by name, it will not be rewritten`,
-				sites: unbound.slice(0, 20).map((r) => ({ module: r.module, line: r.startLine + 1 })),
-			},
-		];
-	}
-
-	/**
-	 * Places a rewritten occurrence would resolve the new name to something else.
-	 *
-	 * A declaration collides when its scope holds a rename site, when it is a member of the renamed
-	 * member's type, or when the renamed symbol nests inside its scope around one of its uses. A
-	 * member's own declaration, a site the parser marked `qualified`, and a token that binds nothing, such
-	 * as a forward's, are no sites here: no local can capture them. A declaration's container is its
-	 * scope; module level spans the file. Everything comes from the index, never from source text.
-	 *
-	 * A blocker rather than a warning: this is known to break. Each one names the conflicting site
-	 * and both ways out.
-	 */
-	private renameCollisions(
-		symbolId: string,
-		newName: string,
-		sites: ReadonlyMap<string, readonly RenameSite[]>,
-		qualified: ReadonlySet<string>,
-		inert: ReadonlySet<string>,
-		context: ReadContext,
-	): RenameBlocker[] {
-		const renamed = context.declaration(symbolId);
-		const owner = memberOwner(symbolId);
-		const ownDeclaration = (module: string, site: RenameSite) =>
-			owner !== null &&
-			renamed?.module === module &&
-			renamed.selectionRange !== undefined &&
-			sameRange(site.range, renamed.selectionRange);
-		const exposed = new Map<string, Position[]>();
-		for (const [module, each] of sites) {
-			const starts = each
-				.filter((site) => {
-					const key = startKey(module, site.range.start);
-					return !ownDeclaration(module, site) && !qualified.has(key) && !inert.has(key);
-				})
-				.map((site) => site.range.start);
-			exposed.set(module, starts);
-		}
-		const scopeOf = (declaration: StoredDeclaration) => context.ancestorsOf(declaration)[0]?.range ?? null;
-		const collides = (other: StoredDeclaration) => {
-			if (owner !== null && owner === memberOwner(other.symbolId)) return true;
-			const scope = scopeOf(other);
-			if ((exposed.get(other.module) ?? []).some((at) => scope === null || inside(scope, at))) return true;
-			if (owner !== null || renamed === null) return false;
-			const own = scopeOf(renamed);
-			// Capture requires nested scopes.
-			const nested = own !== null && (scope === null || (inside(scope, own.start) && inside(scope, own.end)));
-			if (!nested || other.module !== renamed.module) return false;
-			return context.referencesTo(other.symbolId).some((reference) => {
-				const at = { line: reference.startLine, character: reference.startCharacter };
-				return reference.module === renamed.module && reference.qualified !== true && inside(own, at);
-			});
-		};
-		// Disjoint meanings never clash.
-		const meaning = renamed === null ? undefined : this.meaningOf(renamed, context);
-		const declared = context
-			.declarationsNamed(newName)
-			.filter(
-				(other) =>
-					other.symbolId !== symbolId &&
-					sites.has(other.module) &&
-					narrowed(meaning, this.meaningOf(other, context)) !== null &&
-					collides(other),
-			);
-
-		// A rebinding import of the subject itself, its source token renamed, binds the same declaration again.
-		const again = (entry: StoredImport) =>
-			entry.conflict !== undefined &&
-			entry.conflict.amongTransfers !== "exclude" &&
-			entry.range !== undefined &&
-			(sites.get(entry.module) ?? []).some((site) => sameRange(site.range, entry.range as Range));
-		const bound = context
-			.importsBinding(newName)
-			.filter((entry) => (exposed.get(entry.module) ?? []).length > 0 && !again(entry));
-
-		const concerns: RenameBlocker[] = [];
-		if (declared.length > 0) {
-			concerns.push({
-				kind: "NameTaken",
-				detail: nameAlreadyDeclared(newName, declared.length),
-				sites: declared.map((other) => ({
-					module: other.module,
-					line: (other.selectionRange ?? other.range).start.line + 1,
-				})),
-			});
-		}
-		if (bound.length > 0) {
-			concerns.push({
-				kind: "NameImported",
-				detail: nameAlreadyImported(newName, bound.length),
-				sites: bound.map((entry) => ({
-					module: entry.module,
-					line: (entry.localRange ?? entry.range ?? entry.span).start.line + 1,
-				})),
-			});
-		}
-		return concerns;
-	}
-
-	/** The meaning a declaration's own export states; absent when none does. */
-	private meaningOf(declaration: StoredDeclaration, context: ReadContext): Meaning | undefined {
-		const edge = context
-			.exportsIn(declaration.module)
-			.find((each) => each.target.kind === "symbol" && each.target.symbolId === declaration.symbolId);
-		return edge?.meaning;
-	}
-
-	/** Builds the complete edit set for `renameEdits`. See `docs/daemon-protocol.md`. */
-	async renameEdits(
-		symbolId: string,
-		newName: string,
-		context: ReadContext = new ReadContext(this.store),
-		stops: readonly string[] = [],
-	): Promise<PlannedRenameEdits> {
-		return (await this.planRenameEdits(symbolId, newName, context, stops)).edits;
-	}
-
-	/** The edit set, proved against every provider's view of it, and the import edges a writer checks again. */
-	async planRenameEdits(
-		symbolId: string,
-		newName: string,
-		context: ReadContext,
-		stops: readonly string[] = [],
-	): Promise<{ edits: PlannedRenameEdits; relied: StoredImport[] }> {
-		const { plan, routes } = await this.planRename(symbolId, newName, context, stops);
-		const relied = routes?.relied ?? [];
-		const refuse = (reason: Refusal, blockers = plan.blockers) => ({
-			edits: { ok: false as const, plan: { ...plan, blockers }, reason },
-			relied,
-		});
-		const blocker = plan.blockers[0];
-		if (blocker !== undefined) return refuse(blocker.detail);
-		// File changes invalidate stored ranges.
-		const stale = this.source.staleModules(plan.files.map((file) => file.module));
-		if (stale.length > 0) return refuse(staleSincePlanned(stale, "rename"));
-
-		const files: FileEdits[] = [];
-		const proposed: RenameCandidate["proposed"] = [];
-		const blocked: RenameBlocker[] = [];
-
-		for (const file of plan.files) {
-			const current = this.source.writable(file.module);
-			if ("refused" in current) return refuse(current.refused);
-			const text = current.text;
-			if (text === null) return refuse(moduleUnreadable(file.module));
-
-			const answer = await this.probe.renameEdits(file.module, {
-				module: file.module,
-				text,
-				oldName: plan.oldName,
-				newName,
-				sites: file.sites,
-				...defined({ ownerCalls: file.ownerCalls }),
-			});
-
-			if (answer.status === "refused") {
-				const detail = providerRefused(file.module, answer.reason, answer.detail);
-				const kind = REFUSAL_KINDS[answer.reason] ?? "NotEditable";
-				return refuse(detail, [...plan.blockers, { kind, detail, sites: [{ module: file.module, line: 1 }] }]);
-			}
-			for (const site of answer.blocked) {
-				blocked.push({
-					kind: site.reason,
-					detail: siteBlocked(file.module, site.detail),
-					sites: [{ module: file.module, line: site.range.start.line + 1 }],
-				});
-			}
-			if (answer.edits.length === 0) continue;
-			const applied = applyEdits(text, answer.edits);
-			if ("problem" in applied) return refuse(editsRefused(applied.problem));
-			files.push({ module: file.module, contentHash: hashContent(text), edits: answer.edits });
-			proposed.push({ module: file.module, before: text, text: applied.text, edits: answer.edits });
-		}
-
-		if (blocked.length > 0) return refuse(occurrencesBlocked(), blocked);
-
-		const idMap = this.renameIdMap(symbolId, newName, context);
-		const affected = [
-			...plan.files.map((file) => file.module),
-			...plan.routes.modules.map((row) => row.module),
-			...this.modulesBoundTo(idMap.keys(), context),
-			// A capture or a rebinding shows in an importer of a landing whose rows move.
-			...(routes?.moved ?? []).flatMap((landing) =>
-				context.importEdgesLandingOn(landing).map((edge) => edge.module),
-			),
-			// So does a dotted read through a namespace holder.
-			...(routes?.readers ?? []),
-		];
-		const proof = await this.prove({
-			proposed,
-			affected,
-			idMap,
-			subject: symbolId,
-			sites: new Map(plan.files.map((file) => [file.module, file.sites])),
-			projected: routes?.projected ?? [],
-		});
-		const [unproved] = proof;
-		if (unproved !== undefined) return refuse(unproved.detail, proof);
-		return { edits: { ok: true, plan, files }, relied };
-	}
-
-	/**
-	 * Where the index cannot see far enough to promise a rename is complete.
-	 *
-	 * Both of these are uncertainty rather than failure, so they are stated and the caller decides.
-	 * Refusing on either would refuse most real renames; hiding them would claim a completeness the
-	 * index does not have.
-	 */
-	private renameWarnings(
-		declaration: StoredDeclaration,
-		oldName: string,
-		newName: string,
-		symbolId: string,
-		context: ReadContext,
-	): RenameConcern[] {
-		const warnings: RenameConcern[] = [];
-
-		if (declaration.languageKind?.split(" ").some((part) => REACHED_BY_RESOLUTION_ORDER.has(part)) === true) {
-			warnings.push({
-				kind: "ReceiverMemberMayCapture",
-				detail: `${oldName} is reached through receivers, and a receiver type's own member named ${newName} outranks it; the index does not know every receiver's type`,
-			});
-		}
-
-		const unbound = context.referencesSpelled(oldName, symbolId);
-		if (unbound.length > 0) {
-			warnings.push({
-				kind: "SameSpellingUnbound",
-				detail: `${unbound.length} occurrence${unbound.length === 1 ? "" : "s"} of ${oldName} did not bind to this symbol; some may be uses of it that binding could not follow`,
-				sites: unbound.slice(0, 20).map((r) => ({ module: r.module, line: r.startLine + 1 })),
-			});
-		}
-
-		if (declaration.exported === true) {
-			warnings.push({
-				kind: "ExportedBeyondIndex",
-				detail: `${oldName} is exported, so anything outside this workspace that uses it is not visible here`,
-			});
-		}
-
-		return warnings;
 	}
 }

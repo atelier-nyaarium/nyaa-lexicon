@@ -58,6 +58,9 @@ import {
 	tighter,
 	within,
 } from "./scopes.js";
+import { isRustPathHead, isRustTypeKind, WORDS } from "./vocabulary.js";
+
+export { WORDS } from "./vocabulary.js";
 
 export const LANGUAGE = "rust";
 export const EXTENSIONS = [".rs"] as const;
@@ -80,88 +83,6 @@ export const TIERS = {
 } as const;
 
 export const PROVIDER_ID = "rust-provider";
-
-/** Path heads that name a module relative to the current one, never a crate. */
-const PATH_KEYWORDS: ReadonlySet<string> = new Set(["crate", "self", "super", "Self"]);
-
-/** Rust 2021 strict and reserved keywords. Builtins are the primitive types, never real keywords. */
-export const WORDS = {
-	keywords: [
-		"Self",
-		"abstract",
-		"as",
-		"async",
-		"await",
-		"become",
-		"box",
-		"break",
-		"const",
-		"continue",
-		"crate",
-		"do",
-		"dyn",
-		"else",
-		"enum",
-		"extern",
-		"final",
-		"fn",
-		"for",
-		"gen",
-		"if",
-		"impl",
-		"in",
-		"let",
-		"loop",
-		"macro",
-		"match",
-		"mod",
-		"move",
-		"mut",
-		"override",
-		"priv",
-		"pub",
-		"ref",
-		"return",
-		"self",
-		"static",
-		"struct",
-		"super",
-		"trait",
-		"try",
-		"type",
-		"typeof",
-		"union",
-		"unsafe",
-		"unsized",
-		"use",
-		"virtual",
-		"where",
-		"while",
-		"yield",
-	],
-	builtins: [
-		"String",
-		"Vec",
-		"bool",
-		"char",
-		"f32",
-		"f64",
-		"i128",
-		"i16",
-		"i32",
-		"i64",
-		"i8",
-		"isize",
-		"str",
-		"u128",
-		"u16",
-		"u32",
-		"u64",
-		"u8",
-		"usize",
-	],
-	literals: ["false", "true"],
-};
 
 function contains(range: Range, position: Range["start"]): boolean {
 	// Inclusive at both ends.
@@ -191,8 +112,7 @@ function declarationKindMatches(role: Reference["role"], declaration: Declaratio
 	const variant = declaration.languageKind === "variant";
 	if (role === "call") return declaration.kind === "function" || declaration.kind === "method" || variant;
 	if (role === "instantiate") return declaration.kind === "struct" || declaration.kind === "enum" || variant;
-	if (role === "typeUse" || role === "implements")
-		return ["struct", "enum", "interface", "class"].includes(declaration.kind);
+	if (role === "typeUse" || role === "implements") return isRustTypeKind(declaration.kind);
 	if (role === "write") return declaration.kind !== "constant" || declaration.languageKind === "static";
 	return true;
 }
@@ -203,12 +123,9 @@ const VALUE_ROLES: ReadonlySet<Reference["role"]> = new Set(["read", "write", "c
 /** Targets whose `main` something runs. */
 const EXECUTABLES: ReadonlySet<string> = new Set(["bin", "example", "build"]);
 
-/** What a path segment another follows can name. */
-const QUALIFIER_KINDS: ReadonlySet<string> = new Set(["module", "struct", "enum", "interface", "class"]);
-
 /** `.name` reads a field and calls a method, a segment another follows names a module or type, and nothing else reaches a field. */
 function kindAdmits(raw: RawReference, declaration: Declaration): boolean {
-	if (raw.qualifier === true) return QUALIFIER_KINDS.has(declaration.kind);
+	if (raw.qualifier === true) return declaration.kind === "module" || isRustTypeKind(declaration.kind);
 	if (!declarationKindMatches(raw.reference.role, declaration)) return false;
 	if (raw.member === true && raw.reference.role !== "call") return declaration.kind === "field";
 	return declaration.kind !== "field";
@@ -451,7 +368,7 @@ export class RustProvider {
 			// Through this file's own import of an outside crate, such as `extern crate` or the import itself.
 			const head = segments[0] as string;
 			const root: Place = { facts, path: [], kind: "module" };
-			const crate = absolute || PATH_KEYWORDS.has(head) ? undefined : this.scopes.externalImport(root, head);
+			const crate = absolute || isRustPathHead(head) ? undefined : this.scopes.externalImport(root, head);
 			return crate === undefined ? missing : { status: "external", packageName: crate };
 		}
 		if (
@@ -864,9 +781,7 @@ export class RustProvider {
 		)
 			return undefined;
 		const local = facts.rawDeclarations.find(
-			(candidate) =>
-				candidate.declaration.name === name &&
-				["struct", "enum", "interface", "class"].includes(candidate.declaration.kind),
+			(candidate) => candidate.declaration.name === name && isRustTypeKind(candidate.declaration.kind),
 		);
 		if (local !== undefined) return local.declaration.symbolId;
 		const placed = this.scopes.place(facts, [name], { containerId: undefined, offset: -1 });
