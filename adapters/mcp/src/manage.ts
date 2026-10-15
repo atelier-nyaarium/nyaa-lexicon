@@ -36,14 +36,10 @@ import {
 } from "@nyaa-lexicon/core";
 import { type DaemonLock, parseDaemonLock } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
+import { type ToolResult, textResult as text } from "./result.js";
 
 ////////////////////////////////
 //  Interfaces & Types
-
-interface ToolResult {
-	content: Array<{ type: "text"; text: string }>;
-	isError?: boolean;
-}
 
 /** Injected so a test drives real directories without real daemons. */
 export interface ManageDeps {
@@ -129,13 +125,6 @@ const PRUNE_AFTER_DAYS = Math.round(PRUNE_AFTER_MS / 86_400_000);
 
 ////////////////////////////////
 //  Functions & Helpers
-
-function text(body: string, isError = false): ToolResult {
-	return {
-		content: [{ type: "text", text: body }],
-		...(isError ? { isError: true } : {}),
-	};
-}
 
 function daemonLockFile(store: ProjectStore): string {
 	return storePaths(store.directory).lockFile;

@@ -12,6 +12,7 @@
 
 import { z } from "zod";
 import { type EditConflict, TextEditSchema } from "./edits.js";
+import { ModulePathSchema } from "./modulePath.js";
 import { PositionSchema, RangeSchema } from "./symbols.js";
 import { UnknownReasonSchema } from "./values.js";
 
@@ -85,7 +86,7 @@ export const DependencyOriginSchema = z
 		z.object({
 			kind: z.literal("workspaceModule"),
 			symbolId: z.string().min(1),
-			module: z.string().min(1),
+			module: ModulePathSchema,
 			/** The import statement in the source module that supplied it, when one did. */
 			via: ImportOriginSchema.optional(),
 		}),
@@ -212,10 +213,7 @@ export const MoveBlockedReasonSchema = z
 export type MoveBlockedReason = z.infer<typeof MoveBlockedReasonSchema>;
 
 /**
- * How a move names what `planEdits` found, in one place for every provider.
- *
- * Shared because three providers said the same three things in their own words, and the wording is
- * what an agent reads when a move refuses. Drift here is a user-visible inconsistency for no reason.
+ * How a provider reports edit conflicts for a move.
  */
 export const MOVE_EDIT_CONFLICT: Record<EditConflict, { reason: MoveBlockedReason; detail: string }> = {
 	unaddressable: { reason: "ParseError", detail: "an edit range is outside the module" },
@@ -254,7 +252,7 @@ export type MoveRefusal = z.infer<typeof MoveRefusalSchema>;
  */
 export const MoveEditsRequestSchema = z
 	.object({
-		module: z.string().min(1),
+		module: ModulePathSchema,
 		/** Passed in, like parseFile, so the provider never disagrees with the core about the text. */
 		text: z.string(),
 		/**
@@ -264,8 +262,8 @@ export const MoveEditsRequestSchema = z
 		exists: z.boolean(),
 		symbolId: z.string().min(1),
 		name: z.string().min(1),
-		fromModule: z.string().min(1),
-		toModule: z.string().min(1),
+		fromModule: ModulePathSchema,
+		toModule: ModulePathSchema,
 		role: MoveRoleSchema,
 		importSites: z.array(MoveImportSiteSchema),
 		/**
@@ -355,13 +353,13 @@ export type ArrangeMember = z.infer<typeof ArrangeMemberSchema>;
  */
 export const ArrangeEditsRequestSchema = z
 	.object({
-		module: z.string().min(1),
+		module: ModulePathSchema,
 		text: z.string(),
 		/** False when the target does not exist yet. */
 		exists: z.boolean(),
 		/** The target when only its own declarations move. */
-		fromModule: z.string().min(1),
-		toModule: z.string().min(1),
+		fromModule: ModulePathSchema,
+		toModule: ModulePathSchema,
 		/** In landing order. */
 		members: z.array(ArrangeMemberSchema),
 		/** A statement naming several members is rewritten once. */

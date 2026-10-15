@@ -76,7 +76,9 @@ export function noteRevisionMoved(expected: number, current: number): Refusal {
 }
 
 export function noteRefsRefused(count: number): Refusal {
-	return mint(`${count} ref${count === 1 ? " does" : "s do"} not resolve. Each is listed with candidates`);
+	return mint(
+		`${count} ref${count === 1 ? " does" : "s do"} not resolve. Choose a listed candidate, or edit or remove each broken link`,
+	);
 }
 
 export function noNoteStands(symbolId: string): Refusal {
@@ -84,7 +86,9 @@ export function noNoteStands(symbolId: string): Refusal {
 }
 
 export function noProposalStands(symbolId: string): Refusal {
-	return mint(`no proposal waits on the note about ${symbolId}`);
+	return mint(
+		`no proposal waits on the note about ${symbolId}. Create or refresh the proposal with \`write_note\`, then resolve it`,
+	);
 }
 
 export function proposalReplaced(symbolId: string): Refusal {
@@ -123,11 +127,19 @@ export function relationNotLocal(kind: string): Refusal {
 }
 
 export function refModuleNotIndexed(module: string): Refusal {
-	return mint(`${module} is not an indexed file`);
+	return mint(`${module} is not an indexed file. Index it, or correct the module path in the link`);
 }
 
 export function refNamesNothing(module: string): Refusal {
-	return mint(`names nothing in ${module}`);
+	return mint(`names nothing in ${module}. Choose a listed candidate, or edit or remove the broken link`);
+}
+
+export function refProjectMismatch(project: string, expected: string): Refusal {
+	return mint(`the ref names project ${project}, not ${expected}. Use a ref for ${expected}, or remove the link`);
+}
+
+export function refParseFailed(problem: string): Refusal {
+	return mint(`${problem}. Correct the ref syntax, or remove the link`);
 }
 
 export function refAmbiguous(count: number): Refusal {
@@ -135,7 +147,7 @@ export function refAmbiguous(count: number): Refusal {
 }
 
 export function refTargetGone(): Refusal {
-	return mint(`names nothing now; the symbol it named is gone`);
+	return mint(`names nothing now; the symbol it named is gone. Edit the link to name a current symbol, or remove it`);
 }
 
 export function refNamesArguments(): Refusal {
@@ -586,6 +598,15 @@ export function moveCycle(names: readonly string[]): Refusal {
 
 export function moveTogetherSplit(name: string, module: string, from: string): Refusal {
 	return mint(`${name} is in ${module}, not ${from}. Only declarations from one module move together`);
+}
+
+export function moveTogetherMemberFailed(name: string, detail: string, moved: readonly string[]): Refusal {
+	const progress = moved.length === 0 ? "" : ` after ${moved.join(", ")} moved`;
+	const recovery =
+		moved.length === 0
+			? "Correct the cause, then retry the move"
+			: "Correct the cause and retry the failed member, or call `refactor_revert` to undo the earlier moves";
+	return mint(`${name} did not move${progress}: ${detail}. ${recovery}`);
 }
 
 export function arrangeNeedsTopLevel(name: string): Refusal {

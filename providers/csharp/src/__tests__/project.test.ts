@@ -1,27 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { CsharpProvider } from "../main.js";
 import { frameworkSymbols } from "../msbuild.js";
-import { startProvider } from "./harness.js";
+import { startProvider, workspaceFixture, writeWorkspace } from "./harness.js";
 
-const roots: string[] = [];
-
-function write(root: string, files: Record<string, string>): void {
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-}
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-csharp-project-"));
-	roots.push(root);
-	write(root, files);
-	return root;
-}
+const workspace = workspaceFixture("project");
 
 /** A class holding one field per symbol, each under `#if` that symbol. */
 function gated(name: string, symbols: readonly string[], prefix = ""): string {
@@ -103,10 +87,6 @@ const LEGACY_PROJECT = [
 	'  <Import Project="$(MSBuildToolsPath)\\Microsoft.CSharp.targets" />',
 	"</Project>",
 ].join("\n");
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("C# project symbols", () => {
 	it("reads each file with its nearest project's symbols for Debug and the first target framework", () => {
@@ -243,13 +223,13 @@ describe("C# project symbols", () => {
 		// Absent props it looked for are listed, so one appearing later is noticed.
 		expect(before.configFiles).toEqual(["Directory.Build.props", "app/App.csproj", "app/Directory.Build.props"]);
 		expect(kept(handlers, root, "app/App.cs")).toEqual(["FIRST", "DEBUG", "NETFRAMEWORK", "NET472"]);
-		write(root, { "app/App.csproj": project("FIRST", "<Authors>Someone</Authors>") });
+		writeWorkspace(root, { "app/App.csproj": project("FIRST", "<Authors>Someone</Authors>") });
 		expect(discover().fingerprint).toBe(before.fingerprint);
-		write(root, { "app/App.csproj": project("$(DefineConstants);SECOND") });
+		writeWorkspace(root, { "app/App.csproj": project("$(DefineConstants);SECOND") });
 		const second = discover().fingerprint;
 		expect(second).not.toBe(before.fingerprint);
 		expect(kept(handlers, root, "app/App.cs")).toEqual(["SECOND", "TRACE", "DEBUG", "NETFRAMEWORK", "NET472"]);
-		write(root, {
+		writeWorkspace(root, {
 			"Directory.Build.props":
 				"<Project><PropertyGroup><DefineConstants>LATE</DefineConstants></PropertyGroup></Project>",
 		});

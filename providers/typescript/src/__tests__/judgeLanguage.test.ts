@@ -233,6 +233,21 @@ describe("load-cycle judge: language", () => {
 		]);
 	});
 
+	it("interprets assignment patterns with the same values and defaults as bindings", async () => {
+		await expectShapes([
+			['const target = { value: 0 }; ({ ["x"]: target.value } = { x: 1 }); if (target.value === 1) A;', "bad"],
+			["let value: number; ({ x: value = A } = { x: undefined });", "bad"],
+			["let x: number; ({ x = A } = {});", "bad"],
+			["const target = { value: 0 }; [target.value] = [1]; if (target.value === 1) A;", "bad"],
+			["let x: number; [x = A] = [];", "bad"],
+			["const target = { value: 0 }; [...[target.value]] = [1]; if (target.value === 1) A;", "bad"],
+			[
+				"const source = { get x() { throw 1; } };\nconst target = { get receiver() { A; return { value: 0 }; } };\ntry { ({ x: target.receiver.value } = source); } catch {}",
+				"fine",
+			],
+		]);
+	});
+
 	it("forgets all of an object code it cannot see may redefine, and runs the hooks a function or prototype may hold", async () => {
 		await expectShapes([
 			['const o = { get x() { return A; } };\nObject.defineProperty(o, "x", { value: 1 });\no.x;', "unknown"],

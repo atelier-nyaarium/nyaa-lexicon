@@ -27,6 +27,7 @@ import {
 	requireOf,
 	TYPE_ONLY,
 } from "./imports.js";
+import { isWrapper, unwrapped } from "./members.js";
 import { modeName } from "./project.js";
 import { rangeOf } from "./ranges.js";
 
@@ -286,7 +287,7 @@ function callsAtModuleTop(source: ts.SourceFile, checker: ts.TypeChecker): TopCa
 	const visit = (item: ts.Node): void => {
 		if (ts.isFunctionLike(item)) return;
 		if (ts.isCallExpression(item)) {
-			const expression = unwrapParens(item.expression);
+			const expression = unwrapped(item.expression);
 			if (ts.isFunctionExpression(expression) || ts.isArrowFunction(expression)) calls.iifes.add(expression);
 			else if (ts.isIdentifier(expression)) {
 				const symbol = checker.getSymbolAtLocation(expression);
@@ -297,12 +298,6 @@ function callsAtModuleTop(source: ts.SourceFile, checker: ts.TypeChecker): TopCa
 	};
 	visit(source);
 	return calls;
-}
-
-function unwrapParens(node: ts.Node): ts.Node {
-	let current = node;
-	while (ts.isParenthesizedExpression(current)) current = current.expression;
-	return current;
 }
 
 function scriptIsJavaScript(source: ts.SourceFile): boolean {
@@ -648,18 +643,6 @@ function commonJsName(node: ts.Expression): ts.Identifier | ts.StringLiteral | u
 		if (ts.isStringLiteral(argument)) return argument;
 	}
 	return undefined;
-}
-
-function unwrapped(expression: ts.Expression): ts.Expression {
-	let current = expression;
-	while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) || ts.isSatisfiesExpression(current)) {
-		current = current.expression;
-	}
-	return current;
-}
-
-function isWrapper(node: ts.Node): node is ts.ParenthesizedExpression | ts.AsExpression | ts.SatisfiesExpression {
-	return ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node);
 }
 
 function isAssignedBy(node: ts.Node): boolean {

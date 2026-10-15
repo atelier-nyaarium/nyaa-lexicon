@@ -4,8 +4,10 @@
 // stops using it is caught. A text sweep cannot see this; the compiler already knows.
 
 import type { StagedEdits } from "../applyEdits.js";
+import type { NoteLedger } from "../notes.js";
 import type { InsertPlan, MoveEditsOutcome, RefactorPlanner, ReplacementPlan } from "../refactorPlanner.js";
 import type { PlanAnswer, StepShape } from "../refactorStep.js";
+import type { MoveOutcome, NoteRefProblem } from "../refusalSlots.js";
 import type { Refusal } from "../refusals.js";
 import type { LexiconService } from "../service.js";
 import type { SourceWorkspace } from "../sourceWorkspace.js";
@@ -78,3 +80,13 @@ type _track = Assert<IsRefusal<Optional<ReturnType<TransactionManager["track"]>>
 type _writeFile = Assert<IsRefusal<Refused<Extract<ReturnType<TransactionManager["writeFile"]>, { written: false }>>>>;
 
 type _write = Assert<IsRefusal<Refused<Extract<StagedEdits, { applied: false }>>>>;
+
+type _moveOutcome = Assert<IsRefusal<Extract<MoveOutcome, { moved: false }>["reason"]>>;
+
+type _noteRefProblem = Assert<IsRefusal<NoteRefProblem["problem"]>>;
+
+type FailedNote = Extract<ReturnType<NoteLedger["write"]>, { outcome: "refused" }>;
+
+type NoteProblem<T> = NonNullable<T> extends (infer P)[] ? (P extends { problem: infer R } ? R : never) : never;
+
+type _ledgerNoteProblem = Assert<IsRefusal<NoteProblem<FailedNote["refs"]>>>;

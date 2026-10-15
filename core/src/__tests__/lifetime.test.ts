@@ -102,8 +102,7 @@ describe("lingering while empty", () => {
 	});
 });
 
-// Issue #7: counting only connections stopped the daemon under a running rename the moment its
-// client timed out and disconnected.
+// In-flight work keeps idle shutdown from stopping the daemon after its client disconnects.
 describe("holding the linger while work is in flight", () => {
 	function heldLinger(busy: { reason: string | null }) {
 		const clock = fakeClock();

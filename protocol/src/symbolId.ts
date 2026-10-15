@@ -140,6 +140,16 @@ export function decodeModuleField(field: string): string {
 	return field.replace(/%(25|20)/g, (_, g) => (g === "25" ? "%" : " "));
 }
 
+/** A canonical module field round trips exactly. */
+export function isCanonicalModuleField(field: string): boolean {
+	const module = decodeModuleField(field);
+	return isCanonicalModule(module) && encodeModuleField(module) === field;
+}
+
+function isCanonicalLanguage(language: string): boolean {
+	return language !== "" && !/\s/.test(language);
+}
+
 /** The parser must accept exactly what the composer emits, or an id becomes host-dependent. */
 export function isCanonicalModule(module: string): boolean {
 	try {
@@ -201,7 +211,7 @@ function encodeDescriptor(d: Descriptor): string {
 
 /** Normalizes the module here, so a provider cannot mint a host-dependent id by forgetting to. */
 export function composeSymbolId(id: SymbolId): string {
-	if (id.language === "" || /\s/.test(id.language)) {
+	if (!isCanonicalLanguage(id.language)) {
 		throw new Error(`language must be a non-empty slug with no whitespace, got: ${JSON.stringify(id.language)}`);
 	}
 
@@ -242,6 +252,13 @@ function readName(c: SourceCursor): string | null {
 
 	const out = c.readWhile((ch) => !STRUCTURAL.has(ch));
 	return out === "" ? null : out;
+}
+
+function readCanonicalName(c: SourceCursor): string | null {
+	const start = c.mark();
+	const name = readName(c);
+	if (name === null || c.textSince(start) !== quoteName(name)) return null;
+	return name;
 }
 
 /**
@@ -285,8 +302,10 @@ function parseDescriptors(c: SourceCursor, out: Descriptor[]): DescriptorFailure
 		if (ch === "(" || ch === "[") {
 			const close = ch === "(" ? ")" : "]";
 			c.next();
-			const name = readName(c);
-			if (name === null) return failed(c.failure("expected a parameter name", start));
+			const name = readCanonicalName(c);
+			if (name === null) {
+				return failed(c.failure("expected a canonical parameter name", start));
+			}
 			if (ch === "[" && DIGITS_RE.test(name)) {
 				return failed(c.failure("a type parameter cannot be named by digits alone", start));
 			}
@@ -302,8 +321,10 @@ function parseDescriptors(c: SourceCursor, out: Descriptor[]): DescriptorFailure
 			continue;
 		}
 
-		const name = readName(c);
-		if (name === null) return failed(c.failure("expected a descriptor name", start));
+		const name = readCanonicalName(c);
+		if (name === null) {
+			return failed(c.failure("expected a canonical descriptor name", start));
+		}
 
 		// The open paren is what separates a method from a term of the same name.
 		if (c.peek() === "(") {
@@ -382,6 +403,8 @@ function parseHead(c: SourceCursor): ParseResult<IdHead> {
 
 	const language = readIdField(c, "the language");
 	if (!language.ok) return language;
+	if (!isCanonicalLanguage(language.value.text))
+		return err(c.failure("language must be a non-empty slug with no whitespace", language.value.start));
 	const afterLanguage = expectIdSpace(c, "the language", language.value.start);
 	if (afterLanguage) return err(afterLanguage);
 
@@ -390,7 +413,7 @@ function parseHead(c: SourceCursor): ParseResult<IdHead> {
 
 	const module = decodeModuleField(moduleField.value.text);
 	// The parser must accept exactly what the composer emits, or an id becomes host-dependent.
-	if (!isCanonicalModule(module))
+	if (!isCanonicalModuleField(moduleField.value.text))
 		return err(c.failure(`module is not in canonical form: ${module}`, moduleField.value.start));
 
 	const afterModule = expectIdSpace(c, "the module", moduleField.value.start);

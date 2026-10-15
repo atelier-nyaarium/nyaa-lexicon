@@ -4,7 +4,6 @@ import {
 	type ArrangeEditsRequest,
 	asyncModuleStore,
 	type Binding,
-	comparePositions,
 	defined,
 	discoverByWalk,
 	type FileFacts,
@@ -20,6 +19,7 @@ import {
 	type ProbeBatchResponse,
 	type ProjectModel,
 	parseSymbolId,
+	positionInRange,
 	projectDiagnostic,
 	type Reference,
 	type RenameEditsRequest,
@@ -242,9 +242,8 @@ function externalPackageExists(root: string, specifier: string): boolean {
 	});
 }
 
-// Inclusive at both ends.
 function containsPosition(range: Range, position: Range["start"]): boolean {
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return positionInRange(range, position);
 }
 
 //////// Provider

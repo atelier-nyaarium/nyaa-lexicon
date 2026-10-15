@@ -1,20 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runBounded, systemTimer } from "../../protocol/src/boundedChild.js";
+import { hasUmdWrapper } from "../bundleSmoke";
+import { dirtyTrackedFiles, untrackedFiles } from "../releaseState";
 import {
 	checkDerivedSites,
 	checkProtocolRelease,
-	dirtyTrackedFiles,
 	expandWorkspaceEntry,
-	hasUmdWrapper,
 	nextVersion,
 	readVersion,
 	setVersion,
-	untrackedFiles,
 	versionTargets,
-} from "../build";
+} from "../versionPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -47,28 +46,6 @@ afterEach(() => {
 //  Tests
 
 describe("nextVersion", () => {
-	it("executes the shipped MCP artifact", () => {
-		const result = spawnSync(
-			process.execPath,
-			[path.join(import.meta.dirname, "..", "..", "dist", "main.js"), "--version"],
-			{
-				encoding: "utf8",
-			},
-		);
-		expect(result.status).toBe(0);
-		expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
-	});
-
-	it("rejects every AMD wrapper spelling, and only a real read", () => {
-		for (const source of [
-			'typeof define === "function" && define.amd',
-			"'function' == typeof define && define.amd",
-			'typeof define=="function"&&define["amd"]',
-		])
-			expect(hasUmdWrapper(source)).toBe(true);
-		expect(hasUmdWrapper('const note = "define.amd"; // define.amd\nconfig.define.amd;')).toBe(false);
-	});
-
 	it("bumps each component and zeroes the ones below it", () => {
 		expect(nextVersion("1.2.3", "patch")).toBe("1.2.4");
 		expect(nextVersion("1.2.3", "minor")).toBe("1.3.0");
@@ -84,6 +61,30 @@ describe("nextVersion", () => {
 		expect(() => nextVersion("1.2", "patch")).toThrow();
 		expect(() => nextVersion("1.2.3-rc.1", "patch")).toThrow();
 		expect(() => nextVersion("v1.2.3", "patch")).toThrow();
+	});
+});
+
+describe("bundle smoke", () => {
+	it("executes the shipped MCP artifact", async () => {
+		const result = await runBounded(
+			process.execPath,
+			[path.join(import.meta.dirname, "..", "..", "dist", "main.js"), "--version"],
+			{ maxBytes: 1024 * 1024, timeoutMs: 30_000, timer: systemTimer },
+		);
+		expect(result.kind).toBe("exited");
+		if (result.kind !== "exited") return;
+		expect(result.code).toBe(0);
+		expect(result.stdout.toString("utf8").trim()).toMatch(/^\d+\.\d+\.\d+$/);
+	});
+
+	it("rejects every AMD wrapper spelling, and only a real read", () => {
+		for (const source of [
+			'typeof define === "function" && define.amd',
+			"'function' == typeof define && define.amd",
+			'typeof define=="function"&&define["amd"]',
+		])
+			expect(hasUmdWrapper(source)).toBe(true);
+		expect(hasUmdWrapper('const note = "define.amd"; // define.amd\nconfig.define.amd;')).toBe(false);
 	});
 });
 

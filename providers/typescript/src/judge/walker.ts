@@ -25,7 +25,6 @@ import {
 	type Frame,
 	forget,
 	type Guard,
-	isNullish,
 	isObject,
 	MAX_DEPTH,
 	MAX_STEPS,
@@ -45,7 +44,7 @@ import {
 } from "./model.js";
 import { readName } from "./names.js";
 import type { PinnedProgram } from "./program.js";
-import { objectRest, statements as walkStatements, withDefault } from "./statements.js";
+import { assignPattern, statements as walkStatements } from "./statements.js";
 import { conditionSymbols, hasModifier, moduleSymbol, unwrapExpression } from "./symbols.js";
 import type { Writes } from "./writes.js";
 
@@ -451,8 +450,16 @@ export class Walker {
 	}
 
 	/** Assigns to an assignment target: a name, a member, or a destructuring pattern. */
-	*assignTo(target: ts.Node, value: Value, frame: Frame, flow: Flow): Step<void> {
+	*assignTo(target: ts.Node, value: Value, frame: Frame, flow: Flow, exact = false): Step<void> {
 		const node = ts.isExpression(target) ? unwrapExpression(target) : target;
+		if (
+			ts.isObjectLiteralExpression(node) ||
+			ts.isArrayLiteralExpression(node) ||
+			(ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+		) {
+			yield* assignPattern(this, node, value, frame, flow, exact);
+			return;
+		}
 		if (ts.isIdentifier(node)) {
 			this.writeName(node, value, frame, flow);
 			return;
@@ -464,48 +471,6 @@ export class Walker {
 				: yield* this.keyOf(node.argumentExpression, frame, flow);
 			if (!flow.alive) return;
 			yield* writeMember(this, receiver, key, value, node, frame, flow);
-			return;
-		}
-		if (ts.isObjectLiteralExpression(node)) {
-			if (isNullish(value)) {
-				this.throwExit(flow, false);
-				return;
-			}
-			let taken: Set<string> | undefined = new Set();
-			for (const property of node.properties) {
-				if (!flow.alive) return;
-				if (ts.isShorthandPropertyAssignment(property)) {
-					const item = yield* readMember(this, value, property.name.text, property.name, frame, flow);
-					taken?.add(property.name.text);
-					this.writeName(property.name, item, frame, flow);
-				} else if (ts.isPropertyAssignment(property)) {
-					const key =
-						ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
-							? property.name.text
-							: undefined;
-					if (key === undefined) taken = undefined;
-					else taken?.add(key);
-					const item =
-						key === undefined ? UNKNOWN : yield* readMember(this, value, key, property.name, frame, flow);
-					yield* this.assignTo(property.initializer, item, frame, flow);
-				} else if (ts.isSpreadAssignment(property)) {
-					const copied = yield* objectRest(this, value, taken, node, frame, flow);
-					yield* this.assignTo(property.expression, copied, frame, flow);
-				} else this.note(property);
-			}
-			return;
-		}
-		if (ts.isArrayLiteralExpression(node)) {
-			this.unseen(node);
-			for (const element of node.elements) {
-				if (ts.isOmittedExpression(element)) continue;
-				yield* this.assignTo(ts.isSpreadElement(element) ? element.expression : element, UNKNOWN, frame, flow);
-			}
-			return;
-		}
-		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-			const bound = yield* withDefault(this, value, node.right, frame, flow);
-			yield* this.assignTo(node.left, bound, frame, flow);
 			return;
 		}
 		this.note(node);

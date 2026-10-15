@@ -1,7 +1,4 @@
-// Composition root. Owns the wiring, delegates the rest.
-//
-// Each owner is handed a narrow port rather than the supervisor, and a residue test holds it there.
-// The methods below are pass-throughs on purpose.
+// Composition root. Wires owners and exposes their operations, including cross-owner reads.
 
 import { workspaceKey } from "@nyaa-lexicon/client";
 import {

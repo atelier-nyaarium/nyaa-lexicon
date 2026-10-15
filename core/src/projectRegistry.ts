@@ -5,8 +5,7 @@
 //
 // Single owner of the registry file; call sites take the whole state or nothing.
 
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
 	canonicalRoot,
@@ -16,6 +15,7 @@ import {
 	workspaceKey,
 	workspacePaths,
 } from "@nyaa-lexicon/client";
+import { atomicWriteJson } from "./atomicJson.js";
 import { Database } from "./database.js";
 import { admitStateDir } from "./workspaceAdmission.js";
 
@@ -109,14 +109,8 @@ export function readRegistry(host: PlatformEnv = currentHost()): RegisteredProje
 function writeRegistry(host: PlatformEnv, projects: RegisteredProject[]): void {
 	const file = registryFile(host);
 	mkdirSync(path.dirname(file), { recursive: true });
-	const staging = `${file}.${process.pid}.${randomUUID()}.tmp`;
 	const stored = projects.map(({ key, root, stateDir }) => entryOf(key, root, stateDir));
-	try {
-		writeFileSync(staging, JSON.stringify({ projects: stored } satisfies RegistryFile, null, 2));
-		renameSync(staging, file);
-	} finally {
-		rmSync(staging, { force: true });
-	}
+	atomicWriteJson(file, { projects: stored } satisfies RegistryFile, { space: 2 });
 }
 
 /**

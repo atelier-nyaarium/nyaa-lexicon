@@ -2,8 +2,8 @@
 //
 //   bun dist/daemon.js <workspace> [--warm] [--state-dir <dir>]
 //
-// Indexes once at start, then serves until stopped. The index is a real file rather than memory,
-// so a restart re-uses what it already knows.
+// Startup scans run when stored files exist or warmup is requested. The store retains the index
+// across restarts.
 //
 // It runs detached with stdio pointed at the workspace's daemon.log, so every line here is the
 // only record of what happened.
@@ -219,8 +219,7 @@ async function main(argv: string[]): Promise<void> {
 	////////////////////////////////
 	//  Teardown, before anything to tear down
 
-	// Nullable because a failure or signal can land at ANY startup stage, and teardown must release
-	// whatever exists by then, or the lock and providers outlive the process (issue #7).
+	// Resources stay nullable until created so teardown can handle partial startup.
 	let daemon: RunningDaemon | null = null;
 	let store: IndexStore | null = null;
 	let supervisor: ProviderSupervisor | null = null;
@@ -614,8 +613,7 @@ async function main(argv: string[]): Promise<void> {
 		linger = lingerWhileEmpty({
 			afterMs: DEFAULT_LINGER_MS,
 			stop: () => void shutdown(`no clients for ${DEFAULT_LINGER_MS / 60_000} minutes`),
-			// Issue #7: counting only connections stopped the daemon under a running rename the
-			// moment its client timed out and disconnected.
+			// Idle shutdown waits for active requests and open refactor transactions.
 			holdWhile: () => {
 				if (inFlight > 0) return `${inFlight} request(s) in flight`;
 				if (journal.status().open) return "a refactor transaction is open";

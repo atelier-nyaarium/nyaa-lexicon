@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ModulePathSchema } from "./modulePath.js";
 import { LandingSchema } from "./project.js";
 import { RangeSchema } from "./symbols.js";
 
@@ -43,12 +44,12 @@ export const LoadCycleUnknownSchema = z
 	})
 	.meta({ id: "LoadCycleUnknown" });
 
-export const LoadCycleMemberSchema = z.object({ module: z.string().min(1), contentHash: z.string().min(1) });
+export const LoadCycleMemberSchema = z.object({ module: ModulePathSchema, contentHash: z.string().min(1) });
 export const JudgeLoadCycleRequestSchema = z
 	.object({
 		preview: z.string().min(1).optional(),
 		members: z.array(LoadCycleMemberSchema).min(1),
-		entries: z.array(z.string().min(1)).min(1).max(32),
+		entries: z.array(ModulePathSchema).min(1).max(32),
 		partial: z.string().min(1).optional(),
 	})
 	.meta({ id: "JudgeLoadCycleRequest" });
@@ -86,14 +87,14 @@ export const PrepareLoadCyclePreviewRequestSchema = z
 		files: z
 			.array(
 				z.object({
-					module: z.string().min(1),
+					module: ModulePathSchema,
 					base: z.string().nullable(),
 					contentHash: z.string().min(1),
 					text: z.string(),
 				}),
 			)
 			.min(1),
-		answer: z.array(z.string().min(1)).min(1),
+		answer: z.array(ModulePathSchema).min(1),
 	})
 	.meta({ id: "PrepareLoadCyclePreviewRequest" });
 
@@ -115,7 +116,7 @@ export function unjudgedLoadCycle(request: JudgeLoadCycleRequest): Extract<Judge
 
 export const ModuleCyclesRequestSchema = z
 	.object({
-		module: z.string().min(1).optional(),
+		module: ModulePathSchema.optional(),
 		verdict: z.enum(["bad", "fine", "unknown"]).optional(),
 		includeUnread: z.boolean().optional(),
 		limit: z.number().int().min(1).max(200).default(20),
@@ -144,7 +145,5 @@ export const ModuleCycleSchema = z
 
 export type ModuleCycle = z.infer<typeof ModuleCycleSchema>;
 
-export const ModuleProblemsRequestSchema = z
-	.object({ module: z.string().min(1) })
-	.meta({ id: "ModuleProblemsRequest" });
+export const ModuleProblemsRequestSchema = z.object({ module: ModulePathSchema }).meta({ id: "ModuleProblemsRequest" });
 export const ModuleProblemsResponseSchema = z.array(LoadCycleHazardSchema).meta({ id: "ModuleProblemsResponse" });

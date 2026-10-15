@@ -7,19 +7,20 @@
 
 import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
+import { ModulePathSchema } from "./modulePath.js";
 
 ////////////////////////////////
 //  Schemas
 
 export const ImportEditsRequestSchema = z
 	.object({
-		module: z.string().min(1),
+		module: ModulePathSchema,
 		/** The text to plan against, which wins over disk. */
 		text: z.string(),
 		/** The name as `module` writes it. */
 		name: z.string().min(1),
 		/** The module declaring it. */
-		fromModule: z.string().min(1),
+		fromModule: ModulePathSchema,
 	})
 	.meta({ id: "ImportEditsRequest" });
 

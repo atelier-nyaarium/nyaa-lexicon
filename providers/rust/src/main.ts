@@ -1,7 +1,6 @@
 import {
 	type ArrangeEditsRequest,
 	type Binding,
-	comparePositions,
 	type Declaration,
 	type Diagnostic,
 	defined,
@@ -21,6 +20,7 @@ import {
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
+	positionInRange,
 	type Range,
 	type Reference,
 	type RenameEditsRequest,
@@ -165,7 +165,7 @@ export const WORDS = {
 
 function contains(range: Range, position: Range["start"]): boolean {
 	// Inclusive at both ends.
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return positionInRange(range, position);
 }
 
 function unbound(reason: UnknownReason, detail: string): Binding {

@@ -44,6 +44,18 @@ describe("reachedCalls follows a binding rather than a spelling", () => {
 		["apply", `import * as fs from "node:fs";\nconst use = (p: string) => fs.readFileSync.apply(null, [p]);`],
 		["require", `const fs = require("node:fs");\nconst use = (p: string) => fs.readFileSync(p);`],
 		[
+			"a locally required namespace",
+			`function use(p: string) {\n\tconst fs = require("node:fs");\n\treturn fs.readFileSync(p);\n}`,
+		],
+		[
+			"a function-scoped var namespace",
+			`function use(p: string) {\n\tif (p) { var fs = require("node:fs"); }\n\treturn fs.readFileSync(p);\n}`,
+		],
+		[
+			"a namespace-local var namespace",
+			`namespace N {\n\tvar fs = require("node:fs");\n\tfs.readFileSync("x");\n}`,
+		],
+		[
 			"a dynamic import destructure",
 			`async function use(p: string) {\n\tconst { readFileSync } = await import("node:fs");\n\treturn readFileSync(p);\n}`,
 		],
@@ -59,7 +71,39 @@ describe("reachedCalls follows a binding rather than a spelling", () => {
 		});
 	}
 
+	it("leaves a catch binding alone", () => {
+		expect(reached(`import * as fs from "node:fs";\ntry {} catch (fs) { fs.readFileSync("x"); }`)).toEqual([]);
+	});
+
+	it("keeps an outer namespace visible after an inner block shadow", () => {
+		expect(
+			reached(
+				`import * as fs from "node:fs";\nfunction use(p: string) {\n\t{ const fs = other; fs.readFileSync(p); }\n\treturn fs.readFileSync(p);\n}`,
+			),
+		).toEqual(["fs.readFileSync"]);
+	});
+
 	const innocent: Array<[string, string]> = [
+		[
+			"a namespace-local var shadowing the import",
+			`import * as fs from "node:fs";\nnamespace N {\n\tvar fs = other;\n\tfs.readFileSync("x");\n}`,
+		],
+		[
+			"a named function expression shadowing the namespace",
+			`import * as fs from "node:fs";\nconst run = function fs() { fs.readFileSync("x"); };`,
+		],
+		[
+			"a static block var shadowing the namespace",
+			`import * as fs from "node:fs";\nclass C { static { var fs = other; fs.readFileSync("x"); } }`,
+		],
+		[
+			"a block-local function shadowing the namespace",
+			`import * as fs from "node:fs";\nfunction use() {\n\t{ function fs() {} fs.readFileSync("x"); }\n}`,
+		],
+		[
+			"a block-local class shadowing the namespace",
+			`import * as fs from "node:fs";\nfunction use() {\n\t{ class fs {} fs.readFileSync("x"); }\n}`,
+		],
 		[
 			"a same-named local",
 			`function readFileSync(p: string) {\n\treturn p;\n}\nconst use = (p: string) => readFileSync(p);`,

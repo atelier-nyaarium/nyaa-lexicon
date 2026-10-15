@@ -32,13 +32,7 @@ export function formatFailure(failure: ParseFailure): string {
 	return `${failure.message} at ${failure.line}:${failure.column} (offset ${failure.offset}): ${failure.context}`;
 }
 
-/**
- * A digit run as a number, or null when the text and the number would disagree.
- *
- * Past 2^53 two distinct digit runs collapse onto one value, and a leading zero gives one value two
- * spellings. Either way an id or a version stops being its own name. One owner, because the same
- * check written twice already drifted once.
- */
+/** Accepts only digit runs that round-trip through a safe integer. */
 export function safeDigits(text: string): number | null {
 	if (!/^\d+$/.test(text)) return null;
 	const value = Number(text);

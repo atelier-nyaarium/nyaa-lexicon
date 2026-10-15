@@ -2,7 +2,8 @@
 
 import { z } from "zod";
 import { SymbolSummarySchema } from "./daemonShapes.js";
-import { NoteAuthorSchema } from "./noteShapes.js";
+import { ModulePathSchema } from "./modulePath.js";
+import { NoteAuthorOptionalField, NoteAuthorSchema } from "./noteShapes.js";
 
 ////////////////////////////////
 //  Constants
@@ -205,8 +206,6 @@ export const RelationFeedbackResultSchema = z
 ////////////////////////////////
 //  Requests
 
-const Author = { author: NoteAuthorSchema.optional() };
-
 /** Consumer intent scopes feedback so one consumer's judgment does not affect another's. */
 const Intent = z
 	.string()
@@ -240,7 +239,7 @@ export const RelationsBetweenRequestSchema = z
 /** A module's discovered exports, or the modules an export would suit; exactly one of the two. */
 export const RelationCandidatesRequestSchema = z
 	.object({
-		module: z.string().min(1).optional(),
+		module: ModulePathSchema.optional(),
 		symbolId: z.string().min(1).optional(),
 		limit: z.number().int().positive().max(50).optional(),
 		intent: Intent.optional(),
@@ -266,7 +265,7 @@ export const WriteRelationRequestSchema = z
 		why: Text.optional(),
 		reason: Text.optional(),
 		expectedRevision: z.number().int().nonnegative(),
-		...Author,
+		...NoteAuthorOptionalField,
 	})
 	.meta({ id: "WriteRelationRequest" });
 
@@ -275,7 +274,7 @@ export const AnswerRelationGapRequestSchema = z
 	.object({
 		symbolId: z.string().min(1),
 		related: z.array(z.object({ symbolId: z.string().min(1), why: Text })).max(20),
-		...Author,
+		...NoteAuthorOptionalField,
 	})
 	.meta({ id: "AnswerRelationGapRequest" });
 

@@ -6,12 +6,12 @@
 //
 //   bun scripts/isolationSmoke.ts
 
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { connect, type Session } from "../client/src/index.js";
+import { runBounded, systemTimer } from "../protocol/src/boundedChild.js";
 
 ////////////////////////////////
 //  Constants
@@ -31,7 +31,7 @@ interface Hostile {
 	denied: string;
 }
 
-function hostileWorkspace(scratch: string): Hostile {
+async function hostileWorkspace(scratch: string): Promise<Hostile> {
 	const workspace = path.join(scratch, "workspace");
 	const markers = path.join(scratch, "markers");
 	const outside = path.join(scratch, "outside");
@@ -58,14 +58,29 @@ function hostileWorkspace(scratch: string): Hostile {
 	symlinkSync(path.join(outside, "canary.ts"), path.join(workspace, "linked.ts"));
 	symlinkSync(path.join(outside, "canary.md"), path.join(workspace, "linked.md"));
 	symlinkSync(outside, path.join(workspace, "linked-dir"));
-	git(workspace, ["init", "-q"]);
-	git(workspace, ["add", "-A"]);
+	await git(workspace, ["init", "-q"]);
+	await git(workspace, ["add", "-A"]);
 	return { workspace, markers, leaked, canary, denied };
 }
 
-function git(cwd: string, args: string[]): void {
-	const run = spawnSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, encoding: "utf8", timeout: 30_000 });
-	if (run.status !== 0) throw new Error(`git ${args[0]} failed: ${(run.stderr ?? "").trim() || run.status}`);
+async function git(cwd: string, args: string[]): Promise<void> {
+	const result = await runBounded("git", ["-c", "core.fsmonitor=false", ...args], {
+		cwd,
+		maxBytes: 1024 * 1024,
+		timeoutMs: 30_000,
+		timer: systemTimer,
+	});
+	if (result.kind === "exited" && result.code === 0) return;
+	const stderr = result.kind === "exited" ? result.stderr.toString("utf8").trim() : "";
+	const reason =
+		result.kind === "spawnFailed"
+			? result.error.message
+			: result.kind === "timedOut"
+				? "timed out"
+				: result.kind === "overflowed"
+					? "output exceeded the command limit"
+					: result.code;
+	throw new Error(`git ${args[0]} failed: ${stderr || reason}`);
 }
 
 /** Files under the state dir containing the canary, WAL included. */
@@ -93,7 +108,7 @@ async function waitReady(session: Session): Promise<void> {
 
 async function main(): Promise<void> {
 	const scratch = mkdtempSync(path.join(os.tmpdir(), "lexicon-isolation-"));
-	const { workspace, markers, leaked, canary, denied } = hostileWorkspace(scratch);
+	const { workspace, markers, leaked, canary, denied } = await hostileWorkspace(scratch);
 	const stateDir = path.join(scratch, "state");
 	// A .env only sets a variable the process lacks, so the canary needs it absent.
 	delete process.env["XDG_STATE_HOME"];

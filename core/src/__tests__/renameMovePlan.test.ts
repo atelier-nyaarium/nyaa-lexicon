@@ -12,9 +12,12 @@ import { ImportResolver, type ResolveSpecifier } from "../imports";
 import type { CandidateParse, ProviderProbe } from "../providerProbe";
 import { ReadContext } from "../readContext";
 import { RefactorPlanner } from "../refactorPlanner";
-import { routeChanged } from "../refusals";
+import { moveTogetherMemberFailed, routeChanged } from "../refusals";
+import type { LexiconService } from "../service";
 import type { SourceWorkspace } from "../sourceWorkspace";
+import { refactorMoveTogether } from "../stepRunners";
 import type { FactsStamp, IndexStore, StoredDeclaration, StoredImport, StoredReference } from "../store";
+import type { TransactionManager } from "../transactions";
 import { EMPTY_READS } from "./emptyReads";
 import { edge, landed } from "./importEdges";
 import { askWith, stepWith } from "./steppedPlan";
@@ -466,6 +469,82 @@ describe("writing a move only over the rows the plan read", () => {
 
 		expect(outcome).toMatchObject({ moved: false, reason: expect.stringMatching(/indexed again/) });
 		expect(written).toEqual([]);
+	});
+});
+
+describe("a move-together failure", () => {
+	it("keeps the rejected member detail and reports how to recover after partial progress", async () => {
+		const text = "function alpha() {}\nfunction beta() {}\n";
+		const alpha = id("alpha");
+		const beta = id("beta");
+		const names = new Map([
+			[alpha, "alpha"],
+			[beta, "beta"],
+		]);
+		const movePlan = (symbolId: string) => ({
+			ok: true as const,
+			symbolId,
+			name: names.get(symbolId) ?? symbolId,
+			fromModule: MODULE,
+			toModule: TARGET,
+			closure: [],
+			dependencies: [],
+			baseHash: hashContent(text),
+		});
+		let calls = 0;
+		const service = {
+			during: (_doing: unknown, work: () => Promise<unknown>) => work(),
+			upgradeRemaining: async () => {},
+			newReadContext: () => ({ seen: () => [] }),
+			planMove: (symbolId: string) => movePlan(symbolId),
+			planArrange: async () => ({ ok: true, toModule: TARGET, promoted: [] }),
+			arrangedFiles: async () => ({
+				ok: false,
+				unsupported: true,
+				reason: moveTogetherMemberFailed("arrangement", "unsupported", []),
+				issues: [],
+			}),
+			moveEdits: async (plan: { module?: string; name: string }) => {
+				calls += 1;
+				if (calls === 2) throw new Error(`provider rejected ${plan.name}`);
+				return {
+					ok: true,
+					files: [{ module: MODULE, text: "moved" }],
+					bases: [{ module: MODULE, hash: hashContent(text) }],
+					issues: [],
+				};
+			},
+			currentHashOf: (module: string) => (module === MODULE ? hashContent(text) : null),
+			staleModules: () => [],
+			factsMoved: () => [],
+			rebaseIntoModule: () => null,
+			writeModule: () => true,
+			fixWritten: async () => ({ ran: false, failed: null }),
+			oweParses: () => {},
+			indexFile: async (module: string) => ({ module, action: "indexed", cause: null }),
+			payOwed: () => {},
+			checkMoveLanded: () => [],
+		} as unknown as LexiconService;
+		const transactions = {
+			openTransaction: () => ({ id: "rt-test", startedAt: 0, origin: "explicit" }),
+			tracks: () => true,
+			beginStep: () => ({ ok: true, stepNo: 1 }),
+			completeStep: () => {},
+			recordIssues: () => {},
+			rebind: () => ({ subjects: 0, applied: [], blocked: [] }),
+			stepFiles: () => [],
+		} as unknown as TransactionManager;
+
+		const outcome = await refactorMoveTogether(service, transactions, async (work) => work(), {
+			symbolId: alpha,
+			toModule: TARGET,
+			together: [beta],
+		});
+		if (outcome.moved) throw new Error("the joined move unexpectedly completed");
+		expect(outcome.order).toHaveLength(1);
+		expect(outcome.reason).toMatch(/provider rejected/);
+		expect(outcome.reason).toMatch(/after .+ moved/);
+		expect(outcome.reason).toMatch(/refactor_revert/);
 	});
 });
 

@@ -4,7 +4,6 @@ import { isDeepStrictEqual } from "node:util";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
-	comparePositions,
 	discoverByWalk,
 	handlersFor,
 	type ImportEditsRequest,
@@ -19,6 +18,7 @@ import {
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
+	positionInRange,
 	projectDiagnostic,
 	type Range,
 	type RenameEditsRequest,
@@ -196,7 +196,7 @@ export const WORDS = {
 
 // Inclusive at both ends.
 function contains(range: Range, position: Range["start"]): boolean {
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return positionInRange(range, position);
 }
 
 function unknown(reason: UnknownReason, detail: string): TypeInfo {

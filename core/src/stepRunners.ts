@@ -7,7 +7,6 @@ import {
 	hashContent,
 	type InsertOutcome,
 	type MoveAnchor,
-	type MoveOutcome,
 	type Promoted,
 	type RefactorIssue,
 	type RenameStepOutcome,
@@ -20,7 +19,7 @@ import { type MoveMember, moveOrder } from "./moveOrder.js";
 import { promotedField } from "./movePromotion.js";
 import { type ReadContext, UNREAD_FILE } from "./readContext.js";
 import { journaledStep, type RefusedWith, type StepPolicy } from "./refactorStep.js";
-import type { PlannedMove } from "./refusalSlots.js";
+import type { MoveOutcome, PlannedMove } from "./refusalSlots.js";
 import {
 	anchorNotTopLevel,
 	arrangeNotAsPreviewed,
@@ -28,6 +27,7 @@ import {
 	changedWhilePlanned,
 	factsMovedWhilePlanned,
 	moveCycle,
+	moveTogetherMemberFailed,
 	moveTogetherSplit,
 	type Refusal,
 	staleSincePlanned,
@@ -515,27 +515,34 @@ export async function refactorMoveTogether(
 	for (const member of ordered.order) {
 		let root: string | undefined;
 		// A throw after earlier members landed must still name them.
-		const step = await refactorMove(
-			service,
-			transactions,
-			write,
-			{ symbolId: member.symbolId, toModule: args.toModule, promote: args.promote, ...defined({ anchor }) },
-			"join",
-		).then(
-			(result) => {
-				if (result.done) root = result.root;
-				return moveOutcome(result);
-			},
-			(error: unknown): MoveOutcome => ({
+		let step: MoveOutcome;
+		try {
+			const result = await refactorMove(
+				service,
+				transactions,
+				write,
+				{ symbolId: member.symbolId, toModule: args.toModule, promote: args.promote, ...defined({ anchor }) },
+				"join",
+			);
+			if (result.done) root = result.root;
+			step = moveOutcome(result);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			return {
 				moved: false,
-				issues: [],
-				reason: error instanceof Error ? error.message : String(error),
-			}),
-		);
+				issues,
+				order,
+				reason: moveTogetherMemberFailed(member.name, detail, order),
+			};
+		}
 		issues.push(...step.issues);
 		if (!step.moved) {
-			const moved = order.length === 0 ? "" : ` after ${order.join(", ")} moved`;
-			return { moved: false, issues, order, reason: `${member.name} did not move${moved}: ${step.reason}` };
+			return {
+				moved: false,
+				issues,
+				order,
+				reason: moveTogetherMemberFailed(member.name, step.reason, order),
+			};
 		}
 		promoted.push(...(step.promoted ?? []));
 		for (const module of step.modules ?? []) modules.add(module);

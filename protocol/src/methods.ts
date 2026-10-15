@@ -13,6 +13,7 @@ import {
 	ReleaseLoadCycleNotificationSchema,
 	ReleaseLoadCyclePreviewNotificationSchema,
 } from "./loadCycles.js";
+import { ModulePathSchema } from "./modulePath.js";
 import { ArrangeEditsRequestSchema, MoveEditsRequestSchema, MoveEditsResponseSchema } from "./move.js";
 import {
 	FileFactsSchema,
@@ -153,7 +154,7 @@ export type ProviderTiers = z.infer<typeof ProviderTiersSchema>;
 export const DiscoverProjectRequestSchema = z
 	.object({
 		workspaceRoot: z.string().min(1),
-		scope: z.array(z.string().min(1)).optional().describe("Workspace-relative module paths in core scope."),
+		scope: z.array(ModulePathSchema).optional().describe("Workspace-relative module paths in core scope."),
 	})
 	.meta({
 		id: "DiscoverProjectRequest",
@@ -161,7 +162,7 @@ export const DiscoverProjectRequestSchema = z
 
 export const ParseFileRequestSchema = z
 	.object({
-		module: z.string().min(1),
+		module: ModulePathSchema,
 		contentHash: z.string().min(1),
 		/** Text is passed in so the provider never disagrees with the core about what is on disk. */
 		text: z.string(),
@@ -173,11 +174,9 @@ export const ParseFileRequestSchema = z
 /** Every file not listed reads as the index holds it. */
 export const ProbeBatchRequestSchema = z
 	.object({
-		files: z
-			.array(z.object({ module: z.string().min(1), contentHash: z.string().min(1), text: z.string() }))
-			.min(1),
+		files: z.array(z.object({ module: ModulePathSchema, contentHash: z.string().min(1), text: z.string() })).min(1),
 		/** Modules this provider owns, to answer facts for. */
-		answer: z.array(z.string().min(1)).min(1),
+		answer: z.array(ModulePathSchema).min(1),
 	})
 	.refine(
 		(request) =>
@@ -243,7 +242,7 @@ export type PrepareLoadCyclePreviewResponse = z.infer<typeof PrepareLoadCyclePre
 
 export const ResolveImportRequestSchema = z
 	.object({
-		fromModule: z.string().min(1),
+		fromModule: ModulePathSchema,
 		specifier: z.string().min(1),
 		/** Explicit bundle declarations can resolve runtime paths the language alone cannot. */
 		surfaceGlobs: z.array(z.string().min(1)).optional(),
@@ -253,17 +252,17 @@ export const ResolveImportRequestSchema = z
 
 /** Identified by position rather than by id: the reference has no symbol until this call runs. */
 export const BindRequestSchema = z
-	.object({ module: z.string().min(1), range: RangeSchema, name: z.string().min(1) })
+	.object({ module: ModulePathSchema, range: RangeSchema, name: z.string().min(1) })
 	.meta({ id: "BindRequest" });
 
 /** Either an already-bound symbol or a position, since a caller may hold only one of them. */
 export const TypeOfRequestSchema = z
-	.union([z.object({ symbolId: z.string().min(1) }), z.object({ module: z.string().min(1), range: RangeSchema })])
+	.union([z.object({ symbolId: z.string().min(1) }), z.object({ module: ModulePathSchema, range: RangeSchema })])
 	.meta({ id: "TypeOfRequest" });
 
 /** The core no longer holds this module: it was deleted, refused or left the scope. */
 export const ForgetModuleNotificationSchema = z
-	.object({ module: z.string().min(1) })
+	.object({ module: ModulePathSchema })
 	.meta({ id: "ForgetModuleNotification" });
 
 /**
@@ -272,12 +271,12 @@ export const ForgetModuleNotificationSchema = z
  * disk like any dependency, so it never serves a copy nobody updates.
  */
 export const ReleaseModuleNotificationSchema = z
-	.object({ module: z.string().min(1) })
+	.object({ module: ModulePathSchema })
 	.meta({ id: "ReleaseModuleNotification" });
 
 /** The modules this provider owns as roots, sent after each root recount. */
 export const IndexRootsNotificationSchema = z
-	.object({ roots: z.array(z.string().min(1)) })
+	.object({ roots: z.array(ModulePathSchema) })
 	.meta({ id: "IndexRootsNotification" });
 
 /**
@@ -292,7 +291,7 @@ export const IndexRootsNotificationSchema = z
  */
 export const ModuleAdmissionNotificationSchema = z
 	.object({
-		module: z.string().min(1),
+		module: ModulePathSchema,
 		/** The bytes parsed, so a verdict cannot settle a parse the provider has moved past. */
 		contentHash: z.string().min(1),
 		outcome: z.discriminatedUnion("status", [

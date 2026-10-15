@@ -2,10 +2,10 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
 	type Binding,
-	comparePositions,
 	type Declaration,
 	defined,
 	type ImportResolution,
+	positionInRange as inRange,
 	type Reference,
 	type ReferenceOrigin,
 	sameRange,
@@ -47,7 +47,7 @@ const DECLARATION: ReferenceOrigin = { kind: "declaration" };
 //////// Helpers
 
 function positionInRange(range: Range, position: Range["start"]): boolean {
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return inRange(range, position);
 }
 
 function absoluteModule(workspaceRoot: string, module: string): string | null {

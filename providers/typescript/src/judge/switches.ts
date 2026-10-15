@@ -1,7 +1,7 @@
 // Switch statements: which clause the discriminant enters, and how the clauses' completions leave it.
 
 import ts from "typescript";
-import { can, canOther, canOtherThan, EITHER, exclude, isFiniteDomain, type Primitive } from "./domains.js";
+import { can, canOtherThan, EITHER, exclude, isFiniteDomain, type Primitive } from "./domains.js";
 import {
 	type Exit,
 	type Flow,
@@ -10,11 +10,11 @@ import {
 	literal,
 	mergeGuards,
 	provOf,
-	strictEquals,
 	UNKNOWN,
 	unionProv,
 	type Value,
 } from "./model.js";
+import { type LiteralRelation, literalRelation } from "./operators.js";
 import { statements } from "./statements.js";
 import { literalOf } from "./symbols.js";
 import type { Step, Walker } from "./walker.js";
@@ -87,10 +87,13 @@ export function* switchStatement(
 		if (finiteNarrowing && remaining !== undefined && literal !== undefined && !can(remaining, literal)) continue;
 		const exactMatch = finiteNarrowing && literal !== undefined;
 		const narrowed = exactMatch && remaining !== undefined ? { ...discriminant, domain: remaining } : discriminant;
-		matched.set(at, [...tests.guards, w.guard(matching(narrowed, value), node.expression, flow)]);
+		const relation = literalRelation(narrowed, value);
+		if (relation.kind !== "never")
+			matched.set(at, [...tests.guards, w.guard(matching(relation, discriminant, value), node.expression, flow)]);
 		if (finiteNarrowing && remaining !== undefined && literal !== undefined)
 			remaining = exclude(remaining, literal);
-		const failedGuard = w.guard(nonmatching(discriminant, value), node.expression, flow);
+		const failedRelation = literalRelation(discriminant, value);
+		const failedGuard = w.guard(nonmatching(failedRelation, discriminant, value), node.expression, flow);
 		tests.guards.push(failedGuard);
 		if (remaining !== undefined && remaining.length === 0) {
 			exhausted = true;
@@ -145,38 +148,22 @@ export function* switchStatement(
 	flow.guards = extra.length === 0 ? base : [...base, mergeGuards(extra)];
 }
 
-function nonmatching(discriminant: Value, label: Value): Value {
-	const same = strictEquals(discriminant, label);
-	if (same === false) return literal(true);
-	if (same === true) return literal(false);
+function nonmatching(relation: LiteralRelation, discriminant: Value, label: Value): Value {
+	if (relation.kind === "never") return literal(true);
+	if (relation.kind === "always") return literal(false);
 	const prov = unionProv(provOf(discriminant), provOf(label));
-	const operand = discriminant.kind === "literal" ? label : discriminant;
-	const other = discriminant.kind === "literal" ? discriminant : label;
-	if (operand.kind === "unknown" && operand.domain !== undefined && other.kind === "literal") {
-		if (!can(operand.domain, other.value)) return literal(true);
-		if (!canOther(operand.domain, other.value)) return literal(false);
-		return { kind: "unknown", prov, domain: EITHER };
-	}
-	return { kind: "unknown", prov };
+	return { kind: "unknown", prov, ...(relation.domain === undefined ? {} : { domain: relation.domain }) };
 }
 
 /**
  * Whether a case matches: decided between known values, else a test that can match where an input may
  * equal a literal label. One that cannot match is entered only by a fallthrough the walk does not follow.
  */
-function matching(discriminant: Value, label: Value): Value {
-	const same = strictEquals(discriminant, label);
-	if (same === true) return literal(true);
-	if (same === false) return UNKNOWN;
+function matching(relation: LiteralRelation, discriminant: Value, label: Value): Value {
+	if (relation.kind === "always") return literal(true);
+	if (relation.kind === "never") return literal(false);
 	const prov = unionProv(provOf(discriminant), provOf(label));
-	const operand = discriminant.kind === "literal" ? label : discriminant;
-	const other = discriminant.kind === "literal" ? discriminant : label;
-	if (operand.kind === "unknown" && operand.domain !== undefined && other.kind === "literal") {
-		// A domain of that label alone always matches.
-		if (!canOther(operand.domain, other.value)) return literal(true);
-		if (can(operand.domain, other.value)) return { kind: "unknown", prov, domain: EITHER };
-	}
-	return { kind: "unknown", prov };
+	return { kind: "unknown", prov, ...(relation.domain === undefined ? {} : { domain: relation.domain }) };
 }
 
 /** Whether no case matches, so the default runs: where every label is a literal the discriminant may differ from. */

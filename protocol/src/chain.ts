@@ -5,6 +5,7 @@
 // else the descriptor names its own id carries (an out-of-line definition names its scope without
 // declaring it). Coordinates are the protocol's, 0-based, untouched.
 
+import { comparePositions } from "./coordinates.js";
 import type { StoredDeclaration } from "./daemonShapes.js";
 import { defined } from "./defined.js";
 import { isParameterSymbol, ownerOf, parseSymbolId } from "./symbolId.js";
@@ -78,13 +79,13 @@ const AVAILABLE_CAP = 50;
 //  Functions & Helpers
 
 function documentOrder(a: { range: Range; symbolId: string }, b: { range: Range; symbolId: string }): number {
-	const byPosition = a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character;
+	const byPosition = comparePositions(a.range.start, b.range.start);
 	if (byPosition !== 0) return byPosition;
 	return a.symbolId < b.symbolId ? -1 : a.symbolId > b.symbolId ? 1 : 0;
 }
 
 function rangeOrder(a: Range, b: Range): number {
-	return a.start.line - b.start.line || a.start.character - b.start.character;
+	return comparePositions(a.start, b.start);
 }
 
 function stepOrder(a: Step, b: Step): number {

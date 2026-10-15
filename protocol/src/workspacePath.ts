@@ -40,7 +40,8 @@ export function workspaceFile(root: string, module: string): string | null {
 	}
 	const absolute = path.resolve(root, ...canonical.split("/"));
 	const relative = path.relative(root, absolute);
-	if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+	if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+		return null;
 	return absolute;
 }
 

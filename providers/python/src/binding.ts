@@ -10,7 +10,7 @@ import {
 	sameRange,
 	type UnknownReason,
 } from "@nyaa-lexicon/protocol";
-import type { Range, RawDescriptor, RawImportBinding } from "./facts/types";
+import { type Range, type RawDescriptor, type RawImportBinding, TYPE_USE_KINDS } from "./facts/types";
 import { idFor, type MappedFacts, type Receiver, starSelects } from "./mapped";
 
 ////////////////////////////////
@@ -41,9 +41,6 @@ export interface BinderReads {
 
 ////////////////////////////////
 //  Constants
-
-/** Kinds a typeUse reference may bind to. */
-const TYPE_USE_KINDS = new Set<Declaration["kind"]>(["class", "variable", "function", "interface", "typeParameter"]);
 
 const ABSENT: Exposure = { kind: "absent" };
 

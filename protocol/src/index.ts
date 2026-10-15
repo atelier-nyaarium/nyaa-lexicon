@@ -21,6 +21,8 @@ export {
 	comparePositions,
 	coordinatesOf,
 	type OffsetRange,
+	positionInRange,
+	rangeInRange,
 	sameRange,
 	type TextCoordinates,
 } from "./coordinates.js";
@@ -339,7 +341,7 @@ export {
 	WelcomeFrameSchema,
 } from "./daemonWire.js";
 export { defined } from "./defined.js";
-export { isTooDeep, MAX_NESTING, NestingGauge, saysTooDeep, TOO_DEEP } from "./depth.js";
+export { isTooDeep, MAX_NESTING, NestingGauge, saysTooDeep, TOO_DEEP, treeDeeperThan } from "./depth.js";
 export {
 	applyEdits,
 	type EditConflict,

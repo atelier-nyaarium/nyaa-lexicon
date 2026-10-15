@@ -14,14 +14,10 @@ import {
 	sameStore,
 } from "@nyaa-lexicon/core";
 import { z } from "zod";
+import { type ToolResult, textResult as text } from "./result.js";
 
 ////////////////////////////////
 //  Interfaces & Types
-
-interface ToolResult {
-	content: Array<{ type: "text"; text: string }>;
-	isError?: boolean;
-}
 
 /** What a store says about its workspace, as `list_projects` shows it. */
 export interface StoreTimes {
@@ -99,13 +95,6 @@ export const BindProjectInput = {
 
 ////////////////////////////////
 //  Functions & Helpers
-
-function text(body: string, isError = false): ToolResult {
-	return {
-		content: [{ type: "text", text: body }],
-		...(isError ? { isError: true } : {}),
-	};
-}
 
 /** How a project's row finds its store in `storeTimes`. */
 function storeOf(project: SessionProject): string {

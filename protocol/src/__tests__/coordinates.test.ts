@@ -1,7 +1,27 @@
 import { describe, expect, it } from "bun:test";
-import { coordinatesOf } from "../coordinates";
+import { coordinatesOf, positionInRange, rangeInRange } from "../coordinates";
 
 const ASTRAL = "\u{1F600}";
+
+describe("inclusive range containment", () => {
+	const outer = { start: { line: 2, character: 3 }, end: { line: 5, character: 7 } };
+
+	it("includes both endpoints and positions between them", () => {
+		expect(positionInRange(outer, outer.start)).toBe(true);
+		expect(positionInRange(outer, { line: 4, character: 1 })).toBe(true);
+		expect(positionInRange(outer, outer.end)).toBe(true);
+	});
+
+	it("includes ranges touching either endpoint", () => {
+		expect(rangeInRange(outer, { start: outer.start, end: { line: 3, character: 0 } })).toBe(true);
+		expect(rangeInRange(outer, { start: { line: 4, character: 0 }, end: outer.end })).toBe(true);
+	});
+
+	it("rejects a position or range extending beyond the outer range", () => {
+		expect(positionInRange(outer, { line: 2, character: 2 })).toBe(false);
+		expect(rangeInRange(outer, { start: outer.start, end: { line: 5, character: 8 } })).toBe(false);
+	});
+});
 
 describe("addressing a position", () => {
 	it("refuses a character past the end of its line instead of clamping", () => {

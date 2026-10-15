@@ -176,7 +176,7 @@ function* variables(w: Walker, list: ts.VariableDeclarationList, frame: Frame, f
 	}
 }
 
-/** Binds a declaration's name or pattern, reading each destructured property as it goes. */
+/** Binds a declaration's name or pattern. */
 export function* bindPattern(
 	w: Walker,
 	name: ts.BindingName,
@@ -186,54 +186,145 @@ export function* bindPattern(
 	flow: Flow,
 	exact = false,
 ): Step<void> {
-	if (ts.isIdentifier(name)) {
-		w.initialize(binding, value, frame, flow);
+	yield* interpretPattern(w, name, value, { kind: "initialize", binding }, frame, flow, exact);
+}
+
+/** Assigns a destructuring target using the binding pattern's value walk. */
+export function* assignPattern(
+	w: Walker,
+	pattern: ts.Node,
+	value: Value,
+	frame: Frame,
+	flow: Flow,
+	exact = false,
+): Step<void> {
+	yield* interpretPattern(w, pattern, value, { kind: "assign" }, frame, flow, exact);
+}
+
+type PatternMode = { readonly kind: "initialize"; readonly binding: ts.Node } | { readonly kind: "assign" };
+
+function* interpretPattern(
+	w: Walker,
+	pattern: ts.Node,
+	value: Value,
+	mode: PatternMode,
+	frame: Frame,
+	flow: Flow,
+	exact: boolean,
+): Step<void> {
+	if (!flow.alive) return;
+	if (mode.kind === "initialize" && ts.isIdentifier(pattern)) {
+		w.initialize(mode.binding, value, frame, flow);
 		return;
 	}
-	if (ts.isObjectBindingPattern(name)) {
-		// Destructuring null or undefined throws before reading anything.
+	if (
+		mode.kind === "assign" &&
+		ts.isBinaryExpression(pattern) &&
+		pattern.operatorToken.kind === ts.SyntaxKind.EqualsToken
+	) {
+		const bound = yield* withDefault(w, value, pattern.right, frame, flow);
+		yield* interpretPattern(w, pattern.left, bound, mode, frame, flow, exact);
+		return;
+	}
+	if (ts.isObjectBindingPattern(pattern) || ts.isObjectLiteralExpression(pattern)) {
 		if (isNullish(value)) {
 			w.throwExit(flow, false);
 			return;
 		}
-		// The keys the elements so far took, which a rest element leaves out; undefined once one has no name.
 		let taken: Set<string> | undefined = new Set();
-		for (const element of name.elements) {
+		const initialize = ts.isObjectBindingPattern(pattern);
+		const elements: readonly ts.Node[] = initialize
+			? (pattern as ts.ObjectBindingPattern).elements
+			: (pattern as ts.ObjectLiteralExpression).properties;
+		for (const element of elements) {
 			if (!flow.alive) return;
-			if (element.dotDotDotToken !== undefined) {
-				const copied = yield* objectRest(w, value, taken, name, frame, flow);
-				yield* bindPattern(w, element.name, copied, element, frame, flow);
+			let target: ts.Node;
+			let keyNode: ts.Node | undefined;
+			let initializer: ts.Expression | undefined;
+			let rest = false;
+			let binding = mode.kind === "initialize" ? mode.binding : element;
+			if (initialize && ts.isBindingElement(element)) {
+				rest = element.dotDotDotToken !== undefined;
+				target = element.name;
+				keyNode = element.propertyName ?? (ts.isIdentifier(element.name) ? element.name : undefined);
+				initializer = element.initializer;
+				binding = element;
+			} else if (!initialize && ts.isSpreadAssignment(element)) {
+				rest = true;
+				target = element.expression;
+			} else if (!initialize && ts.isShorthandPropertyAssignment(element)) {
+				target = element.name;
+				keyNode = element.name;
+				initializer = element.objectAssignmentInitializer;
+			} else if (!initialize && ts.isPropertyAssignment(element)) {
+				target = element.initializer;
+				keyNode = element.name;
+			} else {
+				w.note(element);
 				continue;
 			}
-			const key = element.propertyName ?? element.name;
-			let property: Value = UNKNOWN;
-			if (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)) {
-				property = yield* readMember(w, value, key.text, key, frame, flow);
-				taken?.add(key.text);
-			} else if (ts.isComputedPropertyName(key)) {
-				yield* w.expr(key.expression, frame, flow);
-				w.note(key);
-				taken = undefined;
+			const childMode: PatternMode = mode.kind === "initialize" ? { kind: "initialize", binding } : mode;
+			if (rest) {
+				const copied = yield* objectRest(w, value, taken, pattern, frame, flow);
+				yield* interpretPattern(w, target, copied, childMode, frame, flow, exact);
+				continue;
 			}
-			const bound = yield* withDefault(w, property, element.initializer, frame, flow);
-			yield* bindPattern(w, element.name, bound, element, frame, flow);
+			const key = yield* patternKey(w, keyNode, frame, flow);
+			if (!flow.alive) return;
+			if (key === undefined) taken = undefined;
+			else taken?.add(key);
+			const property =
+				key === undefined ? UNKNOWN : yield* readMember(w, value, key, keyNode ?? pattern, frame, flow);
+			const bound = yield* withDefault(w, property, initializer, frame, flow);
+			yield* interpretPattern(w, target, bound, childMode, frame, flow, exact);
 		}
 		return;
 	}
-	// An array pattern iterates: only a literal's elements are known.
-	const known = exact && value.kind === "array" ? value.elements : undefined;
-	if (known === undefined) w.unseen(name);
-	for (const [at, element] of name.elements.entries()) {
-		if (!flow.alive || ts.isOmittedExpression(element)) continue;
-		let item: Value = UNKNOWN;
-		if (known !== undefined)
-			item =
-				element.dotDotDotToken === undefined
-					? (known[at] ?? UNDEFINED)
-					: { kind: "array", elements: known.slice(at) };
-		const bound = yield* withDefault(w, item, element.initializer, frame, flow);
-		yield* bindPattern(w, element.name, bound, element, frame, flow, known !== undefined);
+	if (ts.isArrayBindingPattern(pattern) || ts.isArrayLiteralExpression(pattern)) {
+		const initialize = ts.isArrayBindingPattern(pattern);
+		const known = exact && value.kind === "array" ? value.elements : undefined;
+		if (known === undefined) w.unseen(pattern);
+		for (const [at, element] of pattern.elements.entries()) {
+			if (!flow.alive || ts.isOmittedExpression(element)) continue;
+			const rest = initialize
+				? ts.isBindingElement(element) && element.dotDotDotToken !== undefined
+				: ts.isSpreadElement(element);
+			const target =
+				initialize && ts.isBindingElement(element)
+					? element.name
+					: ts.isSpreadElement(element)
+						? element.expression
+						: element;
+			const binding =
+				initialize && ts.isBindingElement(element)
+					? element
+					: mode.kind === "initialize"
+						? mode.binding
+						: element;
+			const initializer = initialize && ts.isBindingElement(element) ? element.initializer : undefined;
+			const item =
+				known === undefined
+					? UNKNOWN
+					: rest
+						? { kind: "array" as const, elements: known.slice(at) }
+						: (known[at] ?? UNDEFINED);
+			const bound = yield* withDefault(w, item, initializer, frame, flow);
+			const childMode: PatternMode = mode.kind === "initialize" ? { kind: "initialize", binding } : mode;
+			yield* interpretPattern(w, target, bound, childMode, frame, flow, known !== undefined);
+		}
+		return;
 	}
+	if (mode.kind === "assign") yield* w.assignTo(pattern, value, frame, flow);
+	else w.note(pattern);
+}
+
+function* patternKey(w: Walker, node: ts.Node | undefined, frame: Frame, flow: Flow): Step<string | undefined> {
+	if (node === undefined) return undefined;
+	if (ts.isIdentifier(node) || ts.isStringLiteral(node)) return node.text;
+	if (ts.isNumericLiteral(node)) return yield* w.keyOf(node, frame, flow);
+	if (ts.isComputedPropertyName(node)) return yield* w.keyOf(node.expression, frame, flow);
+	w.note(node);
+	return undefined;
 }
 
 /**

@@ -1,7 +1,7 @@
 // A name path declared twice in one file is two declarations; the later ones carry an occurrence.
 // Positional only: what sits inside a changed declaration follows it, a binding target included.
 
-import { comparePositions } from "./coordinates.js";
+import { comparePositions, rangeInRange } from "./coordinates.js";
 import { defined } from "./defined.js";
 import type { ExportTarget, FileFacts } from "./project.js";
 import { composeSymbolId, type Descriptor, parseSymbolId, rebaseSymbolId, type SymbolId } from "./symbolId.js";
@@ -20,7 +20,7 @@ interface Moved {
 //  Functions & Helpers
 
 function within(inner: Range, outer: Range): boolean {
-	return comparePositions(outer.start, inner.start) <= 0 && comparePositions(inner.end, outer.end) <= 0;
+	return rangeInRange(outer, inner);
 }
 
 /** The id without its last occurrence, and which occurrence it was; null for a local, which has none. */

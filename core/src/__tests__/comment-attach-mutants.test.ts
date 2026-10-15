@@ -8,7 +8,7 @@ import type { attachComments } from "../commentAttach";
 import { lexiconRoot } from "../providers";
 import { CASES } from "./commentAttachCases";
 
-/** One mutant per attachment defect that shipped; the case table must fail each. */
+/** Every attachment defect mutant must be rejected by the case table. */
 const SOURCE = join(import.meta.dirname, "..", "commentAttach.ts");
 
 /** Outside `core/src`, where the residue sweeps walk, and inside the checkout, where packages resolve. */

@@ -14,6 +14,7 @@ import type {
 	ScopeKind,
 	UnboundReason,
 } from "./types.js";
+import { TYPE_USE_KINDS } from "./types.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -52,15 +53,6 @@ export interface BindingQuery {
 
 ////////////////////////////////
 //  Constants
-
-/** Kinds a same-file typeUse reference may bind to. */
-const TYPE_USE_KINDS: ReadonlySet<RawDeclaration["kind"]> = new Set([
-	"class",
-	"variable",
-	"function",
-	"interface",
-	"typeParameter",
-]);
 
 const ROLES: ReadonlySet<RawReferenceRole> = new Set(["call", "read", "write", "extends", "typeUse"]);
 

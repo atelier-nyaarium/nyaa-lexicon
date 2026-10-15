@@ -574,9 +574,7 @@ function triviaOf(comment: CommentSpan): { codeBefore: boolean; codeAfter: boole
 /** Expectations pair with reported comments in source order, so a repeated text checks each copy. */
 function checkTrivia(expected: ExpectedTrivia[], actual: CommentSpan[]): string[] {
 	const problems: string[] = [];
-	const ordered = [...actual].sort(
-		(a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character,
-	);
+	const ordered = [...actual].sort((a, b) => comparePositions(a.range.start, b.range.start));
 	const taken = new Set<CommentSpan>();
 	for (const want of expected) {
 		const found = ordered.find((comment) => comment.text === want.comment && !taken.has(comment));

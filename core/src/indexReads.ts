@@ -126,10 +126,7 @@ function preview(raw: string): string {
 }
 
 /**
- * One place that decides what "more than a page" means, so no caller reports a cap as a total.
- *
- * `total` is the true count where a count query can give one, and the scanned-match count where it
- * cannot. Passing the page itself would report the cap, which is what it used to do.
+ * Uses the paging strategy's count; capped results report a lower bound.
  */
 function page(query: LiteralQuery, paged: Paged<StoredLiteral>): LiteralsResult {
 	return { query, literals: paged.items, ...wire(paged) };
@@ -289,11 +286,9 @@ export class IndexReadModel {
 	}
 
 	/**
-	 * A symbol's documentation, which is now the comment attached above it rather than a copy.
+	 * Projects the leading attached comment into a symbol summary.
 	 *
-	 * Derived rather than stored, so the prose a reader sees and the prose in the file are the same
-	 * string by construction. The normalized form is used because that is what the retired field
-	 * held: markers stripped, wrapping joined.
+	 * The summary uses the stored normalized text, with comment markers removed and wrapping joined.
 	 */
 	private withDocumentation(summary: SymbolSummary): SymbolSummary {
 		const leading = this.store.commentsAnchoredTo(summary.symbolId).find((item) => item.form === "leading");

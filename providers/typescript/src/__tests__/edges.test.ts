@@ -403,6 +403,22 @@ describe("import edges", () => {
 		// Without the checker nothing is proved.
 		expect(parsed(files, "src/use.js", "outline").imports).toEqual([]);
 	});
+
+	it("recognizes wrapped named calls when classifying require loads", () => {
+		const use = [
+			'function asserted() { require("./a"); }',
+			'function nonnull() { require("./b"); }',
+			"(asserted as any)();",
+			"nonnull!();",
+		].join("\n");
+		const files = { "src/a.js": "", "src/b.js": "", "src/use.js": use };
+		const facts = parsed(files, "src/use.js");
+
+		expect(facts.imports.flatMap((statement) => statement.edges.map((edge) => edge.loads))).toEqual([
+			"static",
+			"static",
+		]);
+	});
 });
 
 describe("reference origins", () => {
@@ -690,5 +706,27 @@ describe("export edges", () => {
 		expect(exportsOf(parsed({ "src/e.js": module }, "src/e.js"), module)).toEqual([
 			{ form: "direct", name: "kept", target: "symbol:kept", meaning: ["value"] },
 		]);
+	});
+
+	it("resolves CommonJS exports through type assertion and non-null wrappers", () => {
+		const text = [
+			"interface Api {}",
+			"function asserted() {}",
+			"function nonnull() {}",
+			"exports.asserted = <Api>asserted;",
+			"exports.nonnull = nonnull!;",
+		].join("\n");
+		const facts = extract(text, "src/a.js");
+
+		expect(exportsOf(facts, text)).toEqual([
+			{ form: "local", name: "asserted", target: "symbol:asserted", meaning: ["value"] },
+			{ form: "local", name: "nonnull", target: "symbol:nonnull", meaning: ["value"] },
+		]);
+		expect(
+			extractSurfaceFile("src/a.ts", text)
+				.declarations.filter((declaration) => declaration.exported)
+				.map((declaration) => declaration.name)
+				.sort(),
+		).toEqual(["asserted", "nonnull"]);
 	});
 });

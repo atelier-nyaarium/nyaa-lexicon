@@ -16,6 +16,8 @@ import type {
 	RenamePlan,
 	SymbolSource,
 	TypeInfo,
+	MoveOutcome as WireMoveOutcome,
+	NoteRefProblem as WireNoteRefProblem,
 } from "@nyaa-lexicon/protocol";
 import type { Refusal } from "./refusals.js";
 
@@ -35,6 +37,14 @@ export type PlannedSourceRead =
 export type PlannedMove =
 	| (Extract<MovePlan, { ok: true }> & { promoted?: Promoted[] })
 	| { ok: false; reason: Refusal };
+
+/** Move outcomes always explain a refusal; the wire keeps its optional reason for compatibility. */
+export type MoveOutcome =
+	| (Omit<Extract<WireMoveOutcome, { moved: true }>, "reason"> & { reason?: Refusal | undefined })
+	| (Omit<Extract<WireMoveOutcome, { moved: false }>, "reason"> & { reason: Refusal });
+
+/** The per-reference explanation core composes for an unaccepted note link. */
+export type NoteRefProblem = Omit<WireNoteRefProblem, "problem"> & { problem: Refusal };
 
 /** Core's own answer for an id it holds no declaration for; a provider's unknown passes through. */
 export type UnknownType = Extract<TypeInfo, { status: "unknown" }> & { detail: Refusal };

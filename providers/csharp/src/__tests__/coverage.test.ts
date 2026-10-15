@@ -1,7 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import {
 	BindingSchema,
 	type Declaration,
@@ -12,20 +9,9 @@ import {
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
-import { parseThroughKit, startProvider } from "./harness.js";
+import { parseThroughKit, startProvider, workspaceFixture } from "./harness.js";
 
-const roots: string[] = [];
-
-function makeWorkspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-csharp-coverage-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
+const makeWorkspace = workspaceFixture("coverage");
 
 function one<T>(values: T[], message: string): T {
 	const value = values[0];
@@ -80,10 +66,6 @@ function scope(kind: "packageScope" | "symbolScope", scopeId: string, anchorSymb
 		...(anchorSymbolId === undefined ? {} : { anchorSymbolId }),
 	};
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("C# import-driven type answers", () => {
 	it("resolves plain, constructed generic alias, and constructed static imports to the generic namesake", () => {

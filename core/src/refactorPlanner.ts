@@ -29,6 +29,8 @@ import {
 	normalizeModulePath,
 	ownerOf,
 	parseSymbolId,
+	positionInRange,
+	rangeInRange,
 	rebaseSymbolId,
 	sameRange,
 } from "@nyaa-lexicon/protocol";
@@ -92,11 +94,11 @@ export type { MovePlan, RenameConcern, RenameEditPlan, RenameFile, RenamePlan } 
 //  Functions & Helpers
 
 function inside(range: Range, at: Position): boolean {
-	return comparePositions(range.start, at) <= 0 && comparePositions(at, range.end) <= 0;
+	return positionInRange(range, at);
 }
 
 function contains(outer: Range, inner: Range): boolean {
-	return inside(outer, inner.start) && inside(outer, inner.end);
+	return rangeInRange(outer, inner);
 }
 
 /** An id without its last occurrence, which every copy of its name path shares. */
@@ -1058,10 +1060,7 @@ export class RefactorPlanner {
 
 	/** Whether a stored reference sits inside a range, which is how the moved body is bounded. */
 	private inRange(reference: { startLine: number; startCharacter: number }, range: Range): boolean {
-		if (reference.startLine < range.start.line || reference.startLine > range.end.line) return false;
-		if (reference.startLine === range.start.line && reference.startCharacter < range.start.character) return false;
-		if (reference.startLine === range.end.line && reference.startCharacter > range.end.character) return false;
-		return true;
+		return positionInRange(range, { line: reference.startLine, character: reference.startCharacter });
 	}
 
 	/**

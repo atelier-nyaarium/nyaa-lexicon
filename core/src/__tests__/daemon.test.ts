@@ -426,8 +426,7 @@ describe("the starting window", () => {
 		await expect(pending).resolves.toEqual({ method: "describe", params: { id: "x" } });
 	});
 
-	// The defect: a private 15s client budget against three 60s provider starts reported permanent
-	// failure for a daemon still coming up.
+	// The daemon's retry interval can exceed a client's default request budget.
 	it("waits as long as the daemon says it still needs, not a budget of its own", async () => {
 		const outcome = await startDaemon({
 			workspaceRoot: WORKSPACE,

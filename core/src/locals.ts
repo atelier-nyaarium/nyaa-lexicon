@@ -1,6 +1,6 @@
 // One module's containment: what groups, what is local, and who owns a local's evidence.
 
-import { GROUPING_KINDS, parseSymbolId, type Range, RUNNING_KINDS } from "@nyaa-lexicon/protocol";
+import { comparePositions, GROUPING_KINDS, parseSymbolId, type Range, RUNNING_KINDS } from "@nyaa-lexicon/protocol";
 import type { StoredDeclaration } from "./store.js";
 
 ////////////////////////////////
@@ -13,7 +13,7 @@ function containsLocals(declaration: StoredDeclaration): boolean {
 }
 
 function bySource(a: StoredDeclaration, b: StoredDeclaration): number {
-	return a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character;
+	return comparePositions(a.range.start, b.range.start);
 }
 
 function isParameter(declaration: StoredDeclaration): boolean {
@@ -27,9 +27,7 @@ export function inSourceOrder<T extends { range: Range }>(
 	ids: readonly string[],
 	read: (symbolId: string) => T[],
 ): T[] {
-	return ids
-		.flatMap(read)
-		.sort((a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character);
+	return ids.flatMap(read).sort((a, b) => comparePositions(a.range.start, b.range.start));
 }
 
 /**

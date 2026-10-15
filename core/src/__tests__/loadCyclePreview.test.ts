@@ -11,7 +11,7 @@ import {
 import { DeadlineError } from "../deadline.js";
 import { gateOf } from "../dispatch.js";
 import { previewLoadCycles } from "../loadCyclePreview.js";
-import { type Cycle, newCycleComponents, previewComponents } from "../loadCycles.js";
+import { type Cycle, newCycleComponents, previewComponents } from "../loadCycleView.js";
 import type { ProviderProbe } from "../providerProbe.js";
 import { IndexStore, type ReplaceFileInput } from "../store.js";
 import { WorkspaceGate } from "../workspaceGate.js";

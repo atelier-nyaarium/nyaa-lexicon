@@ -1,6 +1,5 @@
 import path from "node:path";
 import {
-	comparePositions,
 	coordinatesOf,
 	MOVE_EDIT_CONFLICT,
 	type MoveBlockedReason,
@@ -10,6 +9,7 @@ import {
 	type MoveImportSite,
 	planEdits,
 	type Range,
+	rangeInRange,
 	type TextCoordinates,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
@@ -495,7 +495,7 @@ export function sameModule(left: string, right: string): boolean {
 
 // Inclusive at both ends.
 function rangeContains(outer: Range, inner: Range): boolean {
-	return comparePositions(outer.start, inner.start) <= 0 && comparePositions(inner.end, outer.end) <= 0;
+	return rangeInRange(outer, inner);
 }
 
 ////////////////////////////////

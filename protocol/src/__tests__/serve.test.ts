@@ -43,7 +43,7 @@ describe("the shared server, before any handler", () => {
 			/escape the workspace/,
 		);
 		await expect(
-			daemon.sendRequest("parseFile", { module: "src/a.ts", contentHash: "h", text: "" }),
+			daemon.sendRequest("parseFile", { module: "./src/./a.ts", contentHash: "h", text: "" }),
 		).resolves.toEqual({});
 		expect(asked).toEqual(["src/a.ts"]);
 
@@ -73,7 +73,7 @@ describe("a notification", () => {
 		const handled = pair({ ...answering, forgetModule: ({ module }) => forgotten.push(module) });
 		const ignoring = pair(answering);
 
-		await handled.daemon.sendNotification("forgetModule", { module: "src/a.kt" });
+		await handled.daemon.sendNotification("forgetModule", { module: "./src/./a.kt" });
 		await handled.daemon.sendNotification("forgetModule", { module: "../out.kt" });
 		await ignoring.daemon.sendNotification("forgetModule", { module: "src/a.kt" });
 		// A request after the notifications settles only once they were read.

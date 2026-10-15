@@ -108,6 +108,7 @@ describe("composeSymbolId", () => {
 	it("refuses a language containing whitespace, which would break the field count", () => {
 		expect(() => composeSymbolId({ ...CART, language: "type script" })).toThrow(/slug/);
 		expect(() => composeSymbolId({ ...CART, language: "" })).toThrow(/slug/);
+		expect(parseSymbolId("lexicon type\tscript src/cart.ts Cart#")).toBeNull();
 	});
 
 	it("refuses a negative or fractional local ordinal", () => {
@@ -359,6 +360,8 @@ describe("audit findings", () => {
 		expect(parseSymbolId("lexicon typescript src\\cart.ts Cart#")).toBeNull();
 		expect(parseSymbolId("lexicon typescript src/../cart.ts Cart#")).toBeNull();
 		expect(parseSymbolId("lexicon typescript C:/proj/cart.ts Cart#")).toBeNull();
+		expect(parseSymbolId("lexicon typescript src/%2f.ts Cart#")).toBeNull();
+		expect(parseSymbolId("lexicon typescript src/%zz.ts Cart#")).toBeNull();
 	});
 
 	it("refuses an empty quoted name, which compose can never produce", () => {
@@ -375,6 +378,17 @@ describe("audit findings", () => {
 		const nfc = composeSymbolId({ ...CART, descriptors: [{ kind: "term", name: "caf\u00e9" }] });
 		const nfd = composeSymbolId({ ...CART, descriptors: [{ kind: "term", name: "cafe\u0301" }] });
 		expect(nfd).toBe(nfc);
+	});
+
+	it("refuses a decomposed descriptor name the composer would normalize", () => {
+		expect(parseSymbolId("lexicon typescript src/cart.ts cafe\u0301.")).toBeNull();
+		expect(parseSymbolId("lexicon typescript src/cart.ts `cafe\u0301#`#")).toBeNull();
+		expect(parseSymbolId("lexicon typescript src/cart.ts (cafe\u0301)")).toBeNull();
+	});
+
+	it("refuses unnecessary quoting the composer would remove", () => {
+		expect(parseSymbolId("lexicon typescript src/cart.ts `Cart`#")).toBeNull();
+		expect(parseSymbolId("lexicon typescript src/cart.ts (`Cart`)")).toBeNull();
 	});
 
 	it("keeps case significant, because collapsing it would collide on case-sensitive hosts", () => {

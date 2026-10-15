@@ -8,6 +8,7 @@ import { z } from "zod";
 import { TextEditSchema } from "./edits.js";
 import { FACT_KINDS, parseFactId } from "./factId.js";
 import { LoadCycleHazardSchema, ModuleCycleSchema as LoadCycleResultSchema } from "./loadCycles.js";
+import { ModulePathSchema } from "./modulePath.js";
 import { ImportKindSchema, MoveAnchorSchema, MoveDependencySchema } from "./move.js";
 import { PaintFactsSchema } from "./paint.js";
 import {
@@ -1414,7 +1415,7 @@ export type LedgerMark = z.infer<typeof LedgerMarkSchema>;
 
 export const DriftedModuleSchema = z
 	.object({
-		module: z.string(),
+		module: ModulePathSchema,
 		contentHash: Hash32.nullable(),
 	})
 	.meta({ id: "DriftedModule" });

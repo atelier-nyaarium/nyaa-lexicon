@@ -21,6 +21,14 @@ export type Range = Declaration["range"];
 export type Position = Range["start"];
 export type RawDescriptor = Pick<Descriptor, "kind" | "name" | "disambiguator">;
 
+export const TYPE_USE_KINDS: ReadonlySet<Declaration["kind"]> = new Set([
+	"class",
+	"variable",
+	"function",
+	"interface",
+	"typeParameter",
+]);
+
 export interface RawDeclaration {
 	name: string;
 	kind: Declaration["kind"];

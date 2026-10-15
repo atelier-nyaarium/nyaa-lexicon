@@ -137,6 +137,11 @@ describe("the grammar", () => {
 		expect(() => literalFactId("../escape.ts", LIT, NO_OWNERS)).toThrow();
 		expect(isFactId("lexfact literal ./src/a.ts 0123456789abcdef")).toBe(false);
 	});
+
+	it("refuses module fields the composer would re-encode", () => {
+		expect(isFactId("lexfact literal src/%2f.ts 0123456789abcdef")).toBe(false);
+		expect(isFactId("lexfact literal src/%zz.ts 0123456789abcdef")).toBe(false);
+	});
 });
 
 /** Fact ids change when an identity-bearing field of their row changes. */

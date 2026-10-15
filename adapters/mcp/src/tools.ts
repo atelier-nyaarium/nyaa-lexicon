@@ -97,6 +97,9 @@ import {
 	renderSymbolSource,
 	renderType,
 } from "./render.js";
+import { type ToolResult, textResult as text } from "./result.js";
+
+export type { ToolResult } from "./result.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -186,11 +189,6 @@ export interface OverviewResult {
 	largestData?: Array<{ module: string; symbols: number; content: "data" | "document" }>;
 	entryPoints?: Array<{ module: string; how: EntryHow; symbolId?: string | undefined }> | undefined;
 	moreEntryPoints?: number | undefined;
-}
-
-export interface ToolResult {
-	content: Array<{ type: "text"; text: string }>;
-	isError?: boolean | undefined;
 }
 
 /** What the tool schemas parse to. Optionals carry `undefined` explicitly, per the strict config. */
@@ -762,13 +760,6 @@ Distinguishes declared, inferred, and unknown results.
 
 /** Projects already told their index holds outline facts. */
 const toldOutline = new WeakSet<ToolBackend>();
-
-function text(body: string, isError = false): ToolResult {
-	return {
-		content: [{ type: "text", text: body }],
-		...(isError ? { isError: true } : {}),
-	};
-}
 
 /**
  * Says so when an answer came from an index that is still being built.

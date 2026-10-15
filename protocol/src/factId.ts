@@ -22,7 +22,14 @@ import { createHash } from "node:crypto";
 import { err, ok, type ParseResult } from "./parseResult.js";
 import type { Certainty, CommentSpan, Conflict, DocRegion, Export, ImportEdge, Literal, Selector } from "./project.js";
 import { SourceCursor } from "./sourceCursor.js";
-import { decodeModuleField, encodeModuleField, expectIdSpace, isCanonicalModule, readIdField } from "./symbolId.js";
+import {
+	decodeModuleField,
+	encodeModuleField,
+	expectIdSpace,
+	isCanonicalModule,
+	isCanonicalModuleField,
+	readIdField,
+} from "./symbolId.js";
 import type { Declaration, Position, Range, Reference, ReferenceOrigin } from "./symbols.js";
 
 ////////////////////////////////
@@ -309,7 +316,7 @@ export function parseFactIdResult(text: string): ParseResult<FactId> {
 	if (!moduleField.ok) return moduleField;
 	const module = decodeModuleField(moduleField.value.text);
 	// The parser must accept exactly what the composer emits, or an id becomes host-dependent.
-	if (!isCanonicalModule(module))
+	if (!isCanonicalModuleField(moduleField.value.text))
 		return err(c.failure(`module is not in canonical form: ${module}`, moduleField.value.start));
 	const afterModule = expectIdSpace(c, "the module", moduleField.value.start);
 	if (afterModule) return err(afterModule);

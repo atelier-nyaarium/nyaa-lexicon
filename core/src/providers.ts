@@ -1,9 +1,7 @@
 // Finding and starting the provider processes.
 //
-// Core learns nothing about any language here. It finds directories under providers/ and starts
-// each one; a provider states its own id, extensions and tiers at initialize. Four entrypoints
-// used to hand-roll this, and every one of them hardcoded a single provider, so the other two
-// were unreachable from every way of running the tool.
+// Core discovers provider directories and starts them. Each provider reports its id, extensions,
+// and tiers during initialize.
 
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";

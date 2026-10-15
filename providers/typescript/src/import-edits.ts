@@ -12,10 +12,11 @@ import {
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { scriptKindOf } from "./file-types.js";
-import { moduleScope, parseDiagnostics, placeImports } from "./move.js";
+import { moduleScope, placeImports } from "./move.js";
 import { bindsPlanned, moduleBindings, typeOnlyNames } from "./move-dependencies.js";
 import { joinTarget, mergeIndex, type PlannedImport, syntaxOf } from "./move-imports.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";
+import { parseDiagnostics } from "./syntax.js";
 
 ////////////////////////////////
 //  Interfaces & Types

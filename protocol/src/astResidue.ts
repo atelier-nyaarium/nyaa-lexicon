@@ -64,19 +64,34 @@ export function importedAs(
 	return local;
 }
 
-/** Local names bound to a whole module, whether `import fs from` or `import * as fs from`. */
-export function namespacesOf(source: ts.SourceFile, modules: ReadonlySet<string>): Set<string> {
-	const local = new Set<string>();
+type BindingOrigins = Map<string, Array<ts.Node | undefined>>;
+
+function addBinding(origins: BindingOrigins, name: string, origin?: ts.Node): boolean {
+	const bindings = origins.get(name) ?? [];
+	if (bindings.includes(origin)) return false;
+	bindings.push(origin);
+	origins.set(name, bindings);
+	return true;
+}
+
+/** Local names bound to a whole module, with the declaration that owns each name. */
+function namespaceBindingsOf(source: ts.SourceFile, modules: ReadonlySet<string>): BindingOrigins {
+	const local: BindingOrigins = new Map();
 	for (const statement of source.statements) {
 		const specifier = specifierOf(statement);
 		if (specifier === undefined || !modules.has(specifier)) continue;
 		const clause = (statement as ts.ImportDeclaration).importClause;
-		if (clause?.name !== undefined) local.add(clause.name.text);
+		if (clause?.name !== undefined) addBinding(local, clause.name.text, clause.name);
 		if (clause?.namedBindings !== undefined && ts.isNamespaceImport(clause.namedBindings)) {
-			local.add(clause.namedBindings.name.text);
+			addBinding(local, clause.namedBindings.name.text, clause.namedBindings.name);
 		}
 	}
 	return local;
+}
+
+/** Local names bound to a whole module, whether `import fs from` or `import * as fs from`. */
+export function namespacesOf(source: ts.SourceFile, modules: ReadonlySet<string>): Set<string> {
+	return new Set(namespaceBindingsOf(source, modules).keys());
 }
 
 /**
@@ -129,23 +144,121 @@ export function calleeOf(node: ts.CallExpression): { receiver?: string; name: st
 	return undefined;
 }
 
-/** Names a scope introduces: its parameters, and the locals declared directly in it. */
-function boundIn(scope: ts.Node): Set<string> {
-	const names = new Set<string>();
-	const add = (name: ts.BindingName): void => {
-		if (ts.isIdentifier(name)) names.add(name.text);
-		else for (const element of name.elements) if (ts.isBindingElement(element)) add(element.name);
-	};
-	if (ts.isFunctionLike(scope)) for (const parameter of scope.parameters) add(parameter.name);
+function isLexicalScope(node: ts.Node): boolean {
+	return (
+		ts.isFunctionLike(node) ||
+		ts.isClassLike(node) ||
+		ts.isClassStaticBlockDeclaration(node) ||
+		ts.isBlock(node) ||
+		ts.isForStatement(node) ||
+		ts.isForInStatement(node) ||
+		ts.isForOfStatement(node) ||
+		ts.isCatchClause(node) ||
+		ts.isSwitchStatement(node) ||
+		ts.isModuleBlock(node)
+	);
+}
+
+function isFunctionScoped(declaration: ts.VariableDeclaration): boolean {
+	const list = declaration.parent;
+	return ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) === 0;
+}
+
+function addScopedVars(scope: ts.Node, names: Set<string>): void {
 	const walk = (node: ts.Node): void => {
-		// Never descend into a nested scope: its declarations are not this one's.
-		if (node !== scope && (ts.isFunctionLike(node) || ts.isClassLike(node))) return;
-		if (ts.isVariableDeclaration(node)) add(node.name);
-		if (ts.isFunctionDeclaration(node) && node.name !== undefined) names.add(node.name.text);
+		if (
+			node !== scope &&
+			(ts.isFunctionLike(node) ||
+				ts.isClassLike(node) ||
+				ts.isClassStaticBlockDeclaration(node) ||
+				ts.isModuleBlock(node))
+		) {
+			return;
+		}
+		if (ts.isVariableDeclaration(node) && isFunctionScoped(node)) addBindingName(names, node.name);
 		ts.forEachChild(node, walk);
 	};
 	walk(scope);
+}
+
+function addBindingName(names: Set<string>, name: ts.BindingName): void {
+	if (ts.isIdentifier(name)) names.add(name.text);
+	else for (const element of name.elements) if (ts.isBindingElement(element)) addBindingName(names, element.name);
+}
+
+function addDirectBindings(scope: ts.Node, names: Set<string>): void {
+	const walk = (node: ts.Node): void => {
+		if (ts.isFunctionDeclaration(node) && node.name !== undefined) names.add(node.name.text);
+		if (ts.isClassDeclaration(node) && node.name !== undefined) names.add(node.name.text);
+		if (node !== scope && isLexicalScope(node)) return;
+		if (ts.isVariableDeclaration(node) && !isFunctionScoped(node)) addBindingName(names, node.name);
+		ts.forEachChild(node, walk);
+	};
+	walk(scope);
+}
+
+/** Names a scope introduces, with `var` hoisted to its nearest function. */
+function boundIn(scope: ts.Node): Set<string> {
+	const names = new Set<string>();
+	if (ts.isFunctionLike(scope)) {
+		if (ts.isFunctionExpression(scope) && scope.name !== undefined) names.add(scope.name.text);
+		if (ts.isFunctionDeclaration(scope) && scope.name !== undefined) names.add(scope.name.text);
+		for (const parameter of scope.parameters) addBindingName(names, parameter.name);
+		addScopedVars(scope, names);
+	} else if (ts.isClassStaticBlockDeclaration(scope)) {
+		addScopedVars(scope, names);
+	} else if (ts.isModuleBlock(scope)) {
+		addScopedVars(scope, names);
+		addDirectBindings(scope, names);
+	} else if (ts.isCatchClause(scope)) {
+		if (scope.variableDeclaration !== undefined) addBindingName(names, scope.variableDeclaration.name);
+	} else if (ts.isForStatement(scope)) {
+		const initializer = scope.initializer;
+		if (
+			initializer !== undefined &&
+			ts.isVariableDeclarationList(initializer) &&
+			(initializer.flags & ts.NodeFlags.BlockScoped) !== 0
+		) {
+			for (const declaration of initializer.declarations) addBindingName(names, declaration.name);
+		}
+	} else if (ts.isForInStatement(scope) || ts.isForOfStatement(scope)) {
+		const initializer = scope.initializer;
+		if (ts.isVariableDeclarationList(initializer) && (initializer.flags & ts.NodeFlags.BlockScoped) !== 0) {
+			for (const declaration of initializer.declarations) addBindingName(names, declaration.name);
+		}
+	} else if (ts.isClassLike(scope)) {
+		if (scope.name !== undefined) names.add(scope.name.text);
+	} else {
+		addDirectBindings(scope, names);
+	}
 	return names;
+}
+
+function scopeOf(origin: ts.Node | undefined): ts.Node | undefined {
+	if (origin === undefined) return undefined;
+	if (ts.isVariableDeclaration(origin) && isFunctionScoped(origin)) {
+		for (let scope: ts.Node | undefined = origin.parent; scope !== undefined; scope = scope.parent) {
+			if (
+				ts.isFunctionLike(scope) ||
+				ts.isClassStaticBlockDeclaration(scope) ||
+				ts.isSourceFile(scope) ||
+				ts.isModuleBlock(scope)
+			) {
+				return scope;
+			}
+		}
+	}
+	for (let scope: ts.Node | undefined = origin.parent; scope !== undefined; scope = scope.parent) {
+		if (isLexicalScope(scope) || ts.isSourceFile(scope)) return scope;
+	}
+	return undefined;
+}
+
+function contains(scope: ts.Node, node: ts.Node): boolean {
+	for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent) {
+		if (current === scope) return true;
+	}
+	return false;
 }
 
 /**
@@ -157,14 +270,15 @@ function boundIn(scope: ts.Node): Set<string> {
  * makes the name reach, and treating its own declaration as a shadow would hide every one.
  */
 export function shadowed(node: ts.Node, name: string, origin?: ts.Node): boolean {
+	const definingScope = scopeOf(origin);
+	if (definingScope !== undefined && !contains(definingScope, node)) return true;
 	for (let scope = node.parent; scope !== undefined; scope = scope.parent) {
-		if (ts.isSourceFile(scope)) return false;
-		if (!ts.isFunctionLike(scope) && !ts.isBlock(scope) && !ts.isForStatement(scope)) continue;
+		if (ts.isSourceFile(scope)) return definingScope !== undefined && definingScope !== scope;
+		if (!isLexicalScope(scope)) continue;
 		if (!boundIn(scope).has(name)) continue;
-		const defining = origin !== undefined && origin.pos >= scope.pos && origin.end <= scope.end;
-		if (!defining) return true;
+		return scope !== definingScope;
 	}
-	return false;
+	return definingScope !== undefined;
 }
 
 /** The module a `require(...)` or an `import(...)` loads, when its specifier is written out. */
@@ -180,10 +294,16 @@ function loadedModule(node: ts.Node | undefined): string | undefined {
 	return argument.text;
 }
 
-/** The member a `ns.member` or `ns["member"]` names, when the receiver is one of `namespaces`. */
-function memberOfNamespace(node: ts.Node, namespaces: ReadonlySet<string>): string | undefined {
+function bindingReaches(node: ts.Node, name: string, bindings: BindingOrigins): boolean {
+	return (bindings.get(name) ?? []).some((origin) => !shadowed(node, name, origin));
+}
+
+/** The member a `ns.member` or `ns["member"]` names, when the receiver resolves to a module. */
+function memberOfNamespace(node: ts.Node, namespaces: BindingOrigins): string | undefined {
 	if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return undefined;
-	if (!ts.isIdentifier(node.expression) || !namespaces.has(node.expression.text)) return undefined;
+	if (!ts.isIdentifier(node.expression) || !bindingReaches(node.expression, node.expression.text, namespaces)) {
+		return undefined;
+	}
 	if (ts.isPropertyAccessExpression(node)) return node.name.text;
 	return ts.isStringLiteral(node.argumentExpression) ? node.argumentExpression.text : undefined;
 }
@@ -207,11 +327,11 @@ function declarationsIn(source: ts.SourceFile): ts.VariableDeclaration[] {
 function rebound(
 	source: ts.SourceFile,
 	bare: Set<string>,
-	namespaces: ReadonlySet<string>,
+	namespaces: BindingOrigins,
 	members: ReadonlySet<string>,
 	modulesLoaded: ReadonlySet<string>,
-): Map<string, ts.Node | undefined> {
-	const known = new Map<string, ts.Node | undefined>([...bare].map((name) => [name, undefined]));
+): BindingOrigins {
+	const known: BindingOrigins = new Map([...bare].map((name) => [name, [undefined]]));
 	const declarations = declarationsIn(source);
 	let growing = true;
 	while (growing) {
@@ -230,26 +350,23 @@ function rebound(
 						: undefined;
 				const reaches =
 					(member !== undefined && members.has(member)) ||
-					(ts.isIdentifier(initializer) && known.has(initializer.text)) ||
+					(ts.isIdentifier(initializer) && bindingReaches(initializer, initializer.text, known)) ||
 					(boundFrom !== undefined &&
-						((ts.isIdentifier(boundFrom) && known.has(boundFrom.text)) ||
+						((ts.isIdentifier(boundFrom) && bindingReaches(boundFrom, boundFrom.text, known)) ||
 							members.has(memberOfNamespace(boundFrom, namespaces) ?? "")));
-				if (reaches && !known.has(declaration.name.text)) {
-					known.set(declaration.name.text, declaration);
-					growing = true;
-				}
+				if (reaches && addBinding(known, declaration.name.text, declaration)) growing = true;
 				continue;
 			}
 			// `const { readFileSync } = fs`, and the same off a `require` or a dynamic import
 			if (!ts.isObjectBindingPattern(declaration.name)) continue;
-			const fromNamespace = ts.isIdentifier(initializer) && namespaces.has(initializer.text);
+			const fromNamespace =
+				ts.isIdentifier(initializer) && bindingReaches(initializer, initializer.text, namespaces);
 			if (!fromNamespace && !modulesLoaded.has(loadedModule(initializer) ?? "")) continue;
 			for (const element of declaration.name.elements) {
 				const named = element.propertyName ?? element.name;
 				if (!ts.isIdentifier(named) || !members.has(named.text)) continue;
-				if (!ts.isIdentifier(element.name) || known.has(element.name.text)) continue;
-				known.set(element.name.text, declaration);
-				growing = true;
+				if (!ts.isIdentifier(element.name)) continue;
+				if (addBinding(known, element.name.text, declaration)) growing = true;
 			}
 		}
 	}
@@ -279,16 +396,16 @@ export function reachedCalls(
 	members: ReadonlySet<string>,
 ): Array<{ call: ts.Node; name: string }> {
 	// A `require` or a dynamic `import` binds the same module without an import declaration.
-	const namespaces = new Set(namespacesOf(source, modules));
+	const namespaces = namespaceBindingsOf(source, modules);
 	for (const declaration of declarationsIn(source)) {
 		if (!modules.has(loadedModule(declaration.initializer) ?? "")) continue;
-		if (ts.isIdentifier(declaration.name)) namespaces.add(declaration.name.text);
+		if (ts.isIdentifier(declaration.name)) addBinding(namespaces, declaration.name.text, declaration);
 	}
 	const bare = rebound(source, importedAs(source, modules, members), namespaces, members, modules);
 	const found: Array<{ call: ts.Node; name: string }> = [];
 	const reaches = (node: ts.Node): string | undefined => {
 		if (ts.isIdentifier(node)) {
-			return bare.has(node.text) && !shadowed(node, node.text, bare.get(node.text)) ? node.text : undefined;
+			return bindingReaches(node, node.text, bare) ? node.text : undefined;
 		}
 		if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
 			const member = ts.isPropertyAccessExpression(node)
@@ -297,8 +414,13 @@ export function reachedCalls(
 					? node.argumentExpression.text
 					: undefined;
 			if (member === undefined || !members.has(member)) return undefined;
-			if (!ts.isIdentifier(node.expression) || !namespaces.has(node.expression.text)) return undefined;
-			return shadowed(node.expression, node.expression.text) ? undefined : `${node.expression.text}.${member}`;
+			if (
+				!ts.isIdentifier(node.expression) ||
+				!bindingReaches(node.expression, node.expression.text, namespaces)
+			) {
+				return undefined;
+			}
+			return `${node.expression.text}.${member}`;
 		}
 		return undefined;
 	};

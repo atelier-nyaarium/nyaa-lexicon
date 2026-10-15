@@ -17,7 +17,9 @@ import { LANGUAGE } from "./extract.js";
 import { fileRoleOf } from "./file-role.js";
 import { scriptKindOf } from "./file-types.js";
 import { headerOf } from "./header.js";
-import { ownedTypeLiterals } from "./members.js";
+import { isWrapper, ownedTypeLiterals, unwrapped } from "./members.js";
+import { rangeOf } from "./ranges.js";
+import { parseDiagnostics } from "./syntax.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -258,13 +260,13 @@ function addExportExpression(
 	add: (name: string, node: ts.Node, selection?: ts.Node) => void,
 	selection?: ts.Node,
 ): void {
-	const unwrapped = unwrapExpression(expression);
-	if (ts.isFunctionExpression(unwrapped) || ts.isArrowFunction(unwrapped)) {
-		add(name, unwrapped, selection);
+	const inner = unwrapped(expression);
+	if (ts.isFunctionExpression(inner) || ts.isArrowFunction(inner)) {
+		add(name, inner, selection);
 		return;
 	}
-	if (ts.isIdentifier(unwrapped)) {
-		const candidates = locals.get(unwrapped.text) ?? [];
+	if (ts.isIdentifier(inner)) {
+		const candidates = locals.get(inner.text) ?? [];
 		if (candidates.length === 1) add(name, candidates[0] as ts.Node, selection);
 	}
 }
@@ -273,22 +275,8 @@ function callableOf(node: ts.Node): SurfaceCallable | undefined {
 	if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return node;
 	if (ts.isMethodDeclaration(node) || ts.isMethodSignature(node)) return node;
 	if (!ts.isVariableDeclaration(node) || node.initializer === undefined) return undefined;
-	const initializer = unwrapExpression(node.initializer);
+	const initializer = unwrapped(node.initializer);
 	return ts.isFunctionExpression(initializer) || ts.isArrowFunction(initializer) ? initializer : undefined;
-}
-
-function unwrapExpression(expression: ts.Expression): ts.Expression {
-	let current = expression;
-	while (
-		ts.isParenthesizedExpression(current) ||
-		ts.isAsExpression(current) ||
-		ts.isTypeAssertionExpression(current) ||
-		ts.isSatisfiesExpression(current) ||
-		ts.isNonNullExpression(current)
-	) {
-		current = current.expression;
-	}
-	return current;
 }
 
 function recordFunction(
@@ -621,15 +609,7 @@ function declarationKind(
 /** The statement or assignment writing an exported function value, else the node itself. */
 function holderOf(node: ts.Node): ts.Node {
 	let value = node;
-	while (
-		ts.isParenthesizedExpression(value.parent) ||
-		ts.isAsExpression(value.parent) ||
-		ts.isTypeAssertionExpression(value.parent) ||
-		ts.isSatisfiesExpression(value.parent) ||
-		ts.isNonNullExpression(value.parent)
-	) {
-		value = value.parent;
-	}
+	while (isWrapper(value.parent)) value = value.parent;
 	const parent = value.parent;
 	if (ts.isExportAssignment(parent) || ts.isPropertyAssignment(parent)) return parent;
 	if (ts.isBinaryExpression(parent) && parent.right === value) return parent;
@@ -637,8 +617,7 @@ function holderOf(node: ts.Node): ts.Node {
 }
 
 function syntaxDiagnostics(module: string, source: ts.SourceFile): Diagnostic[] {
-	const diagnostics =
-		(source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+	const diagnostics = parseDiagnostics(source);
 	const coordinates = coordinatesOf(source.text);
 	return diagnostics.map((diagnostic) => {
 		const range =
@@ -656,13 +635,6 @@ function syntaxDiagnostics(module: string, source: ts.SourceFile): Diagnostic[] 
 
 ////////////////////////////////
 //  Syntax Helpers
-
-function rangeOf(node: ts.Node, source: ts.SourceFile) {
-	return {
-		start: source.getLineAndCharacterOfPosition(node.getStart(source)),
-		end: source.getLineAndCharacterOfPosition(node.getEnd()),
-	};
-}
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
 	return ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === kind);

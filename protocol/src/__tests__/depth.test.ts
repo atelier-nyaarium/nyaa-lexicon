@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isTooDeep, MAX_NESTING, NestingGauge } from "../depth.js";
+import { isTooDeep, MAX_NESTING, NestingGauge, treeDeeperThan } from "../depth.js";
 
 function refusal(run: () => void): unknown {
 	try {
@@ -26,6 +26,18 @@ describe("bounding nesting from a parser's own events", () => {
 		gauge.open();
 		gauge.open();
 		expect(isTooDeep(refusal(() => gauge.open()))).toBe(true);
+	});
+});
+
+describe("bounding parsed tree depth", () => {
+	it("allows exactly MAX_NESTING edges and rejects one more", () => {
+		const childAt =
+			(edges: number) =>
+			(node: number): number[] =>
+				node < edges ? [node + 1] : [];
+
+		expect(treeDeeperThan(0, childAt(MAX_NESTING), MAX_NESTING)).toBe(false);
+		expect(treeDeeperThan(0, childAt(MAX_NESTING + 1), MAX_NESTING)).toBe(true);
 	});
 });
 

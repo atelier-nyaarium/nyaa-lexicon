@@ -46,12 +46,7 @@ export interface EditPlan {
 ////////////////////////////////
 //  Functions & Helpers
 
-/**
- * Work out what a set of edits means, without applying any of them.
- *
- * One analysis, where five had drifted apart. Findings only, no policy: what a caller does with a
- * conflict is still the caller's.
- */
+/** Analyzes edit ranges and reports conflicts; callers choose how to handle them. */
 export function planEdits(coordinates: TextCoordinates, edits: TextEdit[]): EditPlan {
 	const conflicts: EditPlan["conflicts"] = [];
 	const unique = new Map<string, { edit: TextEdit; start: number; end: number }>();

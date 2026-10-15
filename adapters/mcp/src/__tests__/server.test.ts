@@ -360,6 +360,27 @@ describe("query project routing", () => {
 		expect(routes).toEqual(["beta-key", "alpha-key"]);
 	});
 
+	it("keeps ref arguments intact for a fixed backend", async () => {
+		const modules: string[] = [];
+		const client = await connectClient(
+			backend({
+				projectId: "local-project",
+				moduleStatus: async (module) => {
+					modules.push(module);
+					return { module, exists: true, claimed: true, indexed: true };
+				},
+			}),
+			binding([]),
+		);
+
+		const result = await call(client, "resolve_ref", {
+			queries: [{ ref: "project-ref://local-project/src/file.ts" }],
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(modules).toEqual(["src/file.ts"]);
+	});
+
 	it("forwards literal regex searches", async () => {
 		const seen: LiteralQuery[] = [];
 		const source: BackendSource = () =>
@@ -651,14 +672,34 @@ describe("mutation project routing", () => {
 
 	it("routes a scalar selection to one project", async () => {
 		const routes: string[] = [];
+		const sent: unknown[] = [];
 		const client = await connectClient(
-			recordSource(routes),
+			recordSource(routes, sent),
 			binding([project("alpha", true), project("beta", true)]),
 		);
 
 		await call(client, "write_note", { ...args, project: "beta" });
 
 		expect(routes).toEqual(["beta"]);
+		expect(sent).toEqual([{ ...args, author: { kind: "client", name: "lexicon-mcp-test", version: "0.0.0" } }]);
+	});
+
+	it("removes the selector before calling a fixed backend", async () => {
+		const sent: unknown[] = [];
+		const client = await connectClient(
+			backend({
+				declarationOf: async (symbolId) => ({ symbolId }) as unknown as StoredDeclaration,
+				writeNote: async (request) => {
+					sent.push(request);
+					return { outcome: "refused", reason: "observed" };
+				},
+			}),
+			binding([]),
+		);
+
+		await call(client, "write_note", { ...args, project: "ignored" });
+
+		expect(sent).toEqual([{ ...args, author: { kind: "client", name: "lexicon-mcp-test", version: "0.0.0" } }]);
 	});
 
 	it("allows omission with one binding and rejects it with several", async () => {

@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import { type EditConflict, TextEditSchema } from "./edits.js";
+import { ModulePathSchema } from "./modulePath.js";
 import { RangeSchema } from "./symbols.js";
 
 ////////////////////////////////
@@ -66,11 +67,7 @@ export const RenameRefusalSchema = z
 export type RenameRefusal = z.infer<typeof RenameRefusalSchema>;
 
 /**
- * How a rename names what `planEdits` found. Here rather than in the providers that read it,
- * because two copies of this had already drifted onto different reasons for the same condition.
- *
- * The reason is narrowed to the two names BlockedSiteReason and RenameRefusal share, so one
- * mapping serves a provider that blocks the site and a provider that refuses the whole request.
+ * How a provider reports edit conflicts for a rename.
  */
 export const RENAME_EDIT_CONFLICT: Record<EditConflict, { reason: BlockedSiteReason & RenameRefusal; detail: string }> =
 	{
@@ -99,7 +96,7 @@ export type RenameSite = z.infer<typeof RenameSiteSchema>;
 
 export const RenameEditsRequestSchema = z
 	.object({
-		module: z.string().min(1),
+		module: ModulePathSchema,
 		/** Passed in, like parseFile, so the provider never disagrees with the core about the text. */
 		text: z.string(),
 		oldName: z.string().min(1),

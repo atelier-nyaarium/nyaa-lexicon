@@ -1,24 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, it } from "bun:test";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BindingSchema, composeSymbolId, parseSymbolId, TypeInfoSchema } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
 import { CsharpParser } from "../parser.js";
-import { parseThroughKit, startProvider } from "./harness.js";
+import { parseThroughKit, startProvider, workspaceFixture } from "./harness.js";
 
-const roots: string[] = [];
-
-function makeWorkspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-csharp-edge-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
+const makeWorkspace = workspaceFixture("edge");
 
 function parse(text: string, module = "main.cs") {
 	const provider = new CsharpProvider();
@@ -31,10 +19,6 @@ function one<T>(values: T[], message: string): T {
 	if (value === undefined) throw new Error(message);
 	return value;
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("C# lexical facts", () => {
 	it("decodes escaped, verbatim, raw, and interpolated strings", () => {

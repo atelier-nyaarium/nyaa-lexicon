@@ -15,7 +15,6 @@ import {
 	exportedText,
 	exportInPlace,
 	moduleScope,
-	parseDiagnostics,
 	planImports,
 	removalOf,
 	targetDeclares,
@@ -26,6 +25,7 @@ import { blockedSite } from "./move-imports.js";
 import { settleBlankLines } from "./move-layout.js";
 import { type Leaving, orphanedImports, repointLeavingExports } from "./move-sites.js";
 import type { ModuleResolver, SpecifierRenderer } from "./project.js";
+import { parseDiagnostics } from "./syntax.js";
 
 ////////////////////////////////
 //  Main

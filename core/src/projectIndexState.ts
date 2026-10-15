@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { canonicalRoot } from "@nyaa-lexicon/client";
 import { ProjectIndexStateSchema } from "@nyaa-lexicon/protocol";
+import { atomicWriteJson } from "./atomicJson.js";
 
 export class ProjectIndexMarker {
 	constructor(
@@ -32,14 +32,8 @@ export class ProjectIndexMarker {
 
 	publish(indexedAt: number): void {
 		if (this.root === undefined) return;
-		const temporary = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
 		mkdirSync(path.dirname(this.file), { recursive: true });
-		try {
-			writeFileSync(temporary, JSON.stringify({ version: 1, root: canonicalRoot(this.root), indexedAt }));
-			renameSync(temporary, this.file);
-		} finally {
-			rmSync(temporary, { force: true });
-		}
+		atomicWriteJson(this.file, { version: 1, root: canonicalRoot(this.root), indexedAt });
 	}
 
 	clear(): void {

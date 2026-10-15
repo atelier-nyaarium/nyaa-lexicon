@@ -138,6 +138,16 @@ export function comparePositions(a: Position, b: Position): number {
 	return a.line !== b.line ? a.line - b.line : a.character - b.character;
 }
 
+/** Inclusive containment of a position by a range. */
+export function positionInRange(range: Range, position: Position): boolean {
+	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+}
+
+/** Inclusive containment of one range by another. */
+export function rangeInRange(outer: Range, inner: Range): boolean {
+	return positionInRange(outer, inner.start) && positionInRange(outer, inner.end);
+}
+
 export function sameRange(a: Range, b: Range): boolean {
 	return comparePositions(a.start, b.start) === 0 && comparePositions(a.end, b.end) === 0;
 }

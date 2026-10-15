@@ -1033,6 +1033,46 @@ describe("Python provider project behavior", () => {
 		);
 	});
 
+	it("rewrites only strings in the accepted static __all__ list", async () => {
+		const root = workspace({});
+		const provider = new PythonProvider();
+		initializeProvider(provider, root);
+		const cases = [
+			{
+				text: '__all__: list[str] = ["old"]\nold = 1\n',
+				shouldRewrite: true,
+			},
+			{
+				text: '__all__ = ["old"]\n__all__ = ["other"]\nold = 1\n',
+				shouldRewrite: false,
+			},
+			{
+				text: 'def local():\n    __all__ = ["old"]\n    return None\nold = 1\n',
+				shouldRewrite: false,
+			},
+		];
+
+		for (const { text, shouldRewrite } of cases) {
+			const response = await provider.renameEdits({
+				module: "main.py",
+				text,
+				oldName: "old",
+				newName: "new",
+				sites: [{ range: spanAt(text, text.indexOf('"old"'), '"old"') }],
+			});
+
+			if (shouldRewrite) {
+				expect(response).toMatchObject({ status: "ready", edits: [{ newText: "new" }], blocked: [] });
+			} else {
+				expect(response).toMatchObject({
+					status: "ready",
+					edits: [],
+					blocked: [{ reason: "StringLiteral" }],
+				});
+			}
+		}
+	});
+
 	it("refuses parameter renames and collisions", async () => {
 		const root = workspace({});
 		const provider = new PythonProvider();

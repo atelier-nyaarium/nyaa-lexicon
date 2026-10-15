@@ -213,13 +213,6 @@ export function fileHistoryFor(module: string, commits: Commit[]): FileHistory {
 	return { module, commits: count, linesAdded, linesDeleted, recent, firstSeen, lastTouched, truncated };
 }
 
-/**
- * Files that changed alongside this one, most often first.
- *
- * Counted over commits rather than over pairs, so a file touched in ten commits with another can
- * never score above ten however many times either appears. A partner `present` denies, such as a
- * file deleted since, is left out.
- */
 /** Whether a path history names is still a file in the working tree. */
 export function presentIn(workspaceRoot: string): (file: string) => boolean {
 	return (file) => statSync(path.join(workspaceRoot, file), { throwIfNoEntry: false })?.isFile() === true;
@@ -287,6 +280,7 @@ export class CoChangeIndex {
 	}
 }
 
+/** Files changed alongside this one, ranked by shared commit count. */
 export function coChangesFor(
 	module: string,
 	commits: Commit[],

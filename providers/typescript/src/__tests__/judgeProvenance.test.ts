@@ -31,6 +31,7 @@ describe("load-cycle judge: provenance", () => {
 				['declare const x: "x";\nif (x === "x") A;', "bad"],
 				['declare const n: number;\nif (typeof n === "number") A;', "bad"],
 				[`${mode}\nif (mode === "c") A;`, "fine"],
+				["declare const mode: string;\nif (mode === 1) A;", "fine"],
 				[`${maybe}\nif (typeof s === "number") A;`, "fine"],
 				// A type that does not spell its values exactly, or a value computed from an input, decides nothing provable.
 				['declare const m: `prefix-${string}`;\nif (m === "wrong") A;', "unknown"],
@@ -171,6 +172,8 @@ describe("load-cycle judge: provenance", () => {
 		await expectShapes([
 			['declare const m: "x";\nswitch (m) { case "x": case "y": A; }', "bad"],
 			['declare const m: null;\nswitch (m) { case null: case "x": A; }', "bad"],
+			["declare const mode: string;\nswitch (mode) { case 1: A; }", "fine"],
+			["const left = {}; const right = {};\nswitch (left) { case right: A; }", "fine"],
 		]);
 	});
 

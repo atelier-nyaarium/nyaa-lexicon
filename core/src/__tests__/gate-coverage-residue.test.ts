@@ -10,9 +10,7 @@ import ts from "typescript";
 /**
  * Holds every writing dispatch handler inside the workspace gate.
  *
- * Bug class killed: a write path nobody routed through the gate. Taking it is opt-in per handler,
- * so forgetting produces a race rather than an error, and it was forgotten twice: once for watcher
- * batches and once for rename. A new writing method now fails here instead.
+ * Writing handlers must remain inside the workspace gate.
  */
 const DISPATCH = join(import.meta.dirname, "..", "dispatch.ts");
 
@@ -37,8 +35,7 @@ interface Handler {
 /**
  * Each handler, as the AST node its effect wraps.
  *
- * Splitting the file's TEXT at a property was the defect: a call is judged by whether it sits inside
- * a gate's callback, which is containment, and text can only tell you what came earlier on the page.
+ * Gate ownership is checked by AST containment, since call order alone does not prove a handler is gated.
  */
 function handlers(parsed: ParsedSource): Handler[] {
 	const found: Handler[] = [];

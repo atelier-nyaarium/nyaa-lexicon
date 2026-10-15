@@ -767,7 +767,3 @@ export function tokenize(
 export function positionRange(token: Token): Range {
 	return { start: token.start, end: token.end };
 }
-
-export function pointRange(position: Position): Range {
-	return { start: position, end: { line: position.line, character: position.character + 1 } };
-}

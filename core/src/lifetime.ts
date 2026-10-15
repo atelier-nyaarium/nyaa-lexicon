@@ -14,8 +14,7 @@ export interface LingerOptions {
 	afterMs: number;
 	/** What to run when it fires. */
 	stop: () => void;
-	/** Asked at fire time. A reason re-arms instead of stopping: issue #7 was a daemon
-	 * exiting under a running rename because only connections were counted. */
+	/** Asked when the timer fires. A non-null result re-arms the wait. */
 	holdWhile?: () => string | null;
 	/** Told each time a hold re-arms. */
 	onHeld?: (reason: string) => void;

@@ -1,6 +1,8 @@
 // The Python syntax tree, in the node classes and field order of CPython's `ast` module, with UTF-16
 // offsets for positions. Fields are camelCased; child order follows each class's `_fields`.
 
+import { treeDeeperThan } from "@nyaa-lexicon/protocol";
+
 ////////////////////////////////
 //  Interfaces & Types
 
@@ -575,17 +577,7 @@ export function childNodes(node: Node): Node[] {
 
 /** Whether a path from `node` down holds more than `limit` edges. */
 export function deeperThan(node: Node, limit: number): boolean {
-	const pending: Node[] = [node];
-	const depths: number[] = [0];
-	for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
-		const depth = depths.pop() as number;
-		if (depth > limit) return true;
-		forEachChild(current, (child) => {
-			pending.push(child);
-			depths.push(depth + 1);
-		});
-	}
-	return false;
+	return treeDeeperThan(node, childNodes, limit);
 }
 
 /** `ast.walk`: breadth first, the node itself first. */

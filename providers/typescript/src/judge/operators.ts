@@ -2,7 +2,7 @@
 
 import ts from "typescript";
 import { converts, toPrimitive } from "./conversions.js";
-import { can, canNullish, canOther, canPresent, EITHER, eitherPresent, eitherWay } from "./domains.js";
+import { can, canNullish, canOther, canPresent, type Domain, EITHER, eitherPresent, eitherWay } from "./domains.js";
 import { writeMember } from "./members.js";
 import { inOperator, instanceOf } from "./membership.js";
 import {
@@ -280,10 +280,37 @@ function tested(operator: ts.SyntaxKind, left: Value, right: Value, result: Valu
 	const [operand, other] = left.kind === "literal" ? [right, left] : [left, right];
 	if (operand.kind !== "unknown" || operand.domain === undefined || other.kind !== "literal") return result;
 	if (isLoose(operator) && !isNullish(other)) return result;
-	const same = isLoose(operator) ? canNullish(operand.domain) : can(operand.domain, other.value);
-	const differs = isLoose(operator) ? canPresent(operand.domain) : canOther(operand.domain, other.value);
-	if (same && differs) return { ...result, domain: EITHER };
-	return same === differs ? result : withProv(literal(same === equal), provOf(result));
+	if (isLoose(operator)) {
+		const same = canNullish(operand.domain);
+		const differs = canPresent(operand.domain);
+		if (same && differs) return { ...result, domain: EITHER };
+		return same === differs ? result : withProv(literal(same === equal), provOf(result));
+	}
+	const relation = literalRelation(operand, other);
+	if (relation.kind === "either")
+		return relation.domain === undefined ? result : { ...result, domain: relation.domain };
+	return withProv(literal((relation.kind === "always") === equal), provOf(result));
+}
+
+export type LiteralRelation =
+	| { readonly kind: "always" }
+	| { readonly kind: "never" }
+	| { readonly kind: "either"; readonly domain?: Domain };
+
+/** Whether two values are always equal, never equal, or may be either. */
+export function literalRelation(left: Value, right: Value): LiteralRelation {
+	const same = strictEquals(left, right);
+	if (same === true) return { kind: "always" };
+	if (same === false) return { kind: "never" };
+	const operand = left.kind === "literal" ? right : left;
+	const other = left.kind === "literal" ? left : right;
+	if (operand.kind !== "unknown" || operand.domain === undefined || other.kind !== "literal")
+		return { kind: "either" };
+	const matches = can(operand.domain, other.value);
+	const differs = canOther(operand.domain, other.value);
+	if (matches && !differs) return { kind: "always" };
+	if (!matches && differs) return { kind: "never" };
+	return { kind: "either", ...(matches && differs ? { domain: EITHER } : {}) };
 }
 
 export function* binary(w: Walker, node: ts.BinaryExpression, frame: Frame, flow: Flow): Step<Value> {
@@ -364,7 +391,8 @@ function* assign(w: Walker, node: ts.BinaryExpression, frame: Frame, flow: Flow)
 	const target = unwrapExpression(node.left);
 	if (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target) || ts.isIdentifier(target)) {
 		const value = yield* w.expr(node.right, frame, flow);
-		if (flow.alive) yield* w.assignTo(target, value, frame, flow);
+		if (flow.alive)
+			yield* w.assignTo(target, value, frame, flow, ts.isArrayLiteralExpression(unwrapExpression(node.right)));
 		return value;
 	}
 	if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {

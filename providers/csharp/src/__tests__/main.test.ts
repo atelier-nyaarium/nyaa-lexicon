@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import {
 	BindingSchema,
@@ -15,7 +14,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { CsharpProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { CsharpParser } from "../parser.js";
-import { handlersOf, parseThroughKit, startProvider } from "./harness.js";
+import { handlersOf, parseThroughKit, startProvider, workspaceFixture } from "./harness.js";
 
 /** A type in the global namespace, whose name lands on its module. */
 const LOOSE = "public class Item {}\n";
@@ -62,28 +61,13 @@ it("uses qualifier and parameter descriptors", () => {
 	);
 });
 
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-csharp-provider-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
+const workspace = workspaceFixture("provider");
 
 function declaration(facts: { declarations: Declaration[] }, name: string, kind?: Declaration["kind"]) {
 	const found = facts.declarations.find((item) => item.name === name && (kind === undefined || item.kind === kind));
 	if (found === undefined) throw new Error(`declaration missing: ${name}`);
 	return found;
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("C# declarations", () => {
 	it("extracts namespaces, types, members, parameters, docs, and folded accessors", () => {

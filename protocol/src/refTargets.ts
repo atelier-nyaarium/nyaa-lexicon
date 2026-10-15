@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { comparePositions, coordinatesOf } from "./coordinates.js";
+import { comparePositions, coordinatesOf, rangeInRange } from "./coordinates.js";
 import { ModulePathSchema } from "./modulePath.js";
 import { formatRef, parseRef, validProjectId } from "./noteRefs.js";
 import type { Range } from "./symbols.js";
@@ -162,11 +162,7 @@ export function selectionWithin(target: RefTarget, bounds: Range): boolean {
 		const lastBoundLine = bounds.end.character === 0 ? bounds.end.line : bounds.end.line + 1;
 		return target.lines.start >= bounds.start.line + 1 && target.lines.end <= lastBoundLine;
 	}
-	if (target.range)
-		return (
-			comparePositions(target.range.start, bounds.start) >= 0 &&
-			comparePositions(target.range.end, bounds.end) <= 0
-		);
+	if (target.range) return rangeInRange(bounds, target.range);
 	return true;
 }
 

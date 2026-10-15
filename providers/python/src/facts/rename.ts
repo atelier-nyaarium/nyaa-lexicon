@@ -9,6 +9,7 @@ import {
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	type RenameSite,
+	rangeInRange,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
 import type * as A from "../syntax/ast.js";
@@ -16,6 +17,7 @@ import { walk } from "../syntax/ast.js";
 import { isKeyword, parsePython } from "../syntax/parser.js";
 import { isIdentifierCharacter, isIdentifierStart } from "../syntax/tokenizer.js";
 import { Analyzer } from "./analyzer.js";
+import { readAllList } from "./exports.js";
 import { isFunction, NodeVisitor, parameters, typeParamExpressions, typeParamsOf } from "./nodes.js";
 import { parseTypeComment } from "./references.js";
 import { pathKey } from "./scopes.js";
@@ -74,7 +76,7 @@ function isIdentifier(name: string): boolean {
 }
 
 function contains(outer: Range, inner: Range): boolean {
-	return comparePositions(outer.start, inner.start) <= 0 && comparePositions(inner.end, outer.end) <= 0;
+	return rangeInRange(outer, inner);
 }
 
 function sameRange(left: Range, right: Range): boolean {
@@ -87,22 +89,6 @@ function rangeKey(range: Range): string {
 
 function blocked(range: Range, reason: BlockedSite["reason"], detail: string): BlockedSite {
 	return { range, reason, detail };
-}
-
-/** String constants a literal `__all__` lists. */
-function allStrings(tree: A.Module): Set<A.Node> {
-	const found = new Set<A.Node>();
-	for (const node of walk(tree)) {
-		if (node.type !== "Assign" && node.type !== "AugAssign") continue;
-		const targets = node.type === "Assign" ? node.targets : [node.target];
-		if (!targets.some((target) => target.type === "Name" && target.id === "__all__")) continue;
-		const value = node.value;
-		if (value.type !== "List" && value.type !== "Tuple" && value.type !== "Set") continue;
-		for (const element of value.elts) {
-			if (element.type === "Constant" && element.value.kind === "str") found.add(element);
-		}
-	}
-	return found;
 }
 
 /** Where a string literal spells `name` between its quotes, unescaped; undefined otherwise. */
@@ -243,7 +229,8 @@ class RenameVisitor extends NodeVisitor {
 
 	constructor(private readonly analyzer: Analyzer) {
 		super();
-		this.allStrings = allStrings(analyzer.tree);
+		const allList = readAllList(analyzer.tree, analyzer.source);
+		this.allStrings = new Set(allList.state === "static" ? allList.entries.map(({ node }) => node) : []);
 		this.annotationRanges = analyzer.typeAnnotations().map((item) => item.annotationRange);
 	}
 

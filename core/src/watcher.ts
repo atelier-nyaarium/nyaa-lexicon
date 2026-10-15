@@ -160,9 +160,7 @@ export function watchWorkspace(options: WatchOptions): RunningWatcher {
 		retryTimer ??= clock.setTimer(flush, maxWaitMs);
 	}
 
-	// A flush that never asks git delivers at once, same as before. One that does is queued on this
-	// tail, so a burst whose git call answers fast can never overtake one still waiting: delivery
-	// stays in the order flushes were triggered, not the order their git calls happen to settle.
+	// Git-backed flushes deliver in trigger order, even when admission checks settle out of order.
 	let tail: Promise<void> = Promise.resolve();
 	let queued = 0;
 

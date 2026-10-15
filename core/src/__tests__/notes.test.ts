@@ -109,9 +109,13 @@ afterEach(() => {
 //  Tests
 
 describe("writing a note", () => {
-	it("refuses a ref from another project", () => {
+	it("refuses a ref from another project with a recovery action", () => {
 		const outcome = service.writeNote(note({ text: "Holds a [Cart](project-ref://foreign-project/a.ref:Cart)." }));
-		expect(outcome.outcome).toBe("refused");
+		expect(outcome).toMatchObject({
+			outcome: "refused",
+			reason: expect.stringContaining("edit or remove each broken link"),
+			refs: [{ problem: expect.stringContaining("Use a ref for") }],
+		});
 	});
 
 	it("rejects old ref links while leaving code literals alone", () => {
@@ -120,11 +124,22 @@ describe("writing a note", () => {
 			'Holds carts.\n\n```mermaid\ngraph LR\nA --> B\nclick A "ref://a.ref:Cart"\n```',
 		]) {
 			const outcome = service.writeNote(note({ text }));
-			expect(outcome).toMatchObject({ outcome: "refused", refs: [{ ref: "ref://a.ref:Cart" }] });
+			expect(outcome).toMatchObject({
+				outcome: "refused",
+				refs: [{ ref: "ref://a.ref:Cart", problem: expect.stringContaining("Correct the ref syntax") }],
+			});
 		}
 
 		const literal = service.writeNote(note({ text: "The old URI is `ref://a.ref:Cart`." }));
 		expect(literal.outcome).toBe("saved");
+	});
+
+	it("asks to index or correct a link to an unindexed module", () => {
+		const outcome = service.writeNote(note({ text: `Holds carts. See [the cart](${ref("missing.ref")}).` }));
+		expect(outcome).toMatchObject({
+			outcome: "refused",
+			refs: [{ problem: expect.stringContaining("Index it, or correct the module path") }],
+		});
 	});
 
 	it("opens with a plain sentence, and empty text removes the note", () => {
@@ -175,10 +190,12 @@ describe("writing a note", () => {
 		const text = `  \r\nHolds a [cart](${ref("a.ref", "Ghost")}).\n\nEach [item](${ref("a.ref", "Cart", "Ghost")}).`;
 		expect(service.writeNote(note({ text }))).toMatchObject({
 			outcome: "refused",
+			reason: expect.stringContaining("Choose a listed candidate"),
 			refs: [
 				{
 					ref: ref("a.ref", "Ghost"),
 					at: text.indexOf(ref("a.ref", "Ghost")),
+					problem: expect.stringContaining("edit or remove the broken link"),
 					candidates: [ref("a.ref", "Cart"), ref("a.ref", "Cart", "Item")],
 				},
 				{
@@ -248,6 +265,15 @@ describe("a note's refs over time", () => {
 });
 
 describe("whose words an agent may replace", () => {
+	it("asks for a proposal before resolving one", () => {
+		saved(service.writeNote(note()));
+		const outcome = service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON);
+		expect(outcome).toMatchObject({
+			outcome: "refused",
+			reason: expect.stringContaining("Create or refresh the proposal with `write_note`"),
+		});
+	});
+
 	it("turns an agent's write over a person's note into a proposal, which the person's next save drops", () => {
 		saved(service.writeNote(note()));
 		const proposed = service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT }));
@@ -277,6 +303,21 @@ describe("whose words an agent may replace", () => {
 		expect(saved(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON))).toMatchObject({
 			revision: 2,
 			links: [{ symbolId: TROLLEY }],
+		});
+	});
+
+	it("asks for broken proposal links to be edited before accepting", () => {
+		saved(service.writeNote(note()));
+		service.writeNote(
+			note({ text: `Pairs with [Cart](${ref("a.ref", "Cart")}).`, expectedRevision: 1, author: AGENT }),
+		);
+		plant("a.ref", []);
+
+		const outcome = service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON);
+		expect(outcome).toMatchObject({
+			outcome: "refused",
+			reason: expect.stringContaining("edit or remove each broken link"),
+			refs: [{ problem: expect.stringContaining("Edit the link to name a current symbol") }],
 		});
 	});
 

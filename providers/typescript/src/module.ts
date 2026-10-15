@@ -8,6 +8,7 @@ import type { PreparedLoadCycleContext } from "./judge/preview.js";
 import type { JudgeSession } from "./judge/session.js";
 import type { Writes } from "./judge/writes.js";
 import type { LoadedProject } from "./project.js";
+import { parseDiagnostics } from "./syntax.js";
 
 const JAVASCRIPT = new Set([ts.ScriptKind.JS, ts.ScriptKind.JSX]);
 
@@ -20,7 +21,7 @@ function asErrors(problems: readonly ts.Diagnostic[]): Diagnostic[] {
 
 /** Parser diagnostics for surface parses. */
 export function parseErrors(source: ts.SourceFile): Diagnostic[] {
-	return asErrors((source as unknown as { parseDiagnostics?: ts.Diagnostic[] }).parseDiagnostics ?? []);
+	return asErrors(parseDiagnostics(source));
 }
 
 /** Parser errors plus JavaScript grammar diagnostics. */

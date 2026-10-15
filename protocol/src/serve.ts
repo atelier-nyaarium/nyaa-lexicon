@@ -9,18 +9,22 @@ import { defined } from "./defined.js";
 import type { ImportEditsResponse } from "./importEdits.js";
 import { unjudgedLoadCycle } from "./loadCycles.js";
 import type {
-	METHOD_SCHEMAS,
 	ProbeBatchResponse,
 	ProviderEvent,
 	ProviderMethod,
 	ProviderNotification,
 	ProviderPhase,
 } from "./methods.js";
-import { EVENT_SCHEMAS, NOTIFICATION_SCHEMAS, PROVIDER_METHODS, PROVIDER_NOTIFICATIONS } from "./methods.js";
+import {
+	EVENT_SCHEMAS,
+	METHOD_SCHEMAS,
+	NOTIFICATION_SCHEMAS,
+	PROVIDER_METHODS,
+	PROVIDER_NOTIFICATIONS,
+} from "./methods.js";
 import type { MoveEditsResponse } from "./move.js";
 import { withOccurrences } from "./occurrences.js";
 import type { FileFacts, ImportResolution } from "./project.js";
-import { normalizeModulePath } from "./symbolId.js";
 import type { Binding, TypeInfo } from "./values.js";
 
 ////////////////////////////////
@@ -97,15 +101,6 @@ function eventsOver(connection: Connection): ProviderEvents {
 	return { providerPhase: (phase, label) => send("providerPhase", defined({ phase, label })) };
 }
 
-/** Bad request, before any handler. */
-function refuseUnrepresentable(params: unknown): void {
-	if (typeof params !== "object" || params === null) return;
-	for (const field of ["module", "fromModule", "toModule"]) {
-		const value = (params as Record<string, unknown>)[field];
-		if (typeof value === "string") normalizeModulePath(value);
-	}
-}
-
 /**
  * Handlers run one at a time, in arrival order, async ones included. A probe's restore therefore
  * lands before anything sent after it, even a request the daemon sent once the probe timed out.
@@ -132,7 +127,6 @@ export function serveProvider(
 			if (handler === undefined) return;
 			void inTurn(async () => {
 				try {
-					refuseUnrepresentable(params);
 					await handler(NOTIFICATION_SCHEMAS[notification].parse(params));
 				} catch (error) {
 					// No reply carries a refusal.
@@ -152,8 +146,8 @@ export function serveProvider(
 					: undefined)) as ((params: unknown) => unknown) | undefined;
 		connection.onRequest(method, (params: unknown) =>
 			inTurn(async () => {
-				refuseUnrepresentable(params);
-				const answer = await handler?.(params);
+				const parsedParams = METHOD_SCHEMAS[method].request.parse(params);
+				const answer = await handler?.(parsedParams);
 				// One id per declaration, settled at the wire for every provider.
 				if (method === "probeBatch" && isReadyBatch(answer)) {
 					return { ...answer, facts: answer.facts.map((facts) => withOccurrences(facts)) };
@@ -178,8 +172,7 @@ export function runProviderOnStdio(handlers: ProviderHandlers & ProviderNotifica
 }
 
 /**
- * stdin closing means the daemon is gone, however it went. A provider holding any live handle
- * would otherwise outlive it as an orphan (issue #7).
+ * stdin closing means the daemon is gone. A provider cannot keep a live handle then.
  */
 export function exitWhenClosed(stream: NodeJS.ReadableStream, exit: (code: number) => void = process.exit): void {
 	let left = false;

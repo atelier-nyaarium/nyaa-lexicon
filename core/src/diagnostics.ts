@@ -2,19 +2,11 @@
 //
 // A collection, never a stream: rings bound it and the file is rewritten whole.
 
-import {
-	chmodSync,
-	lstatSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { hostMemory, processMemory, runtimeVerdict, storePaths } from "@nyaa-lexicon/client";
 import { z } from "zod";
+import { atomicWrite, atomicWriteJson, atomicWriteTempTarget } from "./atomicJson.js";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import type { ProviderExit } from "./supervisor.js";
 import { type Recorded, TimingsSchema } from "./timings.js";
@@ -237,9 +229,12 @@ function stale(names: string[], pattern: RegExp, keep: number): string[] {
 
 /** A write killed between temp and rename leaves this; it is nobody's once the writer is gone. */
 function abandonedTemp(name: string): boolean {
-	if (!name.endsWith(".tmp")) return false;
-	const target = name.slice(0, -".tmp".length);
-	return target === SELF_REPORT || SNAPSHOT_RE.test(target) || NODE_REPORT_RE.test(target);
+	const targets = [atomicWriteTempTarget(name), name.endsWith(".tmp") ? name.slice(0, -".tmp".length) : undefined];
+	return targets.some(
+		(target) =>
+			target === SELF_REPORT ||
+			(target !== undefined && (SNAPSHOT_RE.test(target) || NODE_REPORT_RE.test(target))),
+	);
 }
 
 /** The newest reports and snapshots survive. Answers what it removed. */
@@ -266,22 +261,6 @@ export function pruneReports(dir: string, keep = REPORTS_KEPT, keepSnapshots = S
 	return removed;
 }
 
-/** Temp then rename, so a reader never meets half a file. A failed temp is removed. */
-function writeAtomically(file: string, content: string): void {
-	const temp = `${file}.tmp`;
-	try {
-		writeFileSync(temp, content);
-		renameSync(temp, file);
-	} catch (error) {
-		try {
-			unlinkSync(temp);
-		} catch {
-			// Not ours, or gone.
-		}
-		throw error;
-	}
-}
-
 /**
  * The high-water report shares a crash report's header and heap block, so one reader renders
  * both.
@@ -299,7 +278,7 @@ function writeSelfReportFile(file: string, sample: Sample, hostTotal: number): v
 		resident: { rss: own?.rss ?? null, hostTotal },
 		sample,
 	};
-	writeAtomically(file, JSON.stringify(report));
+	atomicWriteJson(file, report);
 }
 
 /**
@@ -311,7 +290,7 @@ export function writeHeapSnapshot(reportsDir: string, stamp: number): void {
 	const file = path.join(reportsDir, `Heap.${stamp}.${process.pid}.heapsnapshot`);
 	const bun = (globalThis as { Bun?: { generateHeapSnapshot(format: "v8"): string } }).Bun;
 	if (bun === undefined) throw new Error("heap snapshots come from bun, and this is not bun");
-	writeAtomically(file, bun.generateHeapSnapshot("v8"));
+	atomicWrite(file, bun.generateHeapSnapshot("v8"));
 }
 
 /** A regular file, or why not. A link or a directory wearing the name is not the file. */
@@ -567,7 +546,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 	function write(): void {
 		const snapshot = current();
 		mkdirSync(path.dirname(options.file), { recursive: true });
-		writeAtomically(options.file, JSON.stringify(snapshot));
+		atomicWriteJson(options.file, snapshot, { temporaryPath: `${options.file}.tmp` });
 		lastWrite = snapshot.writtenAt;
 		pruneReports(options.reportsDir);
 	}

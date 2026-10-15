@@ -11,6 +11,7 @@
 import {
 	type CommentForm,
 	type CommentSpan,
+	comparePositions,
 	coordinatesOf,
 	type Declaration,
 	type Range,
@@ -50,7 +51,7 @@ interface Group {
 //  Functions & Helpers
 
 function comparePoints(a: Range["start"], b: Range["start"]): number {
-	return a.line === b.line ? a.character - b.character : a.line - b.line;
+	return comparePositions(a, b);
 }
 
 function sameStart(a: Range, b: Range): boolean {
@@ -99,10 +100,7 @@ function place(comment: CommentSpan): Placed {
 /**
  * Split into runs, reading only each comment's OWN span.
  *
- * Separated from merging on purpose. The previous shape grew a group and then asked that same
- * growing group whether it was still one line, so the answer changed underneath the question and a
- * run of three broke into a pair and a straggler. Deciding membership before anything is merged
- * makes the length of the run unable to affect the decision at all.
+ * Membership depends on each comment span, not on the size of an already-built group.
  */
 function partitionRuns(placed: Placed[]): Placed[][] {
 	const runs: Placed[][] = [];

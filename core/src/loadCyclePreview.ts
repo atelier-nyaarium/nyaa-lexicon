@@ -7,7 +7,7 @@ import type {
 import { ModuleCycleSchema, sameRange } from "@nyaa-lexicon/protocol";
 import type { Clock } from "./clock.js";
 import { DeadlineError } from "./deadline.js";
-import { type Cycle, newCycleComponents, previewComponents, withPreviewComponents } from "./loadCycles.js";
+import { type Cycle, newCycleComponents, previewComponents, withPreviewComponents } from "./loadCycleView.js";
 import type { ProviderPort } from "./providerPort.js";
 import type { ProviderProbe } from "./providerProbe.js";
 import type { Gate } from "./stepRunners.js";

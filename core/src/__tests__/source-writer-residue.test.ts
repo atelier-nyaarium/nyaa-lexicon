@@ -50,6 +50,7 @@ const TEMPORARY_SUFFIX = "lexicon-tmp";
 /** State writers own their files; sourceWriter alone writes workspace files. */
 const OWNERS = new Set([
 	"sourceWriter.ts",
+	"atomicJson.ts",
 	"daemonLock.ts",
 	"projectRegistry.ts",
 	"projectStores.ts",

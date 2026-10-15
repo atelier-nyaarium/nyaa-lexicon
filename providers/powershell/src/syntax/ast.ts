@@ -1,6 +1,7 @@
 // The PowerShell syntax tree, in the node classes of PowerShell's own `System.Management.Automation.
 // Language` tree, with file offsets for positions.
 
+import { treeDeeperThan } from "@nyaa-lexicon/protocol";
 import type { TokenKind } from "./tokens.js";
 
 ////////////////////////////////
@@ -559,13 +560,7 @@ export function childNodes(node: Node): Node[] {
 
 /** Whether any node sits more than `limit` levels under `root`, measured without recursion. */
 export function deeperThan(root: Node, limit: number): boolean {
-	const pending: Array<[Node, number]> = [[root, 0]];
-	for (let entry = pending.pop(); entry !== undefined; entry = pending.pop()) {
-		const [node, depth] = entry;
-		if (depth > limit) return true;
-		for (const child of childNodes(node)) pending.push([child, depth + 1]);
-	}
-	return false;
+	return treeDeeperThan(root, childNodes, limit);
 }
 
 /** Every node under `root`, itself first, depth first in source order. */

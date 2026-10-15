@@ -6,6 +6,7 @@ import {
 	type Range,
 	type Reference,
 	type ReferenceOrigin,
+	rangeInRange,
 	sameRange,
 } from "@nyaa-lexicon/protocol";
 import { type Blocks, blockHeader, bodyEndLine, lambdaBlockOf, statementAt } from "./blocks.js";
@@ -291,7 +292,7 @@ function scopeKeys(blocks: ReferenceBlock[], scope: ReferenceBlock): string[] {
 	for (const block of blocks) {
 		const { span } = block;
 		if (block === scope || span === undefined || block.containerId !== scope.containerId) continue;
-		if (comparePositions(outer.start, span.start) <= 0 && comparePositions(span.end, outer.end) <= 0) {
+		if (rangeInRange(outer, span)) {
 			keys.push(block.functionId ?? block.containerId);
 		}
 	}

@@ -1,23 +1,9 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import { FileFactsSchema, ImportResolutionSchema } from "@nyaa-lexicon/protocol";
 import { CsharpProvider } from "../main.js";
-import { parseThroughKit, startProvider } from "./harness.js";
+import { parseThroughKit, startProvider, workspaceFixture } from "./harness.js";
 
-const roots: string[] = [];
-
-function workspace(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "lexicon-csharp-transfers-"));
-	roots.push(root);
-	for (const [module, text] of Object.entries(files)) {
-		const full = path.join(root, module);
-		mkdirSync(path.dirname(full), { recursive: true });
-		writeFileSync(full, text);
-	}
-	return root;
-}
+const workspace = workspaceFixture("transfers");
 
 function parse(text: string, module = "main.cs") {
 	const provider = new CsharpProvider();
@@ -28,10 +14,6 @@ function parse(text: string, module = "main.cs") {
 function scope(kind: "packageScope" | "symbolScope", scopeId: string) {
 	return { kind, providerId: "csharp-provider", scopeId };
 }
-
-afterEach(() => {
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 describe("C# using directives as transfers", () => {
 	it("reports an injection for a namespace or static, a namespace or named alias, each proved or not", () => {

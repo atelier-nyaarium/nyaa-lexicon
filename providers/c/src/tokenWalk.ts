@@ -1,6 +1,6 @@
 // Walks over a C token list: code neighbors, qualified names, ranges and doc comments.
 
-import { comparePositions, type OffsetRange, type Range } from "@nyaa-lexicon/protocol";
+import { type OffsetRange, positionInRange, type Range } from "@nyaa-lexicon/protocol";
 import type { DescriptorPath, QualifiedName } from "./model.js";
 import type { CToken, TokenKind } from "./tokens.js";
 import { isIdentifierToken } from "./words.js";
@@ -129,7 +129,7 @@ export function descriptorKey(path: DescriptorPath): string {
 }
 
 export function containsPosition(range: Range, position: Range["start"]): boolean {
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return positionInRange(range, position);
 }
 
 export function rangeForTokens(tokens: CToken[], start: number, end: number): Range | undefined {

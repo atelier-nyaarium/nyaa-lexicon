@@ -1,5 +1,4 @@
-// Knowledge notes: one per symbol. Owns what a write must carry, where its refs point, what moved
-// since, and whose words an agent may replace.
+// Knowledge notes: one per subject, addressed by its current symbol id.
 
 import {
 	chainOf,
@@ -14,7 +13,6 @@ import {
 	type NoteLink,
 	type NoteOutcome,
 	type NoteProposal,
-	type NoteRefProblem,
 	parseRef,
 	type RefCandidate,
 	type SearchRefs,
@@ -25,6 +23,7 @@ import { type Clock, systemClock } from "./clock.js";
 import { MODULE_TARGET, type NoteLinkRow, type NoteProposalRow, type NoteRow } from "./noteRows.js";
 import { noteOpening, type OpeningBlock } from "./noteText.js";
 import { ReadContext } from "./readContext.js";
+import type { NoteRefProblem } from "./refusalSlots.js";
 import * as refusal from "./refusals.js";
 import type { IndexStore } from "./store.js";
 
@@ -43,7 +42,12 @@ export interface NoteWrite {
 type Refused = Extract<NoteOutcome, { outcome: "refused" }>;
 
 /** The wire shape with its reason slot narrowed to the catalog's brand. */
-export type LedgerNoteOutcome = Exclude<NoteOutcome, Refused> | (Omit<Refused, "reason"> & { reason: refusal.Refusal });
+type LedgerRefused = Omit<Refused, "reason" | "refs"> & {
+	reason: refusal.Refusal;
+	refs?: NoteRefProblem[] | undefined;
+};
+
+export type LedgerNoteOutcome = Exclude<NoteOutcome, Refused> | LedgerRefused;
 
 /** A ref that resolved, not yet claimed. */
 interface ResolvedRef {
@@ -77,7 +81,10 @@ const SEARCH_SCANNED = 2000;
 ////////////////////////////////
 //  Functions & Helpers
 
-function refused(reason: refusal.Refusal, extra: Partial<Omit<Refused, "outcome" | "reason">> = {}): LedgerNoteOutcome {
+function refused(
+	reason: refusal.Refusal,
+	extra: Partial<Omit<Refused, "outcome" | "reason" | "refs">> & { refs?: NoteRefProblem[] | undefined } = {},
+): LedgerNoteOutcome {
 	return { outcome: "refused", reason, ...extra };
 }
 
@@ -413,12 +420,12 @@ export class NoteLedger {
 	private resolveRef(
 		ref: string,
 		context: ReadContext,
-	): { ok: true; target: ResolvedRef["target"] } | { ok: false; problem: string; candidates: string[] } {
+	): { ok: true; target: ResolvedRef["target"] } | { ok: false; problem: refusal.Refusal; candidates: string[] } {
 		const parsed = parseRef(ref);
-		if (!parsed.ok) return { ok: false, problem: parsed.problem, candidates: [] };
+		if (!parsed.ok) return { ok: false, problem: refusal.refParseFailed(parsed.problem), candidates: [] };
 		const { project, module, segments } = parsed.ref;
 		if (project !== this.project) {
-			return { ok: false, problem: "the ref names a different project", candidates: [] };
+			return { ok: false, problem: refusal.refProjectMismatch(project, this.project), candidates: [] };
 		}
 		if (this.store.depthOf(module) === null) {
 			return { ok: false, problem: refusal.refModuleNotIndexed(module), candidates: [] };

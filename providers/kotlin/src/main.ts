@@ -3,7 +3,6 @@ import path from "node:path";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
-	comparePositions,
 	type Declaration,
 	defined,
 	handlersFor,
@@ -19,6 +18,7 @@ import {
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
+	positionInRange,
 	projectDiagnostic,
 	type Range,
 	type Reference,
@@ -289,7 +289,7 @@ function classContributions(facts: KotlinFile): ScopeContribution[] {
 }
 
 function contains(range: RangeLike, position: RangeLike["start"]): boolean {
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return positionInRange(range, position);
 }
 
 function unknown(reason: UnknownReason, detail: string): { status: "unbound"; reason: UnknownReason; detail: string } {

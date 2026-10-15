@@ -4,6 +4,7 @@ import { defined, type NoteAuthor, parseRefTarget } from "@nyaa-lexicon/protocol
 import { z } from "zod";
 import type { BindingDeps } from "./binding.js";
 import { nothingBoundMessage } from "./binding.js";
+import { type ToolResult, textResult } from "./result.js";
 import {
 	CO_CHANGED_WITH_DESCRIPTION,
 	CoChangedWithInput,
@@ -93,7 +94,6 @@ import {
 	symbolHistory,
 	symbolSource,
 	type ToolBackend,
-	type ToolResult,
 	TYPE_OF_DESCRIPTION,
 	TypeOfInput,
 	typeOfSymbol,
@@ -407,6 +407,7 @@ export const PROJECT_TOOL_DEFINITIONS = [
 		queryValidation: {
 			check: (query) =>
 				!(query.text !== undefined && query.regex !== undefined) &&
+				// biome-ignore lint/complexity/useLiteralKeys: Index keys require brackets.
 				[query.text, query.regex, query["kind"], query["module"], query["within"]].some(
 					(each) => each !== undefined,
 				),
@@ -453,10 +454,6 @@ export const PROJECT_TOOL_NAMES = PROJECT_TOOL_DEFINITIONS.map((definition) => d
 ////////////////////////////////
 //  Functions & Helpers
 
-function text(body: string): ToolResult {
-	return { content: [{ type: "text", text: body }], isError: true };
-}
-
 function resolveNamed(names: string[], all: SessionProject[], bound: SessionProject[]): SessionProject[] | ToolResult {
 	const byName = new Map(all.map((project) => [project.name, project]));
 	const boundKeys = new Set(bound.map((project) => project.key));
@@ -465,12 +462,16 @@ function resolveNamed(names: string[], all: SessionProject[], bound: SessionProj
 	for (const name of names) {
 		const project = byName.get(name);
 		if (project === undefined) {
-			return text(
+			return textResult(
 				`# Project not found\n\nNo project named \`${name}\` is registered in this session. Call \`list_projects\`.`,
+				true,
 			);
 		}
 		if (!boundKeys.has(project.key)) {
-			return text(`# Project not bound\n\n\`${name}\` is registered but not bound. Call \`bind_project\` first.`);
+			return textResult(
+				`# Project not bound\n\n\`${name}\` is registered but not bound. Call \`bind_project\` first.`,
+				true,
+			);
 		}
 		selected.push(project);
 	}
@@ -481,23 +482,25 @@ function selectProjects(
 	scope: ProjectToolScope,
 	binding: BindingDeps,
 	raw: Record<string, unknown>,
+	args: Record<string, unknown>,
 ): Selection | ToolResult {
 	const all = binding.list();
 	const bound = all.filter((project) => project.bound);
-	if (bound.length === 0) return text(nothingBoundMessage(all));
+	if (bound.length === 0) return textResult(nothingBoundMessage(all), true);
 	if (scope === "mutation") {
-		const { project, ...args } = raw as Record<string, unknown> & { project?: string };
+		const { project } = raw as Record<string, unknown> & { project?: string };
 		if (project === undefined) {
 			if (bound.length === 1 && bound[0] !== undefined) return { projects: [bound[0]], args };
-			return text(
+			return textResult(
 				`# Project selection required\n\nSeveral projects are bound: ${bound.map((entry) => `\`${entry.name}\``).join(", ")}. Pass \`project\` with one binding name.`,
+				true,
 			);
 		}
 		const selected = resolveNamed([project], all, bound);
 		return Array.isArray(selected) ? { projects: selected, args } : selected;
 	}
 
-	const { projects, ...args } = raw as Record<string, unknown> & { projects?: string[] };
+	const { projects } = raw as Record<string, unknown> & { projects?: string[] };
 	// Omission and [] both select all bound projects.
 	if (projects === undefined || projects.length === 0) return { projects: bound, args };
 	const selected = resolveNamed(projects, all, bound);
@@ -515,7 +518,8 @@ function isToolResult(value: Selection | ToolResult): value is ToolResult {
 	return "content" in value;
 }
 
-function stripSelector(scope: ProjectToolScope, raw: Record<string, unknown>): Record<string, unknown> {
+function projectArguments(scope: ProjectToolScope, raw: Record<string, unknown>): Record<string, unknown> {
+	if (scope === "ref") return raw;
 	if (scope === "mutation") {
 		const { project: _project, ...args } = raw as Record<string, unknown> & { project?: string };
 		return args;
@@ -540,7 +544,7 @@ async function runSelected(
 		failed ||= result.isError === true;
 		sections.push(`## Project: \`${project.name}\`\n\n${result.content.map((chunk) => chunk.text).join("\n")}`);
 	}
-	return { content: [{ type: "text", text: sections.join("\n\n") }], ...(failed ? { isError: true } : {}) };
+	return textResult(sections.join("\n\n"), failed);
 }
 
 async function runQueryBatch(
@@ -567,7 +571,7 @@ async function runQueryBatch(
 	}
 
 	const text = projectSections.join("\n\n");
-	return { content: [{ type: "text", text }], ...(failed ? { isError: true } : {}) };
+	return textResult(text, failed);
 }
 
 function serverResult(result: ToolResult): ToolResult & Record<string, unknown> {
@@ -611,8 +615,8 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 				inputSchema,
 			},
 			async (raw: Record<string, unknown>): Promise<ToolResult & Record<string, unknown>> => {
+				const args = projectArguments(definition.scope, raw);
 				if (routed === null) {
-					const args = stripSelector(definition.scope, raw);
 					if (batched) {
 						return serverResult(
 							await runQueryBatch(
@@ -625,24 +629,26 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 					return serverResult(await handler(source as ToolBackend, args));
 				}
 				if (definition.scope === "ref") {
-					const queries = (raw as { queries: Record<string, unknown>[] }).queries;
+					const queries = (args as { queries: Record<string, unknown>[] }).queries;
 					const all = binding.list();
 					const bound = all.filter((project) => project.bound);
-					if (bound.length === 0) return serverResult(text(nothingBoundMessage(all)));
+					if (bound.length === 0) return serverResult(textResult(nothingBoundMessage(all), true));
 					let failed = false;
 					const results: string[] = [];
 					for (const query of queries) {
+						// biome-ignore lint/complexity/useLiteralKeys: Index keys require brackets.
 						const parsed = parseRefTarget(String(query["ref"] ?? ""));
-						if (!parsed.ok) return serverResult(text(`# Ref invalid\n\n${parsed.problem}`));
+						if (!parsed.ok) return serverResult(textResult(`# Ref invalid\n\n${parsed.problem}`, true));
 						const matches = bound.filter((project) => project.key === parsed.target.project);
 						if (matches.length !== 1) {
 							return serverResult(
-								text(
+								textResult(
 									matches.length > 1
 										? `# Project not found\n\nNo unique project matches this ref.`
 										: all.some((project) => project.key === parsed.target.project)
 											? `# Project not bound\n\nBind this project with \`bind_project\` first.`
 											: `# Project not found\n\nNo project matches this ref.`,
+									true,
 								),
 							);
 						}
@@ -652,12 +658,9 @@ export function registerProjectTools(server: McpServer, source: BackendSource, b
 						failed ||= result.isError === true;
 						results.push(result.content.map((chunk) => chunk.text).join("\n"));
 					}
-					return serverResult({
-						content: [{ type: "text", text: results.join("\n\n") }],
-						...(failed ? { isError: true } : {}),
-					});
+					return serverResult(textResult(results.join("\n\n"), failed));
 				}
-				const selection = selectProjects(definition.scope, binding, raw);
+				const selection = selectProjects(definition.scope, binding, raw, args);
 				if (isToolResult(selection)) return serverResult(selection);
 				if (batched) {
 					return serverResult(

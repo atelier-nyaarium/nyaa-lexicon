@@ -12,6 +12,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { destructuredElement } from "./references.js";
+import { parseDiagnostics } from "./syntax.js";
 
 ////////////////////////////////
 //  Constants
@@ -671,8 +672,7 @@ function isLegalIdentifier(value: string): boolean {
 		declaration !== undefined &&
 		ts.isIdentifier(declaration.name) &&
 		declaration.name.text === value &&
-		((source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? []).length ===
-			0
+		parseDiagnostics(source).length === 0
 	);
 }
 

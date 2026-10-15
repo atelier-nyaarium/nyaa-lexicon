@@ -50,6 +50,14 @@ describe("naming a workspace file", () => {
 		expect(workspaceFile(root, "../escape.ts")).toBeNull();
 		expect(workspaceFile(root, "/etc/passwd")).toBeNull();
 	});
+
+	it("round-trips a filename beginning with two dots", () => {
+		const absolute = path.join(root, "..cache");
+		const module = workspaceModule(root, absolute);
+
+		expect(module).toBe("..cache");
+		expect(workspaceFile(root, module ?? "")).toBe(absolute);
+	});
 });
 
 describe("shared parser primitives", () => {

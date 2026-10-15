@@ -8,6 +8,7 @@ import {
 	type Landing,
 	type Range,
 	type ResolutionMode,
+	rangeInRange,
 } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
 import { moduleEdges } from "../edges.js";
@@ -46,7 +47,7 @@ export interface Evidence {
 //  Functions & Helpers
 
 function contains(outer: Range, inner: Range): boolean {
-	return comparePositions(outer.start, inner.start) <= 0 && comparePositions(inner.end, outer.end) <= 0;
+	return rangeInRange(outer, inner);
 }
 
 /** A statement's emit decision from its edges: kept when one is, undecided when one is. */

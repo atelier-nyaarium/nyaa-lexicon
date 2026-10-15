@@ -46,6 +46,7 @@ import {
 } from "./references.js";
 import { makeRenameEdits } from "./rename.js";
 import { extractSurfaceFile } from "./surface.js";
+import { parseDiagnostics } from "./syntax.js";
 
 ////////////////////////////////
 //  Constants
@@ -391,7 +392,7 @@ export class TypeScriptAnalyzer {
 			true,
 			scriptKindOf(params.module),
 		);
-		if (parseDiagnosticsOf(source).length > 0) {
+		if (parseDiagnostics(source).length > 0) {
 			return {
 				refused: { status: "refused", reason: "ParseError", detail: "the module contains syntax errors" },
 			};
@@ -1060,10 +1061,6 @@ function tokenAt(source: ts.SourceFile, position: number, name?: string): ts.Nod
 	}
 	walk(source);
 	return found;
-}
-
-function parseDiagnosticsOf(source: ts.SourceFile): readonly ts.Diagnostic[] {
-	return (source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
 }
 
 function declarationsOf(symbol: ts.Symbol): ts.Declaration[] {

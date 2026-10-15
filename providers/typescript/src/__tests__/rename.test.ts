@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { applyEdits, coordinatesOf, type Range, type RenameEditsRequest } from "@nyaa-lexicon/protocol";
 import ts from "typescript";
+import { parseDiagnostics } from "../syntax.js";
 import { harness } from "./harness.js";
 
 const roots: string[] = [];
@@ -29,7 +30,7 @@ function site(text: string, value: string, from = 0) {
 
 function syntaxErrors(text: string, module = "rename.ts"): readonly ts.Diagnostic[] {
 	const source = ts.createSourceFile(module, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-	return (source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+	return parseDiagnostics(source);
 }
 
 function rename(root: string, request: RenameEditsRequest) {

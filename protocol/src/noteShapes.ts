@@ -32,6 +32,8 @@ export const NoteAuthorSchema = z
 
 export type NoteAuthor = z.infer<typeof NoteAuthorSchema>;
 
+export const NoteAuthorOptionalField = { author: NoteAuthorSchema.optional() };
+
 /** One ref a note carries, at its target's current address. */
 export const NoteLinkSchema = z
 	.object({
@@ -138,22 +140,20 @@ export type NoteBacklinks = z.infer<typeof NoteBacklinksSchema>;
 ////////////////////////////////
 //  Requests
 
-const Author = { author: NoteAuthorSchema.optional() };
-
 /** Empty `text` removes the note. `expectedRevision` 0 means no note stands. */
 export const WriteNoteRequestSchema = z
 	.object({
 		symbolId: z.string().min(1),
 		text: z.string(),
 		expectedRevision: z.number().int().nonnegative(),
-		...Author,
+		...NoteAuthorOptionalField,
 	})
 	.meta({ id: "WriteNoteRequest" });
 
 export const ReadNoteRequestSchema = z.object({ symbolId: z.string().min(1) }).meta({ id: "ReadNoteRequest" });
 
 export const ConfirmNoteRequestSchema = z
-	.object({ symbolId: z.string().min(1), expectedRevision: z.number().int().positive(), ...Author })
+	.object({ symbolId: z.string().min(1), expectedRevision: z.number().int().positive(), ...NoteAuthorOptionalField })
 	.meta({ id: "ConfirmNoteRequest" });
 
 /** `expectedRevision` names the revision that misled. */
@@ -162,7 +162,7 @@ export const DoubtNoteRequestSchema = z
 		symbolId: z.string().min(1),
 		reason: z.string().min(1),
 		expectedRevision: z.number().int().positive(),
-		...Author,
+		...NoteAuthorOptionalField,
 	})
 	.meta({ id: "DoubtNoteRequest" });
 
@@ -173,7 +173,7 @@ export const ResolveNoteProposalRequestSchema = z
 		expectedRevision: z.number().int().positive(),
 		/** The shown proposal's `at`; a proposal that replaced it since refuses. */
 		expectedProposal: z.number(),
-		...Author,
+		...NoteAuthorOptionalField,
 	})
 	.meta({ id: "ResolveNoteProposalRequest" });
 

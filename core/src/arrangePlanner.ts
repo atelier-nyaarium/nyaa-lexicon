@@ -16,6 +16,7 @@ import {
 	type OffsetRange,
 	type Position,
 	type Promoted,
+	positionInRange,
 	type Range,
 	type StoredComment,
 	type StoredLiteral,
@@ -152,7 +153,7 @@ function rangeOf(reference: StoredReference): Range {
 }
 
 function holds(range: Range, at: Position): boolean {
-	return comparePositions(range.start, at) <= 0 && comparePositions(at, range.end) <= 0;
+	return positionInRange(range, at);
 }
 
 function wholeComment(text: string, comment: StoredComment): boolean {

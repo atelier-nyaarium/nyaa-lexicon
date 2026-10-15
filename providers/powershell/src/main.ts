@@ -23,6 +23,7 @@ import {
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
+	positionInRange,
 	projectDiagnostic,
 	type Range,
 	type Reference,
@@ -215,13 +216,7 @@ function bound(symbolId: string): Binding {
 }
 
 function contains(range: Range, position: Position): boolean {
-	const afterStart =
-		position.line > range.start.line ||
-		(position.line === range.start.line && position.character >= range.start.character);
-	const beforeEnd =
-		position.line < range.end.line ||
-		(position.line === range.end.line && position.character <= range.end.character);
-	return afterStart && beforeEnd;
+	return positionInRange(range, position);
 }
 
 function landed(module: string): ImportResolution {

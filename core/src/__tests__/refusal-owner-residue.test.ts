@@ -25,7 +25,7 @@ const SLOTS = join(import.meta.dirname, "..", "refusalSlots.ts");
 const ASSERTIONS = join(import.meta.dirname, "refusalSlots.types.ts");
 
 /** Refusal sentence slots. */
-const SLOT_NAMES = new Set(["reason", "refused"]);
+const SLOT_NAMES = new Set(["reason", "refused", "problem"]);
 
 const CORE = join(import.meta.dirname, "..");
 
@@ -154,10 +154,11 @@ describe("one module composes every refusal", () => {
 		expect(mints(parseSource("probe.ts", 'const note = "text as Refusal";').source)).toEqual([]);
 	});
 
-	it("catches a planted literal under each of the three shapes", () => {
+	it("catches a planted literal under each refusal slot", () => {
 		expect(inlineRefusals(`return { outcome: "refused", reason: "a doubt needs a reason" };`)).toHaveLength(1);
 		expect(inlineRefusals("return { symbolId, refused: `nothing to doubt` };")).toHaveLength(1);
 		expect(inlineRefusals(`return { ok: false, reason: 'cites none' };`)).toHaveLength(1);
+		expect(inlineRefusals(`return { ref, at, problem: "bad link", candidates: [] };`)).toHaveLength(1);
 		expect(inlineRefusals(`return { ok: false, reason: refusal.doubtNeedsReason() };`)).toHaveLength(0);
 		expect(inlineRefusals(`return { outcome: "refused", reason: check.reason };`)).toHaveLength(0);
 	});

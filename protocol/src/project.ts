@@ -134,21 +134,11 @@ const NAMING_KINDS: readonly string[] = ["default", "namespace", "require"];
 const SELECTING_KINDS: readonly string[] = ["wildcard", "injection"];
 
 /**
- * One transfer an import makes, and where it is written.
+ * An import edge records its source name, local binding, and source ranges.
  *
- * The position is what separates reading from rewriting. Without it an import is a statement that
- * some names crossed a module boundary, and a rename cannot reach the text that says so: measured
- * on this repo, a plan for `SCHEMA_VERSION` found 4 of its 6 occurrences because the re-export and
- * the import were invisible.
+ * Source and local names have separate spans so a rename can preserve aliases.
  *
- * `name` and `local` carry separate spans on purpose. Renaming the source symbol rewrites `name`
- * and must leave every use of the alias untouched, and one span cannot express that.
- *
- * BOTH are optional because plenty of real imports write only one of them. A namespace import, a
- * default import and a GDScript `const Foo = preload(...)` all write a local binding and name no
- * export at all. Requiring `name` made three providers reach for the local binding to fill it,
- * which would have had a rename of the source symbol rewrite a local alias: a rewrite that still
- * parses and no longer works. A wildcard, an injection and a side-effect import write neither.
+ * Either name may be absent when the import form does not write it.
  */
 export const ImportEdgeSchema = z
 	.object({

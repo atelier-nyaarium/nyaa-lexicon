@@ -11,6 +11,17 @@ export function saysTooDeep(message: string): boolean {
 /** Deeper than any data file; far shallower than what exhausts a stack. */
 export const MAX_NESTING = 1_000;
 
+/** Whether any node sits more than `limit` edges under `root`. */
+export function treeDeeperThan<T>(root: T, childrenOf: (node: T) => readonly T[], limit: number): boolean {
+	const pending: Array<[T, number]> = [[root, 0]];
+	for (let entry = pending.pop(); entry !== undefined; entry = pending.pop()) {
+		const [node, depth] = entry;
+		if (depth > limit) return true;
+		for (const child of childrenOf(node)) pending.push([child, depth + 1]);
+	}
+	return false;
+}
+
 /** A gauge's refusal. */
 class NestingLimit extends Error {}
 

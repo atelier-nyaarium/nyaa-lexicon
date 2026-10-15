@@ -869,9 +869,8 @@ function restoreByColumn(db: Database, table: string, rows: Array<Record<string,
 }
 
 /**
- * Migration shim, removed at 4.0.0. A store from before 3.2.0 journaled what a step moved as JSON
- * in the step's plan; this is the last read of that shape. Returns how many entries the schema
- * refused.
+ * Copies applied rebinds from open legacy plans into the current journal. Returns how many entries
+ * could not be preserved.
  */
 function liftAppliedRebinds(db: Database): number {
 	const steps = db

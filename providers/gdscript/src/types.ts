@@ -1,8 +1,8 @@
 import {
-	comparePositions,
 	coordinatesOf,
 	type Declaration,
 	defined,
+	positionInRange as inRange,
 	parseSymbolId,
 	type TextCoordinates,
 	type TypeInfo,
@@ -87,7 +87,7 @@ interface InferenceContext {
 //////// Helpers
 
 function positionInRange(range: Range, position: Range["start"]): boolean {
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return inRange(range, position);
 }
 
 function unknownType(reason: UnknownReason, detail: string): TypeInfo {

@@ -20,11 +20,13 @@ import type {
 ////////////////////////////////
 //  Interfaces & Types
 
+type StaticAllEntry = { name: string; range: Range; node: A.Constant & { value: { kind: "str" } } };
+
 /** `__all__` as written, before its entries are matched to bindings. */
 export type AllListReading =
 	| { state: "absent" }
 	| { state: "dynamic" }
-	| { state: "static"; entries: Array<{ name: string; range: Range }> };
+	| { state: "static"; entries: StaticAllEntry[] };
 
 /** One statement binding a module-level name, and the export it would leave. */
 interface Binder {
@@ -92,12 +94,12 @@ function readsInPlace(parent: A.Node, child: A.Node): boolean {
 }
 
 /** A literal list, tuple or set of non-empty strings. */
-function literalEntries(value: A.Expression, source: Source): Array<{ name: string; range: Range }> | undefined {
+function literalEntries(value: A.Expression, source: Source): StaticAllEntry[] | undefined {
 	if (value.type !== "List" && value.type !== "Tuple" && value.type !== "Set") return undefined;
-	const entries: Array<{ name: string; range: Range }> = [];
+	const entries: StaticAllEntry[] = [];
 	for (const element of value.elts) {
 		if (!isStringConstant(element) || element.value.value === "") return undefined;
-		entries.push({ name: element.value.value, range: source.rangeOf(element) });
+		entries.push({ name: element.value.value, range: source.rangeOf(element), node: element });
 	}
 	return entries;
 }
@@ -105,7 +107,7 @@ function literalEntries(value: A.Expression, source: Source): Array<{ name: stri
 /** Static only when every write is a module-level, unconditional literal, and no read hands the list on. */
 export function readAllList(tree: A.Module, source: Source): AllListReading {
 	const plain = new Set<A.Node>();
-	let entries: Array<{ name: string; range: Range }> | null | undefined;
+	let entries: StaticAllEntry[] | null | undefined;
 	for (const node of tree.body) {
 		if (node.type === "Assign") {
 			const targets = node.targets.filter(isAll);

@@ -6,6 +6,7 @@ import {
 	type Declaration,
 	type ModuleStore,
 	parseSymbolId,
+	positionInRange,
 	type Reference,
 	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
@@ -57,7 +58,7 @@ export function indexed(facts: CsharpFacts): IndexedFacts {
 
 export function contains(range: Range, position: Range["start"]): boolean {
 	// Inclusive both ends
-	return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) <= 0;
+	return positionInRange(range, position);
 }
 
 /** Half-open: a use starting where the range ends is past it. */

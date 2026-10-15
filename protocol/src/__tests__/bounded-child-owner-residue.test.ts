@@ -22,16 +22,18 @@ function providerSourceDirs(): string[] {
 }
 
 const SWEPT = [
-	...["core/src", "client/src", "adapters/mcp/src", "adapters/lsp/src", "protocol/src"].map((dir) => join(ROOT, dir)),
+	...["core/src", "client/src", "adapters/mcp/src", "adapters/lsp/src", "protocol/src", "scripts"].map((dir) =>
+		join(ROOT, dir),
+	),
 	...providerSourceDirs(),
 ];
 
 const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "tmp"]);
 
 const MODULES = new Set(["node:child_process", "child_process"]);
-const MEMBERS = new Set(["spawn", "execFile"]);
+const MEMBERS = new Set(["spawn", "execFile", "spawnSync", "execFileSync"]);
 
-/** Every other reach of `spawn` or `execFile`, and why it is not routed through the owner. */
+/** Every remaining child-process reach, and why it is not routed through the owner. */
 const ALLOWED = new Map<string, string>([
 	["core/src/supervisor.ts", "spawns long-lived providers; a different lifecycle than a bounded run"],
 	["client/src/discover.ts", "spawns the daemon, detached and unref'd to outlive the caller; a different lifecycle"],
@@ -60,6 +62,11 @@ const ALLOWED = new Map<string, string>([
 		"client/src/__tests__/identity.test.ts",
 		"spawns a child whose mark is read after it exits, not a bounded command",
 	],
+	["scripts/child.ts", "shared synchronous runner for bench, corpora, snapshot, and dist workflows"],
+	["scripts/bench.ts", "runs a multi-minute cold index sample whose duration is the benchmark result"],
+	["scripts/check.ts", "synchronously orchestrates the full gate and restores dist after its child completes"],
+	["scripts/lint.ts", "synchronously runs both lint halves and reports both results"],
+	["scripts/__tests__/snapshot.test.ts", "test-only snapshot CLI fixture"],
 ]);
 
 ////////////////////////////////
@@ -76,7 +83,7 @@ describe("one owner spawns and reaps a bounded child", () => {
 		expect(reachedCalls(parsed.source, MODULES, MEMBERS).length).toBeGreaterThan(0);
 	});
 
-	it("reaches spawn or execFile nowhere but the owner and the allowlisted exceptions", () => {
+	it("routes bounded child calls through the owner", () => {
 		const offenders: string[] = [];
 		for (const dir of SWEPT) {
 			for (const file of sourceFiles(dir, SKIP_DIRS)) {
@@ -93,7 +100,7 @@ describe("one owner spawns and reaps a bounded child", () => {
 
 		expect(
 			offenders,
-			"route a bounded, one-shot child through protocol/src/boundedChild.ts's runBounded, or add a named, reasoned exception to this test's ALLOWED map for a genuinely different lifecycle",
+			"route a bounded, one-shot child through protocol/src/boundedChild.ts's runBounded, or add a named, reasoned exception to this test's ALLOWED map",
 		).toEqual([]);
 	});
 });
