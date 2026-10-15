@@ -93,10 +93,10 @@ change broke is reported rather than assumed away. `refactor_replace` given the 
 `symbol_source` refuses a span that changed since it was read. A file that is not valid UTF-8 is
 refused rather than rewritten.
 
-**Knowledge.** One markdown note per symbol; its opening paragraph is the summary. `read_note` shows
-it with advisories for source changes and broken or changed refs. `write_note` replaces it against
-the revision it read; a broken `project-ref://` link is refused with candidates. `note_backlinks`
-lists notes whose refs name a symbol or file. The author comes from the MCP client handshake, never from the
+**Knowledge.** One markdown note per symbol; its opening paragraph is the summary. `describe_symbol`
+and `symbol_source` show it whole, with advisories for source changes and broken or changed refs.
+`write_note` replaces it against the revision it read; a broken `project-ref://` link is refused
+with candidates. `note_backlinks` lists notes whose refs name a symbol or file. The author comes from the MCP client handshake, never from the
 caller. See [docs/knowledge-layer.md](docs/knowledge-layer.md).
 
 **Housekeeping.** `list_project_stores`, `stop_project_daemon` and `delete_project_store` manage the

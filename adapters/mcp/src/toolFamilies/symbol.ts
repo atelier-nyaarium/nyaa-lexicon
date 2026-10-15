@@ -15,7 +15,7 @@ import {
 	selectionWithin,
 } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
-import { renderDescribe, renderNoteLine, renderReferences, renderSymbolSource, renderType } from "../render.js";
+import { renderDescribe, renderNoteSection, renderReferences, renderSymbolSource, renderType } from "../render.js";
 import type { SymbolArgs, ToolBackend, ToolResult } from "../result.js";
 import { textResult as text } from "../result.js";
 import { diagnosed, moduleOf, resolveOne, WITHIN_NOTE, withIndexState } from "./shared.js";
@@ -66,10 +66,10 @@ export const SymbolSourceInput = {
 export const DESCRIBE_DESCRIPTION = `
 # \`describe_symbol\`
 
-Show a symbol's declaration, members, type hierarchy, dependencies, usage, comments and note summary.
+Show a symbol's declaration, members, type hierarchy, dependencies, usage, comments and note.
 
 Documentation is the comment above it. Comments are what else was written beside the code or inside
-its body. \`read_note\` shows the whole note.
+its body. The note shows the revision \`write_note\` takes.
 
 Use \`symbolId\` when known. Otherwise use \`name\`, adding \`module\` when needed.
 `.trim();
@@ -107,6 +107,8 @@ Read one symbol's exact source text by id, without reading the file around it.
 
 Answers with the text and the range it occupies, so a rewrite goes back where it came from. Refuses
 a stale index rather than slicing a range that has moved.
+
+By \`symbolId\`, also shows the symbol's note with the revision \`write_note\` takes.
 `.trim();
 
 export const TYPE_OF_DESCRIPTION = `
@@ -134,7 +136,7 @@ export async function describeSymbol(backend: ToolBackend, args: SymbolArgs): Pr
 		);
 
 	const note = await backend.readNote(resolved.symbolId);
-	return text(`${renderDescribe(described)}\n\n${renderNoteLine(note)}`);
+	return text(`${renderDescribe(described)}\n\n${renderNoteSection(note)}`);
 }
 
 export async function findReferences(
@@ -167,7 +169,11 @@ export async function symbolSource(
 	}
 	const source = await backend.symbolSource(args);
 	const concerning = args.symbolId === undefined ? undefined : moduleOf(args.symbolId);
-	return text(await withIndexState(backend, renderSymbolSource(source), concerning), !source.found);
+	let body = renderSymbolSource(source);
+	if (source.found && args.symbolId !== undefined) {
+		body = `${body}\n\n${renderNoteSection(await backend.readNote(args.symbolId))}`;
+	}
+	return text(await withIndexState(backend, body, concerning), !source.found);
 }
 
 export async function resolveImport(

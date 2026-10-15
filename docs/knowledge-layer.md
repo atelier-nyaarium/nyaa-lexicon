@@ -33,7 +33,8 @@ The author comes from the harness, never the writer. A client names a person or 
 launched; the MCP adapter names the client from its handshake. Every write replaces the current
 revision when `expectedRevision` matches.
 
-The MCP tools are `read_note`, `write_note` and `note_backlinks`. Notes are written on
+The MCP tools are `write_note` and `note_backlinks`; `describe_symbol` and `symbol_source` show a
+symbol's whole note. Notes are written on
 demand, never as a coverage sweep. A parameter or a local takes no note; its owner does.
 
 ## Refusals name the mistake

@@ -4,7 +4,7 @@
 
 export { renderComments, renderDocs, renderLiterals } from "./render/docs.js";
 export { renderCoChange, renderFileHistory, renderMentions } from "./render/history.js";
-export { renderNote, renderNoteBacklinks, renderNoteLine, renderNoteOutcome } from "./render/knowledge.js";
+export { renderNoteBacklinks, renderNoteOutcome, renderNoteSection } from "./render/knowledge.js";
 export {
 	renderInsertOutcome,
 	renderMoveOutcome,

@@ -24,7 +24,6 @@ const QUERY_TOOLS = [
 	"note_backlinks",
 	"outline_module",
 	"overview",
-	"read_note",
 	"refactor_preview",
 	"refactor_status",
 	"resolve_import",

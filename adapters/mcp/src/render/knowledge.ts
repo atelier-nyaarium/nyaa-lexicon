@@ -36,37 +36,13 @@ function noteAdvisories(note: Note): string[] {
 	return found;
 }
 
-/** A whole note, or where none stands. */
-export function renderNote(symbolId: string, note: Note | null): string {
-	if (note === null) return `# Note on ${code(symbolId)}\n\nNo note stands. \`write_note\` writes one.`;
+/** A symbol's whole note and advisories, as a section of a direct read. */
+export function renderNoteSection(note: Note | null): string {
+	if (note === null) return `## Note\n\nNo note stands. \`write_note\` writes one.`;
 
-	const lines = [
-		`
-# Note on ${code(symbolId)}
-
-${provenance(note)}
-
-${note.text}
-		`.trim(),
-	];
+	const lines = [`## Note`, "", provenance(note), "", note.text];
 	const advisories = noteAdvisories(note);
-	if (advisories.length > 0)
-		lines.push(`
-## Advisories
-
-${advisories.join("\n")}`);
-	return lines.join("\n");
-}
-
-/** The note's summary and advisories, for a describe. */
-export function renderNoteLine(note: Note | null): string {
-	if (note === null) return `## Note\n\nNo note stands.`;
-
-	const more = note.summary === null || note.text.slice(note.restAt).trim() !== "";
-	const lead = `${note.summary ?? "No summary."}${more ? " `read_note` shows the rest." : ""}`;
-	const lines = [`## Note`, "", lead, "", provenance(note)];
-	const advisories = noteAdvisories(note);
-	if (advisories.length > 0) lines.push("", ...advisories);
+	if (advisories.length > 0) lines.push("", "### Advisories", "", ...advisories);
 	return lines.join("\n");
 }
 

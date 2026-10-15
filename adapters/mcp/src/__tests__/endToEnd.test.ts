@@ -25,7 +25,6 @@ import {
 	describeSymbol,
 	findReferences,
 	noteBacklinks,
-	readNote,
 	refactorPreview,
 	resolveImport,
 	resolveRef,
@@ -231,7 +230,6 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 
 			const results = [
 				await describeSymbol(backend, { symbolId }),
-				await readNote(backend, { symbolId }),
 				await writeNote(backend, { symbolId, ...NOTHING }),
 				await noteBacklinks(backend, { symbolId }),
 				await findReferences(backend, { symbolId }),
@@ -284,6 +282,9 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		const text = `Adds one item to a [Cart](${ref("cart.ref", "Cart")}) and updates the total.`;
 		const replaced = await backend.writeNote({ ...note, text, expectedRevision: 1 });
 		expect(replaced.outcome === "saved" && replaced.note).toMatchObject({ revision: 2, text });
+		const shown = (await symbolSource(backend, { symbolId })).content[0]?.text;
+		expect(shown).toContain("updates the total");
+		expect(shown).toContain("Revision 2");
 		expect((await backend.noteBacklinks(cartId)).notes.map((entry) => entry.symbolId)).toEqual([symbolId]);
 	}, 30_000);
 

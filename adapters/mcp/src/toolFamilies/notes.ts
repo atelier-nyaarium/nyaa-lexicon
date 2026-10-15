@@ -1,6 +1,6 @@
 import { defined, NOTE_STYLE, type NoteAuthor } from "@nyaa-lexicon/protocol";
 import { z } from "zod";
-import { renderNote, renderNoteBacklinks, renderNoteOutcome } from "../render.js";
+import { renderNoteBacklinks, renderNoteOutcome } from "../render.js";
 import type { SymbolArgs, ToolBackend, ToolResult } from "../result.js";
 import { textResult as text } from "../result.js";
 import { moduleOf, resolveOne, withIndexState } from "./shared.js";
@@ -14,17 +14,11 @@ const NOTE_SUBJECT = {
 	module: z.string().min(1).optional().describe(`Workspace-relative module path.`),
 };
 
-export const ReadNoteInput = NOTE_SUBJECT;
-
 // Core caps the length.
 export const WriteNoteInput = {
 	...NOTE_SUBJECT,
 	text: z.string().describe(`Markdown for the note. Empty removes it.`),
-	expectedRevision: z
-		.number()
-		.int()
-		.nonnegative()
-		.describe(`The revision \`read_note\` showed. \`0\` when none stands.`),
+	expectedRevision: z.number().int().nonnegative().describe(`The note's revision as read. \`0\` when none stands.`),
 };
 
 export const NoteBacklinksInput = {
@@ -41,19 +35,11 @@ export const NoteBacklinksInput = {
 ////////////////////////////////
 //  Constants
 
-export const READ_NOTE_DESCRIPTION = `
-# Read Note
-
-Show a symbol's note: its text, revision and advisories.
-
-Refs read at their targets' current addresses. Advisories report source changes and broken or changed refs.
-`.trim();
-
 export const WRITE_NOTE_DESCRIPTION = `
 # Write Note
 
-Write or replace a symbol's note. Read it first; pass its revision as \`expectedRevision\`, \`0\`
-when none stands.
+Write or replace a symbol's note. Read it first with \`describe_symbol\` or \`symbol_source\`; pass
+its note's revision as \`expectedRevision\`, \`0\` when none stands.
 
 ${NOTE_STYLE}
 
@@ -68,15 +54,6 @@ List notes whose refs name a symbol, or a file given as \`module\` alone.
 
 ////////////////////////////////
 //  Handlers
-
-export async function readNote(backend: ToolBackend, args: SymbolArgs): Promise<ToolResult> {
-	const resolved = await resolveOne(backend, args);
-	if ("problem" in resolved) return text(await withIndexState(backend, resolved.problem, args.module), true);
-
-	const note = await backend.readNote(resolved.symbolId);
-	const body = renderNote(resolved.symbolId, note);
-	return text(note === null ? await withIndexState(backend, body, moduleOf(resolved.symbolId)) : body);
-}
 
 export async function writeNote(
 	backend: ToolBackend,

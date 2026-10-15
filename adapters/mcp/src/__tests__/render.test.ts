@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { renderDescribe, renderDocs, renderNote, renderNoteLine, renderOutline, renderOverview } from "../render";
+import { renderDescribe, renderDocs, renderNoteSection, renderOutline, renderOverview } from "../render";
 
 ////////////////////////////////
 //  Helpers
@@ -39,19 +39,14 @@ describe("reading a note back", () => {
 		links: [],
 	};
 
-	it("shows the whole text on a read, and the summary with a pointer to the rest on a describe", () => {
-		expect(renderNote(SYMBOL, note)).toContain(note.text);
-		const line = renderNoteLine(note);
-		expect(line).toContain("Adds one item. `read_note` shows the rest.");
-		expect(line).not.toContain("Totals");
-		expect(renderNoteLine({ ...note, text: "Adds one item." })).not.toContain("read_note");
-		expect(renderNoteLine({ ...note, summary: null, restAt: 0 })).toContain(
-			"No summary. `read_note` shows the rest.",
-		);
+	it("shows the whole text with the revision a write takes", () => {
+		const section = renderNoteSection(note);
+		expect(section).toContain(note.text);
+		expect(section).toContain("Revision 2");
 	});
 
 	it("lists what moved as advisories, and none when nothing did", () => {
-		const moved = renderNote(SYMBOL, {
+		const moved = renderNoteSection({
 			...note,
 			sourceChanged: true,
 			links: [
@@ -62,9 +57,9 @@ describe("reading a note back", () => {
 				},
 			],
 		});
-		expect(moved).toContain("## Advisories");
+		expect(moved).toContain("### Advisories");
 		expect(moved).toContain("project-ref://test-project/src/b.ts:Gone");
-		expect(renderNote(SYMBOL, note)).not.toContain("## Advisories");
+		expect(renderNoteSection(note)).not.toContain("Advisories");
 	});
 });
 

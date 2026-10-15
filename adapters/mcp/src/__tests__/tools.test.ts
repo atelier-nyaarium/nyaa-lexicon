@@ -6,7 +6,6 @@ import {
 	findReferences,
 	noteBacklinks,
 	outlineModule,
-	readNote,
 	refactorMove,
 	refactorPreview,
 	refactorRename,
@@ -221,7 +220,6 @@ describe("resolving what the caller gave", () => {
 			await describeSymbol(dead, { symbolId: "x" }),
 			await findReferences(dead, { symbolId: "x" }),
 			await typeOfSymbol(dead, { symbolId: "x" }),
-			await readNote(dead, { symbolId: "x" }),
 			await writeNote(dead, { symbolId: "x", ...NOTHING }),
 			await noteBacklinks(dead, { symbolId: "x" }),
 			await refactorPreview(dead, { symbolId: "x", newName: "y" }),
@@ -347,11 +345,6 @@ describe("the note tools", () => {
 		links: [],
 	};
 
-	it("reads a missing note as a finding, not a failure", async () => {
-		const result = await readNote(backend(), { symbolId: CART });
-		expect(result.isError).toBeUndefined();
-	});
-
 	it("resolves a name, then sends the text and the harness's author untouched", async () => {
 		const sent: unknown[] = [];
 		const author = { kind: "client" as const, name: "claude-code", version: null };
@@ -396,11 +389,32 @@ describe("the note tools", () => {
 		expect(asked).toEqual(["src/a.ts", CART]);
 	});
 
-	it("carries the note's summary on a describe", async () => {
-		const result = await describeSymbol(backend({ describe: async () => described, readNote: async () => saved }), {
-			symbolId: CART,
+	it("carries the whole note on a describe and a source read by id, and none on a literal's", async () => {
+		const found = {
+			found: true as const,
+			name: "Cart",
+			kind: "class",
+			module: "src/a.ts",
+			range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+			text: "code",
+			contentHash: "file",
+		};
+		const reading = backend({
+			describe: async () => described,
+			readNote: async () => saved,
+			symbolSource: async () => found,
 		});
-		expect(result.content[0]?.text).toContain("Holds items. `read_note` shows the rest.");
+		const results = [
+			await describeSymbol(reading, { symbolId: CART }),
+			await symbolSource(reading, { symbolId: CART }),
+			await symbolSource(reading, { factId: "f" }),
+		];
+
+		expect(results.map((result) => JSON.stringify(result).includes("One per shopper."))).toEqual([
+			true,
+			true,
+			false,
+		]);
 	});
 });
 

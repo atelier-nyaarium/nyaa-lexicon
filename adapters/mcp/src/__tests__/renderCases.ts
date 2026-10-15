@@ -267,12 +267,7 @@ export const CASES: Record<string, unknown[][]> = {
 			},
 		],
 	],
-	renderNote: [
-		[SYMBOL.symbolId, null],
-		[SYMBOL.symbolId, NOTE],
-		[SYMBOL.symbolId, MOVED_NOTE],
-	],
-	renderNoteLine: [[null], [NOTE], [MOVED_NOTE]],
+	renderNoteSection: [[null], [NOTE], [MOVED_NOTE]],
 	renderNoteOutcome: [
 		[SYMBOL.symbolId, { outcome: "saved", note: NOTE }],
 		[SYMBOL.symbolId, { outcome: "saved", note: null }],
