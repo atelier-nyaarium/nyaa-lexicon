@@ -49,20 +49,15 @@ afterEach(() => {
 //  Tests
 
 describe("one clock through the daemon's composition", () => {
-	it("stamps the note, its subject, its doubt and its confirmation from the one clock", () => {
+	it("stamps a note and its subject from the one clock", () => {
 		const written = clock.now();
 		service.writeNote({ symbolId: CART, text: "Holds items.", expectedRevision: 0 });
 		expect(service.readNote(CART)?.authoredAt).toBe(written);
 		expect(store.subjects.forAddress(CART)?.boundAt).toBe(written);
 
 		clock.advance(60_000);
-		const doubted = clock.now();
-		service.doubtNote(CART, "checkout was rewritten", 1);
-		expect(service.readNote(CART)?.doubt?.at).toBe(doubted);
-
-		clock.advance(60_000);
-		const confirmed = clock.now();
-		service.confirmNote(CART, 1);
-		expect(service.readNote(CART)).toMatchObject({ confirmedAt: confirmed, doubt: null });
+		const edited = clock.now();
+		service.writeNote({ symbolId: CART, text: "Adds one item.", expectedRevision: 1 });
+		expect(service.readNote(CART)).toMatchObject({ authoredAt: written, editedAt: edited, text: "Adds one item." });
 	});
 });

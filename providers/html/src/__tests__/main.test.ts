@@ -19,7 +19,23 @@ describe("HTML provider", () => {
 		expect(full.docs.map((doc) => doc.plain)).toEqual(["words"]);
 		expect(full.literals.map((l) => l.value)).toEqual(["p1"]);
 		const outline = provider.parseFile({ module: "a.html", contentHash: "h", text, depth: "outline" });
-		expect(outline).toMatchObject({ depth: "outline", docs: [], literals: [] });
+		expect(outline).toMatchObject({ depth: "outline", docs: [], literals: [], comments: [] });
 		expect(outline.declarations).toHaveLength(3);
+	});
+
+	it("keeps the rename refusal detail", () => {
+		const response = new HtmlProvider().renameEdits({
+			module: "a.html",
+			text: "",
+			oldName: "a",
+			newName: "b",
+			sites: [],
+		});
+
+		expect(response).toMatchObject({
+			status: "refused",
+			reason: "NotImplemented",
+			detail: "HTML rename edits are not implemented",
+		});
 	});
 });

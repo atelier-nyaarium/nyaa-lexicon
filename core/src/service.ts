@@ -14,6 +14,7 @@ import {
 	type ImportResolution,
 	type ModuleFactsResult,
 	type MostReferencedResult,
+	notImplementedImportEdits,
 	type OverviewResult,
 	type ParseFactsResult,
 	parseSymbolId,
@@ -498,11 +499,7 @@ export class LexiconService {
 	async previewImport(request: ImportEditsRequest): Promise<ImportEditsResponse> {
 		const owner = this.probe.owner(request.module);
 		if (!owner.owned) {
-			return {
-				status: "refused",
-				reason: "NotImplemented",
-				detail: `no provider owns the module: ${owner.reason}`,
-			};
+			return notImplementedImportEdits(`no provider owns the module: ${owner.reason}`);
 		}
 		return await this.probe.importEdits(request.module, request);
 	}
@@ -669,18 +666,6 @@ export class LexiconService {
 
 	writeNote(...args: Parameters<NoteLedger["write"]>): ReturnType<NoteLedger["write"]> {
 		return this.notes.write(...args);
-	}
-
-	confirmNote(...args: Parameters<NoteLedger["confirm"]>): ReturnType<NoteLedger["confirm"]> {
-		return this.notes.confirm(...args);
-	}
-
-	doubtNote(...args: Parameters<NoteLedger["doubt"]>): ReturnType<NoteLedger["doubt"]> {
-		return this.notes.doubt(...args);
-	}
-
-	resolveNoteProposal(...args: Parameters<NoteLedger["resolveProposal"]>): ReturnType<NoteLedger["resolveProposal"]> {
-		return this.notes.resolveProposal(...args);
 	}
 
 	noteBacklinks(...args: Parameters<NoteLedger["backlinks"]>): ReturnType<NoteLedger["backlinks"]> {

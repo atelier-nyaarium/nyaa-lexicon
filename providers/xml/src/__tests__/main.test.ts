@@ -19,6 +19,35 @@ describe("XML provider", () => {
 		]);
 	});
 
+	it("projects optional detail away at outline depth", () => {
+		const facts = new XmlProvider().parseFile({
+			module: "a.xml",
+			contentHash: "h",
+			text: "<!-- note -->\n<root/>\n",
+			depth: "outline",
+		});
+
+		expect(facts).toMatchObject({ depth: "outline", literals: [], comments: [] });
+		expect(Object.hasOwn(facts, "blankLines")).toBe(false);
+		expect(Object.hasOwn(facts, "docs")).toBe(false);
+	});
+
+	it("keeps the rename refusal detail", () => {
+		const response = new XmlProvider().renameEdits({
+			module: "a.xml",
+			text: "",
+			oldName: "a",
+			newName: "b",
+			sites: [],
+		});
+
+		expect(response).toMatchObject({
+			status: "refused",
+			reason: "NotImplemented",
+			detail: "XML rename edits are not implemented",
+		});
+	});
+
 	it("keeps an attribute and child with the same name separate", () => {
 		const facts = new XmlProvider().parseFile({ module: "a.xml", contentHash: "h", text: `<a b="1"><b/></a>` });
 		const settled = withOccurrences(facts);

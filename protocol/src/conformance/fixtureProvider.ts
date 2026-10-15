@@ -13,7 +13,7 @@ import type {
 	MoveEditsResponse,
 } from "../move.js";
 import type { BlockedSite, RenameEditsRequest, RenameEditsResponse } from "../rename.js";
-import { notImplementedMove, type ProviderHandlers, runProviderOnStdio } from "../serve.js";
+import { notImplementedMove, notImplementedRenameEdits, type ProviderHandlers, runProviderOnStdio } from "../serve.js";
 import { PROTOCOL_VERSION } from "../version.js";
 import {
 	extractDeclarations,
@@ -38,7 +38,7 @@ export function makeFixtureRenameEdits(request: RenameEditsRequest): RenameEdits
 	}
 	// The grammar owns no parameters, so absent means unowned; a call handed over is one it cannot rewrite.
 	if (request.ownerCalls !== undefined && request.ownerCalls.length > 0) {
-		return { status: "refused", reason: "NotImplemented", detail: "the fixture provider rewrites no owner call" };
+		return notImplementedRenameEdits("the fixture provider rewrites no owner call");
 	}
 	const coordinates = coordinatesOf(request.text);
 	const edits: TextEdit[] = [];

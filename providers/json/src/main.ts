@@ -18,6 +18,7 @@ import {
 	notImplementedImport,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	notImplementedType,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -25,6 +26,7 @@ import {
 	type RenameEditsResponse,
 	runProviderOnStdio,
 	serveProvider,
+	shallowFacts,
 	type TextCoordinates,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
@@ -137,19 +139,20 @@ export class JsonProvider {
 					strict,
 				});
 
-		const shallow = params.depth === "outline" || params.depth === "surface";
-		return {
-			module: params.module,
-			contentHash: params.contentHash,
-			declarations: facts.declarations,
-			references: [],
-			imports: [],
-			literals: shallow ? [] : facts.literals,
-			comments: shallow ? [] : facts.comments,
-			...defined({ blankLines: shallow ? undefined : facts.blankLines }),
-			diagnostics: facts.diagnostics,
-			...(shallow ? { depth: params.depth as IndexDepth } : {}),
-		};
+		return shallowFacts(
+			{
+				module: params.module,
+				contentHash: params.contentHash,
+				declarations: facts.declarations,
+				references: [],
+				imports: [],
+				literals: facts.literals,
+				comments: facts.comments,
+				...defined({ blankLines: facts.blankLines }),
+				diagnostics: facts.diagnostics,
+			},
+			params.depth,
+		);
 	}
 
 	resolveImport(_params: { fromModule: string; specifier: string }): ImportResolution {
@@ -165,7 +168,7 @@ export class JsonProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "JSON rename edits are not implemented" };
+		return notImplementedRenameEdits("JSON rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

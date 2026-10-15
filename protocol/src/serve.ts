@@ -25,6 +25,7 @@ import {
 import type { MoveEditsResponse } from "./move.js";
 import { withOccurrences } from "./occurrences.js";
 import type { FileFacts, ImportResolution } from "./project.js";
+import type { RenameEditsResponse } from "./rename.js";
 import type { Binding, TypeInfo } from "./values.js";
 
 ////////////////////////////////
@@ -208,5 +209,11 @@ export function notImplementedMove(detail: string): MoveEditsResponse {
 }
 
 export function notImplementedImportEdits(detail: string): ImportEditsResponse {
+	return { status: "refused", reason: "NotImplemented", detail };
+}
+
+export function notImplementedRenameEdits(
+	detail: string,
+): Extract<RenameEditsResponse, { status: "refused" }> & { reason: "NotImplemented"; detail: string } {
 	return { status: "refused", reason: "NotImplemented", detail };
 }

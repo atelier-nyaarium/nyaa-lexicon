@@ -4,6 +4,7 @@
 import {
 	type BlockedSite,
 	type coordinatesOf,
+	notImplementedRenameEdits,
 	planEdits,
 	type RenameEditsRequest,
 	type RenameEditsResponse,
@@ -449,11 +450,7 @@ export function renameEdits(request: RenameEditsRequest): RenameEditsResponse {
 
 	const parameterTarget = ownerCalls !== undefined || matched.some(({ candidates }) => onlyParameter(candidates));
 	if (parameterTarget && ownerCalls === undefined) {
-		return {
-			status: "refused",
-			reason: "NotImplemented",
-			detail: "parameter renames cannot account for keyword callers outside this request",
-		};
+		return notImplementedRenameEdits("parameter renames cannot account for keyword callers outside this request");
 	}
 	const parameterRanges = new Set(
 		matched

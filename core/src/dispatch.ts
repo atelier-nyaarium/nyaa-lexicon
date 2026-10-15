@@ -361,19 +361,6 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		scopeSymbols: read((params) => service.scopeSymbols(params)),
 		readNote: read((params) => service.readNote(params.symbolId)),
 		writeNote: write((params) => service.writeNote(params)),
-		confirmNote: write((params) => service.confirmNote(params.symbolId, params.expectedRevision, params.author)),
-		doubtNote: write((params) =>
-			service.doubtNote(params.symbolId, params.reason, params.expectedRevision, params.author),
-		),
-		resolveNoteProposal: write((params) =>
-			service.resolveNoteProposal(
-				params.symbolId,
-				params.accept,
-				params.expectedRevision,
-				params.expectedProposal,
-				params.author,
-			),
-		),
 		noteBacklinks: read((params) => service.noteBacklinks(params.symbolId, params.limit)),
 		relationsOf: historyFirst(({ symbolId, ...options }, history) =>
 			service.relations.relationsOf(symbolId, history, options),

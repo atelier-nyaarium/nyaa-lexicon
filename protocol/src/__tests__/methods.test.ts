@@ -85,6 +85,14 @@ describe("method table", () => {
 		expect(isProviderMethod("")).toBe(false);
 	});
 
+	it("retires note confirmation, doubt and proposal methods", () => {
+		const methods = Object.keys(DAEMON_METHODS);
+		expect(methods).not.toContain("confirmNote");
+		expect(methods).not.toContain("doubtNote");
+		expect(methods).not.toContain("resolveNoteProposal");
+		expect(methods).toContain("writeNote");
+	});
+
 	it("carries an additive surface depth through parse and resolution", () => {
 		expect(
 			METHOD_SCHEMAS.parseFile.request.parse({

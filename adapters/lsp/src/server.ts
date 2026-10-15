@@ -206,10 +206,10 @@ export class LspServer {
 		// itself is worse than a shorter one.
 		if (type.status === "inferred") lines.push(`*inferred* \`${type.display}\` from ${type.basis}`);
 
-		// A note's summary, marked when it may no longer hold.
+		// A note's summary, marked when its source changed.
 		const note = await this.service.readNote(found.symbolId);
 		if (note?.summary) {
-			const mark = note.doubt !== null ? " *(doubted)*" : note.sourceChanged ? " *(source changed)*" : "";
+			const mark = note.sourceChanged ? " *(source changed)*" : "";
 			lines.push(`${note.summary}${mark}`);
 		}
 

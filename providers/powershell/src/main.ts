@@ -16,6 +16,7 @@ import {
 	moduleStore,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -284,11 +285,11 @@ export class PowerShellProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "PowerShell rename edits are not implemented" };
+		return notImplementedRenameEdits("PowerShell rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "PowerShell move edits are not implemented" };
+		return notImplementedMove("PowerShell move edits are not implemented");
 	}
 
 	importEdits(_params: ImportEditsRequest): ImportEditsResponse {

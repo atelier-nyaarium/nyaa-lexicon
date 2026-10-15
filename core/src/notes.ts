@@ -12,15 +12,14 @@ import {
 	type NoteBacklinks,
 	type NoteLink,
 	type NoteOutcome,
-	type NoteProposal,
 	parseRef,
 	type RefCandidate,
 	type SearchRefs,
 	walkChain,
 } from "@nyaa-lexicon/protocol";
-import { authorOf, authorText, isPerson } from "./authors.js";
+import { authorOf, authorText } from "./authors.js";
 import { type Clock, systemClock } from "./clock.js";
-import { MODULE_TARGET, type NoteLinkRow, type NoteProposalRow, type NoteRow } from "./noteRows.js";
+import { MODULE_TARGET, type NoteLinkRow, type NoteRow } from "./noteRows.js";
 import { noteOpening, type OpeningBlock } from "./noteText.js";
 import { ReadContext } from "./readContext.js";
 import type { NoteRefProblem } from "./refusalSlots.js";
@@ -88,11 +87,6 @@ function refused(
 	return { outcome: "refused", reason, ...extra };
 }
 
-/** A person wrote or vouched for the standing revision. */
-function heldByPerson(row: NoteRow): boolean {
-	return isPerson(authorOf(row.editedBy)) || isPerson(authorOf(row.confirmedBy));
-}
-
 /** Each ref at its target's current address, rewritten from the end so indices hold. */
 function rewriteRefs(text: string, current: ReadonlyMap<string, string>, project: string): string {
 	const replacements: Array<{ from: number; to: number; value: string }> = [];
@@ -132,7 +126,7 @@ export class NoteLedger {
 		return row === null ? null : this.render(row);
 	}
 
-	/** An agent's write over a note a person holds becomes a proposal; empty text removes the note. */
+	/** Empty text removes the note. */
 	write(request: NoteWrite): LedgerNoteOutcome {
 		const text = this.checkedText(request.text);
 		if (!text.ok) return text.outcome;
@@ -158,20 +152,6 @@ export class NoteLedger {
 		const writer = request.author ?? null;
 		const now = this.clock.now();
 		return this.store.noteWrite(() => {
-			if (row !== null && heldByPerson(row) && !isPerson(writer)) {
-				// Rises per proposal, so `at` names the one a person was shown.
-				const replaced = this.store.notes.proposal(row.subjectId)?.proposedAt ?? -1;
-				const proposedAt = Math.max(now, replaced + 1);
-				this.store.notes.propose(
-					row.subjectId,
-					{ text: text.value, baseRevision: row.revision, proposedBy: authorText(writer), proposedAt },
-					this.claimLinks(refs.value, now),
-				);
-				return {
-					outcome: "proposed",
-					note: this.render(this.store.notes.byAddress(request.symbolId) as NoteRow),
-				};
-			}
 			if (text.value === "") {
 				if (row !== null) this.store.notes.remove(row.subjectId);
 				return { outcome: "saved", note: null };
@@ -190,124 +170,11 @@ export class NoteLedger {
 					authoredAt: row === null ? now : row.authoredAt,
 					editedBy: authorText(writer),
 					editedAt: now,
-					confirmedBy: null,
-					confirmedAt: null,
 					sourceDigest: subject.lastDigest,
-					doubtBy: null,
-					doubtReason: null,
-					doubtAt: null,
 				},
 				this.claimLinks(refs.value, now),
 			);
-			// A person's own revision supersedes what an agent proposed against the last one.
-			if (isPerson(writer)) this.store.notes.dropProposal(subject.subjectId);
 			return { outcome: "saved", note: this.render(this.store.notes.byAddress(request.symbolId) as NoteRow) };
-		});
-	}
-
-	/** Vouches for the standing revision as it reads now: source and refs seen, doubt cleared. */
-	confirm(symbolId: string, expectedRevision: number, author?: NoteAuthor): LedgerNoteOutcome {
-		const row = this.store.notes.byAddress(symbolId);
-		if (row === null) return refused(refusal.noNoteStands(symbolId));
-		if (row.revision !== expectedRevision) {
-			return refused(refusal.noteRevisionMoved(expectedRevision, row.revision), { current: this.render(row) });
-		}
-		const now = this.clock.now();
-		return this.store.noteWrite(() => {
-			const links = this.store.notes.links(row.subjectId).map((link) => ({
-				...link,
-				targetDigest: link.target.startsWith(MODULE_TARGET) ? null : this.store.notes.digestOf(link.target),
-			}));
-			this.store.notes.confirm(row.subjectId, authorText(author), now, row.lastDigest, links);
-			return { outcome: "saved", note: this.render(this.store.notes.byAddress(symbolId) as NoteRow) };
-		});
-	}
-
-	/** Someone was misled by this revision. The next save or confirm clears it. */
-	doubt(symbolId: string, reason: string, expectedRevision: number, author?: NoteAuthor): LedgerNoteOutcome {
-		if (reason.trim() === "") return refused(refusal.doubtNeedsReason());
-		const row = this.store.notes.byAddress(symbolId);
-		if (row === null) return refused(refusal.noNoteStands(symbolId));
-		if (row.revision !== expectedRevision) {
-			return refused(refusal.noteRevisionMoved(expectedRevision, row.revision), { current: this.render(row) });
-		}
-		return this.store.noteWrite(() => {
-			this.store.notes.doubt(row.subjectId, authorText(author), reason.trim(), this.clock.now());
-			return { outcome: "saved", note: this.render(this.store.notes.byAddress(symbolId) as NoteRow) };
-		});
-	}
-
-	/** Accepting makes the proposal the next revision, vouched for by whoever accepted it. */
-	resolveProposal(
-		symbolId: string,
-		accept: boolean,
-		expectedRevision: number,
-		expectedProposal: number,
-		author?: NoteAuthor,
-	): LedgerNoteOutcome {
-		const row = this.store.notes.byAddress(symbolId);
-		if (row === null) return refused(refusal.noNoteStands(symbolId));
-		const proposal = this.store.notes.proposal(row.subjectId);
-		if (proposal === null) return refused(refusal.noProposalStands(symbolId));
-		if (row.revision !== expectedRevision || proposal.baseRevision !== row.revision) {
-			return refused(refusal.noteRevisionMoved(expectedRevision, row.revision), { current: this.render(row) });
-		}
-		if (proposal.proposedAt !== expectedProposal) {
-			return refused(refusal.proposalReplaced(symbolId), { current: this.render(row) });
-		}
-		if (!accept) {
-			return this.store.noteWrite(() => {
-				this.store.notes.dropProposal(row.subjectId);
-				return { outcome: "saved", note: this.render(this.store.notes.byAddress(symbolId) as NoteRow) };
-			});
-		}
-
-		// The proposal's refs as its targets stand now, so a rename since resolves to the same symbol.
-		const shown = this.proposalOf(proposal, row.subjectId);
-		const gone = new Set(shown.links.filter((link) => link.state === "broken").map((link) => link.written));
-		if (gone.size > 0) {
-			const refs = findRefs(shown.text)
-				.filter((found) => gone.has(found.ref))
-				.map((found) => ({
-					ref: found.ref,
-					at: found.index,
-					problem: refusal.refTargetGone(),
-					candidates: [],
-				}));
-			return refused(refusal.noteRefsRefused(refs.length), { refs });
-		}
-		// Current addresses can lengthen it, so the text is checked as it will stand.
-		const text = this.checkedText(shown.text);
-		if (!text.ok) return text.outcome;
-		const refs = this.resolveRefs(text.value);
-		if (!refs.ok) return refs.outcome;
-		const now = this.clock.now();
-		return this.store.noteWrite(() => {
-			if (text.value === "") {
-				this.store.notes.remove(row.subjectId);
-				return { outcome: "saved", note: null };
-			}
-			this.store.notes.save(
-				row.subjectId,
-				{
-					text: text.value,
-					recordedAs: row.symbolId,
-					revision: row.revision + 1,
-					author: row.author,
-					authoredAt: row.authoredAt,
-					editedBy: proposal.proposedBy,
-					editedAt: now,
-					confirmedBy: authorText(author),
-					confirmedAt: now,
-					sourceDigest: row.lastDigest,
-					doubtBy: null,
-					doubtReason: null,
-					doubtAt: null,
-				},
-				this.claimLinks(refs.value, now),
-			);
-			this.store.notes.dropProposal(row.subjectId);
-			return { outcome: "saved", note: this.render(this.store.notes.byAddress(symbolId) as NoteRow) };
 		});
 	}
 
@@ -512,7 +379,6 @@ export class NoteLedger {
 
 	private render(row: NoteRow): Note {
 		const shown = this.shown(row.text, this.store.notes.links(row.subjectId));
-		const proposal = this.store.notes.proposal(row.subjectId);
 		return {
 			symbolId: row.symbolId,
 			recordedAs: row.recordedAs,
@@ -523,24 +389,8 @@ export class NoteLedger {
 			authoredAt: row.authoredAt,
 			editedBy: authorOf(row.editedBy),
 			editedAt: row.editedAt,
-			confirmedBy: authorOf(row.confirmedBy),
-			confirmedAt: row.confirmedAt,
-			doubt:
-				row.doubtReason === null || row.doubtAt === null
-					? null
-					: { by: authorOf(row.doubtBy), reason: row.doubtReason, at: row.doubtAt },
 			sourceChanged: row.sourceDigest !== row.lastDigest,
 			links: shown.links,
-			proposal: proposal === null ? null : this.proposalOf(proposal, row.subjectId),
-		};
-	}
-
-	private proposalOf(proposal: NoteProposalRow, subjectId: string): NoteProposal {
-		return {
-			...this.shown(proposal.text, this.store.notes.proposalLinks(subjectId)),
-			baseRevision: proposal.baseRevision,
-			by: authorOf(proposal.proposedBy),
-			at: proposal.proposedAt,
 		};
 	}
 

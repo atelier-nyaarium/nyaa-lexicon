@@ -87,12 +87,8 @@ function noted(summary: string, overrides: Partial<Note> = {}): Note {
 		authoredAt: 1,
 		editedBy: null,
 		editedAt: 1,
-		confirmedBy: null,
-		confirmedAt: null,
-		doubt: null,
 		sourceChanged: false,
 		links: [],
-		proposal: null,
 		...overrides,
 	};
 }
@@ -265,14 +261,14 @@ describe("hover", () => {
 		expect(result?.range).toEqual(found.selectionRange);
 	});
 
-	it("adds inferred type information and marks a doubted note", async () => {
+	it("adds inferred type information and shows the note", async () => {
 		const type: TypeInfo = { status: "inferred", display: "string", basis: "return statements" };
-		const doubted = noted("Remembered doubted prose.", { doubt: { by: null, reason: "meaning changed", at: 2 } });
+		const note = noted("Remembered prose.");
 		const server = new LspServer(
 			reads({
 				declarationsIn: async () => [found],
 				typeOf: async () => type,
-				readNote: async () => doubted,
+				readNote: async () => note,
 				describe: async () => described(0),
 			}),
 			ROOT,
@@ -281,7 +277,7 @@ describe("hover", () => {
 		const result = await server.hover(URI, { line: 3, character: 5 });
 
 		expect(result?.contents.value).toContain("*inferred* `string` from return statements");
-		expect(result?.contents.value).toContain("Remembered doubted prose. *(doubted)*");
+		expect(result?.contents.value).toContain("Remembered prose.");
 		expect(result?.contents.value).not.toContain("*(source changed)*");
 	});
 
@@ -300,7 +296,6 @@ describe("hover", () => {
 
 		expect(result?.contents.value).toContain("Clean remembered prose.");
 		expect(result?.contents.value).not.toContain("*(source changed)*");
-		expect(result?.contents.value).not.toContain("*(doubted)*");
 		expect(result?.contents.value).toContain("Used in 2 places.");
 	});
 });

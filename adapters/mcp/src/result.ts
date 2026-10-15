@@ -27,7 +27,6 @@ import type {
 	MoveAnchor,
 	MoveOutcome,
 	Note,
-	NoteAuthor,
 	NoteBacklinks,
 	NoteOutcome,
 	RefactorCommitResult,
@@ -102,12 +101,6 @@ export interface ToolBackend {
 	commitsMentioning: (name: string, limit?: number) => Promise<CommitsMentioningResult>;
 	readNote: (symbolId: string) => Promise<Note | null>;
 	writeNote: (request: RequestOf<"writeNote">) => Promise<NoteOutcome>;
-	doubtNote: (
-		symbolId: string,
-		reason: string,
-		expectedRevision: number,
-		author?: NoteAuthor,
-	) => Promise<NoteOutcome>;
 	/** A symbol id, or a module path for notes naming that file. */
 	noteBacklinks: (target: string, limit?: number) => Promise<NoteBacklinks>;
 	declarationOf: (symbolId: string) => Promise<StoredDeclaration | null>;

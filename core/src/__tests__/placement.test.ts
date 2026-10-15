@@ -125,7 +125,7 @@ describe("normalizing the salvage", () => {
 		expect(normalized.notes).toMatchObject([{ subjectId: "s2", recordedAs: CART, revision: 1, text: "p" }]);
 	});
 
-	it("reads numbers a text column stored as strings in whole numbers, treats an empty address as none, and keeps a doubt", () => {
+	it("reads numbers stored as strings and ignores removed note fields", () => {
 		const normalized = normalizeSalvaged(
 			{
 				symbol_notes: [
@@ -143,8 +143,18 @@ describe("normalizing the salvage", () => {
 			7,
 		);
 
-		expect(normalized.notes).toMatchObject([
-			{ recordedAs: CART, revision: 2, authoredAt: 1700, doubtReason: "r", doubtAt: 1800 },
+		expect(normalized.notes).toEqual([
+			{
+				subjectId: null,
+				recordedAs: CART,
+				revision: 2,
+				text: "p",
+				author: null,
+				authoredAt: 1700,
+				editedBy: null,
+				editedAt: 0,
+				sourceDigest: null,
+			},
 		]);
 	});
 });

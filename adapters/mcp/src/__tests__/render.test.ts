@@ -35,12 +35,8 @@ describe("reading a note back", () => {
 		authoredAt: 1,
 		editedBy: { kind: "client" as const, name: "claude-code", version: "2.1.0" },
 		editedAt: 2,
-		confirmedBy: null,
-		confirmedAt: null,
-		doubt: null,
 		sourceChanged: false,
 		links: [],
-		proposal: null,
 	};
 
 	it("shows the whole text on a read, and the summary with a pointer to the rest on a describe", () => {

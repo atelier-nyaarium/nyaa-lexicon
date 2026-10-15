@@ -94,9 +94,9 @@ change broke is reported rather than assumed away. `refactor_replace` given the 
 refused rather than rewritten.
 
 **Knowledge.** One markdown note per symbol; its opening paragraph is the summary. `read_note` shows
-it with advisories: source changed, broken or changed refs, doubt, a pending proposal. `write_note` saves it against the revision it read; a broken `project-ref://` link is
-refused with candidates. `doubt_note` flags a misleading revision. `note_backlinks` lists notes
-whose refs name a symbol or file. The author comes from the MCP client handshake, never from the
+it with advisories for source changes and broken or changed refs. `write_note` replaces it against
+the revision it read; a broken `project-ref://` link is refused with candidates. `note_backlinks`
+lists notes whose refs name a symbol or file. The author comes from the MCP client handshake, never from the
 caller. See [docs/knowledge-layer.md](docs/knowledge-layer.md).
 
 **Housekeeping.** `list_project_stores`, `stop_project_daemon` and `delete_project_store` manage the
@@ -113,8 +113,8 @@ root.
 
 Read tools accept a `queries` array. Each item uses that tool's normal fields, and one MCP call can
 run several items. The outer `projects` selector applies to every item. Omit it when one project is
-bound, pass names for a subset, or pass `[]` for every bound project. Every `refactor_` tool, plus
-`write_note` and `doubt_note`, accepts one optional `project` instead and never fans out.
+bound, pass names for a subset, or pass `[]` for every bound project. Refactor tools and `write_note`
+accept one optional `project` instead and never fan out.
 
 Binding names are session-local. Same-named roots use `app-1`, `app-2`, and so on. A plugin reload
 compacts the names, so call `list_projects` again and match the full root.

@@ -20,6 +20,7 @@ import {
 	moduleStore,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -406,11 +407,11 @@ export class CProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "C rename edits are not implemented" };
+		return notImplementedRenameEdits("C rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "C move edits are not implemented" };
+		return notImplementedMove("C move edits are not implemented");
 	}
 
 	importEdits(_params: ImportEditsRequest): ImportEditsResponse {

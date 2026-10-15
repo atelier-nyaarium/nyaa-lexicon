@@ -18,7 +18,7 @@ import type {
 	RenameEditsRequest,
 	RenameEditsResponse,
 } from "@nyaa-lexicon/protocol";
-import { hashContent } from "@nyaa-lexicon/protocol";
+import { hashContent, notImplementedImportEdits } from "@nyaa-lexicon/protocol";
 import { ErrorCodes } from "vscode-jsonrpc/node";
 import type { ProviderPort } from "./providerPort.js";
 
@@ -82,7 +82,7 @@ export function liveProbe(supervisor: ProviderPort): ProviderProbe {
 			} catch (error) {
 				// Only an unknown method means unsupported.
 				if ((error as { code?: number }).code !== ErrorCodes.MethodNotFound) throw error;
-				return { status: "refused", reason: "NotImplemented", detail: "the provider does not plan imports" };
+				return notImplementedImportEdits("the provider does not plan imports");
 			}
 		},
 		probeBatch: (module, request) => supervisor.ask(module, "probeBatch", request),

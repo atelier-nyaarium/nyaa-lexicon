@@ -26,16 +26,14 @@ Saving refuses a broken, ambiguous or foreign-project ref with candidates and it
 Refs are stored by subject, so a read renders each at its target's current address and a rename needs
 no rewrite. `noteBacklinks` reads them back.
 
-Advisories are computed on read: the symbol's source changed since the revision was saved or
-confirmed, a ref's target is gone or changed, a doubt stands, a proposal waits. A doubt belongs to
-one revision; the next save or confirm clears it.
+Advisories are computed on read: the symbol's source changed since the revision was saved, or a
+ref's target is gone or changed.
 
 The author comes from the harness, never the writer. A client names a person or the agent it
-launched; the MCP adapter names the client from its handshake. An agent's write over a note a person
-wrote or confirmed becomes a proposal for that person. A newer proposal replaces it with a later
-`at`; resolving names the revision and the `at` shown, so a replaced proposal refuses.
+launched; the MCP adapter names the client from its handshake. Every write replaces the current
+revision when `expectedRevision` matches.
 
-The MCP tools are `read_note`, `write_note`, `doubt_note` and `note_backlinks`. Notes are written on
+The MCP tools are `read_note`, `write_note` and `note_backlinks`. Notes are written on
 demand, never as a coverage sweep. A parameter or a local takes no note; its owner does.
 
 ## Refusals name the mistake

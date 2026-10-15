@@ -23,7 +23,30 @@ describe("text provider", () => {
 			text: "FROM base\n",
 			depth: "outline",
 		});
+		const explicitFull = provider.parseFile({
+			module: "Dockerfile",
+			contentHash: "h",
+			text: "FROM base\n",
+			depth: "full",
+		});
 		expect(FileFactsSchema.parse(full).docs?.map((region) => region.text)).toEqual(["FROM base", "RUN app"]);
 		expect(outline.docs).toEqual([]);
+		expect(FileFactsSchema.parse(explicitFull).depth).toBe("full");
+	});
+
+	it("keeps the rename refusal detail", () => {
+		const response = new TextProvider().renameEdits({
+			module: "Dockerfile",
+			text: "",
+			oldName: "a",
+			newName: "b",
+			sites: [],
+		});
+
+		expect(response).toMatchObject({
+			status: "refused",
+			reason: "NotImplemented",
+			detail: "plain text has no symbols",
+		});
 	});
 });

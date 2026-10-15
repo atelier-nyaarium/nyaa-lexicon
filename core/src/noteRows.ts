@@ -1,5 +1,4 @@
-// Note rows: the notes table, its links and pending proposals, read and written by subject. Rows
-// only; what a note means and whether a write stands lives in the note ledger.
+// Note rows: the notes table and its links, read and written by subject.
 
 import type { Statements } from "./database.js";
 
@@ -17,12 +16,7 @@ export interface NoteRow {
 	authoredAt: number;
 	editedBy: string | null;
 	editedAt: number;
-	confirmedBy: string | null;
-	confirmedAt: number | null;
 	sourceDigest: string | null;
-	doubtBy: string | null;
-	doubtReason: string | null;
-	doubtAt: number | null;
 	/** The subject's digest now; null before a full parse. */
 	lastDigest: string | null;
 }
@@ -37,13 +31,6 @@ export interface NoteLinkRow {
 	targetDigest: string | null;
 }
 
-export interface NoteProposalRow {
-	text: string;
-	baseRevision: number;
-	proposedBy: string | null;
-	proposedAt: number;
-}
-
 /** A target that names a whole module rather than a subject. */
 export const MODULE_TARGET = "module:";
 
@@ -54,8 +41,8 @@ export const MODULE_TARGET = "module:";
 export function insertNote(db: Statements, subjectId: string, note: NoteColumns, replace: boolean): void {
 	db.prepare(
 		`INSERT ${replace ? "OR REPLACE " : ""}INTO symbol_notes (subjectId, recordedAs, revision, text, author,
-		 authoredAt, editedBy, editedAt, confirmedBy, confirmedAt, sourceDigest, doubtBy, doubtReason, doubtAt)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 authoredAt, editedBy, editedAt, sourceDigest)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
 		subjectId,
 		note.recordedAs,
@@ -65,12 +52,7 @@ export function insertNote(db: Statements, subjectId: string, note: NoteColumns,
 		note.authoredAt,
 		note.editedBy,
 		note.editedAt,
-		note.confirmedBy,
-		note.confirmedAt,
 		note.sourceDigest,
-		note.doubtBy,
-		note.doubtReason,
-		note.doubtAt,
 	);
 }
 
@@ -89,16 +71,7 @@ export class NoteRows {
 	}
 
 	links(subjectId: string): NoteLinkRow[] {
-		return this.linksOf(subjectId, false);
-	}
-
-	proposalLinks(subjectId: string): NoteLinkRow[] {
-		return this.linksOf(subjectId, true);
-	}
-
-	proposal(subjectId: string): NoteProposalRow | null {
-		const row = this.db.prepare("SELECT * FROM symbol_note_proposals WHERE subjectId = ?").get(subjectId);
-		return row === undefined ? null : (row as unknown as NoteProposalRow);
+		return this.linksOf(subjectId);
 	}
 
 	/** The subject's current digest, for a target or the note's own subject. */
@@ -120,58 +93,15 @@ export class NoteRows {
 	/** Replaces the note and its links whole. */
 	save(subjectId: string, note: NoteColumns, links: readonly NoteLinkRow[]): void {
 		insertNote(this.db, subjectId, note, true);
-		this.replaceLinks(subjectId, links, false);
+		this.replaceLinks(subjectId, links);
 		this.recordKnowledgeWrite(true);
 	}
 
-	/** The note, its links and any proposal, gone. */
+	/** The note and its links, gone. */
 	remove(subjectId: string): void {
 		const note = this.db.prepare("DELETE FROM symbol_notes WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ?").run(subjectId);
-		this.db.prepare("DELETE FROM symbol_note_proposals WHERE subjectId = ?").run(subjectId);
 		this.recordKnowledgeWrite(note.changes > 0);
-	}
-
-	/** Confirmation re-reads every digest, so what moved before it no longer shows. */
-	confirm(
-		subjectId: string,
-		by: string | null,
-		at: number,
-		sourceDigest: string | null,
-		links: readonly NoteLinkRow[],
-	): void {
-		this.db
-			.prepare(
-				`UPDATE symbol_notes SET confirmedBy = ?, confirmedAt = ?, sourceDigest = ?,
-				 doubtBy = NULL, doubtReason = NULL, doubtAt = NULL WHERE subjectId = ?`,
-			)
-			.run(by, at, sourceDigest, subjectId);
-		this.replaceLinks(subjectId, links, false);
-		this.recordKnowledgeWrite(true);
-	}
-
-	doubt(subjectId: string, by: string | null, reason: string, at: number): void {
-		this.db
-			.prepare("UPDATE symbol_notes SET doubtBy = ?, doubtReason = ?, doubtAt = ? WHERE subjectId = ?")
-			.run(by, reason, at, subjectId);
-		this.recordKnowledgeWrite(true);
-	}
-
-	propose(subjectId: string, proposal: NoteProposalRow, links: readonly NoteLinkRow[]): void {
-		this.replaceLinks(subjectId, links, true);
-		this.db
-			.prepare(
-				`INSERT OR REPLACE INTO symbol_note_proposals (subjectId, baseRevision, text, proposedBy, proposedAt)
-				 VALUES (?, ?, ?, ?, ?)`,
-			)
-			.run(subjectId, proposal.baseRevision, proposal.text, proposal.proposedBy, proposal.proposedAt);
-		this.recordKnowledgeWrite(true);
-	}
-
-	dropProposal(subjectId: string): void {
-		const dropped = this.db.prepare("DELETE FROM symbol_note_proposals WHERE subjectId = ?").run(subjectId);
-		this.replaceLinks(subjectId, [], true);
-		this.recordKnowledgeWrite(dropped.changes > 0);
 	}
 
 	/** Notes whose refs name `target`, newest edit first. */
@@ -182,30 +112,29 @@ export class NoteRows {
 		const rows = this.db
 			.prepare(
 				`SELECT n.subjectId, n.symbolId, n.text FROM notes_addressed n
-				 WHERE n.subjectId IN (SELECT subjectId FROM symbol_note_links WHERE target = ? AND proposed = 0)
+				 WHERE n.subjectId IN (SELECT subjectId FROM symbol_note_links WHERE target = ?)
 				 ORDER BY n.editedAt DESC`,
 			)
 			.all(target) as Array<{ subjectId: string; symbolId: string; text: string }>;
 		return { notes: rows.slice(0, limit), total: rows.length };
 	}
 
-	private linksOf(subjectId: string, proposed: boolean): NoteLinkRow[] {
+	private linksOf(subjectId: string): NoteLinkRow[] {
 		return this.db
 			.prepare(
 				`SELECT written, target, targetDigest FROM symbol_note_links
-				 WHERE subjectId = ? AND proposed = ? ORDER BY rowid`,
+				 WHERE subjectId = ? ORDER BY rowid`,
 			)
-			.all(subjectId, proposed ? 1 : 0) as unknown as NoteLinkRow[];
+			.all(subjectId) as unknown as NoteLinkRow[];
 	}
 
-	/** Replaces the note's links, or the proposal's. */
-	private replaceLinks(subjectId: string, links: readonly NoteLinkRow[], proposed: boolean): void {
-		const flag = proposed ? 1 : 0;
-		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ? AND proposed = ?").run(subjectId, flag);
+	/** Replaces the note's links. */
+	private replaceLinks(subjectId: string, links: readonly NoteLinkRow[]): void {
+		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ?").run(subjectId);
 		const insert = this.db.prepare(
-			`INSERT OR IGNORE INTO symbol_note_links (subjectId, proposed, written, target, targetDigest)
-			 VALUES (?, ?, ?, ?, ?)`,
+			`INSERT OR IGNORE INTO symbol_note_links (subjectId, written, target, targetDigest)
+			 VALUES (?, ?, ?, ?)`,
 		);
-		for (const link of links) insert.run(subjectId, flag, link.written, link.target, link.targetDigest);
+		for (const link of links) insert.run(subjectId, link.written, link.target, link.targetDigest);
 	}
 }

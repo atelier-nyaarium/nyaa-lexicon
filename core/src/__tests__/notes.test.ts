@@ -69,17 +69,12 @@ function plantBoth(cartDigest = "c1", basketDigest = "b1"): void {
 	plant("b.ref", [{ symbolId: BASKET, name: "Basket", digest: basketDigest }]);
 }
 
-/** The pending proposal's `at`, as a person would be shown it. */
-function shownAt(symbolId = BASKET): number {
-	return service.readNote(symbolId)?.proposal?.at ?? -1;
-}
-
 function note(fields: Partial<NoteWrite> = {}): NoteWrite {
 	return { symbolId: BASKET, text: HOLDS(), expectedRevision: 0, author: PERSON, ...fields };
 }
 
 function saved(outcome: ReturnType<LexiconService["writeNote"]>) {
-	if (outcome.outcome !== "saved") throw new Error(outcome.outcome === "refused" ? outcome.reason : "proposed");
+	if (outcome.outcome === "refused") throw new Error(outcome.reason);
 	return outcome.note;
 }
 
@@ -226,22 +221,30 @@ describe("a note's refs over time", () => {
 		]);
 	});
 
-	it("mark a changed target and changed source until confirmed, and a doubt until then too", () => {
+	it("clears changed-source and broken-link advisories on the next write", () => {
 		saved(service.writeNote(note()));
 		plantBoth("c2", "b2");
-		expect(service.doubtNote(BASKET, "it held one once", 7, AGENT)).toMatchObject({ outcome: "refused" });
-		service.doubtNote(BASKET, "it holds several", 1, AGENT);
-
 		expect(service.readNote(BASKET)).toMatchObject({
 			sourceChanged: true,
 			links: [{ state: "changed" }],
-			doubt: { reason: "it holds several", by: AGENT },
 		});
-		expect(saved(service.confirmNote(BASKET, 1, PERSON))).toMatchObject({
+		expect(
+			saved(service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT }))),
+		).toMatchObject({
+			revision: 2,
+			text: "Holds items.",
 			sourceChanged: false,
-			links: [{ state: "ok" }],
-			doubt: null,
-			confirmedBy: PERSON,
+			links: [],
+		});
+
+		saved(service.writeNote(note({ text: HOLDS(), expectedRevision: 2, author: AGENT })));
+		plant("a.ref", []);
+		expect(service.readNote(BASKET)?.links).toMatchObject([{ state: "broken" }]);
+		expect(
+			saved(service.writeNote(note({ text: "Holds carts.", expectedRevision: 3, author: AGENT }))),
+		).toMatchObject({
+			revision: 4,
+			links: [],
 		});
 	});
 
@@ -264,80 +267,15 @@ describe("a note's refs over time", () => {
 	});
 });
 
-describe("whose words an agent may replace", () => {
-	it("asks for a proposal before resolving one", () => {
+describe("note revisions", () => {
+	it("lets every author replace the standing note with an expected revision", () => {
 		saved(service.writeNote(note()));
-		const outcome = service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON);
-		expect(outcome).toMatchObject({
-			outcome: "refused",
-			reason: expect.stringContaining("Create or refresh the proposal with `write_note`"),
-		});
-	});
-
-	it("turns an agent's write over a person's note into a proposal, which the person's next save drops", () => {
-		saved(service.writeNote(note()));
-		const proposed = service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT }));
-
-		expect(proposed).toMatchObject({
-			outcome: "proposed",
-			note: { revision: 1, text: HOLDS(), proposal: { text: "Holds items.", by: AGENT } },
-		});
-		expect(saved(service.writeNote(note({ text: "Holds carts.", expectedRevision: 1 })))).toMatchObject({
+		const replaced = saved(service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT })));
+		expect(replaced).toMatchObject({
 			revision: 2,
-			proposal: null,
-		});
-	});
-
-	it("keeps a proposal's refs on their targets, so accepting after a rename links the same symbol", () => {
-		saved(service.writeNote(note({ text: "Holds items." })));
-		service.writeNote(
-			note({ text: `Wraps a [Cart](${ref("a.ref", "Cart")}).`, expectedRevision: 1, author: AGENT }),
-		);
-		plant("a.ref", [
-			{ symbolId: TROLLEY, name: "Trolley", digest: "c1" },
-			{ symbolId: CART, name: "Cart", digest: "other" },
-		]);
-		store.journalWrite(() => store.subjects.rebind([{ from: CART, to: TROLLEY }], "journalMove", 9));
-
-		expect(service.readNote(BASKET)?.proposal?.text).toBe(`Wraps a [Cart](${ref("a.ref", "Trolley")}).`);
-		expect(saved(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON))).toMatchObject({
-			revision: 2,
-			links: [{ symbolId: TROLLEY }],
-		});
-	});
-
-	it("asks for broken proposal links to be edited before accepting", () => {
-		saved(service.writeNote(note()));
-		service.writeNote(
-			note({ text: `Pairs with [Cart](${ref("a.ref", "Cart")}).`, expectedRevision: 1, author: AGENT }),
-		);
-		plant("a.ref", []);
-
-		const outcome = service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON);
-		expect(outcome).toMatchObject({
-			outcome: "refused",
-			reason: expect.stringContaining("edit or remove each broken link"),
-			refs: [{ problem: expect.stringContaining("Edit the link to name a current symbol") }],
-		});
-	});
-
-	it("refuses to resolve a proposal replaced since it was shown, and removes the note on an empty one", () => {
-		saved(service.writeNote(note()));
-		service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT }));
-		const shown = shownAt();
-		service.writeNote(note({ text: "", expectedRevision: 1, author: AGENT }));
-
-		expect(service.resolveNoteProposal(BASKET, true, 1, shown, PERSON).outcome).toBe("refused");
-		expect(saved(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON))).toBeNull();
-		expect(service.readNote(BASKET)).toBeNull();
-	});
-
-	it("rejects a proposal without a new revision, and replaces an agent's note in place", () => {
-		saved(service.writeNote(note()));
-		service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT }));
-		expect(saved(service.resolveNoteProposal(BASKET, false, 1, shownAt(), PERSON))).toMatchObject({
-			revision: 1,
-			proposal: null,
+			text: "Holds items.",
+			author: PERSON,
+			editedBy: AGENT,
 		});
 
 		const agents = note({ symbolId: CART, text: "A cart.", author: AGENT });
@@ -345,6 +283,11 @@ describe("whose words an agent may replace", () => {
 		expect(saved(service.writeNote({ ...agents, text: "A trolley.", expectedRevision: 1 }))).toMatchObject({
 			revision: 2,
 			author: AGENT,
+		});
+
+		expect(service.writeNote(note({ text: "Stale text.", expectedRevision: 1 }))).toMatchObject({
+			outcome: "refused",
+			current: { revision: 2 },
 		});
 	});
 });
@@ -412,7 +355,7 @@ describe("a store with four-field notes", () => {
 			description TEXT, why TEXT, gotchas TEXT, proposedBy TEXT, proposedAt INTEGER NOT NULL);
 	`;
 
-	/** Four-field notes: a seed on Cart, a person's on Basket. */
+	// Legacy note fixtures.
 	function writeFourFields(): void {
 		saved(service.writeNote(note({ symbolId: CART, text: "A cart.", author: undefined })));
 		saved(service.writeNote(note()));
@@ -427,14 +370,16 @@ describe("a store with four-field notes", () => {
 		const cart = subject(CART);
 		const basket = subject(BASKET);
 		for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
-		db.exec("DROP TABLE symbol_notes; DROP TABLE symbol_note_links; DROP TABLE symbol_note_proposals;");
+		db.exec("DROP TABLE symbol_notes; DROP TABLE symbol_note_links;");
 		db.exec(OLD_TABLES);
 		const row = db.prepare(
 			`INSERT INTO symbol_notes (subjectId, recordedAs, revision, summary, description, why, gotchas, author,
 			 authoredAt, editedBy, editedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		);
 		row.run(cart, CART, 1, "Seeded from a sweep.", null, null, null, null, 5, null, 5);
+		row.run(null, TROLLEY, 1, "Seeded from a sweep.", null, null, null, null, 5, null, 5);
 		const person = JSON.stringify(PERSON);
+		db.prepare("UPDATE symbol_notes SET confirmedBy = ?, confirmedAt = 25 WHERE subjectId = ?").run(person, cart);
 		row.run(
 			basket,
 			BASKET,
@@ -448,6 +393,9 @@ describe("a store with four-field notes", () => {
 			person,
 			20,
 		);
+		db.prepare(
+			"UPDATE symbol_notes SET confirmedBy = ?, confirmedAt = 25, doubtBy = ?, doubtReason = 'old', doubtAt = 26 WHERE subjectId = ?",
+		).run(person, person, basket);
 		db.prepare(
 			`INSERT INTO symbol_note_proposals (subjectId, baseRevision, summary, description, proposedBy, proposedAt)
 			 VALUES (?, 1, ?, ?, ?, 30)`,
@@ -472,47 +420,49 @@ describe("a store with four-field notes", () => {
 		reopen();
 		if (rebuild) plantBoth();
 
-		expect(service.readNote(CART)).toBeNull();
+		expect(service.readNote(CART)).toMatchObject({ text: "Seeded from a sweep." });
+		expect(service.readNote(TROLLEY)).toBeNull();
 		expect(service.readNote(BASKET)).toMatchObject({
 			text: `${HOLDS()}\n\nOne per shopper.`,
 			links: [{ symbolId: CART, state: "ok" }],
-			proposal: {
-				text: `Holds items.\n\nPairs with [Cart](${ref("a.ref", "Cart")}).`,
-				by: AGENT,
-				links: [{ symbolId: CART }],
-			},
 		});
+		expect(service.readNote(BASKET)).not.toHaveProperty("proposal");
+		expect(service.readNote(BASKET)).not.toHaveProperty("doubt");
+		expect(service.readNote(BASKET)).not.toHaveProperty("confirmedBy");
 		expect(service.noteBacklinks(CART).notes).toEqual([{ symbolId: BASKET, summary: HOLDS() }]);
-	});
-
-	it("checks a carried proposal's text again when a person accepts it", () => {
-		writeFourFields();
-		const db = new DatabaseSync(file);
-		db.exec("UPDATE symbol_note_proposals SET summary = NULL, description = '## Items\n\nHolds items.'");
-		db.close();
-		reopen();
-
-		expect(service.resolveNoteProposal(BASKET, true, 1, shownAt(), PERSON)).toMatchObject({
-			outcome: "refused",
-			reason: refusal.noteOpensWith("heading"),
-		});
+		const migrated = new DatabaseSync(file);
+		const noteColumns = (migrated.prepare("PRAGMA table_info(symbol_notes)").all() as Array<{ name: string }>).map(
+			(column) => column.name,
+		);
+		const linkColumns = (
+			migrated.prepare("PRAGMA table_info(symbol_note_links)").all() as Array<{ name: string }>
+		).map((column) => column.name);
+		expect(noteColumns).not.toContain("confirmedBy");
+		expect(noteColumns).not.toContain("doubtReason");
+		expect(linkColumns).not.toContain("proposed");
+		expect(
+			migrated
+				.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'symbol_note_proposals'")
+				.get(),
+		).toBe(undefined);
+		migrated.close();
 	});
 
 	it("opens a store missing a four-field table, reading it as empty", () => {
 		writeFourFields();
 		const db = new DatabaseSync(file);
-		db.exec("DROP TABLE symbol_note_links; DROP TABLE symbol_note_proposals;");
+		db.exec("DROP TABLE symbol_note_links;");
 		db.close();
 		reopen();
 
-		expect(service.readNote(BASKET)).toMatchObject({ text: `${HOLDS()}\n\nOne per shopper.`, proposal: null });
+		expect(service.readNote(BASKET)).toMatchObject({ text: `${HOLDS()}\n\nOne per shopper.` });
+		expect(service.readNote(BASKET)).not.toHaveProperty("proposal");
 	});
 });
 
 describe("a store rebuild", () => {
-	it("carries notes, their links and proposals", () => {
+	it("carries notes and their standing links", () => {
 		saved(service.writeNote(note({ text: `${HOLDS()}\n\nPairs with [Cart](${ref("a.ref", "Cart")}).` })));
-		service.writeNote(note({ text: "Holds items.", expectedRevision: 1, author: AGENT }));
 		const before = service.readNote(BASKET);
 		store.close();
 		const db = new DatabaseSync(file);

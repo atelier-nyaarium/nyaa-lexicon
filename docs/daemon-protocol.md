@@ -582,8 +582,7 @@ These reads let a client draw what surrounds one symbol without walking the stor
   is not ready within a 300 ms wait it is `{ verdict: "pending", modules }`; the judgment runs on, and
   the next `describe` reads it.
 - **`scopeSymbols`** is the containment read Ask uses; `knowledge-layer.md` holds it.
-- **Notes:** `readNote`, `writeNote`, `confirmNote`, `doubtNote`, `resolveNoteProposal`,
-  `noteBacklinks` and `searchRefs`; `knowledge-layer.md` holds them.
+- **Notes:** `readNote`, `writeNote`, `noteBacklinks` and `searchRefs`; `knowledge-layer.md` holds them.
 
 `describe.members` does not list parameters and locals. `referenceCount`, `findReferences`,
 `mostReferenced`, `graph.fanIn` and `graph.fanOut` do not count import and export lines.

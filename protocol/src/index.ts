@@ -549,8 +549,6 @@ export {
 	type RefParse,
 } from "./noteRefs.js";
 export {
-	ConfirmNoteRequestSchema,
-	DoubtNoteRequestSchema,
 	NOTE_MAX,
 	type Note,
 	type NoteAuthor,
@@ -562,15 +560,12 @@ export {
 	NoteLinkSchema,
 	type NoteOutcome,
 	NoteOutcomeSchema,
-	type NoteProposal,
-	NoteProposalSchema,
 	type NoteRefProblem,
 	NoteRefProblemSchema,
 	NoteSchema,
 	ReadNoteRequestSchema,
 	type RefCandidate,
 	RefCandidateSchema,
-	ResolveNoteProposalRequestSchema,
 	type SearchRefs,
 	SearchRefsRequestSchema,
 	SearchRefsSchema,
@@ -722,6 +717,7 @@ export {
 	notImplementedImport,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	notImplementedType,
 	type ProviderEvents,
 	type ProviderHandlers,
@@ -730,6 +726,7 @@ export {
 	serveProvider,
 	whenServed,
 } from "./serve.js";
+export { shallowFacts } from "./shallowFacts.js";
 export { firstLineOf, shebangInterpreter } from "./shebang.js";
 export { type CursorMark, type CursorSpan, SourceCursor } from "./sourceCursor.js";
 export {

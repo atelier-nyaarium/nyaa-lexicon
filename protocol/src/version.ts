@@ -19,10 +19,10 @@ export type Compatibility =
 ////////////////////////////////
 //  Constants
 
-export const PROTOCOL_VERSION = "7.1.0" as const;
+export const PROTOCOL_VERSION = "8.0.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
-export const OLDEST_CLIENT_MAJOR = 7;
+export const OLDEST_CLIENT_MAJOR = 8;
 
 /** Store layout version; each names its own index file. */
 export const SCHEMA_VERSION = 28;

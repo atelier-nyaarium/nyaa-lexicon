@@ -72,7 +72,7 @@ function restoreKnowledge(
 	const subjects = new KnowledgeSubjects(db);
 	let unplaced = 0;
 
-	// A note's links and proposal follow the note to wherever it was placed.
+	// A note's links follow the note to wherever it was placed.
 	const notePlaced = new Map<string, string>();
 	for (const row of rows.notes) {
 		const placement = subjects.placeRow({ subjectId: row.subjectId, recordedAs: row.recordedAs, at: now });
@@ -84,22 +84,13 @@ function restoreKnowledge(
 		insertNote(db, placement.subjectId, row, false);
 	}
 	const link = db.prepare(
-		`INSERT OR IGNORE INTO symbol_note_links (subjectId, proposed, written, target, targetDigest)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO symbol_note_links (subjectId, written, target, targetDigest)
+		 VALUES (?, ?, ?, ?)`,
 	);
 	for (const row of rows.noteLinks) {
 		const subjectId = notePlaced.get(row.subjectId);
 		if (subjectId === undefined) continue;
-		link.run(subjectId, row.proposed ? 1 : 0, row.written, row.target, row.targetDigest);
-	}
-	const proposal = db.prepare(
-		`INSERT OR IGNORE INTO symbol_note_proposals (subjectId, baseRevision, text, proposedBy, proposedAt)
-		 VALUES (?, ?, ?, ?, ?)`,
-	);
-	for (const row of rows.noteProposals) {
-		const subjectId = notePlaced.get(row.subjectId);
-		if (subjectId === undefined) continue;
-		proposal.run(subjectId, row.baseRevision, row.text, row.proposedBy, row.proposedAt);
+		link.run(subjectId, row.written, row.target, row.targetDigest);
 	}
 
 	// Both ends placed, or the relation stays out: two subjects never merge.

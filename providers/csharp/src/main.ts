@@ -15,6 +15,7 @@ import {
 	moduleStore,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -362,7 +363,7 @@ export class CsharpProvider extends CsharpBinder {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "C# rename edits are not implemented" };
+		return notImplementedRenameEdits("C# rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

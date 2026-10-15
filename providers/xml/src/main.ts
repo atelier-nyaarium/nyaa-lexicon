@@ -17,6 +17,7 @@ import {
 	notImplementedImport,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	notImplementedType,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -24,6 +25,7 @@ import {
 	type RenameEditsResponse,
 	runProviderOnStdio,
 	serveProvider,
+	shallowFacts,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
@@ -93,19 +95,20 @@ export class XmlProvider {
 			offset: 0,
 			coordinates: coordinatesOf(params.text),
 		});
-		const shallow = params.depth === "outline" || params.depth === "surface";
-		return {
-			module: params.module,
-			contentHash: params.contentHash,
-			declarations: facts.declarations,
-			references: [],
-			imports: [],
-			literals: shallow ? [] : facts.literals,
-			comments: shallow ? [] : facts.comments,
-			...defined({ blankLines: shallow ? undefined : facts.blankLines }),
-			diagnostics: facts.diagnostics,
-			...(shallow ? { depth: params.depth } : {}),
-		};
+		return shallowFacts(
+			{
+				module: params.module,
+				contentHash: params.contentHash,
+				declarations: facts.declarations,
+				references: [],
+				imports: [],
+				literals: facts.literals,
+				comments: facts.comments,
+				...defined({ blankLines: facts.blankLines }),
+				diagnostics: facts.diagnostics,
+			},
+			params.depth,
+		);
 	}
 	resolveImport(_params: { fromModule: string; specifier: string }): ImportResolution {
 		return notImplementedImport("XML has no import specifiers");
@@ -117,7 +120,7 @@ export class XmlProvider {
 		return notImplementedType("XML has no types");
 	}
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "XML rename edits are not implemented" };
+		return notImplementedRenameEdits("XML rename edits are not implemented");
 	}
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
 		return notImplementedMove("XML move edits are not implemented");

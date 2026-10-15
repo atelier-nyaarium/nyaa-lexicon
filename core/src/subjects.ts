@@ -136,28 +136,14 @@ export interface SalvagedNote {
 	authoredAt: number;
 	editedBy: string | null;
 	editedAt: number;
-	confirmedBy: string | null;
-	confirmedAt: number | null;
 	sourceDigest: string | null;
-	doubtBy: string | null;
-	doubtReason: string | null;
-	doubtAt: number | null;
 }
 
 export interface SalvagedNoteLink {
 	subjectId: string;
-	proposed: boolean;
 	written: string;
 	target: string;
 	targetDigest: string | null;
-}
-
-export interface SalvagedNoteProposal {
-	subjectId: string;
-	baseRevision: number;
-	text: string;
-	proposedBy: string | null;
-	proposedAt: number;
 }
 
 /** A salvaged relation whose ends are restored independently by subject id or address. */
@@ -184,7 +170,6 @@ export interface NormalizedSalvage {
 	subjects: SalvagedSubject[];
 	notes: SalvagedNote[];
 	noteLinks: SalvagedNoteLink[];
-	noteProposals: SalvagedNoteProposal[];
 	relations: SalvagedRelation[];
 	dropped: number;
 }
@@ -233,7 +218,7 @@ CREATE INDEX IF NOT EXISTS knowledge_subjects_state ON knowledge_subjects(state)
 CREATE INDEX IF NOT EXISTS knowledge_subjects_from ON knowledge_subjects(fromSymbolId);
 
 -- One note per subject: markdown opening with its summary paragraph. Author columns hold the
--- harness's JSON; sourceDigest is the subject's digest when last saved or confirmed.
+-- harness's JSON; sourceDigest is the subject's digest when last written.
 CREATE TABLE IF NOT EXISTS symbol_notes (
   subjectId    TEXT PRIMARY KEY,
   recordedAs   TEXT NOT NULL,
@@ -243,36 +228,19 @@ CREATE TABLE IF NOT EXISTS symbol_notes (
   authoredAt   INTEGER NOT NULL,
   editedBy     TEXT,
   editedAt     INTEGER NOT NULL,
-  confirmedBy  TEXT,
-  confirmedAt  INTEGER,
-  sourceDigest TEXT,
-  doubtBy      TEXT,
-  doubtReason  TEXT,
-  doubtAt      INTEGER
+  sourceDigest TEXT
 );
 
 -- A note's refs as written, each with what it named: a subject id, or "module:<path>" for a whole
--- file. targetDigest is the target's digest when the note was last saved or confirmed. proposed is
--- 1 for a pending proposal's refs.
+-- file. targetDigest is the target's digest when the note was last written.
 CREATE TABLE IF NOT EXISTS symbol_note_links (
   subjectId    TEXT NOT NULL,
-  proposed     INTEGER NOT NULL CHECK (proposed IN (0, 1)),
   written      TEXT NOT NULL,
   target       TEXT NOT NULL,
   targetDigest TEXT,
-  PRIMARY KEY (subjectId, proposed, written)
+  PRIMARY KEY (subjectId, written)
 );
 CREATE INDEX IF NOT EXISTS symbol_note_links_target ON symbol_note_links(target);
-
--- An agent's replacement for a note a person last edited, until that person accepts or rejects it.
--- Empty text proposes removing the note.
-CREATE TABLE IF NOT EXISTS symbol_note_proposals (
-  subjectId    TEXT PRIMARY KEY,
-  baseRevision INTEGER NOT NULL,
-  text         TEXT NOT NULL,
-  proposedBy   TEXT,
-  proposedAt   INTEGER NOT NULL
-);
 
 -- One row per pair of subjects, the lesser id first; addresses and digests record each end at the last write.
 CREATE TABLE IF NOT EXISTS symbol_relations (
@@ -303,8 +271,6 @@ CREATE TRIGGER IF NOT EXISTS symbol_notes_key_frozen BEFORE UPDATE OF subjectId 
   BEGIN SELECT RAISE(ABORT, 'symbol_notes.subjectId never changes'); END;
 CREATE TRIGGER IF NOT EXISTS symbol_note_links_key_frozen BEFORE UPDATE OF subjectId ON symbol_note_links
   BEGIN SELECT RAISE(ABORT, 'symbol_note_links.subjectId never changes'); END;
-CREATE TRIGGER IF NOT EXISTS symbol_note_proposals_key_frozen BEFORE UPDATE OF subjectId ON symbol_note_proposals
-  BEGIN SELECT RAISE(ABORT, 'symbol_note_proposals.subjectId never changes'); END;
 CREATE TRIGGER IF NOT EXISTS symbol_relations_key_frozen BEFORE UPDATE OF subjectId, otherId ON symbol_relations
   BEGIN SELECT RAISE(ABORT, 'symbol_relations keys never change'); END;
 
@@ -330,7 +296,6 @@ export const KNOWLEDGE_TABLES = [
 	"knowledge_subjects",
 	"symbol_notes",
 	"symbol_note_links",
-	"symbol_note_proposals",
 	"symbol_relations",
 ] as const;
 
@@ -390,7 +355,7 @@ function joinedFields(row: Record<string, unknown>): string {
 		.join("\n\n");
 }
 
-/** A seeded describe answer nobody wrote, edited or confirmed. */
+/** A legacy seed with no user edit or confirmation. */
 function untouchedSeed(row: Record<string, unknown>, seededAt: number | null): boolean {
 	const authoredAt = row["authoredAt"];
 	return (
@@ -405,17 +370,16 @@ function untouchedSeed(row: Record<string, unknown>, seededAt: number | null): b
 }
 
 /**
- * In the caller's transaction, once. Untouched seeds go; every other note and proposal becomes one
- * text.
+ * In the caller's transaction, once. Untouched seeds go; every other note becomes one text.
  */
 export function joinNoteFields(db: Statements, seededAt: number | null): void {
 	// A rename rewrites any view over the table; none may survive it.
 	for (const view of KNOWLEDGE_VIEWS) db.exec(`DROP VIEW IF EXISTS "${view}"`);
+	db.exec("DROP TABLE IF EXISTS symbol_note_proposals");
 	// A store interrupted between creating these may lack one; it reads as empty.
 	const columns: Record<string, string> = {
 		symbol_notes: "subjectId TEXT",
 		symbol_note_links: "subjectId TEXT, field TEXT, written TEXT, target TEXT, targetDigest TEXT",
-		symbol_note_proposals: "subjectId TEXT, baseRevision INTEGER, proposedBy TEXT, proposedAt INTEGER",
 	};
 	const tables = Object.keys(columns);
 	for (const table of tables) {
@@ -440,35 +404,15 @@ export function joinNoteFields(db: Statements, seededAt: number | null): void {
 				authoredAt: row["authoredAt"] as number,
 				editedBy: row["editedBy"] as string | null,
 				editedAt: row["editedAt"] as number,
-				confirmedBy: row["confirmedBy"] as string | null,
-				confirmedAt: row["confirmedAt"] as number | null,
 				sourceDigest: row["sourceDigest"] as string | null,
-				doubtBy: row["doubtBy"] as string | null,
-				doubtReason: row["doubtReason"] as string | null,
-				doubtAt: row["doubtAt"] as number | null,
 			},
 			false,
 		);
 	}
-	const proposal = db.prepare(
-		"INSERT INTO symbol_note_proposals (subjectId, baseRevision, text, proposedBy, proposedAt) VALUES (?, ?, ?, ?, ?)",
-	);
-	const proposals = db
-		.prepare("SELECT * FROM symbol_note_proposals_by_field WHERE subjectId IN (SELECT subjectId FROM symbol_notes)")
-		.all() as Array<Record<string, unknown>>;
-	for (const row of proposals) {
-		proposal.run(
-			row["subjectId"] as string,
-			row["baseRevision"] as number,
-			joinedFields(row),
-			row["proposedBy"] as string | null,
-			row["proposedAt"] as number,
-		);
-	}
 	db.exec(`
-		INSERT OR IGNORE INTO symbol_note_links (subjectId, proposed, written, target, targetDigest)
-		SELECT subjectId, field LIKE 'proposal:%', written, target, targetDigest FROM symbol_note_links_by_field
-		WHERE subjectId IN (SELECT subjectId FROM symbol_notes) ORDER BY rowid
+		INSERT OR IGNORE INTO symbol_note_links (subjectId, written, target, targetDigest)
+		SELECT subjectId, written, target, targetDigest FROM symbol_note_links_by_field
+		WHERE subjectId IN (SELECT subjectId FROM symbol_notes) AND field NOT LIKE 'proposal:%' ORDER BY rowid
 	`);
 
 	for (const table of tables) db.exec(`DROP TABLE ${table}_by_field`);
@@ -544,12 +488,7 @@ export function normalizeSalvaged(
 			authoredAt: num(row["authoredAt"], 0),
 			editedBy: str(row["editedBy"]),
 			editedAt: num(row["editedAt"], 0),
-			confirmedBy: str(row["confirmedBy"]),
-			confirmedAt: at(row["confirmedAt"]),
 			sourceDigest: str(row["sourceDigest"]),
-			doubtBy: str(row["doubtBy"]),
-			doubtReason: str(row["doubtReason"]),
-			doubtAt: at(row["doubtAt"]),
 		});
 	}
 
@@ -562,25 +501,8 @@ export function normalizeSalvaged(
 			dropped++;
 			continue;
 		}
-		// Four-field stores mark proposal links by a `proposal:` field.
 		const proposed = num(row["proposed"], 0) === 1 || (str(row["field"])?.startsWith("proposal:") ?? false);
-		noteLinks.push({ subjectId, proposed, written, target, targetDigest: str(row["targetDigest"]) });
-	}
-
-	const noteProposals: SalvagedNoteProposal[] = [];
-	for (const row of raw["symbol_note_proposals"] ?? []) {
-		const subjectId = str(row["subjectId"]);
-		if (subjectId === null) {
-			dropped++;
-			continue;
-		}
-		noteProposals.push({
-			subjectId,
-			baseRevision: Math.max(1, num(row["baseRevision"], 1)),
-			text: str(row["text"]) ?? joinedFields(row),
-			proposedBy: str(row["proposedBy"]),
-			proposedAt: num(row["proposedAt"], 0),
-		});
+		if (!proposed) noteLinks.push({ subjectId, written, target, targetDigest: str(row["targetDigest"]) });
 	}
 
 	const relations: SalvagedRelation[] = [];
@@ -618,7 +540,7 @@ export function normalizeSalvaged(
 			otherDigest: str(row["otherDigest"]),
 		});
 	}
-	return { subjects, notes, noteLinks, noteProposals, relations, dropped };
+	return { subjects, notes, noteLinks, relations, dropped };
 }
 
 /** Salvaged subject rows put back as they were; every other row finds its subject through `placeRow`. */
@@ -845,7 +767,6 @@ export class KnowledgeSubjects {
 	delete(subjectId: string): void {
 		const notes = this.db.prepare("DELETE FROM symbol_notes WHERE subjectId = ?").run(subjectId);
 		this.db.prepare("DELETE FROM symbol_note_links WHERE subjectId = ?").run(subjectId);
-		this.db.prepare("DELETE FROM symbol_note_proposals WHERE subjectId = ?").run(subjectId);
 		const relations = this.db
 			.prepare("DELETE FROM symbol_relations WHERE subjectId = ? OR otherId = ?")
 			.run(subjectId, subjectId);

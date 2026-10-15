@@ -15,6 +15,7 @@ import {
 	moduleStore,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -444,7 +445,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "Kotlin rename edits are not implemented" };
+		return notImplementedRenameEdits("Kotlin rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

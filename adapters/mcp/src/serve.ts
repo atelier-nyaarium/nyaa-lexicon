@@ -138,8 +138,6 @@ function backendOver(ask: Asker, projectId: string): ToolBackend {
 		commitsMentioning: (name, limit) => ask("commitsMentioning", { name, limit }),
 		readNote: (symbolId) => ask("readNote", { symbolId }),
 		writeNote: (request) => ask("writeNote", request),
-		doubtNote: (symbolId, reason, expectedRevision, author) =>
-			ask("doubtNote", { symbolId, reason, expectedRevision, ...defined({ author }) }),
 		noteBacklinks: (target, limit) => ask("noteBacklinks", { symbolId: target, limit }),
 		declarationOf: (symbolId) => ask("declarationOf", { symbolId }),
 		diagnoseSubject: (symbolId) => ask("diagnoseSubject", { symbolId }),

@@ -78,14 +78,11 @@ import { ModuleExclusionSchema } from "./moduleExclusion.js";
 import { ModulePathSchema as ModulePath } from "./modulePath.js";
 import { ArrangeAnchorSchema, MoveAnchorSchema } from "./move.js";
 import {
-	ConfirmNoteRequestSchema,
-	DoubtNoteRequestSchema,
 	NoteBacklinksRequestSchema,
 	NoteBacklinksSchema,
 	NoteOutcomeSchema,
 	NoteSchema,
 	ReadNoteRequestSchema,
-	ResolveNoteProposalRequestSchema,
 	SearchRefsRequestSchema,
 	SearchRefsSchema,
 	WriteNoteRequestSchema,
@@ -736,30 +733,6 @@ export const DAEMON_METHODS = {
 		mutates: true,
 		budget: "read",
 	},
-	/** Mark a note still true. */
-	confirmNote: {
-		request: ConfirmNoteRequestSchema,
-		response: NoteOutcomeSchema,
-		lifecycle: "query",
-		mutates: true,
-		budget: "read",
-	},
-	/** Flag a note's current revision as misleading. */
-	doubtNote: {
-		request: DoubtNoteRequestSchema,
-		response: NoteOutcomeSchema,
-		lifecycle: "query",
-		mutates: true,
-		budget: "read",
-	},
-	/** Accept or reject an agent's proposed replacement. */
-	resolveNoteProposal: {
-		request: ResolveNoteProposalRequestSchema,
-		response: NoteOutcomeSchema,
-		lifecycle: "query",
-		mutates: true,
-		budget: "read",
-	},
 	/** Notes whose refs name a symbol. */
 	noteBacklinks: {
 		request: NoteBacklinksRequestSchema,
@@ -808,7 +781,7 @@ export const DAEMON_METHODS = {
 		mutates: true,
 		budget: "read",
 	},
-	/** A model's judgment of a gap, stored as proposals. */
+	/** A model's judgment of a gap, stored as relation proposals. */
 	answerRelationGap: {
 		request: AnswerRelationGapRequestSchema,
 		response: RelationGapAnswerSchema,

@@ -43,7 +43,6 @@ const REF_TOOLS = ["resolve_ref"] as const;
 const BATCH_QUERY_TOOLS = QUERY_TOOLS.filter((name) => name !== "overview" && name !== "refactor_status");
 
 const MUTATION_TOOLS = [
-	"doubt_note",
 	"refactor_commit",
 	"refactor_insert",
 	"refactor_move",

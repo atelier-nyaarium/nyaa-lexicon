@@ -103,7 +103,7 @@ describe("one module composes every refusal", () => {
 	it("finds every swept and narrowed file and the owner, so a passing run is never vacuous", () => {
 		for (const file of [...SWEPT, ...NARROWED, OWNER, SLOTS, ASSERTIONS]) expect(readSwept(file)).not.toBeNull();
 		const calls = SWEPT.flatMap((file) => namespacedCalls(parsed(file)));
-		expect(calls.length).toBeGreaterThanOrEqual(15);
+		expect(calls.length).toBeGreaterThanOrEqual(13);
 	});
 
 	// A constructor nothing calls and a call naming no constructor are both drift.

@@ -4,7 +4,6 @@ import {
 	type ArrangeEditsRequest,
 	type Binding,
 	coordinatesOf,
-	defined,
 	discoverByWalk,
 	handlersFor,
 	type ImportEditsRequest,
@@ -17,6 +16,7 @@ import {
 	notImplementedImport,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	notImplementedType,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -24,6 +24,7 @@ import {
 	type RenameEditsRequest,
 	type RenameEditsResponse,
 	runProviderOnStdio,
+	shallowFacts,
 	type TextCoordinates,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
@@ -82,18 +83,21 @@ export class TextProvider implements ProviderMethods {
 			offset: 0,
 			coordinates,
 		});
-		return {
-			module: params.module,
-			contentHash: params.contentHash,
-			declarations: [],
-			references: [],
-			imports: [],
-			literals: [],
-			comments: [],
-			docs: params.depth === "outline" || params.depth === "surface" ? [] : facts.docs,
-			diagnostics: facts.diagnostics,
-			...defined({ depth: params.depth }),
-		};
+		return shallowFacts(
+			{
+				module: params.module,
+				contentHash: params.contentHash,
+				declarations: [],
+				references: [],
+				imports: [],
+				literals: [],
+				comments: [],
+				docs: facts.docs,
+				diagnostics: facts.diagnostics,
+			},
+			params.depth,
+			{ includeFullDepth: true },
+		);
 	}
 
 	resolveImport(_params: { fromModule: string; specifier: string }): ImportResolution {
@@ -109,7 +113,7 @@ export class TextProvider implements ProviderMethods {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "plain text has no symbols" };
+		return notImplementedRenameEdits("plain text has no symbols");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

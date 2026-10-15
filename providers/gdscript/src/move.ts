@@ -9,6 +9,7 @@ import {
 	type MoveEditsResponse,
 	type MoveImportSite,
 	normalizeModulePath,
+	notImplementedMove,
 	type Position,
 	planEdits,
 	type Range,
@@ -64,7 +65,7 @@ export function makeMoveEdits(request: MoveEditsRequest, store: GDScriptStore): 
 	}
 
 	if (!request.exists && request.role.removal === undefined && request.role.insertion === undefined) {
-		return { status: "refused", reason: "NotImplemented", detail: "the target request has no move role" };
+		return notImplementedMove("the target request has no move role");
 	}
 
 	const plan: MovePlan = { edits: [], blocked: [] };

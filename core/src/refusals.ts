@@ -81,20 +81,6 @@ export function noteRefsRefused(count: number): Refusal {
 	);
 }
 
-export function noNoteStands(symbolId: string): Refusal {
-	return mint(`no note stands on ${symbolId}. \`write_note\` writes one`);
-}
-
-export function noProposalStands(symbolId: string): Refusal {
-	return mint(
-		`no proposal waits on the note about ${symbolId}. Create or refresh the proposal with \`write_note\`, then resolve it`,
-	);
-}
-
-export function proposalReplaced(symbolId: string): Refusal {
-	return mint(`a newer proposal replaced the one shown for ${symbolId}. Review it before resolving`);
-}
-
 ////////////////////////////////
 //  Relations
 
@@ -144,10 +130,6 @@ export function refParseFailed(problem: string): Refusal {
 
 export function refAmbiguous(count: number): Refusal {
 	return mint(`names ${count} declarations. Pick one of the candidates`);
-}
-
-export function refTargetGone(): Refusal {
-	return mint(`names nothing now; the symbol it named is gone. Edit the link to name a current symbol, or remove it`);
 }
 
 export function refNamesArguments(): Refusal {

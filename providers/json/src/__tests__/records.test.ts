@@ -73,6 +73,8 @@ describe("dialect by extension", () => {
 		expect(facts.declarations).toHaveLength(1);
 		expect(facts.literals).toEqual([]);
 		expect(facts.comments).toEqual([]);
+		expect(facts.depth).toBe("outline");
+		expect(Object.hasOwn(facts, "docs")).toBe(false);
 	});
 
 	it("reads a comment under any extension, noting it only where the dialect lacks one", () => {
@@ -128,5 +130,12 @@ describe("contract", () => {
 
 		const type = provider.typeOf({ symbolId: "x" });
 		expect(type.status === "unknown" && type.reason).toBe("NotImplemented");
+		expect(
+			provider.renameEdits({ module: "a.json", text: "", oldName: "a", newName: "b", sites: [] }),
+		).toMatchObject({
+			status: "refused",
+			reason: "NotImplemented",
+			detail: "JSON rename edits are not implemented",
+		});
 	});
 });

@@ -17,8 +17,7 @@ function authorName(author: NoteAuthor | null): string {
 /** Revision and who touched it, one line. */
 function provenance(note: Note): string {
 	const edited = note.revision > 1 ? `, last edited by ${authorName(note.editedBy)}` : "";
-	const confirmed = note.confirmedAt === null ? "" : `, confirmed by ${authorName(note.confirmedBy)}`;
-	return `Revision ${note.revision}, written by ${authorName(note.author)}${edited}${confirmed}.`;
+	return `Revision ${note.revision}, written by ${authorName(note.author)}${edited}.`;
 }
 
 /** What moved since the revision was written, one bullet each. */
@@ -33,12 +32,6 @@ function noteAdvisories(note: Note): string[] {
 		found.push(
 			`- **Changed refs:** ${changed.map((link) => code(link.current)).join(", ")} changed since this revision.`,
 		);
-	}
-	if (note.doubt !== null) {
-		found.push(`- **Doubted** by ${authorName(note.doubt.by)}: ${note.doubt.reason}`);
-	}
-	if (note.proposal !== null) {
-		found.push(`- **Proposal pending:** a replacement from ${authorName(note.proposal.by)} waits on a person.`);
 	}
 	return found;
 }
@@ -77,11 +70,11 @@ export function renderNoteLine(note: Note | null): string {
 	return lines.join("\n");
 }
 
-/** What a write or a doubt did. */
-export function renderNoteOutcome(symbolId: string, outcome: NoteOutcome, action: "write" | "doubt"): string {
+/** What a write did. */
+export function renderNoteOutcome(symbolId: string, outcome: NoteOutcome): string {
 	if (outcome.outcome === "refused") {
 		const reason = /[.!?]$/.test(outcome.reason) ? outcome.reason : `${outcome.reason}.`;
-		const lines = [`# ${action === "doubt" ? "Doubt not recorded" : "Note not saved"}`, "", reason];
+		const lines = [`# Note not saved`, "", reason];
 		const refs = outcome.refs ?? [];
 		if (refs.length > 0) lines.push("");
 		for (const problem of refs) {
@@ -96,13 +89,7 @@ export function renderNoteOutcome(symbolId: string, outcome: NoteOutcome, action
 		}
 		return lines.join("\n");
 	}
-	if (outcome.outcome === "proposed") {
-		return `# Proposal saved\n\n**Symbol:** ${code(symbolId)}\n\nA person wrote or confirmed revision ${outcome.note.revision}, so this waits for them.`;
-	}
 	if (outcome.note === null) return `# No note stands\n\n**Symbol:** ${code(symbolId)}\n\nThe text was empty.`;
-	if (action === "doubt") {
-		return `# Doubt recorded\n\n**Symbol:** ${code(symbolId)}\n\nOn revision ${outcome.note.revision}. The next save or confirm clears it.`;
-	}
 	return `# Note saved\n\n**Symbol:** ${code(symbolId)}\n\nRevision ${outcome.note.revision}.`;
 }
 

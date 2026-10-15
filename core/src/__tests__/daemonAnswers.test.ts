@@ -431,7 +431,7 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			symbolId: harness.symbol("add", "cart.ref"),
 			text: `Adds one item to a [Cart](${harness.ref("cart.ref", "Cart")}).`,
 			expectedRevision: 0,
-			author: AGENT,
+			author: { kind: "person" } as const,
 		};
 		const broken = await ask("writeNote", {
 			...note,
@@ -444,41 +444,21 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			text: note.text,
 			links: [{ state: "ok", symbolId: cart }],
 		});
-	},
-	readNote: async () => {
-		expect(await ask("readNote", { symbolId: harness.symbol("add", "cart.ref") })).toMatchObject({ revision: 1 });
-		expect(await ask("readNote", { symbolId: cart })).toBeNull();
-	},
-	doubtNote: async () => {
-		const symbolId = harness.symbol("add", "cart.ref");
-		const outcome = await ask("doubtNote", { symbolId, reason: "it adds two", expectedRevision: 1 });
-		expect(outcome.outcome === "saved" && outcome.note?.doubt?.reason).toBe("it adds two");
-	},
-	confirmNote: async () => {
-		const symbolId = harness.symbol("add", "cart.ref");
-		const outcome = await ask("confirmNote", { symbolId, expectedRevision: 1, author: { kind: "person" } });
-		expect(outcome.outcome === "saved" && outcome.note).toMatchObject({
-			doubt: null,
-			confirmedBy: { kind: "person" },
-		});
-	},
-	resolveNoteProposal: async () => {
-		const symbolId = harness.symbol("add", "cart.ref");
-		const proposed = await ask("writeNote", {
-			symbolId,
+		const replaced = await ask("writeNote", {
+			symbolId: note.symbolId,
 			text: "Adds one item.",
 			expectedRevision: 1,
 			author: AGENT,
 		});
-		expect(proposed.outcome).toBe("proposed");
-		const expectedProposal = proposed.outcome === "proposed" ? (proposed.note.proposal?.at ?? -1) : -1;
-		const accepted = await ask("resolveNoteProposal", {
-			symbolId,
-			accept: true,
-			expectedRevision: 1,
-			expectedProposal,
+		expect(replaced.outcome === "saved" && replaced.note).toMatchObject({
+			revision: 2,
+			text: "Adds one item.",
+			editedBy: AGENT,
 		});
-		expect(accepted.outcome === "saved" && accepted.note).toMatchObject({ revision: 2, text: "Adds one item." });
+	},
+	readNote: async () => {
+		expect(await ask("readNote", { symbolId: harness.symbol("add", "cart.ref") })).toMatchObject({ revision: 2 });
+		expect(await ask("readNote", { symbolId: cart })).toBeNull();
 	},
 	searchRefs: async () => {
 		const found = await ask("searchRefs", { text: "car", limit: 10 });
@@ -716,9 +696,6 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 const KNOWLEDGE = [
 	"writeNote",
 	"readNote",
-	"doubtNote",
-	"confirmNote",
-	"resolveNoteProposal",
 	"noteBacklinks",
 	"relationsOf",
 	"relationsBetween",

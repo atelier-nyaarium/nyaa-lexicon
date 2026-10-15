@@ -15,6 +15,7 @@ import {
 	moduleStore,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	type Range,
@@ -223,7 +224,7 @@ export class RustProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "Rust rename edits are not implemented" };
+		return notImplementedRenameEdits("Rust rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

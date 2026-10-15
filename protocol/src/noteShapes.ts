@@ -46,27 +46,14 @@ export const NoteLinkSchema = z
 		/** The target's declaration kind, or `file`; absent when broken. */
 		kind: z.string().optional(),
 		/**
-		 * `broken`: the target is gone. `changed`: its source changed since the note was saved or
-		 * confirmed. A file ref is never `changed`: every edit to the file would say so.
+		 * `broken`: the target is gone. `changed`: its source changed since the note was saved.
+		 * A file ref is never `changed`: every edit would make that state permanent.
 		 */
 		state: z.enum(["ok", "changed", "broken"]),
 	})
 	.meta({ id: "NoteLink" });
 
 export type NoteLink = z.infer<typeof NoteLinkSchema>;
-
-/** An agent's replacement awaiting a person; empty text proposes removal. Refs read current. */
-export const NoteProposalSchema = z
-	.object({
-		text: z.string(),
-		baseRevision: z.number().int().positive(),
-		by: NoteAuthorSchema.nullable(),
-		at: z.number(),
-		links: z.array(NoteLinkSchema),
-	})
-	.meta({ id: "NoteProposal" });
-
-export type NoteProposal = z.infer<typeof NoteProposalSchema>;
 
 /** Refs read at their targets' current addresses. */
 export const NoteSchema = z
@@ -85,14 +72,9 @@ export const NoteSchema = z
 		authoredAt: z.number(),
 		editedBy: NoteAuthorSchema.nullable(),
 		editedAt: z.number(),
-		confirmedBy: NoteAuthorSchema.nullable(),
-		confirmedAt: z.number().nullable(),
-		/** Someone was misled by this revision; any save or confirm clears it. */
-		doubt: z.object({ by: NoteAuthorSchema.nullable(), reason: z.string(), at: z.number() }).nullable(),
-		/** The symbol's source changed since the note was saved or confirmed. */
+		/** The symbol's source changed since the note was saved. */
 		sourceChanged: z.boolean(),
 		links: z.array(NoteLinkSchema),
-		proposal: NoteProposalSchema.nullable(),
 	})
 	.meta({ id: "Note" });
 
@@ -111,11 +93,10 @@ export const NoteRefProblemSchema = z
 
 export type NoteRefProblem = z.infer<typeof NoteRefProblemSchema>;
 
-/** `saved` with no note: the text was empty, so nothing stands. `proposed`: waiting on a person. */
+/** `saved` with no note: the text was empty, so nothing stands. */
 export const NoteOutcomeSchema = z
 	.discriminatedUnion("outcome", [
 		z.object({ outcome: z.literal("saved"), note: NoteSchema.nullable() }),
-		z.object({ outcome: z.literal("proposed"), note: NoteSchema }),
 		z.object({
 			outcome: z.literal("refused"),
 			reason: z.string(),
@@ -151,31 +132,6 @@ export const WriteNoteRequestSchema = z
 	.meta({ id: "WriteNoteRequest" });
 
 export const ReadNoteRequestSchema = z.object({ symbolId: z.string().min(1) }).meta({ id: "ReadNoteRequest" });
-
-export const ConfirmNoteRequestSchema = z
-	.object({ symbolId: z.string().min(1), expectedRevision: z.number().int().positive(), ...NoteAuthorOptionalField })
-	.meta({ id: "ConfirmNoteRequest" });
-
-/** `expectedRevision` names the revision that misled. */
-export const DoubtNoteRequestSchema = z
-	.object({
-		symbolId: z.string().min(1),
-		reason: z.string().min(1),
-		expectedRevision: z.number().int().positive(),
-		...NoteAuthorOptionalField,
-	})
-	.meta({ id: "DoubtNoteRequest" });
-
-export const ResolveNoteProposalRequestSchema = z
-	.object({
-		symbolId: z.string().min(1),
-		accept: z.boolean(),
-		expectedRevision: z.number().int().positive(),
-		/** The shown proposal's `at`; a proposal that replaced it since refuses. */
-		expectedProposal: z.number(),
-		...NoteAuthorOptionalField,
-	})
-	.meta({ id: "ResolveNoteProposalRequest" });
 
 /** A symbol or file a ref could name, with the ref already written. */
 export const RefCandidateSchema = z

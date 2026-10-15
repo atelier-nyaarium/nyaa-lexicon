@@ -41,6 +41,8 @@ describe("parsing", () => {
 		expect(facts.declarations).toHaveLength(2);
 		expect(facts.literals).toEqual([]);
 		expect(facts.comments).toEqual([]);
+		expect(facts.depth).toBe("outline");
+		expect(Object.hasOwn(facts, "docs")).toBe(false);
 	});
 
 	it("gives every reported span a range that cuts its own text", () => {
@@ -89,5 +91,12 @@ describe("contract", () => {
 
 		const type = provider.typeOf({ symbolId: "x" });
 		expect(type.status === "unknown" && type.reason).toBe("NotImplemented");
+		expect(
+			provider.renameEdits({ module: "a.yml", text: "", oldName: "a", newName: "b", sites: [] }),
+		).toMatchObject({
+			status: "refused",
+			reason: "NotImplemented",
+			detail: "YAML rename edits are not implemented",
+		});
 	});
 });

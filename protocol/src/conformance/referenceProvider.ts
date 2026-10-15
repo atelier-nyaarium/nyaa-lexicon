@@ -17,6 +17,7 @@ import {
 	notImplementedImport,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	notImplementedType,
 	type ProviderHandlers,
 	runProviderOnStdio,
@@ -266,11 +267,7 @@ export const referenceHandlers: ProviderHandlers = {
 	bind: () => notImplementedBinding("the reference provider does not bind references"),
 	typeOf: () => notImplementedType("the reference provider does not infer types"),
 	// Refused whole, not "ready with zero edits", because rename is not implemented here.
-	renameEdits: () => ({
-		status: "refused",
-		reason: "NotImplemented",
-		detail: "the reference provider does not rewrite text",
-	}),
+	renameEdits: () => notImplementedRenameEdits("the reference provider does not rewrite text"),
 	moveEdits: makeReferenceMoveEdits,
 	arrangeEdits: () => notImplementedMove("the reference provider does not arrange declarations"),
 	importEdits: () => notImplementedImportEdits("the reference provider does not write imports"),

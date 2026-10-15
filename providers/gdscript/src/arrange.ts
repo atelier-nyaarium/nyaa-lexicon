@@ -6,6 +6,7 @@ import {
 	comparePositions,
 	coordinatesOf,
 	type MoveEditsResponse,
+	notImplementedMove,
 	type Position,
 	type TextEdit,
 } from "@nyaa-lexicon/protocol";
@@ -49,7 +50,7 @@ export function makeArrangeEdits(request: ArrangeEditsRequest, store: GDScriptSt
 		!request.exists &&
 		request.members.every((member) => member.removal === undefined && member.insertion === undefined)
 	) {
-		return { status: "refused", reason: "NotImplemented", detail: "the target request has no arrange role" };
+		return notImplementedMove("the target request has no arrange role");
 	}
 
 	const plan: MovePlan = { edits: [], blocked: [] };

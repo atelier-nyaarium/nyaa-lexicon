@@ -17,6 +17,7 @@ import {
 	notImplementedImport,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	notImplementedType,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -24,6 +25,7 @@ import {
 	type RenameEditsResponse,
 	runProviderOnStdio,
 	serveProvider,
+	shallowFacts,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
@@ -91,18 +93,20 @@ export class YamlProvider {
 		});
 		const shallow = params.depth === "outline" || params.depth === "surface";
 		const layout = shallow ? undefined : readYamlLayout(params.text, 0, coordinates);
-		return {
-			module: params.module,
-			contentHash: params.contentHash,
-			declarations: facts.declarations,
-			references: [],
-			imports: [],
-			literals: shallow ? [] : facts.literals,
-			comments: layout?.comments ?? [],
-			...defined({ blankLines: layout?.blankLines }),
-			diagnostics: facts.diagnostics,
-			...(shallow ? { depth: params.depth as IndexDepth } : {}),
-		};
+		return shallowFacts(
+			{
+				module: params.module,
+				contentHash: params.contentHash,
+				declarations: facts.declarations,
+				references: [],
+				imports: [],
+				literals: facts.literals,
+				comments: layout?.comments ?? [],
+				...defined({ blankLines: layout?.blankLines }),
+				diagnostics: facts.diagnostics,
+			},
+			params.depth,
+		);
 	}
 
 	resolveImport(_params: { fromModule: string; specifier: string }): ImportResolution {
@@ -118,7 +122,7 @@ export class YamlProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "YAML rename edits are not implemented" };
+		return notImplementedRenameEdits("YAML rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

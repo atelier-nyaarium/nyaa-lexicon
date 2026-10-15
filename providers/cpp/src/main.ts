@@ -15,6 +15,7 @@ import {
 	moduleStore,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	PROTOCOL_VERSION,
 	type ProjectModel,
 	parseSymbolId,
@@ -428,11 +429,7 @@ export class CppProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest) {
-		return {
-			status: "refused" as const,
-			reason: "NotImplemented" as const,
-			detail: "C++ rename rendering is not implemented",
-		};
+		return notImplementedRenameEdits("C++ rename rendering is not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

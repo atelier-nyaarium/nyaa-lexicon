@@ -37,9 +37,6 @@ const NOTE = {
 	authoredAt: AT,
 	editedBy: AGENT,
 	editedAt: AT,
-	confirmedBy: null,
-	confirmedAt: null,
-	doubt: null,
 	sourceChanged: false,
 	links: [
 		{
@@ -48,7 +45,6 @@ const NOTE = {
 			state: "ok",
 		},
 	],
-	proposal: null,
 } as const;
 
 const MOVED_NOTE = {
@@ -58,9 +54,6 @@ const MOVED_NOTE = {
 	summary: "Adds one item.",
 	restAt: 14,
 	editedBy: null,
-	confirmedBy: { kind: "client", name: "claude-code", version: null },
-	confirmedAt: AT,
-	doubt: { by: AGENT, reason: "it adds two", at: AT },
 	sourceChanged: true,
 	links: [
 		{
@@ -74,7 +67,6 @@ const MOVED_NOTE = {
 			state: "changed",
 		},
 	],
-	proposal: { text: "Adds.", baseRevision: 1, by: AGENT, at: AT },
 } as const;
 
 const ISSUE = { kind: "unresolved", detail: "a name stopped resolving", module: "src/a.ts" } as const;
@@ -282,11 +274,10 @@ export const CASES: Record<string, unknown[][]> = {
 	],
 	renderNoteLine: [[null], [NOTE], [MOVED_NOTE]],
 	renderNoteOutcome: [
-		[SYMBOL.symbolId, { outcome: "saved", note: NOTE }, "write"],
-		[SYMBOL.symbolId, { outcome: "saved", note: null }, "write"],
-		[SYMBOL.symbolId, { outcome: "saved", note: MOVED_NOTE }, "doubt"],
-		[SYMBOL.symbolId, { outcome: "proposed", note: NOTE }, "write"],
-		[SYMBOL.symbolId, { outcome: "refused", reason: "the note is at revision 2, not 1", current: NOTE }, "write"],
+		[SYMBOL.symbolId, { outcome: "saved", note: NOTE }],
+		[SYMBOL.symbolId, { outcome: "saved", note: null }],
+		[SYMBOL.symbolId, { outcome: "saved", note: MOVED_NOTE }],
+		[SYMBOL.symbolId, { outcome: "refused", reason: "the note is at revision 2, not 1", current: NOTE }],
 		[
 			SYMBOL.symbolId,
 			{
@@ -310,9 +301,7 @@ export const CASES: Record<string, unknown[][]> = {
 					},
 				],
 			},
-			"write",
 		],
-		[SYMBOL.symbolId, { outcome: "refused", reason: "no note stands on it." }, "doubt"],
 	],
 	renderNoteBacklinks: [
 		["src/a.ts", { notes: [], total: 0 }],

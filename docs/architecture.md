@@ -84,8 +84,9 @@ Two rules hold the design together:
 - **The index is always derivable.** A schema mismatch or an unreadable file is a rebuild, never
   data loss, so no migration path has to be carried forever. The one exception is the knowledge
   layer: notes and stated relations cannot be regenerated from source, so they are salvaged across
-  a rebuild with their subjects, links and proposals; computed relations are never stored, and
-  relation feedback and discovery's tables start empty. Every salvaged row is normalized to a closed value and placed
+  a rebuild with their subjects and links. Stated relation proposals are preserved; computed relations
+  are never stored, and relation feedback and discovery's tables start empty. Every salvaged row is
+  normalized to a closed value and placed
   through the identity owner's one placement method; a row it cannot read or place is a count in
   the daemon log, never a merge. A new schema's first open copies the newest readable older index
   forward (`core/src/indexSeed.ts`) and migrates the copy.
@@ -359,7 +360,7 @@ rather than per-file on purpose: a reverse lookup consults every file, so the pr
 harder to get right and barely narrower, and getting it wrong means serving a confidently stale
 answer.
 
-`IndexStore` owns knowledge generation. Note writes, doubts, confirmations and proposals advance it.
+`IndexStore` owns knowledge generation. Note writes advance it.
 Subject transitions advance it when rows change.
 
 Two questions live behind two caches, because they turn over at different rates. `IndexCaches` in

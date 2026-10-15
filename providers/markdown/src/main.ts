@@ -14,6 +14,7 @@ import {
 	notImplementedImport,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	notImplementedType,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -21,6 +22,7 @@ import {
 	type RenameEditsResponse,
 	runProviderOnStdio,
 	serveProvider,
+	shallowFacts,
 	type TypeInfo,
 } from "@nyaa-lexicon/protocol";
 import type { createMessageConnection } from "vscode-jsonrpc/node";
@@ -77,20 +79,20 @@ export class MarkdownProvider {
 
 	parseFile(params: { module: string; contentHash: string; text: string; depth?: IndexDepth | undefined }) {
 		const parsed = parseMarkdown(params.module, params.text);
-		// Prose is the full-depth payload, so a shallower request gets the table of contents alone.
-		const shallow = params.depth === "outline" || params.depth === "surface";
-		return {
-			module: params.module,
-			contentHash: params.contentHash,
-			declarations: parsed.declarations,
-			references: [],
-			imports: [],
-			literals: shallow ? [] : parsed.literals,
-			comments: [],
-			docs: shallow ? [] : parsed.docs,
-			diagnostics: parsed.diagnostics,
-			...(shallow ? { depth: params.depth as IndexDepth } : {}),
-		};
+		return shallowFacts(
+			{
+				module: params.module,
+				contentHash: params.contentHash,
+				declarations: parsed.declarations,
+				references: [],
+				imports: [],
+				literals: parsed.literals,
+				comments: [],
+				docs: parsed.docs,
+				diagnostics: parsed.diagnostics,
+			},
+			params.depth,
+		);
 	}
 
 	resolveImport(_params: { fromModule: string; specifier: string }): ImportResolution {
@@ -106,7 +108,7 @@ export class MarkdownProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "markdown rename edits are not implemented" };
+		return notImplementedRenameEdits("markdown rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {

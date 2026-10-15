@@ -18,6 +18,7 @@ import {
 	moduleStore,
 	notImplementedImportEdits,
 	notImplementedMove,
+	notImplementedRenameEdits,
 	type Position,
 	PROTOCOL_VERSION,
 	type ProjectModel,
@@ -310,11 +311,11 @@ export class BashProvider {
 	}
 
 	renameEdits(_params: RenameEditsRequest): RenameEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "Bash rename edits are not implemented" };
+		return notImplementedRenameEdits("Bash rename edits are not implemented");
 	}
 
 	moveEdits(_params: MoveEditsRequest): MoveEditsResponse {
-		return { status: "refused", reason: "NotImplemented", detail: "Bash move edits are not implemented" };
+		return notImplementedMove("Bash move edits are not implemented");
 	}
 
 	importEdits(_params: ImportEditsRequest): ImportEditsResponse {

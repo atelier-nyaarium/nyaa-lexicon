@@ -23,7 +23,6 @@ import { formatRef } from "@nyaa-lexicon/protocol";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import {
 	describeSymbol,
-	doubtNote,
 	findReferences,
 	noteBacklinks,
 	readNote,
@@ -107,8 +106,6 @@ function backendOverDaemon(workspaceRoot: string): ToolBackend {
 		commitsMentioning: (name, limit) => ask("commitsMentioning", { name, limit }),
 		readNote: (symbolId) => ask("readNote", { symbolId }),
 		writeNote: (request) => ask("writeNote", request),
-		doubtNote: (symbolId, reason, expectedRevision, author) =>
-			ask("doubtNote", { symbolId, reason, expectedRevision, author }),
 		noteBacklinks: (target, limit) => ask("noteBacklinks", { symbolId: target, limit }),
 	};
 }
@@ -236,7 +233,6 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 				await describeSymbol(backend, { symbolId }),
 				await readNote(backend, { symbolId }),
 				await writeNote(backend, { symbolId, ...NOTHING }),
-				await doubtNote(backend, { symbolId, reason: "misleading", expectedRevision: 1 }),
 				await noteBacklinks(backend, { symbolId }),
 				await findReferences(backend, { symbolId }),
 				await symbolSource(backend, { symbolId }),
@@ -262,7 +258,7 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		expect(removed.isError).toBe(true);
 	}, 30_000);
 
-	it("carries the note flow through the daemon: write, doubt, refuse, clear, and backlinks", async () => {
+	it("carries the note flow through the daemon: write, refuse, replace, and backlinks", async () => {
 		const backend = backendOverDaemon(dir);
 		const [cart] = await backend.findByName("Cart", undefined);
 		const [add] = await backend.findByName("add", undefined);
@@ -276,12 +272,8 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 			links: [{ state: "ok", symbolId: cartId }],
 		});
 
-		expect(
-			(await doubtNote(backend, { symbolId, reason: "it adds two", expectedRevision: 1 })).isError,
-		).toBeUndefined();
-		expect((await backend.readNote(symbolId))?.doubt?.reason).toBe("it adds two");
-
-		expect((await writeNote(backend, note)).isError).toBe(true);
+		const stale = await backend.writeNote({ ...note, expectedRevision: 0 });
+		expect(stale.outcome).toBe("refused");
 		const broken = await backend.writeNote({
 			...note,
 			text: `Adds to a [cart](${ref("cart.ref", "Ghost")}).`,
@@ -289,8 +281,9 @@ describe("a tool call reaching a real provider through a real daemon", () => {
 		});
 		expect(broken.outcome === "refused" && broken.refs?.[0]?.candidates).toContain(ref("cart.ref", "Cart"));
 
-		const cleared = await backend.writeNote({ ...note, expectedRevision: 1 });
-		expect(cleared.outcome === "saved" && cleared.note).toMatchObject({ revision: 2, doubt: null });
+		const text = `Adds one item to a [Cart](${ref("cart.ref", "Cart")}) and updates the total.`;
+		const replaced = await backend.writeNote({ ...note, text, expectedRevision: 1 });
+		expect(replaced.outcome === "saved" && replaced.note).toMatchObject({ revision: 2, text });
 		expect((await backend.noteBacklinks(cartId)).notes.map((entry) => entry.symbolId)).toEqual([symbolId]);
 	}, 30_000);
 

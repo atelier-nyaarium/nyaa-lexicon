@@ -3,7 +3,6 @@ import type { DescribeResult, SymbolSummary } from "@nyaa-lexicon/core";
 import type { StoredDeclaration } from "@nyaa-lexicon/protocol";
 import {
 	describeSymbol,
-	doubtNote,
 	findReferences,
 	noteBacklinks,
 	outlineModule,
@@ -122,7 +121,6 @@ function backend(overrides: Partial<ToolBackend> = {}): ToolBackend {
 		commitsMentioning: async (name) => ({ name, mentions: [], commits: 0 }),
 		readNote: async () => null,
 		writeNote: async () => ({ outcome: "refused", reason: "not under test" }),
-		doubtNote: async () => ({ outcome: "refused", reason: "not under test" }),
 		noteBacklinks: async () => ({ notes: [], total: 0 }),
 		overview: async () => ({
 			files: 0,
@@ -225,7 +223,6 @@ describe("resolving what the caller gave", () => {
 			await typeOfSymbol(dead, { symbolId: "x" }),
 			await readNote(dead, { symbolId: "x" }),
 			await writeNote(dead, { symbolId: "x", ...NOTHING }),
-			await doubtNote(dead, { symbolId: "x", reason: "misleading", expectedRevision: 1 }),
 			await noteBacklinks(dead, { symbolId: "x" }),
 			await refactorPreview(dead, { symbolId: "x", newName: "y" }),
 		];
@@ -346,12 +343,8 @@ describe("the note tools", () => {
 		authoredAt: 1,
 		editedBy: null,
 		editedAt: 1,
-		confirmedBy: null,
-		confirmedAt: null,
-		doubt: null,
 		sourceChanged: false,
 		links: [],
-		proposal: null,
 	};
 
 	it("reads a missing note as a finding, not a failure", async () => {
@@ -377,18 +370,14 @@ describe("the note tools", () => {
 		expect(sent).toEqual([{ symbolId: CART, ...NOTHING, text: "Holds items.", author }]);
 	});
 
-	it("marks a refused write and a refused doubt as errors, and a proposal as neither", async () => {
+	it("marks a refused write as an error and a saved write as success", async () => {
 		const refusing = backend({
 			writeNote: async () => ({ outcome: "refused", reason: "stale revision", current: saved }),
-			doubtNote: async () => ({ outcome: "refused", reason: "no note stands" }),
 		});
 		expect((await writeNote(refusing, { symbolId: CART, ...NOTHING })).isError).toBe(true);
-		expect((await doubtNote(refusing, { symbolId: CART, reason: "misleading", expectedRevision: 1 })).isError).toBe(
-			true,
-		);
 
-		const proposing = backend({ writeNote: async () => ({ outcome: "proposed", note: saved }) });
-		expect((await writeNote(proposing, { symbolId: CART, ...NOTHING })).isError).toBeUndefined();
+		const saving = backend({ writeNote: async () => ({ outcome: "saved", note: saved }) });
+		expect((await writeNote(saving, { symbolId: CART, ...NOTHING })).isError).toBeUndefined();
 	});
 
 	it("names a file when given a module alone, and resolves a symbol otherwise", async () => {

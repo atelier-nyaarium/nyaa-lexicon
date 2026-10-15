@@ -379,6 +379,7 @@ describe("the provider surface", () => {
 			);
 			expect(facts.declarations).toHaveLength(1);
 			expect(facts.docs).toEqual([]);
+			expect([facts.literals, facts.comments]).toEqual([[], []]);
 			expect(facts.depth).toBe(depth);
 		}
 	});
@@ -410,6 +411,11 @@ describe("the provider surface", () => {
 		});
 
 		expect([rename.status, move.status]).toEqual(["refused", "refused"]);
+		expect(rename).toMatchObject({
+			status: "refused",
+			reason: "NotImplemented",
+			detail: "markdown rename edits are not implemented",
+		});
 		expect([rename.status === "refused" && rename.reason, move.status === "refused" && move.reason]).toEqual([
 			"NotImplemented",
 			"NotImplemented",
