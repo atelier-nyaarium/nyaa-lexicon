@@ -54,7 +54,7 @@ const OWNERS = new Set([
 	"daemonLock.ts",
 	"projectRegistry.ts",
 	"projectStores.ts",
-	"indexSeed.ts",
+	"storePurge.ts",
 	"diagnostics.ts",
 	"projectIndexState.ts",
 ]);

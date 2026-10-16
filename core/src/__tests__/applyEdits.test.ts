@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { stageAll } from "../applyEdits";
 import { sourceReader } from "../sourceRead";
+import { viewsOf } from "./reads";
 
 ////////////////////////////////
 //  Helpers
@@ -41,7 +42,7 @@ describe("staging a whole rename", () => {
 				{ module: "a.ts", edits: [edit(0, 0, 3, "sum")] },
 				{ module: "b.ts", edits: [edit(0, 0, 3, "sum")] },
 			],
-			sourceReader(root),
+			viewsOf(sourceReader(root)),
 		);
 
 		expect(outcome).toEqual({
@@ -62,7 +63,7 @@ describe("staging a whole rename", () => {
 					{ module: "a.ts", edits: [edit(0, 0, 3, "sum")] },
 					{ module, edits },
 				],
-				sourceReader(root),
+				viewsOf(sourceReader(root)),
 			);
 
 		expect([
@@ -79,7 +80,7 @@ describe("staging a whole rename", () => {
 	it("keeps a BOM and non-ASCII text outside the edit", () => {
 		write("a.ts", "\u{FEFF}add(); // caf\u{E9} \u{1F600}\n");
 
-		const outcome = stageAll([{ module: "a.ts", edits: [edit(0, 1, 4, "sum")] }], sourceReader(root));
+		const outcome = stageAll([{ module: "a.ts", edits: [edit(0, 1, 4, "sum")] }], viewsOf(sourceReader(root)));
 
 		expect(outcome).toEqual({ staged: [{ module: "a.ts", text: "\u{FEFF}sum(); // caf\u{E9} \u{1F600}\n" }] });
 	});

@@ -3,10 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Declaration, Reference } from "@nyaa-lexicon/protocol";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
+import { writePlain } from "./admissions";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 let dir: string;
 let store: IndexStore;
@@ -67,12 +71,12 @@ function uses(
 }
 
 function file(module: string, declarations: Declaration[], references: Reference[]): void {
-	store.replaceFile({ module, contentHash: module, declarations, references, imports: [], literals: [] });
+	writePlain(store, { module, contentHash: module, declarations, references, imports: [], literals: [] });
 }
 
 /** `Shop` holds `open` (a parameter, a local) and nested `Line`; `use.ref` uses `Line` twice. */
 function plant(): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: "shop.ref",
 		contentHash: "shop",
 		declarations: [
@@ -137,6 +141,8 @@ beforeEach(() => {
 		new ProviderSupervisor(),
 		fromText(() => null),
 		dir,
+		undefined,
+		testPolicy(dir),
 	);
 	plant();
 });

@@ -58,6 +58,17 @@ describe("what every renderer's markdown must hold", () => {
 		expect(total).toBeGreaterThan(60);
 	});
 
+	it("shows key status in symbol answers", () => {
+		for (const name of ["renderDescribe", "renderSymbolSearch", "renderOutline"]) {
+			const answers = rendered(name).join("\n");
+			expect(answers).toContain("(set)");
+			expect(answers).toContain("(empty)");
+		}
+		const sources = rendered("renderSymbolSource").join("\n");
+		expect(sources).toContain("API_KEY (redacted)");
+		expect(sources).toContain("EMPTY_KEY (empty)");
+	});
+
 	// The invariants below assert nothing about an empty answer, so the one renderer that returns one
 	// is pinned here instead of passing them vacuously.
 	it("answers nothing only where a caller needs nothing", () => {

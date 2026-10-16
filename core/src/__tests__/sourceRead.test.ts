@@ -2,9 +2,29 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fromText, MAX_SOURCE_BYTES, readSource, textOf, unreadableReason, writableSource } from "../sourceRead";
+import { hashContent } from "@nyaa-lexicon/protocol";
+import {
+	type AllowedView,
+	fromText,
+	MAX_SOURCE_BYTES,
+	type PlainView,
+	readSource,
+	unreadableReason,
+	writableSource,
+} from "../sourceRead";
+import { readingPolicy } from "./reads";
 
 let root: string;
+
+/** Read view with no project rules. */
+const viewed = (read: ReturnType<typeof readSource>) => readingPolicy.view(read);
+
+const plain = (text: string, lossless = true): PlainView => ({
+	kind: "plain",
+	text,
+	hash: hashContent(text),
+	lossless,
+});
 
 beforeEach(() => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-read-"));
@@ -19,9 +39,9 @@ describe("reading a workspace file for indexing", () => {
 		writeFileSync(path.join(root, "a.ts"), "export const a = 1;\n");
 		mkdirSync(path.join(root, "dir"));
 
-		expect(readSource(root, "a.ts")).toEqual({ kind: "text", text: "export const a = 1;\n", lossless: true });
-		expect(readSource(root, "gone.ts")).toEqual({ kind: "missing" });
-		expect(readSource(root, "dir")).toEqual({ kind: "missing" });
+		expect(viewed(readSource(root, "a.ts"))).toEqual(plain("export const a = 1;\n"));
+		expect(viewed(readSource(root, "gone.ts"))).toEqual({ kind: "missing" });
+		expect(viewed(readSource(root, "dir"))).toEqual({ kind: "missing" });
 	});
 
 	// Git's heuristic: a NUL in the head.
@@ -30,8 +50,8 @@ describe("reading a workspace file for indexing", () => {
 		writeFileSync(path.join(root, "big.yml"), Buffer.alloc(MAX_SOURCE_BYTES + 1, 0x61));
 		writeFileSync(path.join(root, "edge.yml"), Buffer.alloc(MAX_SOURCE_BYTES, 0x61));
 
-		expect(readSource(root, "blob.json")).toEqual({ kind: "binary" });
-		expect(readSource(root, "big.yml")).toEqual({ kind: "tooLarge", bytes: MAX_SOURCE_BYTES + 1 });
+		expect(readSource(root, "blob.json")).toMatchObject({ kind: "binary" });
+		expect(readSource(root, "big.yml")).toMatchObject({ kind: "tooLarge", bytes: MAX_SOURCE_BYTES + 1 });
 		expect(readSource(root, "edge.yml").kind).toBe("text");
 	});
 
@@ -41,13 +61,11 @@ describe("reading a workspace file for indexing", () => {
 		expect(unreadableReason({ kind: "tooLarge", bytes: 5_000_000 })).toContain(String(MAX_SOURCE_BYTES));
 	});
 
-	it("lifts a text-only reader and lowers a read back to text", () => {
+	it("lifts a text-only reader to the full shape", () => {
 		const lifted = fromText((module) => (module === "a.ts" ? "text" : module === "lone.ts" ? "\uD800" : null));
-		expect(lifted("a.ts")).toEqual({ kind: "text", text: "text", lossless: true });
-		expect(lifted("lone.ts")).toMatchObject({ kind: "text", lossless: false });
-		expect(lifted("b.ts")).toEqual({ kind: "missing" });
-		expect(textOf({ kind: "text", text: "t", lossless: false })).toBe("t");
-		expect(textOf({ kind: "binary" })).toBeNull();
+		expect(viewed(lifted("a.ts"))).toEqual(plain("text"));
+		expect(viewed(lifted("lone.ts"))).toMatchObject({ kind: "plain", lossless: false });
+		expect(viewed(lifted("b.ts"))).toEqual({ kind: "missing" });
 	});
 
 	it("decodes an invalid sequence leniently and says the decode was lossy", () => {
@@ -56,25 +74,27 @@ describe("reading a workspace file for indexing", () => {
 		writeFileSync(path.join(root, "bom.ts"), Buffer.from([0xef, 0xbb, 0xbf, 0x61, 0x0a]));
 		writeFileSync(path.join(root, "wide.ts"), "// caf\u{E9} \u{2713} \u{FFFD} \u{1F600}\n");
 
-		expect(readSource(root, "lossy.ts")).toEqual({ kind: "text", text: "a\u{FFFD}(b\n", lossless: false });
-		// A lossy decode the same length as its bytes.
-		expect(readSource(root, "truncated.ts")).toMatchObject({ kind: "text", lossless: false });
-		expect(readSource(root, "bom.ts")).toEqual({ kind: "text", text: "\u{FEFF}a\n", lossless: true });
-		expect(readSource(root, "wide.ts")).toMatchObject({ kind: "text", lossless: true });
+		expect(viewed(readSource(root, "lossy.ts"))).toEqual(plain("a\u{FFFD}(b\n", false));
+		// Equal length does not imply lossless decoding.
+		expect(viewed(readSource(root, "truncated.ts"))).toMatchObject({ kind: "plain", lossless: false });
+		expect(viewed(readSource(root, "bom.ts"))).toEqual(plain("\u{FEFF}a\n"));
+		expect(viewed(readSource(root, "wide.ts"))).toMatchObject({ kind: "plain", lossless: true });
 	});
 });
 
 describe("reading a workspace file for a writer", () => {
 	it("answers lossless text, null for nothing on disk, and a refusal naming the module otherwise", () => {
-		expect(writableSource("a.ts", { kind: "text", text: "a", lossless: true })).toEqual({ text: "a" });
+		expect(writableSource("a.ts", plain("a"))).toEqual({ text: "a" });
 		expect(writableSource("a.ts", { kind: "missing" })).toEqual({ text: null });
-		for (const read of [
-			{ kind: "text", text: "a\u{FFFD}", lossless: false },
+		const refused: AllowedView[] = [
+			plain("a\u{FFFD}", false),
+			{ kind: "refused", hash: "h" },
 			{ kind: "binary" },
 			{ kind: "tooLarge", bytes: MAX_SOURCE_BYTES + 1 },
 			{ kind: "outside" },
-		] as const) {
-			expect(writableSource("a.ts", read)).toEqual({ refused: expect.stringContaining("a.ts") });
+		];
+		for (const view of refused) {
+			expect(writableSource("a.ts", view)).toEqual({ refused: expect.stringContaining("a.ts") });
 		}
 	});
 });

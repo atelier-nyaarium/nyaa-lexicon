@@ -10,6 +10,7 @@ import {
 	type MoveEditsRequest,
 	PROTOCOL_VERSION,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { PythonProvider, wireHandlers } from "../main";
 
 const roots: string[] = [];
@@ -52,7 +53,7 @@ async function parsed(
 	roots.push(root);
 	const provider = new PythonProvider();
 	const handlers = wireHandlers(provider);
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	const facts = await handlers.parseFile({ module, contentHash: "hash", text });
 	return { provider, by: new Map(facts.declarations.map((declaration) => [declaration.name, declaration])) };

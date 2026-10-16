@@ -1,5 +1,6 @@
 // The GDScript provider. It reports project structure, declarations, and reference candidates.
 
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Declaration,
@@ -268,7 +269,7 @@ export class GDScriptProvider {
 //////// Main
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new GDScriptProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new GDScriptProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new GDScriptProvider(), SECRET_READERS));

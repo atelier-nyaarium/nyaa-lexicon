@@ -2,6 +2,7 @@
 // disclosure check cannot disagree about a path.
 
 import { z } from "zod";
+import { globToRegExp } from "./glob.js";
 import { ModulePathSchema } from "./modulePath.js";
 import { normalizeModulePath } from "./symbolId.js";
 
@@ -26,41 +27,6 @@ export type ModuleExclusion = z.infer<typeof ModuleExclusionSchema>;
 
 ////////////////////////////////
 //  Functions & Helpers
-
-/**
- * `**` crosses directory separators, `*` does not (`src/*.ts` vs `src/**\/*.ts`).
- * Everything else is escaped, so a dot matches a dot, not any character.
- */
-export function globToRegExp(glob: string, flags?: "i"): RegExp {
-	let out = "";
-	for (let i = 0; i < glob.length; i++) {
-		const char = glob[i] as string;
-
-		// The separator beside `**` joins it: `dist/**` matches `dist`; `a/**/b` matches `a/b`.
-		if (char === "/" && glob[i + 1] === "*" && glob[i + 2] === "*") {
-			if (glob[i + 3] === "/") {
-				out += "/(?:.*/)?";
-				i += 3;
-				continue;
-			}
-			out += "(?:/.*)?";
-			i += 2;
-			continue;
-		}
-
-		if (char === "*") {
-			if (glob[i + 1] === "*") {
-				out += glob[i + 2] === "/" ? "(?:.*/)?" : ".*";
-				i += glob[i + 2] === "/" ? 2 : 1;
-				continue;
-			}
-			out += "[^/]*";
-			continue;
-		}
-		out += char.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-	}
-	return new RegExp(`^${out}$`, flags);
-}
 
 /** The module key, or null for a path the id grammar cannot spell. */
 function keyOf(module: string): string | null {

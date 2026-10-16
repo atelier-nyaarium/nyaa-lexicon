@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { exclusionConfirmed } from "../daemonMethods";
-import { compileExclusion, globToRegExp, ModuleExclusionSchema } from "../moduleExclusion";
+import { globToRegExp } from "../glob";
+import { compileExclusion, ModuleExclusionSchema } from "../moduleExclusion";
 
 ////////////////////////////////
 //  Tests

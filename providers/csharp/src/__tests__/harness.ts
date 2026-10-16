@@ -2,7 +2,9 @@ import { afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import type { CsharpProvider } from "../main.js";
 
 type CsharpHandlers = ReturnType<typeof handlersFor>;
@@ -32,8 +34,8 @@ export function workspaceFixture(name: string): (files: Record<string, string>) 
 }
 
 export function startProvider(provider: CsharpProvider, workspaceRoot = "/workspace"): CsharpHandlers {
-	const handlers = handlersFor(provider);
-	handlers.initialize({ workspaceRoot, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(provider, SECRET_READERS);
+	handlers.initialize({ workspaceRoot, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot });
 	sessions.set(provider, handlers);
 	return handlers;

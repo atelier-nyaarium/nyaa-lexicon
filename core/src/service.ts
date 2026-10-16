@@ -27,7 +27,7 @@ import {
 } from "@nyaa-lexicon/protocol";
 import { stageAll } from "./applyEdits.js";
 import { ArrangePlanner } from "./arrangePlanner.js";
-import { type Clock, systemClock } from "./clock.js";
+import type { Clock } from "./clock.js";
 import { withinBudget } from "./deadline.js";
 import { describedOf, loadCycleOf } from "./describeLoadCycle.js";
 import { bindsModule, type NamespaceTarget, namespaceTargetOf, sameTarget } from "./edges.js";
@@ -36,7 +36,6 @@ import {
 	discoverSubmodules as discoverInitializedSubmodules,
 	type FileScope,
 	isExternalModule,
-	readScopeConfig,
 } from "./fileScope.js";
 import { runFix, runFixText } from "./fixOnWrite.js";
 import {
@@ -73,12 +72,14 @@ import { ReadContext } from "./readContext.js";
 import { RefactorPlanner } from "./refactorPlanner.js";
 import type { PlannedWrite } from "./refactorStep.js";
 import type { UnknownType } from "./refusalSlots.js";
-import { diagnoseSubject, type Refusal, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
+import type { Refusal } from "./refusals.js";
+import { diagnoseSubject, type SubjectDiagnosis, subjectRefused, writeFailed } from "./refusals.js";
 import { RelationDiscovery } from "./relationDiscovery.js";
 import { RelationLedger } from "./relations.js";
 import { holdsWord } from "./renameRoutes.js";
 import { RESOLUTION_CAPACITY, ResultCache } from "./resultCache.js";
-import type { SourceReader } from "./sourceRead.js";
+import type { SecretPolicy } from "./secretPolicy.js";
+import type { AllowedView, SealedText, SourceReader } from "./sourceRead.js";
 import { SourceWorkspace, type SymbolSource } from "./sourceWorkspace.js";
 import type { Gate } from "./stepRunners.js";
 import { type IndexStore, resolutionKey, type StoredComment, type StoredDeclaration } from "./store.js";
@@ -110,13 +111,17 @@ const HISTORY_FRESH_MS = 5 * 60 * 1000;
 //  Class
 
 export class LexiconService {
+	private readonly secretPolicy: SecretPolicy;
+
 	constructor(
 		private readonly store: IndexStore,
 		private readonly supervisor: ProviderPort,
 		private readonly readSource: SourceReader,
-		private readonly workspaceRoot = ".",
-		private readonly clock: Clock = systemClock,
+		private readonly workspaceRoot: string,
+		private readonly clock: Clock,
+		secretPolicy: SecretPolicy,
 	) {
+		this.secretPolicy = secretPolicy;
 		this.gate = new WorkspaceGate(clock);
 		this.reads = new IndexReadModel(store);
 		this.loadCycles = new LoadCycleRead(store, supervisor, clock, this.gate);
@@ -137,7 +142,9 @@ export class LexiconService {
 				ask,
 			);
 		});
-		this.notes = new NoteLedger(store, workspaceKey(workspaceRoot), this.clock);
+		this.notes = new NoteLedger(store, workspaceKey(workspaceRoot), this.clock, (module) =>
+			this.indexer.noteModuleState(module),
+		);
 		this.relations = new RelationLedger(store, this.clock);
 		this.discovery = new RelationDiscovery(store, this.clock);
 		// An arrow, not the resolver itself: its own port reads the scope back off this indexer.
@@ -150,8 +157,9 @@ export class LexiconService {
 			(from, specifier, mode) => this.imports.resolveImport(from, specifier, mode),
 			this.clock,
 			this.gate,
+			this.secretPolicy,
 		);
-		this.source = new SourceWorkspace(store, readSource, workspaceRoot);
+		this.source = new SourceWorkspace(store, (module) => this.allowedView(module), workspaceRoot);
 		this.probe = liveProbe(supervisor);
 		this.planner = new RefactorPlanner(store, this.imports, this.source, this.probe);
 		this.arranger = new ArrangePlanner(store, this.imports, this.source, this.probe, this.planner, (module, text) =>
@@ -246,6 +254,11 @@ export class LexiconService {
 		return this.indexer.watchScope();
 	}
 
+	/** Hash of policy-visible text. */
+	hashOfRead(read: SealedText): string {
+		return this.indexer.hashOfRead(read);
+	}
+
 	/** The timer's sweep: nothing new to the pass, presence as of the last prune. */
 	sweepKnowledge(): ReturnType<WorkspaceIndexer["sweepKnowledge"]> {
 		return this.indexer.sweepKnowledge();
@@ -269,6 +282,10 @@ export class LexiconService {
 
 	admittedModules(modules: string[]): ReturnType<WorkspaceIndexer["admittedModules"]> {
 		return this.indexer.admittedModules(modules);
+	}
+
+	moduleSecretModes(modules: string[]): ReturnType<WorkspaceIndexer["moduleSecretModes"]> {
+		return this.indexer.moduleSecretModes(modules);
 	}
 
 	warmHold(): string | null {
@@ -331,8 +348,14 @@ export class LexiconService {
 	////////////////////////////////
 	//  Source text, answered by SourceWorkspace
 
-	symbolSource(...args: Parameters<SourceWorkspace["symbolSource"]>): SymbolSource {
+	async symbolSource(...args: Parameters<SourceWorkspace["symbolSource"]>): Promise<SymbolSource> {
+		await this.currentScope();
 		return this.source.symbolSource(...args);
+	}
+
+	/** Policy-visible view of module bytes. */
+	private allowedView(module: string): AllowedView {
+		return this.secretPolicy.current.view(this.readSource(module));
 	}
 
 	currentHashOf(module: string): string | null {
@@ -373,14 +396,14 @@ export class LexiconService {
 
 	/** Runs `lexicon.json`'s `fix` on written modules; `failed` says how a run that did not exit cleanly went. */
 	async fixWritten(modules: string[]): Promise<{ ran: boolean; failed: string | null }> {
-		const argv = readScopeConfig(this.workspaceRoot).fix;
+		const argv = this.secretPolicy.config.fix;
 		if (argv === undefined || modules.length === 0) return { ran: false, failed: null };
 		return { ran: true, failed: await runFix(this.workspaceRoot, argv, modules) };
 	}
 
 	/** Runs `lexicon.json`'s `fixText` on one file's text; null when it is not set. */
 	async formatText(module: string, text: string): Promise<{ text: string } | { failed: string } | null> {
-		const argv = readScopeConfig(this.workspaceRoot).fixText;
+		const argv = this.secretPolicy.config.fixText;
 		return argv === undefined ? null : runFixText(this.workspaceRoot, argv, module, text);
 	}
 
@@ -475,6 +498,17 @@ export class LexiconService {
 	/** Computes the scope if nothing has yet, so a caller that must precede the live index can await it. */
 	currentScope(): Promise<FileScope> {
 		return this.indexer.currentScope();
+	}
+
+	/** Removes stale policy rows and arms WAL purge. */
+	async reconcileSecretPolicy(): Promise<void> {
+		await this.indexer.currentScopeUnderGate();
+		await this.store.pass(async () => this.indexer.reconcilePolicy());
+	}
+
+	async refreshPolicyIfEvidenceMoved(): Promise<void> {
+		if (this.secretPolicy.evidence.verifySubscriptions().length === 0) return;
+		await this.indexer.auditPolicy();
 	}
 
 	////////////////////////////////
@@ -819,6 +853,8 @@ export class LexiconService {
 
 	/** A reference's binding, for a caller holding a position rather than an id. */
 	async bind(module: string, name: string, range: { start: { line: number; character: number } }): Promise<Binding> {
+		if (this.secretPolicy.current.access(module) !== "open")
+			return { status: "unknown", reason: "NotIndexed", detail: this.secretPolicy.genericWithheldDetail };
 		return this.supervisor.ask(module, "bind", {
 			module,
 			name,
@@ -828,7 +864,7 @@ export class LexiconService {
 
 	/** Unwritten rename texts with edit bases. */
 	renameWrites(files: FileEdits[]): { writes: PlannedWrite[] } | { reason: Refusal } {
-		const staged = stageAll(files, this.readSource);
+		const staged = stageAll(files, (module) => this.allowedView(module));
 		if (!("staged" in staged)) return { reason: writeFailed(staged.module, staged.reason) };
 		const bases = new Map(files.map((file) => [file.module, file.contentHash]));
 		return { writes: staged.staged.map(({ module, text }) => ({ module, base: bases.get(module) ?? null, text })) };
@@ -841,6 +877,9 @@ export class LexiconService {
 	 * a signature is how the declaration was written, a type is what the checker concluded.
 	 */
 	async typeOf(symbolId: string): Promise<TypeInfo> {
+		const parsed = parseSymbolId(symbolId);
+		if (parsed !== null && this.secretPolicy.current.access(parsed.module) !== "open")
+			return { status: "unknown", reason: "NotIndexed", detail: this.secretPolicy.genericWithheldDetail };
 		const declaration = this.store.declaration(symbolId);
 		if (!declaration) {
 			const unknown: UnknownType = {

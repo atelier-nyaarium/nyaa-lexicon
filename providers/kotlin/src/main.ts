@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -523,7 +524,7 @@ export class KotlinProvider implements StoreProvider<KotlinFile, null, PackageIn
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new KotlinProvider()): void {
-	wireProvider(connection, handlersFor(provider));
+	wireProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new KotlinProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new KotlinProvider(), SECRET_READERS));

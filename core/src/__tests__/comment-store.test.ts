@@ -5,6 +5,7 @@ import path from "node:path";
 import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach.js";
 import { HiddenModules, IndexStore } from "../store";
+import { forgetPlain, writePlain } from "./admissions";
 
 const ALL = { hidden: HiddenModules.none };
 
@@ -59,7 +60,7 @@ afterEach(() => {
 
 describe("storing comments", () => {
 	it("reads back what it stored, raw and normalized apart", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("add")],
@@ -79,7 +80,7 @@ describe("storing comments", () => {
 	// This pins the COLUMN search reads. That the normalized value is right is the normalizer's
 	// test, and that the whole path joins up is comment-indexing's.
 	it("searches the normalized column rather than the raw one", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("add")],
@@ -100,7 +101,7 @@ describe("storing comments", () => {
 	});
 
 	it("treats a LIKE wildcard in the query as a literal character", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -118,7 +119,7 @@ describe("storing comments", () => {
 	});
 
 	it("keeps a module-level comment anchored to nothing", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -135,7 +136,7 @@ describe("storing comments", () => {
 	});
 
 	it("filters a scan by form", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("add")],
@@ -155,7 +156,7 @@ describe("storing comments", () => {
 	// The invariant: an anchor is rewritten by the next pass, never carried forward. A symbol that
 	// moved cannot leave a comment pointing at where it used to be.
 	it("rewrites anchors on reindex rather than migrating them", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("add")],
@@ -167,7 +168,7 @@ describe("storing comments", () => {
 		});
 		expect(store.commentsAnchoredTo(idOf("add"))).toHaveLength(1);
 
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h2",
 			declarations: [declaration("renamed")],
@@ -183,7 +184,7 @@ describe("storing comments", () => {
 	});
 
 	it("drops a file's comments when the file is forgotten", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("add")],
@@ -194,14 +195,14 @@ describe("storing comments", () => {
 			comments: [comment("// docs", idOf("add"))],
 		});
 
-		store.forgetFile("src/a.ts");
+		forgetPlain(store, "src/a.ts");
 
 		expect(store.commentsToScan(10, ALL)).toEqual([]);
 	});
 
 	// Two identical comments in one file are two facts, exactly as two identical literals are.
 	it("stores two identical comments as two rows", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -225,7 +226,7 @@ describe("storing comments", () => {
 	});
 
 	it("gives every comment a parseable fact id", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [],

@@ -44,10 +44,10 @@ describe("the source workspace is the disk side and only that", () => {
 		).toEqual([]);
 	});
 
-	it("takes a store, a reader and a root, and nothing else", () => {
+	it("takes a store, a reader of views and a root, and nothing else", () => {
 		expect(constructorParameters(parsed(), "SourceWorkspace")).toEqual([
 			"private readonly store: IndexStore",
-			"private readonly readSource: SourceReader",
+			"private readonly readView: ViewReader",
 			"private readonly workspaceRoot: string",
 		]);
 	});

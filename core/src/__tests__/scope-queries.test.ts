@@ -6,6 +6,7 @@ import { composeSymbolId, type Declaration, type Reference } from "@nyaa-lexicon
 import type { AttachedComment } from "../commentAttach.js";
 import { IndexReadModel } from "../indexReads.js";
 import { IndexStore } from "../store.js";
+import { writePlain } from "./admissions";
 
 const POINT = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
 
@@ -61,7 +62,7 @@ describe("scoped search reads", () => {
 		const child = id("inside", "a.ts", "routes");
 		const outside = id("outside", "a.ts");
 		const target = id("target", "a.ts");
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ts",
 			contentHash: "a",
 			declarations: [
@@ -120,7 +121,7 @@ describe("scoped search reads", () => {
 
 	it("uses the immediate container for regex keys and excludes top-level literals", () => {
 		const container = id("field", "a.ts");
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ts",
 			contentHash: "a",
 			declarations: [declaration(container, "field")],

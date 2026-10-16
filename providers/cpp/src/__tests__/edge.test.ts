@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	composeSymbolId,
 	coordinatesOf,
@@ -15,6 +16,7 @@ import {
 	RenameEditsResponseSchema,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 import { tokenize } from "../tokens.js";
@@ -33,8 +35,8 @@ function makeWorkspace(files: Record<string, string>): string {
 }
 
 function wire(root = process.cwd(), provider = new CppProvider()) {
-	const handlers = handlersFor(provider);
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(provider, SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
 }
@@ -1132,8 +1134,12 @@ describe("C++ parser edges", () => {
 
 	test("returns a schema-valid response for every provider handler", () => {
 		const root = makeWorkspace({ "source.cpp": "int value = 1;\n" });
-		const handlers = handlersFor(new CppProvider());
-		const initialize = handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		const handlers = handlersFor(new CppProvider(), SECRET_READERS);
+		const initialize = handlers.initialize({
+			workspaceRoot: root,
+			protocolVersion: PROTOCOL_VERSION,
+			policy: secretWire(),
+		});
 		const info = InitializeResponseSchema.parse(initialize);
 		const project = handlers.discoverProject({ workspaceRoot: root });
 		const parsedProject = ProjectModelSchema.parse(project);

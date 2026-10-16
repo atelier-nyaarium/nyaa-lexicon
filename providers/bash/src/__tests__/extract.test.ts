@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type Binding,
 	coordinatesOf,
@@ -11,6 +12,7 @@ import {
 	type Range,
 	TOO_DEEP,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { parseBash } from "../extract.js";
 import { BashProvider } from "../main.js";
 import { parseBashScript } from "../syntax/parser.js";
@@ -29,8 +31,8 @@ function workspace(files: Record<string, string>): string {
 
 /** Starts through provider handlers. */
 function wire(root: string) {
-	const handlers = handlersFor(new BashProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new BashProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
 }
@@ -1060,7 +1062,7 @@ describe("the wire face", () => {
 			"bin/plain": "echo no shebang\n",
 			"bin/x.py": "#!/bin/bash\n",
 		});
-		const project = new BashProvider().discoverProject(root).model;
+		const project = wire(root).discoverProject({ workspaceRoot: root });
 		expect([...project.files].sort()).toEqual([
 			".bashrc",
 			"bin/posix",
@@ -1071,7 +1073,8 @@ describe("the wire face", () => {
 		]);
 		expect(project.diagnostics).toEqual([]);
 
-		const missing = new BashProvider().discoverProject(path.join(root, "gone")).model;
+		const missingRoot = path.join(root, "gone");
+		const missing = wire(missingRoot).discoverProject({ workspaceRoot: missingRoot });
 		expect(missing.files).toEqual([]);
 		expect(missing.diagnostics.map((diagnostic) => diagnostic.severity)).toEqual(["error"]);
 	});

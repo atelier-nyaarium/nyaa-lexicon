@@ -23,6 +23,7 @@ import {
 	ResolutionModeSchema,
 } from "./project.js";
 import { RenameEditsRequestSchema, RenameEditsResponseSchema } from "./rename.js";
+import { SecretsConfigSchema } from "./secrets.js";
 import { RangeSchema, ReferenceRoleSchema } from "./symbols.js";
 import { BindingSchema, TypeInfoSchema, UnknownReasonSchema } from "./values.js";
 
@@ -92,12 +93,32 @@ export const ProviderWordsSchema = z
 
 export type ProviderWords = z.infer<typeof ProviderWordsSchema>;
 
+const SecretPolicyWireSchema = z.object({
+	revision: z.string().min(1),
+	builtIns: z.string().min(1),
+	secrets: SecretsConfigSchema,
+	deny: z.array(z.string()),
+	syntax: z.number().int().nonnegative(),
+	trackingKind: z.enum(["tracked", "untracked"]),
+	tracked: z.array(z.string()),
+	aliases: z.array(z.tuple([z.string(), z.array(z.string())])),
+	targets: z.array(z.tuple([z.string(), z.string()])),
+	directoryLinks: z.array(z.tuple([z.string(), z.string()])).optional(),
+});
+
+export const InstallPolicyRequestSchema = z
+	.object({ policy: SecretPolicyWireSchema })
+	.meta({ id: "InstallPolicyRequest" });
+
+export const InstallPolicyResponseSchema = z
+	.object({ changed: z.array(ModulePathSchema) })
+	.meta({ id: "InstallPolicyResponse" });
+
 export const InitializeRequestSchema = z
 	.object({
 		workspaceRoot: z.string().min(1),
 		protocolVersion: z.string().min(1),
-		/** Workspace globs the index denies; the provider reads none of them. */
-		deny: z.array(z.string()).optional(),
+		policy: SecretPolicyWireSchema,
 	})
 	.meta({ id: "InitializeRequest" });
 
@@ -328,6 +349,7 @@ export const ProviderErrorSchema = z
  */
 export const PROVIDER_METHODS = [
 	"initialize",
+	"installPolicy",
 	"discoverProject",
 	"parseFile",
 	"probeFile",
@@ -349,6 +371,7 @@ export type ProviderMethod = (typeof PROVIDER_METHODS)[number];
 /** Request and response schema per method, so a dispatcher validates both ends from one table. */
 export const METHOD_SCHEMAS = {
 	initialize: { request: InitializeRequestSchema, response: InitializeResponseSchema },
+	installPolicy: { request: InstallPolicyRequestSchema, response: InstallPolicyResponseSchema },
 	discoverProject: { request: DiscoverProjectRequestSchema, response: ProjectModelSchema },
 	parseFile: { request: ParseFileRequestSchema, response: FileFactsSchema },
 	/** A parse the index never rules on: the provider answers, then holds what it held before. */

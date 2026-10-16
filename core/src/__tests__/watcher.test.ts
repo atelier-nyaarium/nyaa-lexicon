@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { FileEvent } from "../invalidation";
+import type { EvidenceSubscription } from "../policyEvidence";
 import {
 	admitted,
 	hashContent,
@@ -10,10 +11,12 @@ import {
 	type RunningWatcher,
 	readEvent,
 	toModule,
+	type WatchOptions,
 	type WatchScope,
 	watchWorkspace,
 } from "../watcher";
 import { fakeClock } from "./fakeClock";
+import { hashOfRead } from "./reads";
 
 ////////////////////////////////
 //  Helpers
@@ -22,6 +25,8 @@ let root: string;
 let watcher: RunningWatcher | undefined;
 
 const settle = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const watch = (options: Omit<WatchOptions, "hash">) => watchWorkspace({ ...options, hash: hashOfRead });
 
 function write(relative: string, text: string): void {
 	const full = path.join(root, relative);
@@ -80,14 +85,14 @@ describe("ignoring churn", () => {
 describe("reading an event", () => {
 	it("hashes what it read", () => {
 		write("a.ts", "hello");
-		const event = readEvent(root, "a.ts");
+		const event = readEvent(root, "a.ts", hashOfRead);
 		expect(event).toEqual({ kind: "changed", module: "a.ts", contentHash: hashContent("hello") });
 	});
 
 	// The indexer reads it and says why; the watcher only says it changed.
 	it("leaves a binary unhashed rather than hashing a mangled decode", () => {
 		writeFileSync(path.join(root, "b.bin"), Buffer.from([0x41, 0x00, 0x42]));
-		expect(readEvent(root, "b.bin")).toEqual({ kind: "changed", module: "b.bin", contentHash: null });
+		expect(readEvent(root, "b.bin", hashOfRead)).toEqual({ kind: "changed", module: "b.bin", contentHash: null });
 	});
 
 	it("gives the same hash for the same content, and a different one otherwise", () => {
@@ -96,7 +101,10 @@ describe("reading an event", () => {
 	});
 
 	it("reports a vanished file as deleted rather than failing the batch", () => {
-		expect(readEvent(root, "never-existed.ts")).toEqual({ kind: "deleted", module: "never-existed.ts" });
+		expect(readEvent(root, "never-existed.ts", hashOfRead)).toEqual({
+			kind: "deleted",
+			module: "never-existed.ts",
+		});
 	});
 });
 
@@ -104,7 +112,7 @@ describe("batching", () => {
 	it("delivers one batch for a burst rather than one event each", async () => {
 		const batches: FileEvent[][] = [];
 		write("a.ts", "1");
-		watcher = watchWorkspace({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
+		watcher = watch({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
 
 		watcher.inject("a.ts");
 		watcher.inject("a.ts");
@@ -120,7 +128,7 @@ describe("batching", () => {
 		const batches: FileEvent[][] = [];
 		const clock = fakeClock();
 		write("a.ts", "1");
-		watcher = watchWorkspace({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20, clock });
+		watcher = watch({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20, clock });
 
 		watcher.inject("a.ts");
 		clock.advance(15);
@@ -136,7 +144,7 @@ describe("batching", () => {
 	it("carries the last state of each file in the burst", async () => {
 		const batches: FileEvent[][] = [];
 		write("a.ts", "first");
-		watcher = watchWorkspace({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
+		watcher = watch({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
 
 		watcher.inject("a.ts");
 		write("a.ts", "second");
@@ -150,7 +158,7 @@ describe("batching", () => {
 		const batches: FileEvent[][] = [];
 		write("a.ts", "1");
 		write("b.ts", "2");
-		watcher = watchWorkspace({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
+		watcher = watch({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
 
 		watcher.inject("a.ts");
 		watcher.inject("b.ts");
@@ -161,7 +169,7 @@ describe("batching", () => {
 
 	it("drops ignored paths before they reach a batch", async () => {
 		const batches: FileEvent[][] = [];
-		watcher = watchWorkspace({
+		watcher = watch({
 			workspaceRoot: root,
 			onBatch: (b) => batches.push(b),
 			debounceMs: 20,
@@ -177,7 +185,7 @@ describe("batching", () => {
 	it("delivers nothing after stop, so a late burst cannot outlive the watcher", async () => {
 		const batches: FileEvent[][] = [];
 		write("a.ts", "1");
-		watcher = watchWorkspace({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
+		watcher = watch({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 20 });
 
 		watcher.stop();
 		watcher.inject("a.ts");
@@ -188,7 +196,7 @@ describe("batching", () => {
 
 	it("sees a real filesystem write, not only injected events", async () => {
 		const batches: FileEvent[][] = [];
-		watcher = watchWorkspace({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 30 });
+		watcher = watch({ workspaceRoot: root, onBatch: (b) => batches.push(b), debounceMs: 30 });
 
 		write("real.ts", "written");
 		await settle(200);
@@ -200,7 +208,7 @@ describe("batching", () => {
 		const batches: FileEvent[][] = [];
 		const clock = fakeClock();
 		write("a.ts", "1");
-		watcher = watchWorkspace({
+		watcher = watch({
 			workspaceRoot: root,
 			onBatch: (b) => batches.push(b),
 			debounceMs: 20,
@@ -219,13 +227,19 @@ describe("batching", () => {
 });
 
 describe("asking the scope before reading", () => {
-	const scopeOf = (admits: WatchScope["admits"], ignored: WatchScope["ignored"]): WatchScope => ({ admits, ignored });
+	const scopeOf = (admits: WatchScope["admits"], ignored: WatchScope["ignored"]): WatchScope => ({
+		subscriptions: () => [],
+		onSubscriptionsChanged: () => () => {},
+		watchesModule: () => false,
+		admits,
+		ignored,
+	});
 
 	it("reads what the scope holds without asking git", async () => {
 		const batches: FileEvent[][] = [];
 		let asked = 0;
 		write("a.ts", "1");
-		watcher = watchWorkspace({
+		watcher = watch({
 			workspaceRoot: root,
 			onBatch: (b) => batches.push(b),
 			debounceMs: 20,
@@ -250,7 +264,7 @@ describe("asking the scope before reading", () => {
 		const asked: string[][] = [];
 		write("volumes/state.json", "{}");
 		write("src/new.ts", "1");
-		watcher = watchWorkspace({
+		watcher = watch({
 			workspaceRoot: root,
 			onBatch: (b) => batches.push(b),
 			debounceMs: 20,
@@ -275,7 +289,7 @@ describe("asking the scope before reading", () => {
 	it("delivers no batch for a burst git ignores entirely", async () => {
 		const batches: FileEvent[][] = [];
 		write("volumes/state.json", "{}");
-		watcher = watchWorkspace({
+		watcher = watch({
 			workspaceRoot: root,
 			onBatch: (b) => batches.push(b),
 			debounceMs: 20,
@@ -296,7 +310,7 @@ describe("asking the scope before reading", () => {
 		write("a.ts", "1");
 		write("b.ts", "2");
 		const resolvers: Array<(value: Set<string>) => void> = [];
-		watcher = watchWorkspace({
+		watcher = watch({
 			workspaceRoot: root,
 			onBatch: (b) => batches.push(b),
 			debounceMs: 5,
@@ -338,7 +352,7 @@ describe("asking the scope before reading", () => {
 		const batches: FileEvent[][] = [];
 		write("new.ts", "1");
 		let calls = 0;
-		watcher = watchWorkspace({
+		watcher = watch({
 			workspaceRoot: root,
 			onBatch: (b) => batches.push(b),
 			debounceMs: 10,
@@ -358,5 +372,160 @@ describe("asking the scope before reading", () => {
 
 		expect(calls).toBe(2);
 		expect(batches.map((b) => b.map((e) => e.module))).toEqual([["new.ts"]]);
+	});
+});
+
+describe("following evidence subscriptions", () => {
+	let outside: string;
+	let first: string;
+	let second: string;
+
+	function subscription(file: string, key: EvidenceSubscription["keys"][number]): EvidenceSubscription {
+		const stat = statSync(file);
+		return {
+			path: file,
+			keys: [key],
+			fingerprint: `${stat.mtimeMs}:${stat.size}:${stat.ino}`,
+		};
+	}
+
+	function movingScope(initial: EvidenceSubscription[]) {
+		const listeners = new Set<() => void>();
+		let current = initial;
+		const scope: WatchScope = {
+			subscriptions: () => current,
+			onSubscriptionsChanged: (listener) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			watchesModule: () => false,
+			admits: () => true,
+			ignored: async () => new Set(),
+		};
+		return {
+			scope,
+			listeners,
+			move: (subscriptions: EvidenceSubscription[]) => {
+				current = subscriptions;
+				for (const listener of listeners) listener();
+			},
+		};
+	}
+
+	beforeEach(() => {
+		outside = mkdtempSync(path.join(tmpdir(), "lexicon-watch-index-"));
+		first = path.join(outside, "a", "index");
+		second = path.join(outside, "b", "index");
+		for (const file of [first, second]) {
+			mkdirSync(path.dirname(file), { recursive: true });
+			writeFileSync(file, "0");
+		}
+	});
+
+	afterEach(() => {
+		rmSync(outside, { recursive: true, force: true });
+	});
+
+	it("catches an index change between collection and subscription once", async () => {
+		const batches: Array<{ files: FileEvent[]; evidence: readonly string[] }> = [];
+		const { scope, move } = movingScope([subscription(first, "listing:")]);
+		watcher = watch({
+			workspaceRoot: root,
+			onBatch: (files, evidence) => batches.push({ files, evidence }),
+			debounceMs: 20,
+			scope,
+		});
+
+		const collected = subscription(second, "listing:vendor");
+		writeFileSync(second, "1");
+		move([subscription(first, "listing:"), collected]);
+		await settle();
+
+		expect(batches).toEqual([{ files: [], evidence: ["listing:vendor"] }]);
+		batches.length = 0;
+		writeFileSync(second, "2");
+		await settle(150);
+		expect(batches).toEqual([{ files: [], evidence: ["listing:vendor"] }]);
+	});
+
+	it("drops a removed subscription and keeps the remaining path", async () => {
+		const batches: Array<{ files: FileEvent[]; evidence: readonly string[] }> = [];
+		const firstSubscription = subscription(first, "listing:first");
+		const secondSubscription = subscription(second, "listing:second");
+		const { scope, move } = movingScope([firstSubscription, secondSubscription]);
+		watcher = watch({
+			workspaceRoot: root,
+			onBatch: (files, evidence) => batches.push({ files, evidence }),
+			debounceMs: 20,
+			scope,
+		});
+
+		move([secondSubscription]);
+		await settle();
+		expect(batches).toEqual([]);
+
+		writeFileSync(first, "1");
+		await settle(150);
+		expect(batches).toEqual([]);
+
+		writeFileSync(second, "1");
+		await settle(150);
+		expect(batches).toEqual([{ files: [], evidence: ["listing:second"] }]);
+	});
+
+	it("emits one event for a moved fingerprint and none while it stays put", async () => {
+		const batches: Array<{ files: FileEvent[]; evidence: readonly string[] }> = [];
+		const current = subscription(first, "repositories");
+		const { scope, move } = movingScope([current]);
+		watcher = watch({
+			workspaceRoot: root,
+			onBatch: (files, evidence) => batches.push({ files, evidence }),
+			debounceMs: 20,
+			scope,
+		});
+
+		move([current]);
+		await settle();
+		expect(batches).toEqual([]);
+
+		const moved = { ...current, fingerprint: "moved" };
+		move([moved]);
+		await settle();
+		expect(batches).toEqual([{ files: [], evidence: ["repositories"] }]);
+
+		move([moved]);
+		await settle();
+		expect(batches).toHaveLength(1);
+	});
+
+	it("records a watched secret path beneath an ignored segment", async () => {
+		const batches: FileEvent[][] = [];
+		watcher = watch({
+			workspaceRoot: root,
+			onBatch: (files) => batches.push(files),
+			debounceMs: 20,
+			scope: {
+				subscriptions: () => [],
+				onSubscriptionsChanged: () => () => {},
+				admits: () => true,
+				ignored: async () => new Set(),
+				watchesModule: (module) => module === "dist/.env.local",
+			},
+		});
+
+		write("dist/.env.local", "API_KEY=PRIVATE\n");
+		watcher.inject("dist/.env.local");
+		await settle();
+
+		expect(batches.flat().map(({ module }) => module)).toEqual(["dist/.env.local"]);
+	});
+
+	it("stops following the scope when it stops", () => {
+		const { scope, listeners } = movingScope([subscription(first, "repositories")]);
+		watcher = watch({ workspaceRoot: root, onBatch: () => {}, scope });
+		expect(listeners.size).toBe(1);
+
+		watcher.stop();
+		expect(listeners.size).toBe(0);
 	});
 });

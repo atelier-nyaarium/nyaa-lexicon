@@ -1,11 +1,15 @@
 import { expect, test } from "bun:test";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { FileFactsSchema, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { KotlinProvider, LANGUAGE, REFERENCE_ROLES, TIERS } from "../main.js";
 
 test("initialize declares identity, every tier but docs, and the roles the provider emits", () => {
-	const handlers = handlersFor(new KotlinProvider());
+	const handlers = handlersFor(new KotlinProvider(), SECRET_READERS);
 
-	expect(handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION })).toMatchObject({
+	expect(
+		handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() }),
+	).toMatchObject({
 		providerId: "kotlin-provider",
 		language: LANGUAGE,
 		extensions: [".kt"],
@@ -16,8 +20,8 @@ test("initialize declares identity, every tier but docs, and the roles the provi
 });
 
 test("every handler answers, the notifications included, and write operations refuse with a closed reason", () => {
-	const handlers = handlersFor(new KotlinProvider());
-	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new KotlinProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: process.cwd() });
 
 	expect(Object.keys(handlers).sort()).toEqual([
@@ -28,6 +32,7 @@ test("every handler answers, the notifications included, and write operations re
 		"importEdits",
 		"indexRoots",
 		"initialize",
+		"installPolicy",
 		"judgeLoadCycle",
 		"moduleAdmission",
 		"moveEdits",
@@ -81,8 +86,8 @@ test("every handler answers, the notifications included, and write operations re
 });
 
 test("a full parse answers every collection; an outline keeps declarations, imports and diagnostics only", () => {
-	const handlers = handlersFor(new KotlinProvider());
-	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new KotlinProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: process.cwd() });
 	const text = [
 		"package demo",

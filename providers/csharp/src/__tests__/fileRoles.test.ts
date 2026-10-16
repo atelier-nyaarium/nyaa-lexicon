@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { FileFactsSchema, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CsharpProvider } from "../main.js";
 import { handlersOf, parseThroughKit } from "./harness.js";
 
@@ -15,8 +16,11 @@ it("names a static Main declaration as the entry point in parses and probes", ()
 	if (main === undefined) throw new Error("Main declaration missing");
 
 	expect(
-		handlersOf(provider).initialize({ workspaceRoot: "/workspace", protocolVersion: PROTOCOL_VERSION }).tiers
-			.fileRoles,
+		handlersOf(provider).initialize({
+			workspaceRoot: "/workspace",
+			protocolVersion: PROTOCOL_VERSION,
+			policy: secretWire(),
+		}).tiers.fileRoles,
 	).toBe(true);
 	expect(parsed.role).toEqual({ kind: "entry", how: "main", symbolId: main.symbolId });
 	expect(

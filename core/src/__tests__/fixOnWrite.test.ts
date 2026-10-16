@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { readScopeConfig } from "../fileScope";
+import type { ScopeConfig } from "../fileScope";
 import { runFix } from "../fixOnWrite";
+import { testPolicy } from "./testPolicy";
 
 let root: string;
 
@@ -13,6 +14,12 @@ const files = process.argv.slice(2);
 if (files[0] === "./bad.ts") { console.error("cannot fix bad.ts"); process.exit(3); }
 for (const file of files) await Bun.write(file, (await Bun.file(file).text()) + "// fixed\\n");
 `;
+
+async function configOf(root: string): Promise<ScopeConfig> {
+	const policy = testPolicy(root);
+	await policy.refresh({ kind: "startup" });
+	return policy.config;
+}
 
 beforeEach(() => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-fix-"));
@@ -26,7 +33,7 @@ afterEach(() => {
 
 it("runs the configured command on the written files and says how a failed run went", async () => {
 	writeFileSync(path.join(root, "lexicon.json"), JSON.stringify({ fix: [process.execPath, "fixer.ts"] }));
-	const argv = readScopeConfig(root).fix ?? [];
+	const argv = (await configOf(root)).fix ?? [];
 	const clean = await runFix(root, argv, ["a.ts"]);
 	const failed = await runFix(root, argv, ["bad.ts"]);
 	const missing = await runFix(root, ["no-such-fixer-anywhere"], ["a.ts"]);
@@ -37,7 +44,7 @@ it("runs the configured command on the written files and says how a failed run w
 		text: readFileSync(path.join(root, "a.ts"), "utf8"),
 		failed,
 		missing: missing?.startsWith("could not start"),
-		malformed: readScopeConfig(root).fix,
+		malformed: (await configOf(root)).fix,
 	}).toEqual({
 		clean: null,
 		text: "a\n// fixed\n",

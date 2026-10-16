@@ -8,7 +8,14 @@ import { normalizeModulePath } from "./symbolId.js";
 //  Interfaces & Types
 
 /** Where a module sits once links are resolved. */
-export type Contained = { kind: "file" | "absent"; path: string } | { kind: "outside" };
+export type Contained =
+	| {
+			kind: "file" | "absent";
+			path: string;
+			/** Actual opened workspace module. */
+			real?: string;
+	  }
+	| { kind: "outside" };
 
 /**
  * How the module's own leaf is judged. `follow` for a read, which opens what its links reach.
@@ -59,7 +66,10 @@ export function resolveContained(root: string, module: string, leaf: LeafMode = 
 	if (realRoot === null) return { kind: "absent", path: file };
 	if (leaf === "follow") {
 		const real = realOrNull(file);
-		if (real !== null) return under(realRoot, real) ? { kind: "file", path: real } : { kind: "outside" };
+		if (real !== null)
+			return under(realRoot, real)
+				? { kind: "file", path: real, real: workspaceModule(realRoot, real) ?? module }
+				: { kind: "outside" };
 	}
 	const parent = realpathSync(nearestExisting(path.dirname(file)));
 	if (!under(realRoot, parent)) return { kind: "outside" };

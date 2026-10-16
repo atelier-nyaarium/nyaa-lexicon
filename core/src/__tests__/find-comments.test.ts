@@ -6,6 +6,7 @@ import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
 import type { AttachedComment } from "../commentAttach.js";
 import { IndexReadModel } from "../indexReads";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 
 ////////////////////////////////
 //  Helpers
@@ -61,7 +62,7 @@ afterEach(() => {
 
 describe("searching comments", () => {
 	beforeEach(() => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("work")],
@@ -74,7 +75,7 @@ describe("searching comments", () => {
 				{ ...comment("TODO handle the empty case", idOf("work")), form: "trailing", placement: "after" },
 			],
 		});
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/b.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -144,7 +145,7 @@ describe("searching comments", () => {
 	});
 
 	it("says when a page was cut rather than reporting the cap as a total", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/c.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -168,7 +169,7 @@ describe("searching comments", () => {
 
 	it("counts every match, however far past the page it goes", () => {
 		const many = Array.from({ length: 40 }, (_, index) => comment(`common phrase ${index}`, null));
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/e.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -187,7 +188,7 @@ describe("searching comments", () => {
 	// A long banner is hundreds of lines and no caller asked for them.
 	it("caps a long comment and says how much it cut", () => {
 		const lines = Array.from({ length: 20 }, (_, index) => `// line ${index}`).join("\n");
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/d.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -207,7 +208,7 @@ describe("searching comments", () => {
 	// cap does nothing about.
 	it("caps a comment that is wide rather than tall", () => {
 		const wide = `// ${"W".repeat(5_000)}`;
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/f.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -232,7 +233,7 @@ describe("a literal search counts every match too", () => {
 			value: "repeated",
 			range: POINT,
 		}));
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -254,7 +255,7 @@ describe("a literal search counts every match too", () => {
 			number: index,
 			range: POINT,
 		}));
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/b.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -269,7 +270,7 @@ describe("a literal search counts every match too", () => {
 
 describe("describe carries what else was written", () => {
 	it("lists notes but not the documentation, which prints above", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("work")],
@@ -289,7 +290,7 @@ describe("describe carries what else was written", () => {
 	});
 
 	it("omits the section when nothing but documentation was written", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration("work")],

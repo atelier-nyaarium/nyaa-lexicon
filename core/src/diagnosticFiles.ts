@@ -65,6 +65,15 @@ const HostSchema = z.object({
 	sampler: z.enum(["procfs", "none"]),
 });
 
+/** How this major handles freed pages; deferrals wait for an open. */
+const ScrubSchema = z.discriminatedUnion("status", [
+	z.object({ status: z.literal("done"), major: z.number(), ms: z.number() }),
+	z.object({ status: z.literal("deferred"), major: z.number(), reason: z.string() }),
+]);
+
+/** Index state recorded at daemon start. */
+const StoreSchema = z.object({ scrub: ScrubSchema.nullable() });
+
 const CollectionSchema = z.object({
 	writtenAt: z.number(),
 	workspaceRoot: z.string(),
@@ -74,6 +83,8 @@ const CollectionSchema = z.object({
 	samples: z.array(SampleSchema),
 	/** Absent from a daemon that kept none. */
 	timings: TimingsSchema.optional(),
+	/** Omitted when the daemon reported none. */
+	store: StoreSchema.optional(),
 });
 
 export const DiagnosticsSchema = CollectionSchema.extend({ version: z.literal(2), host: HostSchema });
@@ -92,6 +103,7 @@ const LegacyDiagnosticsSchema = CollectionSchema.extend({
 });
 
 export type Diagnostics = z.infer<typeof DiagnosticsSchema>;
+export type StoreState = z.infer<typeof StoreSchema>;
 export type SampleContext = z.infer<typeof ContextSchema>;
 export type Sample = z.infer<typeof SampleSchema>;
 export type ProcessSample = z.infer<typeof ProcessSampleSchema>;

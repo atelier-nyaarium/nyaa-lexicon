@@ -12,10 +12,9 @@ import {
 import type { METHOD_SCHEMAS, NOTIFICATION_SCHEMAS, ProviderMethod } from "./methods.js";
 import { type ModuleValue, type StoreProvider, storeHandlersFor } from "./moduleStore.js";
 import type { ProjectModel } from "./project.js";
-import { type ReadPolicy, readPolicy } from "./readPolicy.js";
+import { createReadPolicyState, type ReadPolicy, type SecretReaders } from "./readPolicy.js";
 import { type ProviderEvents, type ProviderHandlers, type ProviderNotificationHandlers, whenServed } from "./serve.js";
 import { shebangInterpreter } from "./shebang.js";
-import { readWorkspaceHead } from "./sourceFile.js";
 import type { Descriptor } from "./symbolId.js";
 import { workspaceModule } from "./workspacePath.js";
 
@@ -65,6 +64,8 @@ export interface WalkOptions {
 	everything?: boolean;
 	/** Core-owned workspace-relative modules to consider. */
 	scope?: readonly string[] | undefined;
+	/** Read policy for extensionless claims. */
+	policy?: ReadPolicy;
 }
 
 /** Provider state carried along one import path. */
@@ -109,15 +110,20 @@ const UNDECLARED_EXCLUDED_DIRECTORIES: ExcludedDirectories = {
 /** Wire stateless methods; probes call `parseFile`. */
 export function handlersFor<V extends ModuleValue, P, E>(
 	provider: ProviderMethods | StoreProvider<V, P, E>,
+	readers: SecretReaders,
 ): ProviderHandlers & ProviderNotificationHandlers {
-	if ("store" in provider) return storeHandlersFor(provider);
+	if ("store" in provider) return storeHandlersFor(provider, readers);
+	const policy = createReadPolicyState(readers);
 	const judgeLoadCycle = provider.judgeLoadCycle;
 	const releaseLoadCycle = provider.releaseLoadCycle;
 	const prepareLoadCyclePreview = provider.prepareLoadCyclePreview;
 	const releaseLoadCyclePreview = provider.releaseLoadCyclePreview;
 	const handlers: ProviderHandlers & ProviderNotificationHandlers = {
-		initialize: (params) =>
-			provider.initialize(params.workspaceRoot, readPolicy(params.workspaceRoot, params.deny)),
+		initialize: (params) => {
+			policy.reset(params.workspaceRoot, params.policy);
+			return provider.initialize(params.workspaceRoot, policy);
+		},
+		installPolicy: (params) => ({ changed: policy.install(params.policy) }),
 		discoverProject: (params) => provider.discoverProject(params.workspaceRoot, params.scope),
 		parseFile: (params) => provider.parseFile(params),
 		probeFile: (params) => provider.parseFile(params),
@@ -262,7 +268,8 @@ function extensionless(name: string): boolean {
 function claimsOf(root: string, options: WalkOptions) {
 	const shebangs = options.shebangs ?? [];
 	const byShebang = (module: string | null) => {
-		const interpreter = module === null ? undefined : shebangInterpreter(readWorkspaceHead(root, module) ?? "");
+		const interpreter =
+			module === null ? undefined : shebangInterpreter(options.policy?.readHead(path.join(root, module)) ?? "");
 		return interpreter !== undefined && shebangs.includes(interpreter);
 	};
 	return {

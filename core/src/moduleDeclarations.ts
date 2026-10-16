@@ -1,20 +1,27 @@
 // One module's status, both hashes and its rows as ONE snapshot: no await and no async here, so a
 // watcher batch cannot land between the read and the rows.
 
-import type { ModuleDeclarations, ModuleStatus, SourceReadOutcome, StoredDeclaration } from "@nyaa-lexicon/protocol";
+import {
+	defined,
+	type ModuleDeclarations,
+	type ModuleStatus,
+	type SourceReadOutcome,
+	type StoredDeclaration,
+} from "@nyaa-lexicon/protocol";
 import {
 	DENIED_BY_SCOPE_REASON,
 	OUTSIDE_WORKSPACE_REASON,
-	type SourceRead,
+	type SealedRead,
+	type SealedText,
 	type SourceReader,
 	unreadableReason,
 } from "./sourceRead.js";
-import { hashContent } from "./watcher.js";
 
 ////////////////////////////////
 //  Interfaces & Types
 
-export type ModuleClaim = { claimed: true; provider: string } | { claimed: false; unclaimedReason: string };
+/** Claimed by the provider or index secret reader. */
+export type ModuleClaim = { claimed: true; provider?: string } | { claimed: false; unclaimedReason: string };
 
 /** The synchronous reads the snapshot is made of. */
 export interface ModuleStoreReads {
@@ -28,6 +35,8 @@ export interface ModuleDeclarationsDeps {
 	claimOf(module: string): ModuleClaim;
 	denies(module: string): boolean;
 	readSource: SourceReader;
+	/** Hash of policy-visible text. */
+	hashOfRead(read: SealedText): string;
 	store: ModuleStoreReads;
 }
 
@@ -38,7 +47,7 @@ export interface ModuleDeclarationsDeps {
 export function statusOf(
 	module: string,
 	claim: ModuleClaim,
-	read: SourceRead | null,
+	read: SealedRead | null,
 	store: ModuleStoreReads,
 ): ModuleStatus {
 	const depth = store.depthOf(module);
@@ -50,7 +59,7 @@ export function statusOf(
 		module,
 		exists: read !== null && read.kind !== "missing" && read.kind !== "outside",
 		claimed: judged.claimed,
-		...(judged.claimed ? { provider: judged.provider } : { unclaimedReason: judged.unclaimedReason }),
+		...(judged.claimed ? defined({ provider: judged.provider }) : { unclaimedReason: judged.unclaimedReason }),
 		indexed: depth !== null,
 		...(depth === null ? {} : { depth }),
 		...(failure === null ? {} : { failure: failure.reason }),
@@ -58,7 +67,7 @@ export function statusOf(
 }
 
 /** An older client's closed enum has no `outside`, so it reads as missing. */
-function readOutcome(read: SourceRead | null): SourceReadOutcome {
+function readOutcome(read: SealedRead | null): SourceReadOutcome {
 	if (read === null) return { kind: "missing", detail: DENIED_BY_SCOPE_REASON };
 	switch (read.kind) {
 		case "binary":
@@ -79,7 +88,7 @@ export function moduleDeclarations(module: string, deps: ModuleDeclarationsDeps)
 		...statusOf(module, deps.claimOf(module), read, deps.store),
 		read: readOutcome(read),
 		contentHash,
-		diskHash: read?.kind === "text" ? hashContent(read.text) : null,
+		diskHash: read?.kind === "text" ? deps.hashOfRead(read) : null,
 		declarations: contentHash === null ? [] : deps.store.declarationsIn(module),
 	};
 }

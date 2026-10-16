@@ -164,7 +164,7 @@ export class CBinding {
 			receiver.member === true
 				? this.memberBinding(module, facts, receiver, cache, depth + 1)
 				: this.bindingForReference(module, facts, receiver, cache);
-		if (binding.status === "unbound") return binding;
+		if (binding.status === "unbound" || binding.status === "unknown") return binding;
 		if (binding.status === "ambiguous")
 			return unknownBinding("Ambiguous", `the receiver of ${reference.name} has more than one declaration`);
 		const owner = this.memberOwner(this.declared(module, facts, binding.symbolId), 0);

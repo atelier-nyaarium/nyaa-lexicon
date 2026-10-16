@@ -301,7 +301,7 @@ export type ReplacePreview = z.infer<typeof ReplacePreviewSchema>;
 
 export const RefactorBeforeImageSchema = z
 	.union([
-		z.object({ tracked: z.literal(false) }),
+		z.object({ tracked: z.literal(false), reason: z.string().optional() }),
 		z.object({ tracked: z.literal(true), existed: z.literal(false) }),
 		z.object({
 			tracked: z.literal(true),

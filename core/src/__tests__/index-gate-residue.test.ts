@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { callsIn, lineOf, type ParsedSource, parseSource } from "@nyaa-lexicon/protocol/ast";
 import ts from "typescript";
 
@@ -15,6 +15,8 @@ import ts from "typescript";
  * verdict can detect afterwards. The upgrade walk and the warm scan were both outside the gate.
  */
 const CORE = join(import.meta.dirname, "..");
+const REPO = join(CORE, "..", "..");
+const LSP_SERVE = join(REPO, "adapters", "lsp", "src", "serve.ts");
 
 /** What opens an exclusive hold, whatever the receiver is called. */
 const HOLD_OPENERS = ["exclusive", "write"];
@@ -55,6 +57,8 @@ const CALLER_HELD = new Set([
 	"writeRenameEdits",
 	"reindexOwed",
 	"recoverSteps",
+	"reconcilePolicy",
+	"reconcileSecretPolicy",
 ]);
 
 /**
@@ -70,10 +74,11 @@ const GATE_OWNER = "service.ts";
 //  Functions & Helpers
 
 function coreSources(): ParsedSource[] {
-	return readdirSync(CORE)
+	const core = readdirSync(CORE)
 		.filter((entry) => entry.endsWith(".ts"))
 		.map((entry) => join(CORE, entry))
 		.map((file) => parseSource(file, readFileSync(file, "utf8")));
+	return [...core, parseSource(LSP_SERVE, readFileSync(LSP_SERVE, "utf8"))];
 }
 
 /** The member a call reaches, so `gate.exclusive` and a bare `write` read alike. */
@@ -151,7 +156,7 @@ function enclosingFunction(node: ts.Node): string | undefined {
 }
 
 function shortName(parsed: ParsedSource): string {
-	return parsed.file.slice(CORE.length + 1);
+	return parsed.file.startsWith(CORE) ? parsed.file.slice(CORE.length + 1) : relative(REPO, parsed.file);
 }
 
 /** Whether this file builds a gate of its own. */

@@ -2,7 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, moduleOf, normalizeModulePath, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { GDScriptProvider } from "../main.js";
 import { discoverProjectCore } from "../projectCore.js";
 
@@ -116,8 +118,8 @@ function workspace(files: Record<string, string>) {
 		writeFileSync(full, text);
 	}
 	const provider = new GDScriptProvider();
-	const handlers = handlersFor(provider);
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(provider, SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	const model = handlers.discoverProject({ workspaceRoot: root });
 	const parse = (module: string, depth?: "outline") =>
 		handlers.parseFile({ module, contentHash: module, text: files[module] ?? "", ...(depth ? { depth } : {}) });

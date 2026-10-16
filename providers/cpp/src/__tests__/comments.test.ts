@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { coordinatesOf, FileFactsSchema, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CppProvider, TIERS } from "../main.js";
 import { parseCppFile } from "../parser.js";
 
@@ -88,8 +90,8 @@ describe("C++ comment spans", () => {
 	});
 
 	test("declares the comments tier and answers parseFile with the spans", () => {
-		const handlers = handlersFor(new CppProvider());
-		handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		const handlers = handlersFor(new CppProvider(), SECRET_READERS);
+		handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 		handlers.discoverProject({ workspaceRoot: process.cwd() });
 		const text = "// header\nint value = 1;\n";
 		const facts = FileFactsSchema.parse(handlers.parseFile({ module: "source.cpp", contentHash: "source", text }));

@@ -27,6 +27,7 @@ const OWNERS = new Set([
 	"manage.ts",
 	"projectIndexState.ts",
 	"projectRegistry.ts",
+	"storePurge.ts",
 	"transactions.ts",
 ]);
 

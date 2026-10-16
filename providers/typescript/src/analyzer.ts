@@ -187,11 +187,8 @@ export class TypeScriptAnalyzer {
 				return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text);
 			},
 			getScriptVersion: (fileName) => this.scriptVersion(fileName),
-			fileExists: (fileName) =>
-				this.hostText(fileName) !== undefined ||
-				(overlay?.frozen !== true && loaded.system.fileExists(fileName)),
-			readFile: (fileName) =>
-				this.hostText(fileName) ?? (overlay?.frozen === true ? undefined : loaded.system.readFile(fileName)),
+			fileExists: (fileName) => this.hostText(fileName) !== undefined,
+			readFile: (fileName) => this.hostText(fileName),
 			readDirectory:
 				overlay?.frozen === true
 					? (root, extensions) => frozenFiles(overlay, root, extensions)
@@ -865,12 +862,12 @@ export class TypeScriptAnalyzer {
 
 	private hostText(fileName: string): string | undefined {
 		const module = this.toModule(fileName);
-		const { system } = this.project.loaded;
 		const proposed = module === null ? undefined : this.overlay?.files.get(module);
 		if (proposed !== undefined) return proposed.text;
 		if (this.overlay?.frozen === true) return this.overlay.backing?.get(path.resolve(fileName));
-		if (module === null || this.isExternal(fileName) || !claimsExtension(module)) return system.readFile(fileName);
-		return this.store.text(module)?.text ?? system.readFile(fileName);
+		if (module === null || this.isExternal(fileName) || !claimsExtension(module))
+			return this.store.policy.readText(fileName);
+		return this.store.text(module)?.text ?? this.store.policy.readText(fileName);
 	}
 
 	private scriptVersion(fileName: string): string {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FOLD_MARK, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { PythonProvider, wireHandlers } from "../main";
 
 const roots: string[] = [];
@@ -16,7 +17,7 @@ async function signatures(lines: string[]): Promise<Map<string, string | undefin
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-python-header-"));
 	roots.push(root);
 	const handlers = wireHandlers(new PythonProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	const facts = await handlers.parseFile({ module: "src/header.py", contentHash: "hash", text: lines.join("\n") });
 	return new Map(facts.declarations.map((declaration) => [declaration.name, declaration.signature]));
@@ -157,7 +158,7 @@ describe("Python declaration headers", () => {
 			const root = mkdtempSync(path.join(tmpdir(), "lexicon-python-header-meter-"));
 			roots.push(root);
 			const handlers = wireHandlers(new PythonProvider(undefined, meter));
-			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 			handlers.discoverProject({ workspaceRoot: root });
 			const found = await handlers.parseFile({
 				module: "src/header.py",

@@ -6,14 +6,15 @@ import type { Binding } from "@nyaa-lexicon/protocol";
 import { REBIND_CAP } from "../indexer";
 import { type LiveIndex, startLiveIndex } from "../liveIndex";
 import type { MethodRequest } from "../providerPort";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { BATCH_MS, IndexStore, LOST_RETRY_MS } from "../store";
+import { writePlain } from "./admissions";
 import { type FakeClock, fakeClock } from "./fakeClock";
 import { fakeImports, fakeUses } from "./fakeGrammar";
 import { fakeSupervisor, parseClasses, parseFake, rangesOf } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
 import { failingCommit } from "./storeFailures";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -163,7 +164,7 @@ describe("a lost batch", () => {
 		};
 		let pumped: Promise<void> = Promise.resolve();
 		const pass = store.pass(async () => {
-			store.replaceFile({ module: "held.fake", contentHash: "h", declarations: [], references: [] });
+			writePlain(store, { module: "held.fake", contentHash: "h", declarations: [], references: [] });
 			failingCommit(store).arm();
 			clock.advance(BATCH_MS);
 			pumped = service.upgradeRemaining();

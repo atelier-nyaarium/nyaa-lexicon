@@ -18,6 +18,7 @@ import { FactAdmissionError } from "../factAdmission";
 import { ImportResolver } from "../imports";
 import { factsMovedSince, ReadContext } from "../readContext";
 import { IndexStore } from "../store";
+import { failPlain, forgetPlain, writePlain } from "./admissions";
 import { direct, edge, forwarding, landed, named, onLine, TS_CONFLICT } from "./importEdges";
 
 ////////////////////////////////
@@ -70,7 +71,7 @@ function write(module: string, shape: Shape = {}, settle = true): void {
 		const resolution = typeof to === "string" ? landed(to) : ({ status: "resolved", landing: to } as const);
 		return [specifier, resolution] as const;
 	});
-	store.replaceFile({
+	writePlain(store, {
 		module,
 		contentHash: JSON.stringify(shape),
 		declarations,
@@ -250,7 +251,7 @@ describe("the export resolver", () => {
 
 	it("reads unknown what it cannot prove: coverage a module never reported, and a name its target lacks", () => {
 		write("a.ts", { names: ["x"] });
-		store.replaceFile({
+		writePlain(store, {
 			module: "opaque.ts",
 			contentHash: "o",
 			declarations: declared("opaque.ts", ["seen"]),
@@ -343,7 +344,7 @@ describe("the export resolver", () => {
 			visibility: "public",
 			exported: true,
 		}));
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ts",
 			contentHash: "a",
 			declarations,
@@ -418,7 +419,7 @@ describe("the export resolver", () => {
 	});
 
 	it("brings no unknown coverage through a filter that names nothing", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "opaque.ts",
 			contentHash: "o",
 			declarations: declared("opaque.ts", ["seen"]),
@@ -465,10 +466,10 @@ describe("settlement", () => {
 			imports: [named("./a", "x", onLine(line))],
 			resolutions: new Map([["./a", landed("a.ts")]]),
 		});
-		store.replaceFile(at(1));
+		writePlain(store, at(1));
 		const ids = store.referencesIn("c.ts").map((row) => row.factId);
 
-		expect({ moved: store.replaceFile(at(2)), ids: store.referencesIn("c.ts").map((row) => row.factId) }).toEqual({
+		expect({ moved: writePlain(store, at(2)), ids: store.referencesIn("c.ts").map((row) => row.factId) }).toEqual({
 			moved: null,
 			ids,
 		});
@@ -521,8 +522,8 @@ describe("settlement", () => {
 	});
 
 	it("moves nothing held before when it forgets a module only a parse failure named", () => {
-		store.recordFailure("broken.ts", "syntax");
-		store.forgetFile("broken.ts");
+		failPlain(store, "broken.ts", "syntax");
+		forgetPlain(store, "broken.ts");
 
 		expect(store.surfaceMovesOf(["broken.ts"]).get("broken.ts")?.heldBefore).toBe(false);
 	});
@@ -547,7 +548,7 @@ describe("stored edges", () => {
 		});
 		const allList: AllList = { state: "dynamic", reason: "NotIndexed" };
 		const origin = { kind: "import" as const, span: onLine(1), path: ["deep"] };
-		store.replaceFile({
+		writePlain(store, {
 			module: "r.ts",
 			contentHash: "r",
 			declarations: declared("r.ts", ["member"]),
@@ -609,7 +610,7 @@ describe("stored edges", () => {
 		const scope = { kind: "packageScope" as const, providerId: "ts", scopeId: "com.acme" };
 		const key = scopeKey(scope);
 		const contribute = (module: string, members: string[], scopeId = scope.scopeId) =>
-			store.replaceFile({
+			writePlain(store, {
 				module,
 				contentHash: `${module}:${members.join()}`,
 				declarations: declared(module, members),
@@ -621,7 +622,7 @@ describe("stored edges", () => {
 			() => contribute("s1.ts", []),
 			() => write("unrelated.ts", { names: ["u"] }),
 			() => contribute("s2.ts", ["m"]),
-			() => store.forgetFile("s1.ts"),
+			() => forgetPlain(store, "s1.ts"),
 		];
 		const advanced = steps.map((step) => {
 			const before = [store.factsGeneration(), store.scopeGeneration(key)];

@@ -175,6 +175,10 @@ export {
 	ModuleDeclarationsSchema,
 	type ModuleFactsResult,
 	ModuleFactsResultSchema,
+	type ModuleSecretModeAnswer,
+	ModuleSecretModeSchema,
+	type ModuleSecretModeValue,
+	ModuleSecretModeValueSchema,
 	type ModuleStatus,
 	ModuleStatusSchema,
 	type MostReferencedEntry,
@@ -381,6 +385,7 @@ export {
 	parseFactIdResult,
 	referenceFactId,
 } from "./factId.js";
+export { globToRegExp } from "./glob.js";
 export { hashBytes, hashContent } from "./hash.js";
 export {
 	blankLinesFromTrivia,
@@ -451,6 +456,8 @@ export {
 	IndexRootsNotificationSchema,
 	InitializeRequestSchema,
 	InitializeResponseSchema,
+	InstallPolicyRequestSchema,
+	InstallPolicyResponseSchema,
 	isProviderMethod,
 	METHOD_SCHEMAS,
 	type ModuleAdmission,
@@ -480,12 +487,7 @@ export {
 	ResolveImportRequestSchema,
 	TypeOfRequestSchema,
 } from "./methods.js";
-export {
-	compileExclusion,
-	globToRegExp,
-	type ModuleExclusion,
-	ModuleExclusionSchema,
-} from "./moduleExclusion.js";
+export { compileExclusion, type ModuleExclusion, ModuleExclusionSchema } from "./moduleExclusion.js";
 export { ModulePathSchema } from "./modulePath.js";
 export {
 	type AsyncModuleStore,
@@ -642,7 +644,14 @@ export {
 	workspaceFile,
 	workspaceModule,
 } from "./providerKit.js";
-export { OPEN_READ_POLICY, type ReadPolicy, readPolicy } from "./readPolicy.js";
+export {
+	createReadPolicyState,
+	OPEN_READ_POLICY,
+	type ReadPolicy,
+	ReadPolicyState,
+	readPolicy,
+	type SecretReaders,
+} from "./readPolicy.js";
 export {
 	BuildRefInputSchema,
 	buildRef,
@@ -713,6 +722,19 @@ export {
 	RenameSiteSchema,
 } from "./rename.js";
 export { readSwept, sourceFiles } from "./residue.js";
+export {
+	type EffectiveSecretRule,
+	type SecretAnswer,
+	type SecretMatcherMap,
+	type SecretMatcherValue,
+	type SecretMode,
+	SecretModeSchema,
+	type SecretRule,
+	type SecretsConfig,
+	SecretsConfigSchema,
+	type ValueStatus,
+	ValueStatusSchema,
+} from "./secrets.js";
 export {
 	notImplementedBinding,
 	notImplementedImport,

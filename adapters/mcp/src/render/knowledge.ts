@@ -27,6 +27,9 @@ function noteAdvisories(note: Note): string[] {
 	for (const link of note.links.filter((entry) => entry.state === "broken")) {
 		found.push(`- **Broken ref:** ${code(link.written)} names nothing now.`);
 	}
+	for (const link of note.links.filter((entry) => entry.state === "withheld")) {
+		found.push(`- **Withheld ref:** ${code(link.written)} names a file withheld from the index.`);
+	}
 	const changed = note.links.filter((entry) => entry.state === "changed");
 	if (changed.length > 0) {
 		found.push(

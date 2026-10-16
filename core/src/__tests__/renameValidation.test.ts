@@ -14,6 +14,7 @@ import {
 import type { ProviderProbe } from "../providerProbe";
 import { proveRename, type RenameCandidate } from "../renameValidation";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 import { direct, forward, forwarding, landed, named } from "./importEdges";
 
 ////////////////////////////////
@@ -91,7 +92,7 @@ function facts(name: string, extra: Reference[] = [], first: string | null = idO
 
 function write(all: readonly FileFacts[]): void {
 	for (const each of all) {
-		store.replaceFile({
+		writePlain(store, {
 			module: each.module,
 			contentHash: each.contentHash,
 			declarations: each.declarations,

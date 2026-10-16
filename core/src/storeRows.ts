@@ -74,6 +74,7 @@ interface SymbolRow {
 	contains: string | null;
 	memberInsertLine: number | null;
 	languageKind: string | null;
+	valueStatus: string | null;
 }
 
 interface RefRow {
@@ -226,6 +227,7 @@ function rowToDeclaration(raw: unknown): StoredDeclaration {
 		...(row.contains === null ? {} : { contains: row.contains as StoredDeclaration["contains"] }),
 		...(row.memberInsertLine === null ? {} : { memberInsertLine: row.memberInsertLine }),
 		...(row.languageKind === null ? {} : { languageKind: row.languageKind }),
+		...(row.valueStatus === null ? {} : { valueStatus: row.valueStatus as StoredDeclaration["valueStatus"] }),
 	};
 }
 

@@ -44,6 +44,8 @@ import {
 	SCHEMA_VERSION,
 	type ScanCounts,
 	type ScopeContribution,
+	type SecretsConfig,
+	SecretsConfigSchema,
 	type StoredComment,
 	type StoredDeclaration,
 	type StoredDoc,
@@ -52,6 +54,7 @@ import {
 	type StoredImport,
 	type StoredLiteral,
 	type StoredReference,
+	type ValueStatus,
 } from "@nyaa-lexicon/protocol";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import type { AttachedComment } from "./commentAttach.js";
@@ -59,7 +62,16 @@ import { Database } from "./database.js";
 import { type EffectiveExport, type ScopeLanding, scopeKey, settleProjections } from "./exportProjection.js";
 import { admitFacts, spanKey } from "./factAdmission.js";
 import type { GeneratedVerdict } from "./fileScope.js";
-import { installRevisionTriggers, JOURNAL_DDL, JOURNAL_TABLES, keptBlobs } from "./journalSchema.js";
+import {
+	installAdmissionTriggers,
+	installRevisionTriggers,
+	JOURNAL_DDL,
+	JOURNAL_TABLE_NAMES,
+	JOURNAL_TABLES,
+	type JournalTable,
+	keptBlobs,
+	keptHashPairs,
+} from "./journalSchema.js";
 import { stampSeen } from "./lastSeen.js";
 import { NoteRows } from "./noteRows.js";
 import type { PatternDigest } from "./patternDigest.js";
@@ -67,6 +79,13 @@ import { ProjectIndexMarker } from "./projectIndexState.js";
 import { normalizeDocText } from "./proseText.js";
 import { RELATION_TABLES, RelationRows } from "./relationRows.js";
 import type { ScopeFilter } from "./scope.js";
+import type {
+	AdmittedBytes,
+	JournalAdmission,
+	SecretAdmission,
+	StoredAdmission,
+	StoredFailure,
+} from "./secretPolicy.js";
 import { StoreFactQueries } from "./storeFactQueries.js";
 import {
 	columnExists,
@@ -76,6 +95,18 @@ import {
 	tableExists,
 } from "./storeMigrations.js";
 import { StoreProjectionQueries } from "./storeProjections.js";
+import {
+	clearStaging,
+	type HeldAdmission,
+	installStaged,
+	markNew,
+	owesTruncate,
+	type PurgeState,
+	type ScrubOptions,
+	type ScrubReport,
+	StorePurge,
+	stagingOf,
+} from "./storePurge.js";
 import type { NoteRow, RoleRow } from "./storeRows.js";
 import { roleFromRow, rowToNote } from "./storeRows.js";
 import { FACT_TABLES, NOTES_TABLE, SCHEMA } from "./storeSchema.js";
@@ -107,6 +138,30 @@ export type {
 
 ////////////////////////////////
 //  Interfaces & Types
+
+export interface StoredSecretPolicy {
+	secrets: SecretsConfig;
+	deny: string[];
+}
+
+export interface HeldJournalImage extends StoredAdmission {
+	bytes: Uint8Array | null;
+}
+
+export interface UnadmittedJournalReference {
+	module: string;
+	hash: string;
+}
+
+function jsonArrayAt(value: unknown, path: string): unknown[] | null {
+	let current = value;
+	const keys = path === "$" ? [] : path.replace(/^\$\./, "").split(".");
+	for (const key of keys) {
+		if (typeof current !== "object" || current === null || Array.isArray(current)) return null;
+		current = (current as Record<string, unknown>)[key];
+	}
+	return Array.isArray(current) ? current : null;
+}
 
 declare const hiddenBrand: unique symbol;
 
@@ -145,11 +200,12 @@ export interface DocFilter {
 
 type EntryPoint = { module: string } & ({ how: "main"; symbolId: string } | { how: Exclude<EntryHow, "main"> });
 
-export interface ReplaceFileInput {
+/** File facts stored together. */
+export interface FileWrite {
 	module: string;
 	runtime?: "esm" | "cjs";
 	contentHash: string;
-	declarations: Declaration[];
+	declarations: Array<Declaration & { valueStatus?: ValueStatus | undefined }>;
 	references: Reference[];
 	imports?: Import[];
 	literals?: Literal[];
@@ -171,6 +227,16 @@ export interface ReplaceFileInput {
 	scopeContributions?: ScopeContribution[] | undefined;
 }
 
+/** File facts with policy admission. */
+export interface ReplaceFileInput extends FileWrite {
+	admission: SecretAdmission;
+}
+
+declare const overlayBrand: unique symbol;
+
+/** Speculative facts need no admission; only `readOverlaid` creates them. */
+export type OverlaidFile = FileWrite & { readonly [overlayBrand]: true };
+
 /** One commit of a module's rows: the depth they hold and the clock stamp the commit took. */
 export interface FactsStamp {
 	depth: IndexDepth;
@@ -190,6 +256,28 @@ export interface SurfaceChange {
 	/** Scope keys the module contributed to before or after the write; their importers rebind too. */
 	scopes: string[];
 }
+
+/** Rebuild carries non-regenerable knowledge and identity. */
+export interface Carried {
+	salvaged: ReturnType<typeof salvageKnowledge>;
+	/** The refactor ledger id. */
+	ledger: string | null;
+	/** When seeding ended; distinguishes untouched notes. */
+	seededAt: number | null;
+	/** Whether legacy JSON moves need lifting. */
+	liftRebinds: boolean;
+}
+
+/** Store creation options. */
+export interface CreateOptions {
+	clock: Clock;
+	/** Major recorded in the store. */
+	compatibility?: string | null | undefined;
+	scrub?: ScrubOptions | undefined;
+}
+
+/** Counts unplaced and unreadable rows. */
+type Restored = ReturnType<typeof restoreKnowledge>;
 
 /** One declaration as another module may bind to it. */
 interface SurfaceRow {
@@ -260,6 +348,11 @@ const COMPATIBILITY_KEY = "storeCompatibility";
 
 /** Meta key: when notes began. */
 const NOTES_SINCE_KEY = "notesSince";
+const SECRET_POLICY_KEY = "secretPolicy";
+
+/** How module rows and failures were admitted. */
+const HELD_FACTS = "SELECT policyStamp AS stamp, admittedAs FROM files WHERE module = ?";
+const HELD_FAILURE = "SELECT policyStamp AS stamp, admittedAs FROM parse_failures WHERE module = ?";
 
 /** Makes a held rebind debt payable again. */
 const UNBLOCK = "UPDATE rebind_owed SET blockedBy = NULL, blockedFor = NULL, blockedIn = NULL";
@@ -301,6 +394,112 @@ function readMeta(db: Database, key: string): string | null {
 
 function writeMeta(db: Database, key: string, value: string): void {
 	db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
+}
+
+/** Why opening drops rows, or null when they remain. */
+function rebuildReason(version: number, stored: string | null, compatibility?: string | null): string | null {
+	if (version === SCHEMA_VERSION) {
+		const moved = compatibility != null && stored !== null && stored !== compatibility;
+		return moved ? "a major version has shipped since this index was written" : null;
+	}
+	return version === 0 ? null : "the index schema changed";
+}
+
+/** Whether opening retains this file's rows. */
+function keepsRows(file: string, compatibility?: string | null): boolean {
+	let db: Database;
+	try {
+		db = Database.open(file, { readOnly: true });
+	} catch {
+		return false;
+	}
+	try {
+		const { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+		return (
+			version === SCHEMA_VERSION &&
+			rebuildReason(version, readMeta(db, COMPATIBILITY_KEY), compatibility) === null
+		);
+	} catch {
+		return false;
+	} finally {
+		db.close();
+	}
+}
+
+/** Store identity captured before replacement. */
+function originOf(db: Database): Omit<Carried, "salvaged"> {
+	const seeded = readMeta(db, NOTES_SEEDED_KEY);
+	return {
+		ledger: readMeta(db, LEDGER_KEY),
+		seededAt: seeded === null || !Number.isFinite(Number(seeded)) ? null : Number(seeded),
+		// Lift JSON move records from tableless stores.
+		liftRebinds: !tableExists(db, "refactor_rebinds"),
+	};
+}
+
+/** Knowledge and identity carried from a store. */
+export function carriedFrom(db: Database, origin: Omit<Carried, "salvaged"> = originOf(db)): Carried {
+	return { ...origin, salvaged: salvageKnowledge(db) };
+}
+
+/** Whether the file contains store tables. */
+function holdsStore(db: Database): boolean {
+	return (
+		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").get() !== undefined
+	);
+}
+
+/**
+ * Restores knowledge atomically and records the schema version last.
+ */
+function fillStore(db: Database, carried: Carried, options: CreateOptions): Restored {
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		db.exec(SCHEMA);
+		const restored = restoreKnowledge(db, carried.salvaged, options.clock.now(), carried.seededAt);
+		// Lift JSON journal rows in this commit.
+		if (carried.liftRebinds) restored.dropped += liftAppliedRebinds(db);
+		writeMeta(db, LEDGER_KEY, carried.ledger ?? randomUUID());
+		writeMeta(db, PROJECT_INDEX_LIFECYCLE_KEY, "unknown");
+		if (options.compatibility != null) writeMeta(db, COMPATIBILITY_KEY, options.compatibility);
+		markNew(db, options.scrub);
+		db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+		db.exec("COMMIT");
+		return restored;
+	} catch (error) {
+		db.exec("ROLLBACK");
+		throw error;
+	}
+}
+
+/**
+ * Stages restored rows, then closes and replaces the old store after WAL truncation.
+ * Uncarried rows are omitted.
+ */
+export function createStoreFile(
+	file: string,
+	carried: Carried,
+	options: CreateOptions,
+	held: Database | null = null,
+): Restored {
+	clearStaging(file);
+	const staged = Database.open(stagingOf(file));
+	let restored: Restored;
+	try {
+		restored = fillStore(staged, carried, options);
+		// The staged file is complete before WAL mode.
+		staged.exec("PRAGMA journal_mode = WAL");
+	} finally {
+		staged.close();
+	}
+	new ProjectIndexMarker(storePaths(path.dirname(file)).indexedStateFile).clear();
+	installStaged(file, held, options.scrub);
+	return restored;
+}
+
+/** Null admissions represent plain rows. */
+function admittedAsOf(admission: SecretAdmission | null): string | null {
+	return admission === null || admission.as === "plain" ? null : admission.as;
 }
 
 /** The persisted cursor, or the start when none is held or the held one has no recognisable shape. */
@@ -468,6 +667,8 @@ export class IndexStore {
 	private advances = 0;
 	/** Index writes open, inside which knowledge rows take only a subject's resolution. */
 	private indexWrites = 0;
+	/** Whether the WAL needs truncation. */
+	private readonly purge: StorePurge;
 	/** Generations read outside a speculation carry it; a rollback moves it past every epoch used. */
 	private epoch = 0;
 	private nextEpoch = 1;
@@ -480,6 +681,7 @@ export class IndexStore {
 		private readonly indexedState: ProjectIndexMarker,
 		private readonly workspaceRoot?: string,
 	) {
+		this.purge = new StorePurge(db, clock, () => this.batch !== null || this.transactionDepth > 0);
 		const knowledge = db.checkedWrites((sql) => this.checkKnowledgeWrite(sql));
 		this.subjects = new KnowledgeSubjects(knowledge, (changed) => this.recordKnowledgeWrite(changed));
 		this.notes = new NoteRows(knowledge, (changed) => this.recordKnowledgeWrite(changed));
@@ -509,11 +711,6 @@ export class IndexStore {
 		if (this.workspaceRoot === undefined) return;
 		if (readMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY) !== "complete")
 			writeMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY, "unknown");
-	}
-
-	clearProjectIndexed(): void {
-		this.indexedState.clear();
-		writeMeta(this.db, PROJECT_INDEX_LIFECYCLE_KEY, "unknown");
 	}
 
 	/** Runs a note write in one transaction, so a note and its links never land apart. */
@@ -580,6 +777,42 @@ export class IndexStore {
 		}
 	}
 
+	/** Writes that arm purge pay debt after commit. */
+	private owingWrite<T>(work: (armed: () => void) => T): T {
+		let owes = false;
+		try {
+			return this.indexWrite(() =>
+				work(() => {
+					owes = true;
+				}),
+			);
+		} finally {
+			if (owes) this.purge.settle(false);
+		}
+	}
+
+	/** Transactionally arms purge when a plain row's admission or stamp changes. */
+	private armIfOwed(next: SecretAdmission, sources: readonly string[], armed: () => void): void {
+		for (const sql of sources) {
+			const held = this.db.prepare(sql).get(next.module) as HeldAdmission | undefined;
+			if (held === undefined || !owesTruncate(held, next)) continue;
+			this.purge.arm();
+			armed();
+			return;
+		}
+	}
+
+	/** A write about `module` must carry that module's admission. */
+	private static assertAdmissionFor(module: string, admission: SecretAdmission): void {
+		if (admission.module !== module)
+			throw new Error(`the admission for ${admission.module} was given for ${module}`);
+	}
+
+	/** Purge debt and start time. */
+	purgeState(): PurgeState {
+		return this.purge.state();
+	}
+
 	/**
 	 * Makes every batched write so far durable, and visible to other connections. Never inside an
 	 * open write, whose savepoint the commit would end. A failed commit loses the batch.
@@ -595,6 +828,7 @@ export class IndexStore {
 		}
 		this.batch = null;
 		this.clock.clearTimer(batch.timer);
+		this.purge.settle(false);
 		for (const landed of batch.landed) landed(true);
 	}
 
@@ -732,9 +966,9 @@ export class IndexStore {
 	 * Reads with `facts` standing in for their modules' stored facts, projections settled, then rolls
 	 * every write back; `read` gets the modules whose exports moved. Synchronous, so no other read sees them.
 	 */
-	readOverlaid<T>(facts: readonly ReplaceFileInput[], read: (moved: string[]) => T): T {
+	readOverlaid<T>(facts: readonly FileWrite[], read: (moved: string[]) => T): T {
 		return this.speculate(() => {
-			for (const each of facts) this.replaceFile(each);
+			for (const each of facts) this.replaceFile(each as OverlaidFile);
 			return read(this.settleProjections());
 		});
 	}
@@ -783,21 +1017,41 @@ export class IndexStore {
 		this.knowledgeTurns++;
 	}
 
+	/** First open scrubs existing files; rebuilds need no scrub. */
+	static async scrubAhead(
+		file: string,
+		compatibility?: string | null,
+		clock: Clock = systemClock,
+		options: ScrubOptions = {},
+	): Promise<ScrubReport | null> {
+		return keepsRows(file, compatibility) ? StorePurge.scrubAhead(file, clock, options) : null;
+	}
+
 	/**
 	 * Opens or rebuilds the index.
 	 * `compatibility` is the writing major.
-	 * Schema mismatch triggers rebuild.
+	 * Rebuilds stage beside the old store and install by rename.
+	 * Existing stores rewrite freed pages once per major before writes.
+	 * Rebuilt stores need no scrub; `scrub` is absent when none was due.
 	 */
 	static open(
 		file: string,
 		compatibility?: string | null,
 		workspaceRoot?: string,
 		clock: Clock = systemClock,
-	): { store: IndexStore; rebuilt: boolean; reason?: string; unplaced?: number; dropped?: number } {
+		scrubOptions: ScrubOptions = {},
+	): {
+		store: IndexStore;
+		rebuilt: boolean;
+		reason?: string;
+		unplaced?: number;
+		dropped?: number;
+		scrub?: ScrubReport;
+	} {
 		const fresh = !existsSync(file);
 		const indexedState = new ProjectIndexMarker(storePaths(path.dirname(file)).indexedStateFile, workspaceRoot);
-		if (fresh) indexedState.clear();
-		const db = Database.open(file);
+		clearStaging(file);
+		let db = Database.open(file);
 		db.exec("PRAGMA journal_mode = WAL");
 
 		let rebuilt = false;
@@ -811,56 +1065,31 @@ export class IndexStore {
 			version = -1;
 		}
 		const initialized = fresh || version === 0;
-		if (version === 0) indexedState.clear();
 
-		// Read before any rebuild drops the table it lives in.
+		// Read identity before replacing its store.
 		const stored = version === SCHEMA_VERSION ? readMeta(db, COMPATIBILITY_KEY) : null;
-		// Preserve the ledger id across rebuilds.
-		const ledger = readMeta(db, LEDGER_KEY);
-		const seeded = readMeta(db, NOTES_SEEDED_KEY);
-		const seededAt = seeded === null || !Number.isFinite(Number(seeded)) ? null : Number(seeded);
-		// Read before a rebuild creates it: a store without the table journaled its moves as JSON.
-		const liftRebinds = !tableExists(db, "refactor_rebinds");
-		if (version === SCHEMA_VERSION && compatibility != null && stored !== null && stored !== compatibility) {
-			version = -1;
-			reason = "a major version has shipped since this index was written";
-		} else if (version !== SCHEMA_VERSION && version !== 0) {
-			reason = "the index schema changed";
+		const origin = originOf(db);
+		const rebuildFor = rebuildReason(version, stored, compatibility);
+		if (rebuildFor !== null) {
+			reason = rebuildFor;
+			if (version === SCHEMA_VERSION) version = -1;
 		}
 
 		if (version !== SCHEMA_VERSION) {
 			// Knowledge crosses the rebuild: facts reindex from source; notes cannot be regenerated.
-			const salvaged = salvageKnowledge(db);
-
-			// Asked of the database rather than listed here. A hand-maintained drop list silently
-			// diverges from SCHEMA the first time a table is added, and the failure is a rebuild that
-			// dies on "table already exists" long after the change that caused it.
-			const tables = db
-				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
-				.all() as Array<{ name: string }>;
-			// Every view, so one over a retired table never outlives it.
-			const views = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view'").all() as Array<{
-				name: string;
-			}>;
-
-			// One transaction over drop, create and restore. Crashing between them would otherwise
-			// leave a store with no journal and a workspace with a half-applied refactor in it.
-			db.exec("BEGIN IMMEDIATE");
-			try {
-				for (const view of views) db.exec(`DROP VIEW IF EXISTS "${view.name}"`);
-				for (const table of tables) db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
-				db.exec(SCHEMA);
-				({ unplaced, dropped } = restoreKnowledge(db, salvaged, clock.now(), seededAt));
-				// The steps are back, so what they journaled as JSON moves into the table in the same commit.
-				if (liftRebinds) dropped += liftAppliedRebinds(db);
-				db.exec("COMMIT");
-			} catch (error) {
-				db.exec("ROLLBACK");
-				throw error;
+			const carried = carriedFrom(db, origin);
+			const making: CreateOptions = { clock, compatibility, scrub: scrubOptions };
+			// Replace stores; in-place drops do not zero freed pages.
+			if (holdsStore(db)) {
+				({ unplaced, dropped } = createStoreFile(file, carried, making, db));
+				db = Database.open(file);
+				db.exec("PRAGMA journal_mode = WAL");
+			} else {
+				indexedState.clear();
+				({ unplaced, dropped } = fillStore(db, carried, making));
 			}
-			db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 			rebuilt = version !== 0;
-		} else if (liftRebinds) {
+		} else if (origin.liftRebinds) {
 			// Table and lift in one commit, or a crash between them reads as a store that already lifted.
 			db.exec("BEGIN IMMEDIATE");
 			try {
@@ -878,6 +1107,16 @@ export class IndexStore {
 		db.exec("CREATE INDEX IF NOT EXISTS refs_from ON refs(fromId)");
 		// Nullable, so the add is one atomic statement and an old row reads as not yet recorded.
 		if (!columnExists(db, "files", "content")) db.exec("ALTER TABLE files ADD COLUMN content TEXT");
+		if (!columnExists(db, "files", "policyStamp")) db.exec("ALTER TABLE files ADD COLUMN policyStamp TEXT");
+		if (!columnExists(db, "parse_failures", "policyStamp"))
+			db.exec("ALTER TABLE parse_failures ADD COLUMN policyStamp TEXT");
+		// Null admissions represent plain rows.
+		if (!columnExists(db, "files", "admittedAs")) db.exec("ALTER TABLE files ADD COLUMN admittedAs TEXT");
+		if (!columnExists(db, "parse_failures", "admittedAs"))
+			db.exec("ALTER TABLE parse_failures ADD COLUMN admittedAs TEXT");
+		if (!columnExists(db, "symbols", "valueStatus")) {
+			db.exec("ALTER TABLE symbols ADD COLUMN valueStatus TEXT CHECK (valueStatus IN ('set', 'empty'))");
+		}
 		// Each column checked on its own, so a crash between the two adds is finished on the next open.
 		if (!columnExists(db, "files", "generated")) db.exec("ALTER TABLE files ADD COLUMN generated TEXT");
 		if (!columnExists(db, "files", "generatedReason")) db.exec("ALTER TABLE files ADD COLUMN generatedReason TEXT");
@@ -903,7 +1142,7 @@ export class IndexStore {
 		if (columnExists(db, "symbol_notes", "summary")) {
 			db.exec("BEGIN IMMEDIATE");
 			try {
-				joinNoteFields(db, seededAt);
+				joinNoteFields(db, origin.seededAt);
 				db.exec("COMMIT");
 			} catch (error) {
 				db.exec("ROLLBACK");
@@ -947,11 +1186,22 @@ export class IndexStore {
 						AND image.scope = 'step'
 						AND step.phase IN ('written', 'reindexed', 'finalized')
 						AND (image.existsAfter = 0 OR (image.existsAfter = 1 AND image.afterHash IS NOT NULL))
+						AND (image.afterHash IS NULL OR EXISTS (
+							SELECT 1 FROM refactor_admissions AS admission
+							WHERE admission.module = image.module AND admission.hash = image.afterHash
+						))
 				)
+			LEFT JOIN refactor_admissions AS baselineAdmission
+				ON baselineAdmission.module = baseline.module AND baselineAdmission.hash = baseline.beforeHash
 			WHERE baseline.scope = 'baseline'
+				AND (
+					(baseline.existedBefore = 0 AND baseline.beforeHash IS NULL)
+					OR (baseline.existedBefore = 1 AND baselineAdmission.hash IS NOT NULL)
+				)
 		`);
 		installRevisionTriggers(db);
-		if (readMeta(db, LEDGER_KEY) === null) writeMeta(db, LEDGER_KEY, ledger ?? randomUUID());
+		installAdmissionTriggers(db);
+		if (readMeta(db, LEDGER_KEY) === null) writeMeta(db, LEDGER_KEY, origin.ledger ?? randomUUID());
 
 		// Marker and table together, or a crash between them reads as a fresh table.
 		if (!tableExists(db, "notes")) {
@@ -977,8 +1227,9 @@ export class IndexStore {
 		}
 
 		const store = new IndexStore(db, clock, indexedState, workspaceRoot);
-		if (rebuilt) store.clearProjectIndexed();
-		else if (initialized) writeMeta(db, PROJECT_INDEX_LIFECYCLE_KEY, "fresh");
+		store.purge.settle(false);
+		const scrub = store.purge.scrub(file, scrubOptions);
+		if (initialized) writeMeta(db, PROJECT_INDEX_LIFECYCLE_KEY, "fresh");
 		else if (
 			workspaceRoot !== undefined &&
 			readMeta(db, PROJECT_INDEX_LIFECYCLE_KEY) === null &&
@@ -992,6 +1243,7 @@ export class IndexStore {
 			...defined({ reason }),
 			...(unplaced === 0 ? {} : { unplaced }),
 			...(dropped === 0 ? {} : { dropped }),
+			...(scrub === null ? {} : { scrub }),
 		};
 	}
 
@@ -1008,8 +1260,12 @@ export class IndexStore {
 	 * Answers what the write moved of the module's declared surface, read before its old rows go, or
 	 * null when other modules can bind to exactly what they could before. What it moved of the module's
 	 * exports is settled after, from the projection debt the write records.
+	 *
+	 * Admission or stamp changes can arm plain-row purge; overlays carry no admission.
 	 */
-	replaceFile(input: ReplaceFileInput): SurfaceChange | null {
+	replaceFile(input: ReplaceFileInput | OverlaidFile): SurfaceChange | null {
+		const admission = "admission" in input ? input.admission : null;
+		if (admission !== null) IndexStore.assertAdmissionFor(input.module, admission);
 		const {
 			module,
 			contentHash,
@@ -1053,7 +1309,8 @@ export class IndexStore {
 		const through = originEdges(imports);
 		const surface = surfaceOf(declarations);
 		const surfaceDigest = hashContent(surface.map((entry) => entry.key).join("\n"));
-		return this.indexWrite(() => {
+		return this.owingWrite((armed) => {
+			if (admission !== null) this.armIfOwed(admission, [HELD_FACTS, HELD_FAILURE], armed);
 			const change = this.surfaceChange(module, surface, surfaceDigest);
 			const scopesBefore = this.scopeKeysOf(module);
 			const before = this.db.prepare("SELECT allList FROM files WHERE module = ?").get(module) as
@@ -1064,14 +1321,16 @@ export class IndexStore {
 			for (const table of FACT_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module);
 			this.db
 				.prepare(
-					`INSERT OR REPLACE INTO files (module, runtime, contentHash, indexedAt, depth, content, provider, generated, generatedReason,
+					`INSERT OR REPLACE INTO files (module, runtime, contentHash, policyStamp, admittedAs, indexedAt, depth, content, provider, generated, generatedReason,
 					 role, roleHow, roleSymbolId, roleReason, surface, exportsKnown, allList)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					module,
 					input.runtime ?? null,
 					contentHash,
+					admission?.stamp ?? null,
+					admittedAsOf(admission),
 					this.nextStamp(),
 					depth,
 					content,
@@ -1097,8 +1356,8 @@ export class IndexStore {
 				 (symbolId, factId, module, name, kind, visibility, exported, containerId, signature,
 				  startLine, startChar, endLine, endChar, nameLine, nameChar, nameEndLine, nameEndChar,
 				  synthesizedName, mLines, mParameters, mNesting, mBranches, patternDigest, patternCoverage, contains,
-				  memberInsertLine, languageKind)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  memberInsertLine, languageKind, valueStatus)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const d of declarations) {
 				// The name columns are NOT NULL from before names could be absent; the flag says which.
@@ -1133,6 +1392,7 @@ export class IndexStore {
 					d.contains ?? null,
 					d.memberInsertLine ?? null,
 					d.languageKind ?? null,
+					d.valueStatus ?? null,
 				);
 			}
 			this.subjects.restoreResolving(module, this.clock.now());
@@ -1144,10 +1404,12 @@ export class IndexStore {
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			);
 			for (const r of references) {
-				// An unbound reference keeps its REASON where a bound one keeps its provenance:
-				// both answer "how do you know", and losing the reason discards why it failed.
+				// Unbound rows store reasons; ambiguous rows store provenance.
 				const target = r.binding.status === "bound" ? r.binding.symbolId : null;
-				const how = r.binding.status === "unbound" ? r.binding.reason : r.binding.provenance;
+				const how =
+					r.binding.status === "unbound" || r.binding.status === "unknown"
+						? r.binding.reason
+						: r.binding.provenance;
 				const span = r.origin?.kind === "import" ? r.origin.span : undefined;
 				const path = r.origin?.kind === "import" ? r.origin.path : undefined;
 				reference.run(
@@ -1725,30 +1987,36 @@ export class IndexStore {
 		return this.projectionQueries.importEdges();
 	}
 
-	/** Everything a file contributed, gone. Used when a file is deleted rather than changed. */
-	forgetFile(module: string): boolean {
-		return this.indexWrite(() => {
-			// Read while the rows it asks about still exist.
-			const lost = namesOf(this.surfaceHeld(module));
-			const boundInto = this.boundInto(module);
-			const scopesBefore = this.scopeKeysOf(module);
-			let removed = false;
-			let held = false;
-			for (const table of FACT_TABLES) {
-				if (this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module).changes > 0) removed = true;
-			}
-			if (this.db.prepare("DELETE FROM files WHERE module = ?").run(module).changes > 0) held = true;
-			if (this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module).changes > 0) removed = true;
-			// A module the index no longer holds owes nothing.
-			this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
-			if (removed || held) {
-				this.recordMove(module, { gained: [], lost, boundInto, heldBefore: held, scopes: [] });
-				this.advanceGenerations(module, scopesBefore, held, true);
-				// What forwarded from it now lands on nothing the index holds.
-				this.oweForwarders(module);
-			}
-			return removed || held;
+	/** Removes deleted file rows; admission determines purge debt. */
+	forgetFile(module: string, admission: SecretAdmission): boolean {
+		IndexStore.assertAdmissionFor(module, admission);
+		return this.owingWrite((armed) => {
+			this.armIfOwed(admission, [HELD_FACTS, HELD_FAILURE], armed);
+			return this.forgetFileRows(module);
 		});
+	}
+
+	private forgetFileRows(module: string): boolean {
+		// Read while the rows it asks about still exist.
+		const lost = namesOf(this.surfaceHeld(module));
+		const boundInto = this.boundInto(module);
+		const scopesBefore = this.scopeKeysOf(module);
+		let removed = false;
+		let held = false;
+		for (const table of FACT_TABLES) {
+			if (this.db.prepare(`DELETE FROM ${table} WHERE module = ?`).run(module).changes > 0) removed = true;
+		}
+		if (this.db.prepare("DELETE FROM files WHERE module = ?").run(module).changes > 0) held = true;
+		if (this.db.prepare("DELETE FROM parse_failures WHERE module = ?").run(module).changes > 0) removed = true;
+		// A module the index no longer holds owes nothing.
+		this.db.prepare("DELETE FROM rebind_owed WHERE module = ?").run(module);
+		if (removed || held) {
+			this.recordMove(module, { gained: [], lost, boundInto, heldBefore: held, scopes: [] });
+			this.advanceGenerations(module, scopesBefore, held, true);
+			// What forwarded from it now lands on nothing the index holds.
+			this.oweForwarders(module);
+		}
+		return removed || held;
 	}
 
 	fileNotes(module: string): FileNotes {
@@ -1780,7 +2048,9 @@ export class IndexStore {
 
 	/** Fills a row written before content was recorded. A recorded class is never overwritten here. */
 	recordContent(module: string, content: FileContent): void {
-		const record = this.db.prepare("UPDATE files SET content = ? WHERE module = ? AND content IS NULL");
+		const record = this.db.prepare(
+			"UPDATE files SET content = CASE WHEN content IS NULL THEN ? ELSE content END WHERE module = ?",
+		);
 		this.indexWrite(() => record.run(content, module));
 	}
 
@@ -1915,16 +2185,67 @@ export class IndexStore {
 	}
 
 	/** Remembers a parse failure so coverage can name it after this process is gone. */
-	recordFailure(module: string, reason: string): void {
+	recordFailure(module: string, reason: StoredFailure, admission: SecretAdmission): void {
+		IndexStore.assertAdmissionFor(module, admission);
 		const record = this.db.prepare(
-			"INSERT OR REPLACE INTO parse_failures (module, reason, failedAt) VALUES (?, ?, ?)",
+			"INSERT OR REPLACE INTO parse_failures (module, reason, failedAt, policyStamp, admittedAs) VALUES (?, ?, ?, ?, ?)",
 		);
-		this.indexWrite(() => record.run(module, reason, this.clock.now()));
+		this.owingWrite((armed) => {
+			this.armIfOwed(admission, [HELD_FAILURE], armed);
+			record.run(module, reason, this.clock.now(), admission.stamp, admittedAsOf(admission));
+		});
 	}
 
-	clearFailure(module: string): void {
+	policyStampsOf(
+		modules: readonly string[],
+		prefixes: readonly string[],
+	): Array<{ module: string; stamp: string | null }> {
+		if (prefixes.includes(""))
+			return this.db
+				.prepare(
+					`SELECT module, stamp FROM (
+						SELECT module, policyStamp AS stamp FROM files
+						UNION
+						SELECT module, policyStamp AS stamp FROM parse_failures
+					) ORDER BY module`,
+				)
+				.all() as Array<{ module: string; stamp: string | null }>;
+		const rows = new Map<string, string | null>();
+		const read = (clauses: string[], values: string[]) => {
+			if (clauses.length === 0) return;
+			const found = this.db
+				.prepare(
+					`SELECT module, stamp FROM (
+						SELECT module, policyStamp AS stamp FROM files
+						UNION
+						SELECT module, policyStamp AS stamp FROM parse_failures
+					) WHERE ${clauses.join(" OR ")} ORDER BY module`,
+				)
+				.all(...values) as Array<{ module: string; stamp: string | null }>;
+			for (const row of found) rows.set(row.module, row.stamp);
+		};
+		for (let start = 0; start < modules.length; start += 400) {
+			const chunk = modules.slice(start, start + 400);
+			read([`module IN (${chunk.map(() => "?").join(", ")})`], [...chunk]);
+		}
+		for (let start = 0; start < prefixes.length; start += 100) {
+			const chunk = prefixes.slice(start, start + 100);
+			const clauses = chunk.flatMap(() => ["module = ?", "substr(module, 1, length(?)) = ?"]);
+			const values = chunk.flatMap((prefix) => [prefix, `${prefix}/`, `${prefix}/`]);
+			read(clauses, values);
+		}
+		return [...rows]
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([module, stamp]) => ({ module, stamp }));
+	}
+
+	clearFailure(module: string, admission: SecretAdmission): void {
+		IndexStore.assertAdmissionFor(module, admission);
 		const clear = this.db.prepare("DELETE FROM parse_failures WHERE module = ?");
-		this.indexWrite(() => clear.run(module));
+		this.owingWrite((armed) => {
+			this.armIfOwed(admission, [HELD_FAILURE], armed);
+			clear.run(module);
+		});
 	}
 
 	parseFailureCount(): number {
@@ -1950,6 +2271,30 @@ export class IndexStore {
 	/** The project fingerprint a provider's stored facts were parsed under; null when it gave none. */
 	projectFingerprint(providerId: string): string | null {
 		return readMeta(this.db, `${PROJECT_FINGERPRINT_KEY}:${providerId}`);
+	}
+
+	lastSecretPolicy(): StoredSecretPolicy | null {
+		const raw = readMeta(this.db, SECRET_POLICY_KEY);
+		if (raw === null) return null;
+		try {
+			const parsed = JSON.parse(raw) as { secrets?: unknown; deny?: unknown };
+			const secrets = SecretsConfigSchema.safeParse(parsed.secrets);
+			if (
+				!secrets.success ||
+				!Array.isArray(parsed.deny) ||
+				!parsed.deny.every((glob) => typeof glob === "string")
+			)
+				return null;
+			return { secrets: secrets.data, deny: parsed.deny as string[] };
+		} catch {
+			return null;
+		}
+	}
+
+	rememberSecretPolicy(policy: StoredSecretPolicy): void {
+		const encoded = JSON.stringify(policy);
+		if (readMeta(this.db, SECRET_POLICY_KEY) === encoded) return;
+		this.indexWrite(() => writeMeta(this.db, SECRET_POLICY_KEY, encoded));
 	}
 
 	/** An index write, so it never lands while a batch holding the parses under it is lost. */
@@ -2002,8 +2347,7 @@ export class IndexStore {
 	////////////////////////////////
 	//  Refactor journal
 	//
-	// Rows only. Everything that decides what they MEAN lives in TransactionManager, which a
-	// residue test holds as the single owner of the concept.
+	// Store owns journal rows; TransactionManager owns their meaning.
 
 	/** Runs a journal read in a store-owned transaction. */
 	journalRead<T>(work: (db: Database) => T): T {
@@ -2020,23 +2364,222 @@ export class IndexStore {
 		return this.journalRead(work);
 	}
 
-	/** Content addressed, so re-snapshotting an unchanged file costs a lookup and no bytes. */
-	putBlob(hash: string, bytes: Uint8Array): void {
-		// Durable on return, as journal rows naming it will be.
-		this.commitBatch();
-		this.db.prepare("INSERT OR IGNORE INTO refactor_blobs (hash, bytes) VALUES (?, ?)").run(hash, bytes);
+	/** Stores by hash, so repeats write no bytes. Durable on return. */
+	putBlob(admitted: AdmittedBytes): void {
+		this.inTransaction(() => this.putBlobWithin(this.db, admitted));
 	}
 
-	blob(hash: string): Uint8Array | null {
-		const row = this.db.prepare("SELECT bytes FROM refactor_blobs WHERE hash = ?").get(hash) as
-			| { bytes: Uint8Array }
-			| undefined;
-		return row?.bytes ?? null;
+	/** Stores admitted bytes in the active transaction. */
+	putBlobWithin(db: Database, admitted: AdmittedBytes): void {
+		this.admitWithin(db, admitted);
+		db.prepare("INSERT OR IGNORE INTO refactor_blobs (hash, bytes) VALUES (?, ?)").run(
+			admitted.hash,
+			admitted.bytes,
+		);
+	}
+
+	/** Stores one image admission. */
+	admit(admission: JournalAdmission): void {
+		this.inTransaction(() => this.admitWithin(this.db, admission));
+	}
+
+	/** Stores admission in the active transaction. */
+	admitWithin(db: Database, admission: JournalAdmission): void {
+		db.prepare(
+			`INSERT INTO refactor_admissions (module, hash, stamp) VALUES (?, ?, ?)
+			 ON CONFLICT(module, hash) DO UPDATE SET stamp = excluded.stamp`,
+		).run(admission.module, admission.hash, admission.stamp);
+	}
+
+	/** Reads retained image bytes. */
+	heldImage(module: string, hash: string): HeldJournalImage | null {
+		const row = this.db
+			.prepare(
+				`SELECT admissions.module, admissions.hash, admissions.stamp, blobs.bytes
+				 FROM refactor_admissions AS admissions
+				 LEFT JOIN refactor_blobs AS blobs ON blobs.hash = admissions.hash
+				 WHERE admissions.module = ? AND admissions.hash = ?`,
+			)
+			.get(module, hash) as HeldJournalImage | undefined;
+		return row ?? null;
+	}
+
+	/** Lists admitted image pairs. */
+	admissions(): StoredAdmission[] {
+		return this.db
+			.prepare("SELECT module, hash, stamp FROM refactor_admissions ORDER BY module, hash")
+			.all() as unknown as StoredAdmission[];
+	}
+
+	/** Updates an admission stamp. */
+	restamp(admission: JournalAdmission): boolean {
+		return this.inTransaction(() => {
+			const result = this.db
+				.prepare("UPDATE refactor_admissions SET stamp = ? WHERE module = ? AND hash = ?")
+				.run(admission.stamp, admission.module, admission.hash);
+			return Number(result.changes) > 0;
+		});
+	}
+
+	/** Finds missing admissions. */
+	unadmittedReferences(): UnadmittedJournalReference[] {
+		return this.db
+			.prepare(
+				`SELECT refs.module, refs.hash FROM (${keptHashPairs()}) AS refs
+				 WHERE NOT EXISTS (
+				   SELECT 1 FROM refactor_admissions AS admissions
+				   WHERE admissions.module = refs.module AND admissions.hash = refs.hash
+				 )
+			 ORDER BY refs.module, refs.hash`,
+			)
+			.all() as unknown as UnadmittedJournalReference[];
+	}
+
+	/** Prunes unused admissions. */
+	pruneAdmissionsWithin(db: Database): number {
+		const result = db
+			.prepare(
+				`DELETE FROM refactor_admissions
+				 WHERE NOT EXISTS (
+				   SELECT 1 FROM (${keptHashPairs()}) AS refs
+				   WHERE refs.module = refactor_admissions.module AND refs.hash = refactor_admissions.hash
+				 )`,
+			)
+			.run();
+		return Number(result.changes);
 	}
 
 	/** Prunes unreferenced blobs after settlement. */
 	pruneBlobs(): number {
-		this.commitBatch();
+		return this.inTransaction(() => this.pruneUnkept());
+	}
+
+	/**
+	 * Drops image journals and arms WAL purge debt.
+	 */
+	purgeImages(pairs: readonly Pick<StoredAdmission, "module" | "hash">[]): number {
+		try {
+			return this.inTransaction(() => {
+				this.purge.arm();
+				let removed = 0;
+				const units = new Map<string, Set<string>>();
+				const unique = new Map(pairs.map((pair) => [`${pair.module}\u0000${pair.hash}`, pair]));
+				for (const { module, hash } of unique.values()) {
+					removed += this.purgeJsonReferences(this.db, module, hash);
+					for (const table of JOURNAL_TABLE_NAMES) {
+						const entry: JournalTable = JOURNAL_TABLES[table];
+						const columns = entry.hashes;
+						if (columns?.transaction === undefined) continue;
+						const named = columns.columns.map((column) => `${column} = ?`).join(" OR ");
+						const transactions = this.db
+							.prepare(
+								`SELECT DISTINCT ${columns.transaction} AS transactionId FROM ${table}
+								 WHERE ${columns.module} = ? AND (${named})`,
+							)
+							.all(module, ...columns.columns.map(() => hash)) as Array<{ transactionId: string }>;
+						for (const row of transactions) {
+							const modules = units.get(row.transactionId) ?? new Set<string>();
+							modules.add(module);
+							units.set(row.transactionId, modules);
+						}
+					}
+					for (const table of JOURNAL_TABLE_NAMES) {
+						const entry: JournalTable = JOURNAL_TABLES[table];
+						const columns = entry.hashes;
+						if (columns?.transaction !== undefined) continue;
+						if (columns === undefined) continue;
+						const named = columns.columns.map((column) => `${column} = ?`).join(" OR ");
+						removed += Number(
+							this.db
+								.prepare(`DELETE FROM ${table} WHERE ${columns.module} = ? AND (${named})`)
+								.run(module, ...columns.columns.map(() => hash)).changes,
+						);
+					}
+				}
+				for (const [transactionId, modules] of units) {
+					for (const module of modules) {
+						for (const table of JOURNAL_TABLE_NAMES) {
+							const entry: JournalTable = JOURNAL_TABLES[table];
+							const columns = entry.hashes;
+							if (columns?.transaction === undefined) continue;
+							removed += Number(
+								this.db
+									.prepare(
+										`DELETE FROM ${table} WHERE ${columns.transaction} = ? AND ${columns.module} = ?`,
+									)
+									.run(transactionId, module).changes,
+							);
+						}
+						const intent = this.db
+							.prepare("SELECT diskStates FROM refactor_recovery_intents WHERE transactionId = ?")
+							.get(transactionId) as { diskStates: string | null } | undefined;
+						if (intent?.diskStates === null || intent === undefined) continue;
+						try {
+							const states: unknown = JSON.parse(intent.diskStates);
+							if (!Array.isArray(states)) continue;
+							const remaining = states.filter(
+								(state) =>
+									typeof state !== "object" ||
+									state === null ||
+									!("module" in state) ||
+									state.module !== module,
+							);
+							this.db
+								.prepare("UPDATE refactor_recovery_intents SET diskStates = ? WHERE transactionId = ?")
+								.run(JSON.stringify(remaining), transactionId);
+						} catch {}
+					}
+				}
+				this.pruneUnkept();
+				return removed;
+			});
+		} finally {
+			this.purge.settle(true);
+		}
+	}
+
+	private purgeJsonReferences(db: Database, module: string, hash: string): number {
+		let rewritten = 0;
+		for (const table of JOURNAL_TABLE_NAMES) {
+			const entry: JournalTable = JOURNAL_TABLES[table];
+			for (const reference of entry.jsonHashes ?? []) {
+				const rows = db
+					.prepare(
+						`SELECT ${reference.key} AS key, ${reference.column} AS value
+						 FROM ${table} WHERE ${reference.column} IS NOT NULL`,
+					)
+					.all() as Array<{ key: string; value: string }>;
+				for (const row of rows) {
+					const parsed: unknown = JSON.parse(row.value);
+					const entries = jsonArrayAt(parsed, reference.array);
+					if (entries === null) continue;
+					let changed = false;
+					for (let index = entries.length - 1; index >= 0; index--) {
+						const entry = entries[index];
+						if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+						const record = entry as Record<string, unknown>;
+						if (record[reference.module] !== module) continue;
+						if (!reference.hashes.some((column) => record[column] === hash)) continue;
+						if (reference.purge === "remove") entries.splice(index, 1);
+						else {
+							for (const column of reference.hashes) if (record[column] === hash) record[column] = null;
+						}
+						changed = true;
+					}
+					if (!changed) continue;
+					db.prepare(`UPDATE ${table} SET ${reference.column} = ? WHERE ${reference.key} = ?`).run(
+						JSON.stringify(parsed),
+						row.key,
+					);
+					rewritten++;
+				}
+			}
+		}
+		return rewritten;
+	}
+
+	private pruneUnkept(): number {
+		this.pruneAdmissionsWithin(this.db);
 		const result = this.db.prepare(`DELETE FROM refactor_blobs WHERE hash NOT IN (${keptBlobs()})`).run();
 		return Number(result.changes);
 	}
@@ -2082,6 +2625,13 @@ export class IndexStore {
 
 	contentHashOf(module: string): string | null {
 		return this.factQueries.contentHashOf(module);
+	}
+
+	policyStampOf(module: string): string | null {
+		const row = this.db.prepare("SELECT policyStamp FROM files WHERE module = ?").get(module) as
+			| { policyStamp: string | null }
+			| undefined;
+		return row?.policyStamp ?? null;
 	}
 
 	newestIndexedAt(): number | null {
@@ -2446,7 +2996,9 @@ export class IndexStore {
 	close(): void {
 		try {
 			this.commitBatch();
+			this.purge.settle(true);
 		} finally {
+			this.purge.close();
 			this.db.close();
 		}
 	}

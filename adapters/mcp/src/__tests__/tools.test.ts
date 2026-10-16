@@ -279,6 +279,27 @@ describe("resolving what the caller gave", () => {
 		expect(JSON.stringify(without)).not.toContain("Span hash");
 	});
 
+	it("labels redacted key source without showing its value", async () => {
+		const result = await symbolSource(
+			backend({
+				symbolSource: async () => ({
+					found: true,
+					name: "API_KEY",
+					kind: "property",
+					module: ".env.local",
+					range: { start: { line: 0, character: 0 }, end: { line: 0, character: 7 } },
+					text: "API_KEY",
+					valueStatus: "set",
+					contentHash: "file",
+				}),
+			}),
+			{ symbolId: "secret-key" },
+		);
+
+		expect(result.content[0]?.text).toContain("API_KEY (redacted)");
+		expect(JSON.stringify(result)).not.toContain("KEY_VALUE_SECRET");
+	});
+
 	// Older daemons strip unknown fields.
 	it("sends a replace carrying a span hash to the checked method, and refuses one naming no symbol", async () => {
 		const asked: string[] = [];
@@ -470,6 +491,29 @@ describe("resolving a ref", () => {
 		text: "class Cart {}\n  add() {}\n  x\n}",
 		contentHash: "source-hash",
 	};
+	const redactedKey = {
+		kind: "exact" as const,
+		candidate: {
+			...exact.candidate,
+			kind: "property" as const,
+			name: "API_KEY",
+			range: { start: { line: 0, character: 0 }, end: { line: 0, character: 14 } },
+			selectionRange: { start: { line: 0, character: 0 }, end: { line: 0, character: 7 } },
+			valueStatus: "set" as const,
+		},
+		contentHash: null,
+		diskHash: null,
+	};
+	const redactedKeySource = {
+		found: true as const,
+		module: ".env.local",
+		name: "API_KEY",
+		kind: "property",
+		range: redactedKey.candidate.selectionRange,
+		text: "API_KEY",
+		valueStatus: "set" as const,
+		contentHash: "source-hash",
+	};
 
 	it("returns the declaration and confirms a line span within it", async () => {
 		const result = await resolveRef(backend({ resolveChain: async () => exact }), {
@@ -524,6 +568,21 @@ describe("resolving a ref", () => {
 
 		expect(result.isError).toBe(true);
 		expect(result.content[0]?.text).toContain("outside declaration");
+	});
+
+	it("shows key status and rejects a selection on its value", async () => {
+		const reading = backend({
+			resolveChain: async () => redactedKey,
+			symbolSource: async () => redactedKeySource,
+		});
+		const resolved = await resolveRef(reading, { ref: "project-ref://test-project/.env.local:API_KEY" });
+		const value = await resolveRef(reading, {
+			ref: "project-ref://test-project/.env.local:API_KEY#L1,9-L1,14",
+		});
+
+		expect(resolved.content[0]?.text).toContain("Value status: set");
+		expect(value.isError).toBe(true);
+		expect(value.content[0]?.text).toContain("outside declaration");
 	});
 
 	it("rejects an impossible column on an interior source line", async () => {
@@ -653,7 +712,10 @@ describe("resolving a ref", () => {
 			backend({
 				resolveChain: async () => ({
 					kind: "ambiguous",
-					candidates: [exact.candidate, exact.candidate],
+					candidates: [
+						{ ...exact.candidate, name: "API_KEY", valueStatus: "set" },
+						{ ...exact.candidate, name: "EMPTY_KEY", valueStatus: "empty" },
+					],
 					contentHash: null,
 					diskHash: null,
 				}),
@@ -665,6 +727,8 @@ describe("resolving a ref", () => {
 		expect(missing.content[0]?.text).toContain("did not resolve");
 		expect(ambiguous.isError).toBe(true);
 		expect(ambiguous.content[0]?.text).toContain("matches multiple declarations");
+		expect(ambiguous.content[0]?.text).toContain("class API_KEY (set)");
+		expect(ambiguous.content[0]?.text).toContain("class EMPTY_KEY (empty)");
 	});
 });
 

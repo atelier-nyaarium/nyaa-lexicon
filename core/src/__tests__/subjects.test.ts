@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "../database";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
 import { KNOWLEDGE_SCHEMA, normalizeSalvaged, restoreSubjects } from "../subjects";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import { writePlain } from "./admissions";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -33,7 +33,7 @@ function declaration(symbolId: string, name: string, line = 0) {
 }
 
 function plant(module = "a.ref", symbolId = CART, name = "Cart"): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: module,
 		contentHash: "h1",
 		declarations: [declaration(symbolId, name)],
@@ -191,7 +191,7 @@ describe("a subject and its address", () => {
 	it("lists bound subjects whose address no longer resolves", async () => {
 		plant();
 		record(CART);
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h2",
 			declarations: [],
@@ -204,7 +204,7 @@ describe("a subject and its address", () => {
 	it("keeps twenty twins apart: one name, one digest, twenty subjects, and a rebind moves one", async () => {
 		const twins = Array.from({ length: 20 }, (_, i) => `lexicon reference m${i}.ref Cart#`);
 		for (const [i, symbolId] of twins.entries()) {
-			store.replaceFile({
+			writePlain(store, {
 				module: `m${i}.ref`,
 				contentHash: "h1",
 				declarations: [declaration(symbolId, "Cart")],
@@ -242,7 +242,7 @@ describe("a subject and its address", () => {
 
 describe("the pattern digest", () => {
 	it("is minted by a full parse and not by a shallow one", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [declaration(CART, "Cart")],
@@ -253,7 +253,7 @@ describe("the pattern digest", () => {
 		});
 		expect(store.patternDigestOf(CART)).toBeNull();
 
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [declaration(CART, "Cart")],
@@ -273,7 +273,7 @@ describe("the pattern digest", () => {
 	it("follows the bound subject when the declaration is re-indexed", async () => {
 		plant();
 		record(CART);
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h2",
 			declarations: [declaration(CART, "Cart")],
@@ -301,7 +301,7 @@ describe("the pattern digest", () => {
 			["a.ref", CART, "Cart"],
 			["b.ref", basket, "Basket"],
 		] as const) {
-			store.replaceFile({
+			writePlain(store, {
 				module: module,
 				contentHash: "h2",
 				declarations: [declaration(symbolId, name)],
@@ -383,7 +383,7 @@ describe("a rebind a step journaled", () => {
 		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
 		const entries = [{ from: CART, to: moved }];
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		const begun = transactions.beginStep("move", [], { rebind: { entries, evidence: "journalMove" } });
 		if (!begun.ok) throw new Error(begun.reason);
@@ -400,7 +400,7 @@ describe("a rebind a step journaled", () => {
 	/** A move of a.ref into b.ref, written and rebound, left unfinished. */
 	function journalMove(entries: Array<{ from: string; to: string }>): TransactionManager {
 		writeFileSync(path.join(dir, "a.ref"), "before\n");
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		const begun = transactions.beginStep("move", ["a.ref", "b.ref"], {
 			rebind: { entries, evidence: "journalMove" },
@@ -428,7 +428,7 @@ describe("a rebind a step journaled", () => {
 		const moved = "lexicon reference b.ref Cart#";
 		plant("b.ref", moved);
 		record(moved, "The other cart.");
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		const begun = transactions.beginStep("move", [], {
 			rebind: { entries: [{ from: CART, to: moved }], evidence: "journalMove" },
@@ -498,7 +498,7 @@ describe("a rebind a step journaled", () => {
 		plant();
 		record(CART);
 		const moved = "lexicon reference b.ref Cart#";
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		movedStep(transactions, CART, moved);
 		const again = transactions.beginStep("move", [], {
@@ -518,7 +518,7 @@ describe("a rebind a step journaled", () => {
 		record(CART);
 		const b = "lexicon reference b.ref Cart#";
 		const c = "lexicon reference c.ref Cart#";
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		movedStep(transactions, CART, b);
 		movedStep(transactions, b, c);

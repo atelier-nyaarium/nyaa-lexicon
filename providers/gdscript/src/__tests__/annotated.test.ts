@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	applyEdits,
 	composeSymbolId,
@@ -11,6 +12,7 @@ import {
 	type MoveEditsRequest,
 	PROTOCOL_VERSION,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { GDScriptProvider } from "../main.js";
 
 const roots: string[] = [];
@@ -41,8 +43,8 @@ const SOURCE = [
 function handlers() {
 	const root = mkdtempSync(path.join(tmpdir(), "lexicon-gdscript-annotated-"));
 	roots.push(root);
-	const wired = handlersFor(new GDScriptProvider());
-	wired.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const wired = handlersFor(new GDScriptProvider(), SECRET_READERS);
+	wired.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	wired.discoverProject({ workspaceRoot: root });
 	return wired;
 }

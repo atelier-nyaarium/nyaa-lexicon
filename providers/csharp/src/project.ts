@@ -4,7 +4,7 @@
 // what MSBuild would pass the compiler: DefineConstants through Directory.Build.props, the project
 // and the workspace files they import, then the SDK's configuration and framework symbols.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { parseXmlDocument, type XmlContent, type XmlElement } from "@nyaa-lexicon/formats/xml";
 import {
@@ -190,8 +190,8 @@ class ProjectReader {
 
 	private load(file: string): SourceFile | undefined {
 		const absolute = path.join(this.root, file);
-		if (!this.isFile(file) || !this.policy.readable(absolute)) return undefined;
-		const text = readFileSync(absolute, "utf8");
+		const text = this.policy.readText(absolute);
+		if (text === undefined) return undefined;
 		const parsed = parseXmlDocument(text);
 		if (parsed.document === undefined) {
 			const at = coordinatesOf(text).positionAt(parsed.problem.pos);

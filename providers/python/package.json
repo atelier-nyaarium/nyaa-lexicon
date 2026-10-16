@@ -5,6 +5,7 @@
 	"type": "module",
 	"description": "Python provider over an in-house parser",
 	"dependencies": {
+		"@nyaa-lexicon/formats": "workspace:*",
 		"@nyaa-lexicon/protocol": "workspace:*",
 		"vscode-jsonrpc": "9.0.2"
 	}

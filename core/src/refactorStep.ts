@@ -281,11 +281,19 @@ async function writeStep<Outcome>(
 
 			// The workspace's fix runs inside the step, so its output is the step's own after-image.
 			const fixed = planned.exact === true ? { ran: false, failed: null } : await service.fixWritten(written);
-			const lost = fixed.ran ? written.filter((module) => !transactions.restampAfter(begun.stepNo, module)) : [];
+			const after = fixed.ran
+				? written.map((module) => [module, transactions.restampAfter(begun.stepNo, module)] as const)
+				: [];
+			const secretFixOutput = fixed.failed !== null && after.some(([, state]) => state === "guarded");
+			const lost = after.flatMap(([module, state]) => (state === "notAFile" ? [module] : []));
 			transactions.completeStep(begun.stepNo, "written");
 
 			const issues = [...planned.issues];
-			if (fixed.failed !== null) issues.push({ kind: "FixFailed", detail: `the fix command ${fixed.failed}` });
+			if (fixed.failed !== null)
+				issues.push({
+					kind: "FixFailed",
+					detail: secretFixOutput ? "the fix command failed" : `the fix command ${fixed.failed}`,
+				});
 			for (const module of lost) {
 				issues.push({ kind: "FixFailed", detail: `the fix command left ${module} no longer a file`, module });
 			}

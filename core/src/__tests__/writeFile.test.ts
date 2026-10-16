@@ -18,11 +18,10 @@ import { hashBytes, type RefactorWriteFileResult, type RequestOf } from "@nyaa-l
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch } from "../dispatch";
 import { lexiconRoot } from "../providers";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -85,7 +84,7 @@ beforeEach(async () => {
 	);
 	await supervisor.start({ command: [...launch, "run", FIXTURE], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
-	transactions = new TransactionManager(store, root);
+	transactions = new TransactionManager(store, root, service.policy);
 	dispatch = createDispatch(service, { transactions });
 	put("a.ref", ORIGINAL);
 	await service.indexFile("a.ref");
@@ -283,10 +282,10 @@ describe("a gated write while a refactor is open", () => {
 	it("leaves the file tracked with drift when the daemon dies between the write and the note", async () => {
 		transactions.start();
 		const text = "export class Basket {}\n";
-		const putBlob = store.putBlob.bind(store);
-		store.putBlob = (blobHash, bytes) => {
-			if (blobHash === hash(text)) throw new Error("the daemon died");
-			putBlob(blobHash, bytes);
+		const putBlobWithin = store.putBlobWithin.bind(store);
+		store.putBlobWithin = (db, admitted) => {
+			if (admitted.module === "a.ref" && admitted.hash === hash(text)) throw new Error("the daemon died");
+			putBlobWithin(db, admitted);
 		};
 
 		expect(await rethrown(write("a.ref", text, hash(ORIGINAL)))).toThrow();

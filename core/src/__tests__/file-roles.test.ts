@@ -5,10 +5,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { composeSymbolId, type Declaration, FileRoleSchema } from "@nyaa-lexicon/protocol";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { FAKE_CLAIMS, fakeSupervisor } from "./fakeProvider";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers

@@ -12,10 +12,10 @@ import type { CommentSpan, Declaration } from "@nyaa-lexicon/protocol";
 import { composeSymbolId } from "@nyaa-lexicon/protocol";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { HiddenModules, IndexStore } from "../store";
 import { fakeSupervisor } from "./fakeProvider";
+import { TestLexiconService as LexiconService, testPolicy } from "./testPolicy";
 
 const ALL = { hidden: HiddenModules.none };
 
@@ -91,7 +91,14 @@ async function index(fixture: Fixture): Promise<LexiconService> {
 	const full = path.join(root, "a.fake");
 	mkdirSync(path.dirname(full), { recursive: true });
 	writeFileSync(full, fixture.text);
-	const service = new LexiconService(store, supervisorFor(fixture), sourceReader(root), root);
+	const service = new LexiconService(
+		store,
+		supervisorFor(fixture),
+		sourceReader(root),
+		root,
+		undefined,
+		testPolicy(root),
+	);
 	await service.indexWorkspace();
 	return service;
 }

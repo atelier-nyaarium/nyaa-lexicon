@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	BindingSchema,
 	composeSymbolId,
@@ -12,6 +13,7 @@ import {
 	PROVIDER_NOTIFICATIONS,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CsharpProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { CsharpParser } from "../parser.js";
 import { handlersOf, parseThroughKit, startProvider, workspaceFixture } from "./harness.js";
@@ -502,7 +504,7 @@ describe("a using directive resolves to what the index holds", () => {
 
 	/** The index's verdict on a parse, through the kit as the wire delivers it. */
 	function verdict(provider: CsharpProvider, hash: string, refusal?: string): void {
-		handlersFor(provider).moduleAdmission?.({
+		handlersFor(provider, SECRET_READERS).moduleAdmission?.({
 			module: "src/item.cs",
 			contentHash: hash,
 			outcome: refusal === undefined ? { status: "admitted" } : { status: "refused", reason: refusal },
@@ -510,7 +512,7 @@ describe("a using directive resolves to what the index holds", () => {
 	}
 
 	function parse(provider: CsharpProvider, hash: string, text: string) {
-		return handlersFor(provider).parseFile({ module: "src/item.cs", contentHash: hash, text });
+		return handlersFor(provider, SECRET_READERS).parseFile({ module: "src/item.cs", contentHash: hash, text });
 	}
 
 	function admitted(root: string): CsharpProvider {
@@ -567,7 +569,7 @@ describe("a using directive resolves to what the index holds", () => {
 		// The file changed on disk and its parse is outstanding across the probe.
 		writeFileSync(path.join(root, "src/item.cs"), RENAMED);
 		parse(provider, "v2", RENAMED);
-		const probed = handlersFor(provider).probeFile({
+		const probed = handlersFor(provider, SECRET_READERS).probeFile({
 			module: "src/item.cs",
 			contentHash: "probe",
 			text: "namespace Demo.Probe { public class Probed {} }\n",
@@ -594,7 +596,11 @@ describe("a using directive resolves to what the index holds", () => {
 			landing: { kind: "module", module: "src/item.cs" },
 		});
 
-		handlersOf(provider).initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		handlersOf(provider).initialize({
+			workspaceRoot: root,
+			protocolVersion: PROTOCOL_VERSION,
+			policy: secretWire(),
+		});
 		handlersOf(provider).discoverProject({ workspaceRoot: root });
 		expect(resolves(provider, "Item")).toMatchObject({ status: "unresolved", reason: "Ambiguous" });
 	});

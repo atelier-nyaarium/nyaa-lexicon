@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	discoverByWalk,
@@ -720,7 +721,7 @@ export class TypeScriptProvider {
  * it until it is built. Changed in place, since the kit hears it was served through this table.
  */
 export function warmingHandlers(provider: TypeScriptProvider): ReturnType<typeof handlersFor> {
-	const handlers = handlersFor(provider);
+	const handlers = handlersFor(provider, SECRET_READERS);
 	const discover = handlers.discoverProject;
 	handlers.discoverProject = (params) => {
 		const model = discover(params);

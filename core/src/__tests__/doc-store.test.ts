@@ -5,6 +5,7 @@ import path from "node:path";
 import { composeSymbolId, type Declaration, type DocRegion } from "@nyaa-lexicon/protocol";
 import { IndexReadModel, REGEX_SCAN_LIMIT } from "../indexReads.js";
 import { IndexStore } from "../store";
+import { forgetPlain, writePlain } from "./admissions";
 
 ////////////////////////////////
 //  Helpers
@@ -49,7 +50,7 @@ function region(text: string, line: number, anchorId?: string, fenced = false, p
 }
 
 function write(declarations: Declaration[], docs: DocRegion[], module = MODULE): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: module,
 		contentHash: "h1",
 		declarations: declarations,
@@ -149,7 +150,7 @@ describe("storing document prose", () => {
 
 	it("forgets a file's regions along with its other facts", () => {
 		write([heading("Principles")], [region("gone soon", 3, headingId("Principles"))]);
-		store.forgetFile(MODULE);
+		forgetPlain(store, MODULE);
 
 		expect(reads.findDocs({ module: MODULE }).total).toBe(0);
 	});

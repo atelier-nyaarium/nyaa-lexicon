@@ -5,8 +5,8 @@ conformance tools. It runs without the core so provider teams can validate again
 
 ## Wire and compatibility
 
-`PROTOCOL_VERSION` is `8.0.0`. The daemon's `OLDEST_CLIENT_MAJOR` is `8`, so this build serves
-protocol major 8. Package versions and the wire version are separate.
+`PROTOCOL_VERSION` is `9.0.0`. The daemon's `OLDEST_CLIENT_MAJOR` is `8`, so it serves client major 8
+while providers must speak major 9. Package versions and the wire version are separate.
 
 Protocol majors break the wire. Changes within a major are additive. Daemon wire object schemas
 strip unknown keys; do not make them strict or passthrough. MCP tool argument schemas are strict.

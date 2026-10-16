@@ -1,16 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { connect, DaemonError, type PlatformEnv, type Session, writeInstallRecord } from "@nyaa-lexicon/client";
+import { connect, DaemonError, type PlatformEnv, type Session } from "@nyaa-lexicon/client";
 import { type RunningDaemon, startDaemon } from "../daemon";
 import { createDispatch } from "../dispatch";
-import { lexiconRoot } from "../providers";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 ////////////////////////////////
 //  Harness
@@ -24,12 +26,6 @@ const MARKDOWN = path.join(ROOT, "providers", "markdown", "src", "main.ts");
 
 /** Past the indexer's cap, so the read answers `tooLarge`. */
 const OVERSIZED = 4 * 1024 * 1024 + 1;
-
-// The install IS this checkout, so the lock's bundle stamp and the install's come from one file.
-const INSTALL = lexiconRoot();
-const whenBuilt = ["daemon.js", "version.json"].every((file) => existsSync(path.join(INSTALL, "dist", file)))
-	? describe
-	: describe.skip;
 
 const FILES: Record<string, string> = {
 	// Project-model driven: without an include list the provider enumerates nothing.
@@ -111,17 +107,15 @@ async function exact(module: string, segments: string[]) {
 ////////////////////////////////
 //  Tests
 
-whenBuilt("resolveChain and awaitIndexed over a real daemon", () => {
+describe("resolveChain and awaitIndexed over a real daemon", () => {
 	beforeAll(async () => {
 		state = mkdtempSync(path.join(tmpdir(), "lexicon-chain-state-"));
 		workspace = mkdtempSync(path.join(tmpdir(), "lexicon-chain-work-"));
 		host = { platform: "linux", env: { XDG_STATE_HOME: state }, home: state };
-		// connect() reads the live host, so the record and the lock land in this test's state root.
+		// Keep daemon locks isolated.
 		previousStateHome = process.env["XDG_STATE_HOME"];
 		process.env["XDG_STATE_HOME"] = state;
 		for (const [name, text] of Object.entries(FILES)) writeFileSync(path.join(workspace, name), text);
-		writeInstallRecord(INSTALL, host);
-
 		store = IndexStore.open(path.join(state, "index.sqlite")).store;
 		supervisor = new ProviderSupervisor();
 		await Promise.all(
@@ -129,8 +123,15 @@ whenBuilt("resolveChain and awaitIndexed over a real daemon", () => {
 				supervisor.start({ command: [process.execPath, "run", main], timeoutMs: 60_000 }, workspace),
 			),
 		);
-		const service = new LexiconService(store, supervisor, sourceReader(workspace), workspace);
-		const refactor = { transactions: new TransactionManager(store, workspace) };
+		const service = new LexiconService(
+			store,
+			supervisor,
+			sourceReader(workspace),
+			workspace,
+			undefined,
+			testPolicy(workspace),
+		);
+		const refactor = { transactions: new TransactionManager(store, workspace, service.policy) };
 		await service.indexWorkspace();
 
 		const outcome = await startDaemon({

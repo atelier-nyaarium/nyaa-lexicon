@@ -61,6 +61,22 @@ describe("reading a note back", () => {
 		expect(moved).toContain("project-ref://test-project/src/b.ts:Gone");
 		expect(renderNoteSection(note)).not.toContain("Advisories");
 	});
+
+	it("tells an agent when a ref is withheld", () => {
+		const rendered = renderNoteSection({
+			...note,
+			links: [
+				{
+					written: "project-ref://test-project/keys/server.key",
+					current: "project-ref://test-project/keys/server.key",
+					state: "withheld",
+				},
+			],
+		});
+
+		expect(rendered).toContain("**Withheld ref:**");
+		expect(rendered).not.toContain("**Broken ref:**");
+	});
 });
 
 describe("keeping the page's several file counts apart", () => {

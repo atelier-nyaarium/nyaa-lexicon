@@ -16,6 +16,7 @@ import path from "node:path";
 import { hashBytes } from "@nyaa-lexicon/protocol";
 import { IndexStore } from "../store";
 import { readLeaf, TransactionManager } from "../transactions";
+import { testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -60,7 +61,7 @@ function step(kind: "replace" | "rename", edits: Record<string, string | null>) 
 beforeEach(() => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-txn-"));
 	store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-	manager = new TransactionManager(store, root);
+	manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 });
 
 afterEach(() => {
@@ -216,7 +217,7 @@ describe("acting on the transaction that was shown", () => {
 
 		store.close();
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-		manager = new TransactionManager(store, root);
+		manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 		expect(manager.status().revision).toBe(tracked.revision);
 	});
 });
@@ -287,7 +288,7 @@ describe("known file states", () => {
 		});
 		store.close();
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-		manager = new TransactionManager(store, root);
+		manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 		const before = manager.status();
 		if (before.revision === undefined) throw new Error("open transaction has no revision");
 
@@ -344,15 +345,17 @@ describe("known file states", () => {
 		step("replace", { "a.ts": "refactor output\n" });
 		write("a.ts", "confirmed outside edit\n");
 		const shown = manager.status();
-		const dying = new TransactionManager(store, root, undefined, () => {
-			throw new Error("daemon stopped during revert");
+		const dying = new TransactionManager(store, root, testPolicy(root, undefined, store), {
+			failAfterRestore: () => {
+				throw new Error("daemon stopped during revert");
+			},
 		});
 		expect(() => dying.revert(shown.drifted)).toThrow("daemon stopped during revert");
 
 		store.close();
 		write("a.ts", "edit made while stopped\n");
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-		manager = new TransactionManager(store, root);
+		manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 		expect(manager.recover()).toMatchObject({ recovered: true, restored: [], conflicts: ["a.ts"] });
 		expect(read("a.ts")).toBe("edit made while stopped\n");
 		expect(manager.openTransaction()).not.toBeNull();
@@ -400,13 +403,13 @@ describe("known file states", () => {
 		store.close();
 
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-		manager = new TransactionManager(store, root);
+		manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 		expect(manager.status()).toMatchObject({ drifted: [], edited: ["a.ts"] });
 		write("a.ts", "outside\n");
 		store.close();
 
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-		manager = new TransactionManager(store, root);
+		manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 		expect(manager.status()).toMatchObject({ drifted: [diskDrift("a.ts", "outside\n")], edited: ["a.ts"] });
 	});
 });
@@ -606,8 +609,10 @@ describe("owing parses before restoring", () => {
 	for (const operation of ["undo", "revert"] as const) {
 		it(`owes every module ${operation} restores, so a crash before the reindex leaves the work`, () => {
 			manager.completeStep(renameStep(), "finalized");
-			const dying = new TransactionManager(store, root, undefined, () => {
-				throw new Error("died after restoring");
+			const dying = new TransactionManager(store, root, testPolicy(root, undefined, store), {
+				failAfterRestore: () => {
+					throw new Error("died after restoring");
+				},
 			});
 			expect(() => (operation === "undo" ? dying.undo() : dying.revert(dying.status().drifted))).toThrow(
 				"died after restoring",
@@ -717,7 +722,7 @@ describe("restoring where a directory now stands", () => {
 		expect(read("a.ts")).toBe("edited\n");
 		expect(read("b.ts/inner.ts")).toBe("mine\n");
 		// No recovery intent remains.
-		new TransactionManager(store, root).recover();
+		new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 		expect(read("a.ts")).toBe("edited\n");
 		expect(manager.status().steps).toHaveLength(1);
 	});
@@ -837,7 +842,7 @@ describe("recovering after a crash", () => {
 		// Everything in memory goes away, as it would on a crash.
 		store.close();
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-		const reopened = new TransactionManager(store, root);
+		const reopened = new TransactionManager(store, root, testPolicy(root, undefined, store));
 
 		const outcome = reopened.recover();
 
@@ -942,15 +947,17 @@ describe("recovering after a crash", () => {
 	for (const operation of ["undo", "revert"] as const) {
 		it(`finishes an interrupted ${operation}, leaving a directory in a file's place as a conflict`, () => {
 			step("replace", { "a.ts": "edited\n", "b.ts": "created\n" });
-			const dying = new TransactionManager(store, root, undefined, () => {
-				write("b.ts/inner.ts", "mine\n");
-				throw new Error("died after restoring");
+			const dying = new TransactionManager(store, root, testPolicy(root, undefined, store), {
+				failAfterRestore: () => {
+					write("b.ts/inner.ts", "mine\n");
+					throw new Error("died after restoring");
+				},
 			});
 			expect(() => (operation === "undo" ? dying.undo() : dying.revert(dying.status().drifted))).toThrow(
 				"died after restoring",
 			);
 
-			const recovered = new TransactionManager(store, root);
+			const recovered = new TransactionManager(store, root, testPolicy(root, undefined, store));
 			const outcome = recovered.recover();
 
 			expect(outcome).toMatchObject({ recovered: true, restored: ["a.ts"], conflicts: ["b.ts"] });
@@ -997,7 +1004,7 @@ describe("recovering a step's own transaction", () => {
 		write("a.ts", "half applied\n");
 		manager.completeStep(begun.stepNo, "written");
 
-		const outcome = new TransactionManager(store, root).recover();
+		const outcome = new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 
 		expect(outcome).toMatchObject({ restored: ["a.ts"], closed: "reverted" });
 		expect(read("a.ts")).toBe("original\n");
@@ -1007,7 +1014,7 @@ describe("recovering a step's own transaction", () => {
 	it("keeps a finalized step that died before its commit, and closes the transaction", () => {
 		step("replace", { "a.ts": "saved\n" });
 
-		const outcome = new TransactionManager(store, root).recover();
+		const outcome = new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 
 		expect(outcome).toMatchObject({ restored: [], closed: "committed" });
 		expect(read("a.ts")).toBe("saved\n");
@@ -1018,7 +1025,7 @@ describe("recovering a step's own transaction", () => {
 		store.journalWrite((db) => db.exec("ALTER TABLE refactor_transactions DROP COLUMN origin"));
 		store.close();
 		store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-		const reopened = new TransactionManager(store, root);
+		const reopened = new TransactionManager(store, root, testPolicy(root, undefined, store));
 
 		expect(reopened.recover().closed).toBeUndefined();
 		expect(reopened.start().started).toBe(false);
@@ -1037,7 +1044,7 @@ describe("a step that journals its outcome up front", () => {
 		expect(begun.ok).toBe(true);
 		write("src/new.ts", text);
 
-		const recovered = new TransactionManager(store, root).recover();
+		const recovered = new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 
 		expect(recovered.restored).toEqual(["src/new.ts"]);
 		expect(recovered.conflicts).toEqual([]);
@@ -1050,7 +1057,7 @@ describe("a step that journals its outcome up front", () => {
 		manager.beginStep("insert", ["src/a.ts"], undefined, [{ module: "src/a.ts", text: "before\nadded\n" }]);
 		write("src/a.ts", "before\nadded\n");
 
-		const recovered = new TransactionManager(store, root).recover();
+		const recovered = new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 
 		expect(recovered.restored).toEqual(["src/a.ts"]);
 		expect(read("src/a.ts")).toBe("before\n");
@@ -1061,7 +1068,7 @@ describe("a step that journals its outcome up front", () => {
 		manager.beginStep("insert", ["src/new.ts"], undefined, planned("planned\n"));
 		write("src/new.ts", "someone else's content\n");
 
-		const recovered = new TransactionManager(store, root).recover();
+		const recovered = new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 
 		expect(recovered.conflicts).toEqual(["src/new.ts"]);
 		expect(read("src/new.ts")).toBe("someone else's content\n");

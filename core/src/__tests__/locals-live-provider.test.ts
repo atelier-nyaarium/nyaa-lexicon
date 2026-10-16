@@ -3,11 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { lexiconRoot, startProviders } from "../providers";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { gitAdd, gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 /** Uses source, not build. */
 function sourceProvider(name: string) {

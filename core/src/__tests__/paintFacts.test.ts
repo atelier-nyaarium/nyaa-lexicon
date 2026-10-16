@@ -6,6 +6,7 @@ import { coordinatesOf, hashContent, type Range } from "@nyaa-lexicon/protocol";
 import { PaintReads } from "../paintFacts";
 import { liveProbe } from "../providerProbe";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
 import { edge, forwarding, landed } from "./importEdges";
 
@@ -33,7 +34,7 @@ const BUILD = "lexicon fake a.fake build#";
 
 /** Two declarations and two references, written straight to the store as a provider's output would land. */
 function plantModule(store: IndexStore): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: "a.fake",
 		contentHash: hashContent(TEXT),
 		declarations: [
@@ -125,7 +126,7 @@ describe("moduleFacts", () => {
 	});
 
 	it("reads an ambiguous row's reason as Ambiguous, since the row keeps its provenance instead", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "c.fake",
 			contentHash: hashContent(TEXT),
 			declarations: [],
@@ -176,7 +177,7 @@ describe("moduleFacts", () => {
 		};
 
 		// The outline pass: a declaration, no references yet.
-		store.replaceFile({
+		writePlain(store, {
 			module: "b.fake",
 			contentHash: hashContent(TEXT),
 			depth: "outline",
@@ -190,7 +191,7 @@ describe("moduleFacts", () => {
 		expect(outline.references).toEqual([]);
 
 		// The upgrade re-commits at full depth, with the reference the outline pass could not extract.
-		store.replaceFile({
+		writePlain(store, {
 			module: "b.fake",
 			contentHash: hashContent(TEXT),
 			declarations: [declaration],
@@ -398,7 +399,7 @@ describe("symbolAt", () => {
 		const LIB = "export class Widget { Missing }";
 		const lib = coordinatesOf(LIB);
 		const libWidget = "lexicon fake lib.fake Widget#";
-		store.replaceFile({
+		writePlain(store, {
 			module: "lib.fake",
 			contentHash: hashContent(LIB),
 			declarations: [
@@ -431,7 +432,7 @@ describe("symbolAt", () => {
 		});
 		const nowhere = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
 		const line = (at: number) => ({ start: { line: at, character: 0 }, end: { line: at, character: 1 } });
-		store.replaceFile({
+		writePlain(store, {
 			module: "barrel.fake",
 			contentHash: hashContent("barrel"),
 			// Unexported, so the star re-export's Widget still answers.
@@ -479,7 +480,7 @@ describe("symbolAt", () => {
 		const main = coordinatesOf(MAIN);
 		const at = (needle: string) =>
 			main.rangeAt(MAIN.indexOf(needle), MAIN.indexOf(needle) + needle.length) as Range;
-		store.replaceFile({
+		writePlain(store, {
 			module: "main.fake",
 			contentHash: hashContent(MAIN),
 			declarations: [],
@@ -531,7 +532,7 @@ describe("symbolAt", () => {
 	it("follows an imported name through a scope landing to the one member carrying it", async () => {
 		const LIB = "class Widget {}";
 		const widget = "lexicon fake lib.fake Widget#";
-		store.replaceFile({
+		writePlain(store, {
 			module: "lib.fake",
 			contentHash: hashContent(LIB),
 			declarations: [
@@ -550,7 +551,7 @@ describe("symbolAt", () => {
 		const MAIN = 'import { Widget } from "com.acme";';
 		const main = coordinatesOf(MAIN);
 		const at = main.rangeAt(MAIN.indexOf("Widget"), MAIN.indexOf("Widget") + 6) as Range;
-		store.replaceFile({
+		writePlain(store, {
 			module: "main.fake",
 			contentHash: hashContent(MAIN),
 			declarations: [],

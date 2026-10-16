@@ -49,10 +49,11 @@ type LedgerRefused = Omit<Refused, "reason" | "refs"> & {
 export type LedgerNoteOutcome = Exclude<NoteOutcome, Refused> | LedgerRefused;
 
 /** A ref that resolved, not yet claimed. */
-interface ResolvedRef {
-	written: string;
-	target: { kind: "symbol"; symbolId: string } | { kind: "module"; module: string };
-}
+type ResolvedTarget = { kind: "symbol"; symbolId: string } | { kind: "module"; module: string };
+
+type ResolvedRef = { written: string; target: ResolvedTarget } | { written: string; existing: NoteLinkRow };
+
+type NoteModuleState = "indexed" | "withheld" | "unindexed";
 
 type Checked<T> = { ok: true; value: T } | { ok: false; outcome: LedgerNoteOutcome };
 
@@ -119,6 +120,7 @@ export class NoteLedger {
 		private readonly store: IndexStore,
 		private readonly project: string,
 		private readonly clock: Clock = systemClock,
+		private readonly moduleState?: (module: string) => NoteModuleState,
 	) {}
 
 	read(symbolId: string): Note | null {
@@ -146,7 +148,7 @@ export class NoteLedger {
 		}
 
 		// Offsets into the text as sent.
-		const refs = this.resolveRefs(request.text);
+		const refs = this.resolveRefs(request.text, row === null ? [] : this.store.notes.links(row.subjectId));
 		if (!refs.ok) return refs.outcome;
 
 		const writer = request.author ?? null;
@@ -222,12 +224,11 @@ export class NoteLedger {
 	/** Notes whose refs name a symbol, or a file when `symbolId` is a module path. */
 	backlinks(symbolId: string, limit = BACKLINKS_SHOWN): NoteBacklinks {
 		const subject = this.store.subjects.forAddress(symbolId);
-		const target =
-			subject !== null
-				? subject.subjectId
-				: this.store.depthOf(symbolId) !== null
-					? MODULE_TARGET + symbolId
-					: null;
+		let target: string | null;
+		if (subject === null) {
+			const state = this.moduleStateOf(symbolId);
+			target = state === "indexed" || state === "withheld" ? MODULE_TARGET + symbolId : null;
+		} else target = subject.subjectId;
 		if (target === null) return { notes: [], total: 0 };
 		const found = this.store.notes.backlinks(target, limit);
 		return {
@@ -268,18 +269,35 @@ export class NoteLedger {
 		return { ok: true, value: trimmed };
 	}
 
-	/** Every ref must name one indexed declaration or file. */
-	private resolveRefs(text: string): Checked<ResolvedRef[]> {
+	/** Preserves stored refs; resolves submitted ones. */
+	private resolveRefs(text: string, existing: readonly NoteLinkRow[]): Checked<ResolvedRef[]> {
 		const resolved: ResolvedRef[] = [];
 		const problems: NoteRefProblem[] = [];
+		let withheld = 0;
 		const context = new ReadContext(this.store);
+		const prior = new Map<string, NoteLinkRow>();
+		for (const link of existing) {
+			prior.set(link.written, link);
+			prior.set(storedRef(link.written, this.project), link);
+			prior.set(this.linkNow(link, context).current, link);
+		}
 		for (const { ref, index } of findRefs(text, { legacy: true })) {
+			const kept = prior.get(ref) ?? prior.get(storedRef(ref, this.project));
+			if (kept !== undefined) {
+				resolved.push({ written: ref, existing: kept });
+				continue;
+			}
 			const found = this.resolveRef(ref, context);
 			if (found.ok) resolved.push({ written: ref, target: found.target });
-			else problems.push({ ref, at: index, problem: found.problem, candidates: found.candidates });
+			else {
+				if (found.withheld === true) withheld++;
+				problems.push({ ref, at: index, problem: found.problem, candidates: found.candidates });
+			}
 		}
 		if (problems.length > 0) {
-			return { ok: false, outcome: refused(refusal.noteRefsRefused(problems.length), { refs: problems }) };
+			const reason =
+				withheld === 0 ? refusal.noteRefsRefused(problems.length) : refusal.noteRefsWithheld(withheld);
+			return { ok: false, outcome: refused(reason, { refs: problems }) };
 		}
 		return { ok: true, value: resolved };
 	}
@@ -287,14 +305,20 @@ export class NoteLedger {
 	private resolveRef(
 		ref: string,
 		context: ReadContext,
-	): { ok: true; target: ResolvedRef["target"] } | { ok: false; problem: refusal.Refusal; candidates: string[] } {
+	):
+		| { ok: true; target: ResolvedTarget }
+		| { ok: false; problem: refusal.Refusal; candidates: string[]; withheld?: boolean } {
 		const parsed = parseRef(ref);
 		if (!parsed.ok) return { ok: false, problem: refusal.refParseFailed(parsed.problem), candidates: [] };
 		const { project, module, segments } = parsed.ref;
 		if (project !== this.project) {
 			return { ok: false, problem: refusal.refProjectMismatch(project, this.project), candidates: [] };
 		}
-		if (this.store.depthOf(module) === null) {
+		const state = this.moduleStateOf(module);
+		if (state === "withheld") {
+			return { ok: false, problem: refusal.refModuleWithheld(module), candidates: [], withheld: true };
+		}
+		if (state !== "indexed") {
 			return { ok: false, problem: refusal.refModuleNotIndexed(module), candidates: [] };
 		}
 		if (segments.length === 0) return { ok: true, target: { kind: "module", module } };
@@ -343,10 +367,12 @@ export class NoteLedger {
 	/** Claims each target's subject, so a ref follows its symbol through renames and moves. */
 	private claimLinks(refs: readonly ResolvedRef[], now: number): NoteLinkRow[] {
 		return refs.map((ref) => {
-			if (ref.target.kind === "module") {
-				return { written: ref.written, target: MODULE_TARGET + ref.target.module, targetDigest: null };
+			if ("existing" in ref) return ref.existing;
+			const target = ref.target;
+			if (target.kind === "module") {
+				return { written: ref.written, target: MODULE_TARGET + target.module, targetDigest: null };
 			}
-			const subject = this.store.subjects.claim(ref.target.symbolId, now);
+			const subject = this.store.subjects.claim(target.symbolId, now);
 			return {
 				written: ref.written,
 				target: subject?.subjectId ?? MODULE_TARGET,
@@ -394,19 +420,21 @@ export class NoteLedger {
 		};
 	}
 
-	/** A link at its target's current address, or broken where the target is gone. */
+	/** Current address, or written text if unavailable. */
 	private linkNow(link: NoteLinkRow, context: ReadContext): NoteLink {
 		const written = storedRef(link.written, this.project);
 		const broken: NoteLink = { written, current: written, state: "broken" };
 		if (link.target.startsWith(MODULE_TARGET)) {
 			const module = link.target.slice(MODULE_TARGET.length);
-			return module !== "" && this.store.depthOf(module) !== null
-				? { ...broken, kind: "file", state: "ok" }
-				: broken;
+			if (module === "") return broken;
+			const state = this.moduleStateOf(module);
+			if (state === "withheld") return { ...broken, state: "withheld" };
+			return state === "indexed" ? { ...broken, kind: "file", state: "ok" } : broken;
 		}
 		const at = this.store.notes.subjectAt(link.target);
+		const module = at === null ? this.moduleFromRef(written) : moduleOf(at.symbolId);
+		if (module !== null && this.moduleStateOf(module) === "withheld") return { ...broken, state: "withheld" };
 		if (at === null || at.state !== "bound") return broken;
-		const module = moduleOf(at.symbolId);
 		const declarations = module === null ? [] : context.heldIn(module);
 		const segments = chainOf(declarations, at.symbolId);
 		const declaration = declarations.find((row) => row.symbolId === at.symbolId);
@@ -418,5 +446,14 @@ export class NoteLedger {
 			kind: declaration.kind,
 			state: this.store.notes.digestOf(link.target) === link.targetDigest ? "ok" : "changed",
 		};
+	}
+
+	private moduleStateOf(module: string): NoteModuleState {
+		return this.moduleState?.(module) ?? (this.store.depthOf(module) === null ? "unindexed" : "indexed");
+	}
+
+	private moduleFromRef(ref: string): string | null {
+		const parsed = parseRef(ref);
+		return parsed.ok && parsed.ref.project === this.project ? parsed.ref.module : null;
 	}
 }

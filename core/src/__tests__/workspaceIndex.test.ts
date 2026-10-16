@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Declaration, IndexDepth } from "@nyaa-lexicon/protocol";
+import { type GitRunner, runGit } from "../fileScope";
 import type { FileEvent } from "../invalidation";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
-import { LexiconService } from "../service";
 import { MAX_SOURCE_BYTES, type SourceReader, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
@@ -15,6 +15,7 @@ import { fakeClasses } from "./fakeGrammar";
 import { importsFrom, parseFake, resolveFake, fakeSupervisor as sharedFake } from "./fakeProvider";
 import { gitAdd, gitInit } from "./gitFixture";
 import { landed } from "./importEdges";
+import { TestLexiconService as LexiconService, testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -193,6 +194,41 @@ describe("a batch that changes nothing", () => {
 			["skipped", "current"],
 		]);
 		expect([parses, resolves, admissions]).toEqual([parsed, resolved, admitted]);
+	});
+
+	it("does not spawn Git to admit a content-only batch", async () => {
+		await initGit();
+		put("root.fake", "export class Root {}\n");
+		await gitAdd(root, "root.fake");
+		const runs: string[][] = [];
+		const countFile = path.join(root, "git.count");
+		const wrapperDir = path.join(root, "git-bin");
+		mkdirSync(wrapperDir);
+		const wrapper = path.join(wrapperDir, "git");
+		writeFileSync(wrapper, `#!/bin/sh\nprintf 'x\\n' >> '${countFile}'\nexec /usr/bin/git "$@"\n`);
+		chmodSync(wrapper, 0o755);
+		const previousPath = process.env["PATH"];
+		process.env["PATH"] = `${wrapperDir}:${previousPath ?? ""}`;
+		const countingGit: GitRunner = (clock, cwd, args, options) => {
+			runs.push([...args]);
+			return runGit(clock, cwd, args, options);
+		};
+		const policy = testPolicy(root, undefined, store, countingGit);
+		service = new LexiconService(store, fakeSupervisor(["root.fake"]), sourceReader(root), root, undefined, policy);
+		try {
+			await service.indexWorkspace();
+			writeFileSync(countFile, "");
+			runs.length = 0;
+
+			put("root.fake", "export class Root { value = 1; }\n");
+			await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: null }]);
+
+			expect(runs).toEqual([]);
+			expect(readFileSync(countFile, "utf8")).toBe("");
+		} finally {
+			if (previousPath === undefined) delete process.env["PATH"];
+			else process.env["PATH"] = previousPath;
+		}
 	});
 });
 

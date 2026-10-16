@@ -8,6 +8,7 @@ import type { Route } from "../routing";
 function context(overrides: Partial<InvalidationContext> = {}): InvalidationContext {
 	return {
 		route: (): Route => ({ owned: true, providerId: "ts", content: "code" }),
+		readsItself: () => false,
 		indexedHash: () => null,
 		...overrides,
 	};
@@ -24,7 +25,20 @@ describe("deciding what a change costs", () => {
 			action: "reindex",
 			module: "src/a.ts",
 			contentHash: "h2",
-			providerId: "ts",
+		});
+	});
+
+	it("reindexes a file the index reads itself, whatever providers claim", () => {
+		const unclaimed = context({ route: () => ({ owned: false, reason: "unclaimed" }), readsItself: () => true });
+		const contested = context({
+			route: () => ({ owned: false, reason: "contested", providerIds: ["a", "b"] }),
+			readsItself: () => true,
+		});
+
+		expect(decideInvalidation(CHANGED, unclaimed)).toMatchObject({ action: "reindex" });
+		expect(decideInvalidation(CHANGED, contested)).toMatchObject({ action: "reindex" });
+		expect(decideInvalidation(CHANGED, context({ ...unclaimed, readsItself: () => false }))).toMatchObject({
+			action: "ignore",
 		});
 	});
 

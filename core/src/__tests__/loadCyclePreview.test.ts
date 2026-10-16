@@ -13,8 +13,9 @@ import { gateOf } from "../dispatch.js";
 import { previewLoadCycles } from "../loadCyclePreview.js";
 import { type Cycle, newCycleComponents, previewComponents } from "../loadCycleView.js";
 import type { ProviderProbe } from "../providerProbe.js";
-import { IndexStore, type ReplaceFileInput } from "../store.js";
+import { type FileWrite, IndexStore } from "../store.js";
 import { WorkspaceGate } from "../workspaceGate.js";
+import { writePlain } from "./admissions.js";
 import { fakeClock } from "./fakeClock.js";
 import { fakeSupervisor } from "./fakeProvider.js";
 
@@ -22,7 +23,7 @@ const RANGE = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 }
 let root: string;
 let store: IndexStore;
 
-function file(module: string, target?: string, hash = module): ReplaceFileInput {
+function file(module: string, target?: string, hash = module): FileWrite {
 	return {
 		module,
 		contentHash: hash,
@@ -130,8 +131,8 @@ describe("arrangement cycle preview", () => {
 	});
 
 	it("extracts candidate components synchronously and rolls all facts back", () => {
-		store.replaceFile(file("a.ts", "b.ts"));
-		store.replaceFile(file("b.ts"));
+		writePlain(store, file("a.ts", "b.ts"));
+		writePlain(store, file("b.ts"));
 		const revision = store.factsRevision();
 		const before = previewComponents(store, []);
 		const proposed = file("b.ts", "a.ts", "proposed-hash");
@@ -144,8 +145,8 @@ describe("arrangement cycle preview", () => {
 
 	it("prepares all owner files, judges only a new component, revalidates, and releases the overlay", async () => {
 		store.recordProjectFingerprint("fake", "fp");
-		store.replaceFile(file("a.fake", "b.fake"));
-		store.replaceFile(file("b.fake"));
+		writePlain(store, file("a.fake", "b.fake"));
+		writePlain(store, file("b.fake"));
 		const resultHash = hashContent("import './a.fake';");
 		const arranged: ArrangeFile = {
 			module: "b.fake",
@@ -283,21 +284,21 @@ describe("arrangement cycle preview", () => {
 		expect(staleRestart).toEqual([]);
 		incarnation.current++;
 		beforeAnswer = () => {
-			store.replaceFile(file("a.fake", "b.fake", "edited"));
+			writePlain(store, file("a.fake", "b.fake", "edited"));
 			beforeAnswer = () => {};
 		};
 		const staleEdit = await previewLoadCycles(store, provider, probe, clock, gateOf(new WorkspaceGate(clock)), [
 			arranged,
 		]);
 		expect(staleEdit).toEqual([]);
-		store.replaceFile(file("a.fake", "b.fake", "a.fake"));
-		store.replaceFile(file("b.fake", "a.fake", "b.fake"));
+		writePlain(store, file("a.fake", "b.fake", "a.fake"));
+		writePlain(store, file("b.fake", "a.fake", "b.fake"));
 		const none = await previewLoadCycles(store, provider, probe, clock, gateOf(new WorkspaceGate(clock)), [
 			arranged,
 		]);
 		expect(none).toEqual([]);
 		store.recordProjectFingerprint("fake", "fp");
-		store.replaceFile(file("b.fake"));
+		writePlain(store, file("b.fake"));
 		const timedOut = fakeSupervisor({
 			releasedPreviews,
 			answers: { judgeLoadCycle: () => Promise.reject(new DeadlineError("provider deadline")) },
@@ -353,7 +354,7 @@ describe("arrangement cycle preview", () => {
 
 	it("includes created destinations in the overlay and notices a new fine cycle", async () => {
 		store.recordProjectFingerprint("fake", "fp");
-		store.replaceFile(file("a.fake"));
+		writePlain(store, file("a.fake"));
 		const aText = 'import "./b.fake";';
 		const bText = 'import "./a.fake";';
 		const arranged: ArrangeFile[] = [
@@ -436,8 +437,8 @@ describe("arrangement cycle preview", () => {
 
 	it("drops judged results when an edit lands before the final gate hold", async () => {
 		store.recordProjectFingerprint("fake", "fp");
-		store.replaceFile(file("a.fake", "b.fake"));
-		store.replaceFile(file("b.fake"));
+		writePlain(store, file("a.fake", "b.fake"));
+		writePlain(store, file("b.fake"));
 		const text = 'import "./a.fake";';
 		const resultHash = hashContent(text);
 		const arranged: ArrangeFile = { module: "b.fake", base: "b.fake", created: false, text, result: resultHash };
@@ -468,7 +469,7 @@ describe("arrangement cycle preview", () => {
 		const gate = {
 			...base,
 			write: <T>(work: () => T | Promise<T>) => {
-				if (++writes === 3) store.replaceFile(file("b.fake", undefined, "edited-before-final-hold"));
+				if (++writes === 3) writePlain(store, file("b.fake", undefined, "edited-before-final-hold"));
 				return base.write(work);
 			},
 		};

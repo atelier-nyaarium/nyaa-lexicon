@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Binding, ReferenceRole, SymbolKind } from "@nyaa-lexicon/protocol";
 import { IndexReadModel } from "../indexReads";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 import { fakeSupervisor } from "./fakeProvider";
 import { edge, landed } from "./importEdges";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -56,7 +57,7 @@ function use(name: string, role: ReferenceRole, fromId: string | null, line: num
 }
 
 function plant(): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: "a.ref",
 		contentHash: "a1",
 		declarations: [
@@ -82,7 +83,7 @@ function plant(): void {
 			use("helper", "call", FIELD_VALUES, 9, HELPER),
 		],
 	});
-	store.replaceFile({
+	writePlain(store, {
 		module: "b.ref",
 		contentHash: "b1",
 		declarations: [declared(HELPER, "function", "helper", 0), declared(BOOT, "function", "boot", 2)],
@@ -182,7 +183,7 @@ describe("a class's edges", () => {
 describe("a recursive function's edges", () => {
 	/** loop calls itself, twin, helper and a symbol no longer indexed; c.ref calls loop at module level. */
 	it("count recursion as internal, a top-level caller by module, and rank its own file first", () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "c.ref",
 			contentHash: "c1",
 			declarations: [declared(LOOP, "function", "loop", 0), declared(TWIN, "function", "twin", 5)],
@@ -223,7 +224,7 @@ describe("namespace imports", () => {
 			specifier,
 			edges: [edge(kind, at(line), { local, localRange: at(line) })],
 		});
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/app.ts",
 			contentHash: "s1",
 			declarations: [declared(RUN, "function", "run", 2)],

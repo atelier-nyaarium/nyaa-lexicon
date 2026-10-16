@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	applyEdits,
 	composeSymbolId,
@@ -11,6 +12,7 @@ import {
 	PROTOCOL_VERSION,
 	type Range,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { loadGdscriptMoveCases } from "../../../../protocol/src/conformance/moveCorpusGdscript.js";
 import { MoveCaseSchema } from "../../../../protocol/src/conformance/types.js";
 import { extractDeclarationsCore } from "../extractCore.js";
@@ -59,8 +61,8 @@ function methodId(module: string, root: string, name: string): string {
 }
 
 function move(root: string, request: MoveEditsRequest) {
-	const handlers = handlersFor(new GDScriptProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new GDScriptProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers.moveEdits(request);
 }

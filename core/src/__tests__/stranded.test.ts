@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
+import { failPlain, writePlain } from "./admissions";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -29,7 +29,7 @@ function declaration(symbolId: string, name: string, line = 0) {
 }
 
 function plant(module = "a.ref", symbolId = CART, name = "Cart"): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: module,
 		contentHash: "h1",
 		declarations: [declaration(symbolId, name)],
@@ -51,7 +51,7 @@ function refusedAt(symbolId: string): string {
 
 /** The declaration leaves the index; the subject and its rows stay. */
 function strand(module = "a.ref"): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: module,
 		contentHash: "h2",
 		declarations: [],
@@ -103,7 +103,7 @@ describe("a subject whose address stopped resolving", () => {
 		plant();
 		record(CART);
 		strand();
-		store.recordFailure("a.ref", "unterminated string at line 3");
+		failPlain(store, "a.ref", "unterminated string at line 3");
 
 		expect(refusedAt(CART)).toContain("present and not parsing (unterminated string at line 3)");
 		expect(service.readNote(CART)?.text).toBe("A shopping cart.");
@@ -154,7 +154,7 @@ describe("an address a subject vacated", () => {
 		plant("c.ref", c);
 		store.journalWrite(() => store.subjects.rebind([{ from: b, to: c }], "journalMove", 10));
 		// The first module keeps another declaration, so its shortlist is what an unminted id shows.
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h2",
 			declarations: [declaration("lexicon reference a.ref Other#", "Other")],

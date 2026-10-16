@@ -13,9 +13,8 @@ import type {
 	ProviderPhase,
 } from "./methods.js";
 import type { IndexDepth } from "./project.js";
-import { OPEN_READ_POLICY, type ReadPolicy, readPolicy } from "./readPolicy.js";
+import { createReadPolicyState, type ReadPolicy, type ReadPolicyState, type SecretReaders } from "./readPolicy.js";
 import { type ProviderEvents, type ProviderHandlers, type ProviderNotificationHandlers, whenServed } from "./serve.js";
-import { readWorkspaceFile } from "./sourceFile.js";
 import type { Diagnostic } from "./symbols.js";
 
 ////////////////////////////////
@@ -23,6 +22,7 @@ import type { Diagnostic } from "./symbols.js";
 
 type Request<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["request"]>;
 type Response<M extends ProviderMethod> = z.infer<(typeof METHOD_SCHEMAS)[M]["response"]>;
+type PolicyWire = Request<"initialize">["policy"];
 
 export type Maybe<T> = T | Promise<T>;
 
@@ -233,8 +233,8 @@ function refusable(value: ModuleValue): boolean {
 class Kit<V extends ModuleValue, P, E> {
 	root = "";
 	generation = 0;
-	/** What the index denies, which no fill reads. */
-	policy: ReadPolicy = OPEN_READ_POLICY;
+	readonly policyState: ReadPolicyState = createReadPolicyState();
+	readonly policy: ReadPolicy = this.policyState;
 	private discovery: { project: P; fingerprint: string | undefined } | null = null;
 	private discovered = new Set<string>();
 	/** What the index's scope admits, when discovery was told; it names more than the index roots. */
@@ -289,9 +289,9 @@ class Kit<V extends ModuleValue, P, E> {
 	////////////////////////////////
 	//  Writes
 
-	reset(root: string, policy = this.policy): void {
+	reset(root: string, wire?: PolicyWire): void {
 		this.root = path.resolve(root);
-		this.policy = policy;
+		this.policyState.reset(root, wire);
 		this.discovery = null;
 		this.discovered = new Set();
 		this.scope = undefined;
@@ -305,6 +305,19 @@ class Kit<V extends ModuleValue, P, E> {
 		this.filling.clear();
 		this.transientOpen = false;
 		this.generation++;
+	}
+
+	installPolicy(wire: PolicyWire): string[] {
+		const changed = this.policyState.install(wire);
+		for (const module of changed) {
+			if (this.policy.access(module) === "closed") this.forget(module);
+			else this.release(module);
+		}
+		return changed;
+	}
+
+	setReaders(readers: SecretReaders): void {
+		this.policyState.setReaders(readers);
 	}
 
 	setRoots(roots: readonly string[]): void {
@@ -486,7 +499,7 @@ class Kit<V extends ModuleValue, P, E> {
 		// A moved fingerprint sets the admitted layer aside, and the index keeps its rows until a re-parse.
 		const layer = slot?.aside ?? (base?.kind === "held" && base.layer.origin === "parse" ? base.layer : undefined);
 		if (layer !== undefined) return { state: "admitted", contentHash: layer.held.contentHash };
-		if (!this.policy.readable(path.join(this.root, module))) return { state: "outside" };
+		if (!this.policy.exists(path.join(this.root, module))) return { state: "outside" };
 		const refused = base?.kind !== "withheld" && base?.refused !== undefined;
 		if ((slot?.chain.length ?? 0) > 0 || refused) return { state: "pending" };
 		return (this.roots ?? this.scope ?? this.discovered).has(module) ? { state: "pending" } : { state: "outside" };
@@ -682,11 +695,11 @@ class Kit<V extends ModuleValue, P, E> {
 			this.owed.delete(module);
 			return;
 		}
-		if (!this.policy.readable(path.join(this.root, module))) {
+		const read = this.policy.readModule(path.join(this.root, module));
+		if (read === undefined) {
 			this.miss(module, slot);
 			return;
 		}
-		const read = readWorkspaceFile(this.root, module);
 		// Retry unreadable files on later reads.
 		if (read.kind === "unreadable") return;
 		// A UTF-16 file decodes faithfully; only a damaged decode is not what the file says.
@@ -802,23 +815,26 @@ export function asyncModuleStore<V extends ModuleValue, P = null, E = never>(
 /** Route provider requests through the kit. */
 export function storeHandlersFor<V extends ModuleValue, P, E>(
 	provider: StoreProvider<V, P, E>,
+	readers: SecretReaders,
 ): ProviderHandlers & ProviderNotificationHandlers {
 	const kit = kits.get(provider.store) as Kit<V, P, E> | undefined;
 	if (kit === undefined) throw new Error("the provider's store was not made by moduleStore or asyncModuleStore");
-	const discover = (root: string, scope?: string[]) =>
-		after(provider.discoverProject(root, kit.previousProject(), scope), ({ model, project }) => {
+	kit.setReaders(readers);
+	const discover = (root: string, scope?: string[]) => {
+		return after(provider.discoverProject(root, kit.previousProject(), scope), ({ model, project }) => {
 			kit.rediscover(root, model.files, project, model.fingerprint, scope);
 			return model;
 		});
+	};
 	// Discover before the first request.
 	const ready = <R>(work: () => Maybe<R>): Maybe<R> =>
 		kit.discoveredOnce ? work() : after(discover(kit.root), work);
 	const handlers = {
 		initialize: (params: Request<"initialize">) => {
-			const policy = readPolicy(params.workspaceRoot, params.deny);
-			kit.reset(params.workspaceRoot, policy);
-			return provider.initialize(params.workspaceRoot, policy);
+			kit.reset(params.workspaceRoot, params.policy);
+			return provider.initialize(params.workspaceRoot, kit.policy);
 		},
+		installPolicy: (params: Request<"installPolicy">) => ({ changed: kit.installPolicy(params.policy) }),
 		discoverProject: (params: Request<"discoverProject">) => discover(params.workspaceRoot, params.scope),
 		parseFile: (params: Request<"parseFile">) =>
 			ready(() =>

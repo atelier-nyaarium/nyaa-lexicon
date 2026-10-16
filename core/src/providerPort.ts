@@ -11,6 +11,7 @@ import type {
 } from "@nyaa-lexicon/protocol";
 import type { z } from "zod";
 import type { HeadReader, ProviderClaims, Route } from "./routing.js";
+import type { PolicyChange } from "./secretPolicy.js";
 import type { ProviderSupervisor } from "./supervisor.js";
 
 ////////////////////////////////
@@ -47,6 +48,10 @@ export interface ProviderPort {
 	incarnationOf(providerId: string): number | null;
 	/** Calls `listener` whenever a provider's process starts again under the same id. */
 	respawnedFrom(listener: (providerId: string) => void): void;
+	/** Stales provider barriers after policy installs. */
+	policyChanged(change: PolicyChange): void;
+	/** Receives affected paths after the install barrier. */
+	policyInvalidatedFrom(listener: (providerId: string, modules: readonly string[]) => void): void;
 	/**
 	 * Tells the process that ANSWERED the parse what the index did with it. Not awaited.
 	 *

@@ -13,8 +13,25 @@ export interface JournalTable {
 	salvage: boolean;
 	/** Row changes advance open revisions. */
 	revision: boolean;
-	/** Blob hash columns and retention scope. */
-	blobs?: { columns: readonly string[]; where?: string };
+	/** Hash columns and retention. */
+	hashes?: {
+		module: string;
+		columns: readonly string[];
+		blobs?: readonly string[];
+		transaction?: string;
+		retained?: string;
+	};
+	/** JSON image hashes. */
+	jsonHashes?: readonly JournalJsonHashes[];
+}
+
+export interface JournalJsonHashes {
+	column: string;
+	key: string;
+	array: string;
+	module: string;
+	hashes: readonly string[];
+	purge: "nullify" | "remove";
 }
 
 ////////////////////////////////
@@ -27,6 +44,22 @@ export const SETTLED_IMAGES_KEPT = 32;
 export const CLIENT_STEPS_KEPT = 256;
 
 export const JOURNAL_TABLES = {
+	refactor_admissions: {
+		ddl: `
+CREATE TABLE IF NOT EXISTS refactor_admissions (
+  module TEXT NOT NULL,
+  hash   TEXT NOT NULL,
+  stamp  TEXT,
+  PRIMARY KEY (module, hash),
+  CHECK (typeof(module) = 'text' AND module != ''),
+  CHECK (typeof(hash) = 'text' AND hash != ''),
+  CHECK (stamp IS NULL OR typeof(stamp) = 'text')
+);
+CREATE INDEX IF NOT EXISTS refactor_admissions_hash ON refactor_admissions(hash);
+`,
+		salvage: true,
+		revision: false,
+	},
 	// The partial index enforces one open transaction.
 	refactor_transactions: {
 		ddl: `
@@ -99,6 +132,16 @@ CREATE TABLE IF NOT EXISTS refactor_recovery_intents (
 `,
 		salvage: true,
 		revision: true,
+		jsonHashes: [
+			{
+				column: "diskStates",
+				key: "transactionId",
+				array: "$",
+				module: "module",
+				hashes: ["hash"],
+				purge: "remove",
+			},
+		],
 	},
 	refactor_known_states: {
 		ddl: `
@@ -114,7 +157,7 @@ CREATE TABLE IF NOT EXISTS refactor_known_states (
 `,
 		salvage: true,
 		revision: true,
-		blobs: { columns: ["contentHash"] },
+		hashes: { module: "module", columns: ["contentHash"], transaction: "transactionId" },
 	},
 	// Content addressing deduplicates exact byte images.
 	refactor_blobs: {
@@ -147,7 +190,11 @@ CREATE INDEX IF NOT EXISTS refactor_images_txn ON refactor_images(transactionId)
 `,
 		salvage: true,
 		revision: true,
-		blobs: { columns: ["beforeHash", "afterHash"] },
+		hashes: {
+			module: "module",
+			columns: ["beforeHash", "afterHash"],
+			transaction: "transactionId",
+		},
 	},
 	// Per-step issues name commit refusals.
 	refactor_issues: {
@@ -179,6 +226,16 @@ CREATE TABLE IF NOT EXISTS refactor_client_steps (
 `,
 		salvage: true,
 		revision: false,
+		jsonHashes: [
+			{
+				column: "answer",
+				key: "stepId",
+				array: "$.files",
+				module: "module",
+				hashes: ["before", "after"],
+				purge: "nullify",
+			},
+		],
 	},
 	// AUTOINCREMENT preserves pruned sequence numbers.
 	refactor_settlements: {
@@ -210,9 +267,11 @@ CREATE TABLE IF NOT EXISTS refactor_settled_files (
 `,
 		salvage: true,
 		revision: false,
-		blobs: {
-			columns: ["opened", "settled"],
-			where: `seq IN (SELECT seq FROM refactor_settlements WHERE origin = 'explicit' ORDER BY seq DESC LIMIT ${SETTLED_IMAGES_KEPT})`,
+		hashes: {
+			module: "module",
+			columns: ["opened", "settled", "driftedHash"],
+			blobs: ["opened", "settled"],
+			retained: `seq IN (SELECT seq FROM refactor_settlements WHERE origin = 'explicit' ORDER BY seq DESC LIMIT ${SETTLED_IMAGES_KEPT})`,
 		},
 	},
 } as const satisfies Record<string, JournalTable>;
@@ -238,24 +297,137 @@ export function installRevisionTriggers(db: Database): void {
 		);
 		const changed = columns.map((column) => `OLD.${column} IS NOT NEW.${column}`).join(" OR ");
 		const bump = (row: "NEW" | "OLD") =>
-			`BEGIN UPDATE refactor_transactions SET revision = revision + 1 WHERE id = ${row}.transactionId AND state = 'open'; END;`;
-		db.exec(`
-			DROP TRIGGER IF EXISTS ${table}_revision_insert;
-			DROP TRIGGER IF EXISTS ${table}_revision_update;
-			DROP TRIGGER IF EXISTS ${table}_revision_delete;
-			CREATE TRIGGER ${table}_revision_insert AFTER INSERT ON ${table} ${bump("NEW")}
-			CREATE TRIGGER ${table}_revision_update AFTER UPDATE ON ${table} WHEN ${changed} ${bump("NEW")}
-			CREATE TRIGGER ${table}_revision_delete AFTER DELETE ON ${table} ${bump("OLD")}
-		`);
+			`UPDATE refactor_transactions SET revision = revision + 1 WHERE id = ${row}.transactionId AND state = 'open';`;
+		const expected = [
+			{
+				name: `${table}_revision_insert`,
+				sql: `CREATE TRIGGER ${table}_revision_insert AFTER INSERT ON ${table} BEGIN ${bump("NEW")} END`,
+			},
+			{
+				name: `${table}_revision_update`,
+				sql: `CREATE TRIGGER ${table}_revision_update AFTER UPDATE ON ${table} WHEN ${changed} BEGIN ${bump("NEW")} END`,
+			},
+			{
+				name: `${table}_revision_delete`,
+				sql: `CREATE TRIGGER ${table}_revision_delete AFTER DELETE ON ${table} BEGIN ${bump("OLD")} END`,
+			},
+		];
+		const installed = new Map(
+			(
+				db
+					.prepare("SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?")
+					.all(table) as Array<{ name: string; sql: string | null }>
+			).map(({ name, sql }) => [name, sql]),
+		);
+		const changedTriggers = expected.filter(({ name, sql }) => {
+			const current = installed.get(name);
+			return current?.replace(/\s+/g, " ").trim().toLowerCase() !== sql.toLowerCase();
+		});
+		if (changedTriggers.length === 0) continue;
+		db.exec(changedTriggers.map(({ name, sql }) => `DROP TRIGGER IF EXISTS ${name}; ${sql};`).join("\n"));
 	}
+}
+
+/** Reject images without policy rows. */
+export function installAdmissionTriggers(db: Database): void {
+	for (const table of JOURNAL_TABLE_NAMES) {
+		const entry: JournalTable = JOURNAL_TABLES[table];
+		const hashes = entry.hashes;
+		if (hashes !== undefined) {
+			for (const column of hashes.columns) {
+				const admitted = `NEW.${column} IS NOT NULL AND NOT EXISTS (
+					SELECT 1 FROM refactor_admissions WHERE module = NEW.${hashes.module} AND hash = NEW.${column}
+				)`;
+				for (const [event, operation] of [
+					["INSERT", "insert"] as const,
+					[`UPDATE OF module, ${column}`, "update"] as const,
+				]) {
+					const name = `${table}_${column}_admission_${operation}`;
+					db.exec(
+						`CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${event} ON ${table}
+							 WHEN ${admitted}
+							 BEGIN SELECT RAISE(ABORT, 'journal image lacks policy admission'); END;`,
+					);
+				}
+			}
+		}
+		for (const reference of entry.jsonHashes ?? []) {
+			const pairs = reference.hashes
+				.map(
+					(hash) =>
+						`json_extract(image.value, '$.${reference.module}') IS NOT NULL
+							AND json_extract(image.value, '$.${hash}') IS NOT NULL
+							AND NOT EXISTS (
+								SELECT 1 FROM refactor_admissions AS admission
+								WHERE admission.module = json_extract(image.value, '$.${reference.module}')
+									AND admission.hash = json_extract(image.value, '$.${hash}')
+							)`,
+				)
+				.join(" OR ");
+			const unadmitted = `NEW.${reference.column} IS NOT NULL AND (
+				NOT json_valid(NEW.${reference.column}) OR EXISTS (
+					SELECT 1 FROM json_each(
+						CASE WHEN json_valid(NEW.${reference.column}) THEN NEW.${reference.column} ELSE '{}' END,
+						'${reference.array}'
+					) AS image WHERE ${pairs}
+				)
+			)`;
+			for (const [event, operation] of [
+				["INSERT", "insert"] as const,
+				[`UPDATE OF ${reference.column}`, "update"] as const,
+			]) {
+				const name = `${table}_${reference.column}_json_admission_${operation}`;
+				db.exec(
+					`CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${event} ON ${table}
+						 WHEN ${unadmitted}
+						 BEGIN SELECT RAISE(ABORT, 'journal image lacks policy admission'); END;`,
+				);
+			}
+		}
+	}
+	db.exec(`
+		CREATE TRIGGER IF NOT EXISTS refactor_blobs_admission_insert BEFORE INSERT ON refactor_blobs
+		WHEN NOT EXISTS (SELECT 1 FROM refactor_admissions WHERE hash = NEW.hash)
+		BEGIN SELECT RAISE(ABORT, 'journal blob lacks policy admission'); END;
+		CREATE TRIGGER IF NOT EXISTS refactor_blobs_admission_update BEFORE UPDATE OF hash ON refactor_blobs
+		WHEN NOT EXISTS (SELECT 1 FROM refactor_admissions WHERE hash = NEW.hash)
+		BEGIN SELECT RAISE(ABORT, 'journal blob lacks policy admission'); END;
+	`);
 }
 
 /** Query for retained blob hashes. */
 export function keptBlobs(): string {
 	return JOURNAL_TABLE_NAMES.flatMap((table) => {
-		const { blobs }: JournalTable = JOURNAL_TABLES[table];
-		if (blobs === undefined) return [];
-		const where = blobs.where === undefined ? "" : ` AND ${blobs.where}`;
-		return blobs.columns.map((column) => `SELECT ${column} FROM ${table} WHERE ${column} IS NOT NULL${where}`);
+		const { hashes }: JournalTable = JOURNAL_TABLES[table];
+		if (hashes === undefined) return [];
+		const retained = hashes.retained === undefined ? "" : ` AND ${hashes.retained}`;
+		return (hashes.blobs ?? hashes.columns).map(
+			(column) => `SELECT ${column} FROM ${table} WHERE ${column} IS NOT NULL${retained}`,
+		);
+	}).join(" UNION ");
+}
+
+/** Query retained hash pairs. */
+export function keptHashPairs(): string {
+	return JOURNAL_TABLE_NAMES.flatMap((table) => {
+		const { hashes }: JournalTable = JOURNAL_TABLES[table];
+		const direct =
+			hashes?.columns.map(
+				(column) =>
+					`SELECT ${hashes.module} AS module, ${column} AS hash FROM ${table} WHERE ${column} IS NOT NULL`,
+			) ?? [];
+		const entry: JournalTable = JOURNAL_TABLES[table];
+		const json = (entry.jsonHashes ?? []).flatMap((reference) =>
+			reference.hashes.map(
+				(hash) =>
+					`SELECT json_extract(image.value, '$.${reference.module}') AS module,
+						json_extract(image.value, '$.${hash}') AS hash
+					 FROM ${table} AS parent,
+						json_each(CASE WHEN json_valid(parent.${reference.column}) THEN parent.${reference.column} ELSE '{}' END, '${reference.array}') AS image
+					 WHERE parent.${reference.column} IS NOT NULL
+						AND json_extract(image.value, '$.${hash}') IS NOT NULL`,
+			),
+		);
+		return [...direct, ...json];
 	}).join(" UNION ");
 }

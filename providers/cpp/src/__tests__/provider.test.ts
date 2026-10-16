@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type Certainty,
 	composeSymbolId,
@@ -26,6 +27,7 @@ import {
 	type WorkMeter,
 } from "@nyaa-lexicon/protocol";
 import { memberReads, parsedFiles } from "@nyaa-lexicon/protocol/ast";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CppProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import type { CppFacts, ImportFact } from "../model.js";
 import { parseCppFile } from "../parser.js";
@@ -45,8 +47,8 @@ function workspace(files: Record<string, string>): string {
 }
 
 function wire(root = process.cwd(), meter?: WorkMeter) {
-	const handlers = handlersFor(new CppProvider(meter));
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new CppProvider(meter), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
 }
@@ -90,8 +92,12 @@ describe("C++ provider contract", () => {
 	});
 
 	test("declares its supported extensions, roles, and tiers", () => {
-		const handlers = handlersFor(new CppProvider());
-		const info = handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		const handlers = handlersFor(new CppProvider(), SECRET_READERS);
+		const info = handlers.initialize({
+			workspaceRoot: process.cwd(),
+			protocolVersion: PROTOCOL_VERSION,
+			policy: secretWire(),
+		});
 		handlers.discoverProject({ workspaceRoot: process.cwd() });
 
 		expect(InitializeResponseSchema.parse(info).language).toBe("cpp");
@@ -734,8 +740,12 @@ describe("C++ provider contract", () => {
 			"lib/include/open.hpp": "int open_value;\n",
 			"src/main.cpp": '#include <hidden.hpp>\n#include "../secret/api.hpp"\n#include <open.hpp>\n',
 		});
-		const provider = handlersFor(new CppProvider());
-		provider.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, deny: ["secret/**"] });
+		const provider = handlersFor(new CppProvider(), SECRET_READERS);
+		provider.initialize({
+			workspaceRoot: root,
+			protocolVersion: PROTOCOL_VERSION,
+			policy: secretWire(["secret/**"]),
+		});
 		provider.discoverProject({ workspaceRoot: root });
 		const resolve = (specifier: string) => provider.resolveImport({ fromModule: "src/main.cpp", specifier });
 

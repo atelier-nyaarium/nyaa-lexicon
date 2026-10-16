@@ -3,6 +3,7 @@ import { CommentFormSchema, StoredImportSchema, StoredLiteralSchema, StoredRefer
 import { LoadCycleHazardSchema } from "./loadCycles.js";
 import { PaintFactsSchema } from "./paint.js";
 import { FileRoleSchema } from "./project.js";
+import { ValueStatusSchema } from "./secrets.js";
 import { RangeSchema, SymbolKindSchema, VisibilitySchema } from "./symbols.js";
 import { UnknownReasonSchema } from "./values.js";
 
@@ -48,6 +49,7 @@ export const SymbolSummarySchema = z
 		name: z.string(),
 		kind: SymbolKindSchema,
 		module: z.string(),
+		valueStatus: ValueStatusSchema.optional(),
 		/** Absent when the provider's language has no answer, which is not the same as false. */
 		exported: z.boolean().optional(),
 		visibility: VisibilitySchema,
@@ -539,6 +541,7 @@ export const SymbolSourceSchema = z
 			/** A declaration's symbol kind, or `<kind> literal` when the address named a literal fact. */
 			kind: z.string(),
 			range: RangeSchema,
+			valueStatus: ValueStatusSchema.optional(),
 			text: z.string(),
 			/** Of the same read the text came from, so a later write can prove nothing moved. */
 			contentHash: z.string(),

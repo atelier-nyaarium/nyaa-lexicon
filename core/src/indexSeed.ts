@@ -1,10 +1,24 @@
-// A store's first open under a new schema copies the newest older index forward, so knowledge
-// carries over while the older file stays as the install that wrote it left it.
+// Copies notes and journal rows from the newest older index.
 
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { indexFiles, storePaths } from "@nyaa-lexicon/client";
 import { SCHEMA_VERSION } from "@nyaa-lexicon/protocol";
+import { type Clock, systemClock } from "./clock.js";
 import { Database } from "./database.js";
+import { type Carried, carriedFrom, createStoreFile } from "./store.js";
+import type { ScrubOptions } from "./storePurge.js";
+
+////////////////////////////////
+//  Interfaces & Types
+
+/** Seed inputs and operations. */
+export interface SeedOptions {
+	clock?: Clock;
+	/** The major recorded in the index. */
+	compatibility?: string | null;
+	/** How the index file is installed. */
+	scrub?: ScrubOptions;
+}
 
 ////////////////////////////////
 //  Constants
@@ -21,40 +35,41 @@ function unreadable(error: unknown): boolean {
 	return typeof code === "number" && [SQLITE_CORRUPT, SQLITE_NOTADB].includes(code & 0xff);
 }
 
-function copyInto(source: string, staging: string): void {
-	const db = Database.open(source, { readOnly: true });
+/** Earlier index knowledge, or null when unreadable. */
+function carriedOf(file: string): Carried | null {
+	let db: Database | null = null;
 	try {
-		db.exec(`VACUUM INTO '${staging.replaceAll("'", "''")}'`);
+		db = Database.open(file, { readOnly: true });
+		return carriedFrom(db);
+	} catch (error) {
+		if (unreadable(error)) return null;
+		throw new Error(
+			`${file} could not be read forward: ${error instanceof Error ? error.message : String(error)}`,
+			{
+				cause: error,
+			},
+		);
 	} finally {
-		db.close();
+		db?.close();
 	}
 }
 
 /**
- * Copies the newest readable older-schema index into this schema's file, once; the open that
- * follows migrates the copy. Answers the file copied, or null when there was nothing to copy.
- * Throws on any other failure, leaving no target, so the next start retries. Runs under the
- * daemon's lock, so no other daemon writes either file meanwhile.
+ * Seeds this schema from the newest readable older index. Returns its path or null; failures leave
+ * no target. The daemon lock prevents concurrent writes.
  */
-export function seedIndex(directory: string): string | null {
+export function seedIndex(directory: string, options: SeedOptions = {}): string | null {
 	const target = storePaths(directory).index;
 	if (existsSync(target)) return null;
-	// Staged, so a crash mid-copy never leaves a partial file under the real name.
-	const staging = `${target}.seeding`;
-	try {
-		for (const source of indexFiles(directory).filter((each) => each.schema < SCHEMA_VERSION)) {
-			rmSync(staging, { force: true });
-			try {
-				copyInto(source.file, staging);
-			} catch (error) {
-				if (unreadable(error)) continue;
-				throw error;
-			}
-			renameSync(staging, target);
-			return source.file;
-		}
-		return null;
-	} finally {
-		rmSync(staging, { force: true });
+	for (const source of indexFiles(directory).filter((each) => each.schema < SCHEMA_VERSION)) {
+		const carried = carriedOf(source.file);
+		if (carried === null) continue;
+		createStoreFile(target, carried, {
+			clock: options.clock ?? systemClock,
+			compatibility: options.compatibility,
+			scrub: options.scrub,
+		});
+		return source.file;
 	}
+	return null;
 }

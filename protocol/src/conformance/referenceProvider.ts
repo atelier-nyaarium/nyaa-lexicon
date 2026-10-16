@@ -230,6 +230,7 @@ export const referenceHandlers: ProviderHandlers = {
 		tiers: REFERENCE_TIERS,
 		words: REFERENCE_WORDS,
 	}),
+	installPolicy: () => ({ changed: [] }),
 
 	discoverProject: () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),
 

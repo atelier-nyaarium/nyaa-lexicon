@@ -192,13 +192,13 @@ export class LoadCycleView {
 	}
 }
 
-export function previewComponents(store: IndexStore, facts: readonly import("./store.js").ReplaceFileInput[]): Cycle[] {
+export function previewComponents(store: IndexStore, facts: readonly import("./store.js").FileWrite[]): Cycle[] {
 	return withPreviewComponents(store, facts, (cycles) => cycles);
 }
 
 export function withPreviewComponents<T>(
 	store: IndexStore,
-	facts: readonly import("./store.js").ReplaceFileInput[],
+	facts: readonly import("./store.js").FileWrite[],
 	read: (cycles: Cycle[]) => T,
 ): T {
 	return store.readOverlaid(facts, () =>

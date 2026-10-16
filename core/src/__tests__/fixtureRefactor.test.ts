@@ -17,12 +17,12 @@ import {
 import { createDispatch, daemonHandlers } from "../dispatch";
 import { lexiconRoot } from "../providers";
 import { recoverSteps } from "../refactorStep";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import type { Gate } from "../stepRunners";
 import { IndexStore } from "../store";
-import { ProviderSupervisor, ProviderUnavailableError } from "../supervisor";
+import { ProviderUnavailableError } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -97,7 +97,7 @@ async function open(flags: string[] = []): Promise<void> {
 	);
 	await supervisor.start({ command: [...launch, "run", FIXTURE, ...flags], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
-	transactions = new TransactionManager(store, root);
+	transactions = new TransactionManager(store, root, service.policy);
 	dispatch = createDispatch(service, { transactions });
 }
 
@@ -281,7 +281,7 @@ describe("a debt a stopped daemon left", () => {
 		store.oweRebinds(["a.ref"]);
 		const restarted = new LexiconService(store, supervisor, sourceReader(root), root);
 
-		await recoverSteps(restarted, new TransactionManager(store, root));
+		await recoverSteps(restarted, new TransactionManager(store, root, restarted.policy));
 
 		expect(await eventually(() => store.owedRebindAfter(null) === null)).toBe(true);
 		expect(store.blockedRebinds()).toEqual([]);
@@ -835,10 +835,12 @@ describe("an arrangement through the daemon's handlers", () => {
 	it("previews and writes the formatter's text, which the fix command leaves alone", async () => {
 		put("format.ts", 'process.stdout.write((await Bun.stdin.text()) + "\\n");\n');
 		put("spoil.ts", 'for (const file of process.argv.slice(2)) await Bun.write(file, "spoiled\\n");\n');
-		put(
-			"lexicon.json",
-			JSON.stringify({ fixText: [process.execPath, "format.ts"], fix: [process.execPath, "spoil.ts"] }),
-		);
+		const config = JSON.stringify({
+			fixText: [process.execPath, "format.ts"],
+			fix: [process.execPath, "spoil.ts"],
+		});
+		put("lexicon.json", config);
+		await service.applyBatch([{ kind: "changed", module: "lexicon.json", contentHash: hashContent(config) }]);
 		await files({ "a.ref": SOURCE, "b.ref": "export class Zebra\n" });
 		const shown = await preview(ARRANGED);
 		await dispatch("refactorArrange", { ...ARRANGED, expect: expectOf(shown) });

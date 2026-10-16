@@ -104,6 +104,7 @@ function serviceFor(world: StepWorld, written: Stepped["written"], planned: () =
 
 	return {
 		gate,
+		refreshPolicyIfEvidenceMoved: async () => {},
 		upgradeRemaining: async () => {},
 		during: (_doing: unknown, work: () => Promise<unknown>) => work(),
 		fixWritten: async () => ({ ran: false, failed: null }),

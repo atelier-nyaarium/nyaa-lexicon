@@ -5,6 +5,7 @@ import path from "node:path";
 import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
 import { storeCompatibilityKey } from "../fingerprint";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 
 ////////////////////////////////
 //  Helpers
@@ -70,7 +71,7 @@ describe("what decides that stored facts expired", () => {
 			IndexStore.open(file, storeCompatibilityKey(root(`{"version": "${version}"}`)));
 
 		const first = openAt("1.12.0");
-		first.store.replaceFile({
+		writePlain(first.store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [declaration],

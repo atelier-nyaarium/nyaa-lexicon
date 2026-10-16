@@ -1,5 +1,6 @@
 // The wire face of the PowerShell provider.
 
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -188,12 +189,17 @@ export class PowerShellProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string, scope?: string[]): { model: ProjectModel; project: null } {
+	discoverProject(
+		workspaceRoot: string,
+		_previous: null | undefined,
+		scope?: string[],
+	): { model: ProjectModel; project: null } {
 		return {
 			model: discoverByWalk(workspaceRoot, {
 				extensions: EXTENSIONS,
 				shebangs: SHEBANGS,
 				excludedDirectories: EXCLUDED_DIRECTORIES,
+				policy: this.store.policy,
 				scope,
 			}),
 			project: null,
@@ -328,7 +334,7 @@ export function serve(
 	connection: ReturnType<typeof createMessageConnection>,
 	provider = new PowerShellProvider(),
 ): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new PowerShellProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new PowerShellProvider(), SECRET_READERS));

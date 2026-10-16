@@ -13,6 +13,8 @@ import {
 	workspaceFile,
 	workspaceModule,
 } from "../providerKit";
+import { readPolicy } from "../readPolicy";
+import { secretWire } from "./secretWire.js";
 
 ////////////////////////////////
 //  Helpers
@@ -123,7 +125,9 @@ describe("walking a workspace", () => {
 		put("bin/notes", "plain\n");
 		put("bin/named.sh", "#!/usr/bin/env bash\n");
 
-		expect(walkWorkspace(root, { extensions: [], shebangs: ["bash"] }).files).toEqual(["bin/run"]);
+		expect(
+			walkWorkspace(root, { extensions: [], shebangs: ["bash"], policy: readPolicy(root, secretWire()) }).files,
+		).toEqual(["bin/run"]);
 	});
 
 	it("uses the supplied scope without walking unscoped directories", () => {
@@ -176,7 +180,7 @@ describe("wiring a provider", () => {
 			},
 		} as unknown as ProviderMethods;
 
-		const handlers = handlersFor(provider);
+		const handlers = handlersFor(provider, {});
 		expect(Object.keys(handlers).sort()).toEqual(
 			PROVIDER_METHODS.filter((method) => method !== "judgeLoadCycle").sort(),
 		);

@@ -2,7 +2,6 @@
 // directory gives each unit its search lists, which every header the unit reaches is read with;
 // without one, the includer's directory, then workspace directories named `include`, then the root.
 
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { type IncludeSearch, readCompileCommands } from "@nyaa-lexicon/formats/compile-commands";
 import {
@@ -83,9 +82,10 @@ export function discoverCProject(root: string, excluded: ExcludedDirectories, po
 	const diagnostics: Diagnostic[] = [];
 	for (const file of discoverCompileDatabases(root)) {
 		const module = workspaceModule(root, file);
-		if (module === null || !policy.readable(file)) continue;
+		const text = policy.readText(file);
+		if (module === null || text === undefined) continue;
 		databases.push(module);
-		const read = readCompileCommands({ module, text: readFileSync(file, "utf8"), location: path.dirname(file) });
+		const read = readCompileCommands({ module, text, location: path.dirname(file) });
 		diagnostics.push(...read.diagnostics);
 		for (const command of read.commands) {
 			const unit = workspaceModule(root, command.file);

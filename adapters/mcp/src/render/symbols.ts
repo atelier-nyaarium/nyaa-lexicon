@@ -97,7 +97,7 @@ export function renderDescribe(result: DescribeResult): string {
 			? []
 			: ["```ts", result.symbol.signature ?? `${result.symbol.kind} ${result.symbol.name}`, "```", ""];
 	const lines = [
-		`# ${result.symbol.kind} ${result.symbol.name}`,
+		`# ${result.symbol.kind} ${result.symbol.name}${result.symbol.valueStatus === undefined ? "" : ` (${result.symbol.valueStatus})`}`,
 		"",
 		...signature,
 		`**Module:** ${location}`,

@@ -19,6 +19,7 @@ import {
 	SMOKE_FAILURE,
 	smokeIsolation,
 	smokeProviders,
+	WORKERS,
 } from "./bundleSmoke";
 import { outliveInterrupts } from "./child";
 import { DIST_DIR } from "./dist";
@@ -179,6 +180,7 @@ async function main(argv: string[]): Promise<void> {
 			rmSync(path.join(ROOT, path.dirname(target), DIST_DIR), { recursive: true, force: true });
 
 		for (const entry of ENTRYPOINTS) await buildEntry(entry.source, entry.out);
+		for (const entry of WORKERS) await buildEntry(entry.source, entry.out);
 		for (const entry of providers) await buildEntry(entry.source, entry.out);
 		for (const entry of providers) {
 			const assets = copyProviderAssets(ROOT, entry.assets, path.join(DIST_DIR, path.dirname(entry.out)));

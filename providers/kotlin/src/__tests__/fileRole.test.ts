@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { KotlinProvider } from "../main.js";
 import { parseKotlin } from "../parse.js";
 
@@ -20,8 +22,8 @@ test("a main entry names its declaration through parse and probe: top level, or 
 		expect(facts.role).toEqual(mainRole(facts.declarations));
 	}
 
-	const handlers = handlersFor(new KotlinProvider());
-	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new KotlinProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: process.cwd() });
 	const params = { module: "Main.kt", contentHash: "hash", text: "fun main() {}\n" };
 	const parsed = handlers.parseFile(params);

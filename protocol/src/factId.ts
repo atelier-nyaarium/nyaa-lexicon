@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 import { err, ok, type ParseResult } from "./parseResult.js";
 import type { Certainty, CommentSpan, Conflict, DocRegion, Export, ImportEdge, Literal, Selector } from "./project.js";
+import type { ValueStatus } from "./secrets.js";
 import { SourceCursor } from "./sourceCursor.js";
 import {
 	decodeModuleField,
@@ -145,7 +146,7 @@ export function ownerStarts(declarations: readonly Declaration[]): OwnerStarts {
 }
 
 /** Everything that makes this declaration what it is, so a changed signature is a changed fact. */
-export function declarationFactId(module: string, d: Declaration): string {
+export function declarationFactId(module: string, d: Declaration & { valueStatus?: ValueStatus | undefined }): string {
 	return composeFactId("declaration", module, [
 		d.symbolId,
 		d.name,
@@ -163,6 +164,7 @@ export function declarationFactId(module: string, d: Declaration): string {
 		d.metrics?.branches,
 		// Omitted fields add no digest slot.
 		...(d.contains === undefined ? [] : [d.contains]),
+		...(d.valueStatus === undefined ? [] : [d.valueStatus]),
 	]);
 }
 
@@ -206,7 +208,8 @@ function originFields(origin: ReferenceOrigin, through: OriginEdge | undefined):
 export function referenceFactId(module: string, r: Reference, owners: OwnerStarts, through?: OriginEdge): string {
 	const target = r.binding.status === "bound" ? r.binding.symbolId : null;
 	const candidates = r.binding.status === "ambiguous" ? r.binding.candidates.join(",") : null;
-	const how = r.binding.status === "unbound" ? r.binding.reason : r.binding.provenance;
+	const how =
+		r.binding.status === "unbound" || r.binding.status === "unknown" ? r.binding.reason : r.binding.provenance;
 	return composeFactId("reference", module, [
 		r.name,
 		r.role,

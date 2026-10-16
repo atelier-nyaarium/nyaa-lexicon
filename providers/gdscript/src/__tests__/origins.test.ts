@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	applyEdits,
 	type Binding,
@@ -10,6 +11,7 @@ import {
 	PROTOCOL_VERSION,
 	type RenameSite,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { GDScriptProvider } from "../main.js";
 
 const roots: string[] = [];
@@ -22,8 +24,8 @@ function started(files: Record<string, string>) {
 		mkdirSync(path.dirname(full), { recursive: true });
 		writeFileSync(full, text);
 	}
-	const handlers = handlersFor(new GDScriptProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new GDScriptProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
 }

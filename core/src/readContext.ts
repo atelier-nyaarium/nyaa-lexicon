@@ -133,6 +133,7 @@ export function toSummary(declaration: StoredDeclaration): SymbolSummary {
 		name: declaration.name,
 		kind: declaration.kind,
 		module: declaration.module,
+		...defined({ valueStatus: declaration.valueStatus }),
 		visibility: declaration.visibility,
 		...defined({
 			containerId: declaration.containerId,

@@ -91,6 +91,7 @@ export interface RebindSchedulerContext {
 	parseAndStore(module: string, depth?: IndexDepth): Promise<IndexOutcome>;
 	faultOutcome(module: string, error: unknown): IndexOutcome;
 	currentScope(): Promise<FileScope>;
+	currentScopeUnderGate(): Promise<FileScope>;
 	indexOne(module: string, depth?: IndexDepth): Promise<IndexOutcome>;
 }
 
@@ -412,7 +413,9 @@ export async function rebindOne(this: RebindSchedulerContext, module: string): P
 		let outcome: IndexOutcome;
 		try {
 			// A restarted daemon's pump can run before any scan computed the scope.
-			if (this.scope === null) await this.currentScope();
+			if (this.scope === null) {
+				await this.currentScopeUnderGate();
+			}
 			outcome = await this.indexOne(module, depth === "outline" ? "full" : depth);
 		} catch (error) {
 			outcome = this.faultOutcome(module, error);

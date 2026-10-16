@@ -1,4 +1,5 @@
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { readYaml, readYamlLayout } from "@nyaa-lexicon/formats/yaml";
 import {
 	type ArrangeEditsRequest,
@@ -139,7 +140,7 @@ export class YamlProvider {
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new YamlProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new YamlProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new YamlProvider(), SECRET_READERS));

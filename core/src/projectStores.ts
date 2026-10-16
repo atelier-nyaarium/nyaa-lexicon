@@ -26,6 +26,7 @@ import { claimLock, type HolderAlive, holderIdentity, mintToken, readLock, relea
 import { Database } from "./database.js";
 import { lastSeenOf, newestIndexedAt, readSeenStamp, stampSeen } from "./lastSeen.js";
 import { forgetProject, readRegistry } from "./projectRegistry.js";
+import { stagingOf } from "./storePurge.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -318,9 +319,13 @@ export function findProjectStore(reference: string, stores: ProjectStore[]): Pro
 function storeFiles(directory: string): string[] {
 	const paths = storePaths(directory);
 	return [
-		...indexFiles(directory).flatMap(({ file }) => [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]),
+		...[...indexFiles(directory).map(({ file }) => file), stagingOf(paths.index)].flatMap((file) => [
+			file,
+			`${file}-wal`,
+			`${file}-shm`,
+			`${file}-journal`,
+		]),
 		paths.indexedStateFile,
-		`${paths.index}.seeding`,
 		paths.logFile,
 		`${paths.logFile}.old`,
 		paths.diagnosticsFile,

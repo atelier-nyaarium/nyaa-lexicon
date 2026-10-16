@@ -24,7 +24,11 @@ const NO_REFERENCES = { symbolId: SYMBOL, references: [], total: 0, truncated: f
 
 /** A service owns its gate, and dispatch reads it from there, so every stub carries a real one. */
 function asService(stub: object): LexiconService {
-	return { gate: new WorkspaceGate(), ...stub } as unknown as LexiconService;
+	return {
+		gate: new WorkspaceGate(),
+		refreshPolicyIfEvidenceMoved: async () => {},
+		...stub,
+	} as unknown as LexiconService;
 }
 
 /** Records when each call starts and ends, so overlap is visible rather than inferred. */

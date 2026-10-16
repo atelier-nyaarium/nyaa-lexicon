@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -536,7 +537,7 @@ export class CppProvider {
 //  Functions & Helpers
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CppProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new CppProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new CppProvider(), SECRET_READERS));

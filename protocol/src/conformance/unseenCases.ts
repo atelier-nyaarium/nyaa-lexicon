@@ -2,6 +2,7 @@ import { METHOD_SCHEMAS, type ModuleAdmission } from "../methods.js";
 import { moduleOf } from "../symbolId.js";
 import { PROTOCOL_VERSION } from "../version.js";
 import { hashOf } from "./caseSupport.js";
+import { CONFORMANCE_POLICY } from "./policy.js";
 import type { MethodResponse } from "./providerSession.js";
 import { ProviderSession, Stall } from "./providerSession.js";
 import type { CaseResult, LifecycleCase, LifecycleFixture, VariantResult } from "./types.js";
@@ -442,7 +443,11 @@ async function runUnseenCase(
 	const observed = async (variant: PairedVariant, trial: boolean): Promise<Map<string, unknown>> => {
 		const session = ProviderSession.open(command, timeoutMs);
 		try {
-			await session.call("initialize", { workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+			await session.call("initialize", {
+				workspaceRoot: root,
+				protocolVersion: PROTOCOL_VERSION,
+				policy: CONFORMANCE_POLICY,
+			});
 			await session.call("discoverProject", { workspaceRoot: root });
 			const steps = stepsFor(session, root, fixture);
 			await variant.run(steps, trial);
@@ -484,7 +489,11 @@ async function runUnseenCase(
 		} else {
 			const session = ProviderSession.open(command, timeoutMs);
 			try {
-				await session.call("initialize", { workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+				await session.call("initialize", {
+					workspaceRoot: root,
+					protocolVersion: PROTOCOL_VERSION,
+					policy: CONFORMANCE_POLICY,
+				});
 				await session.call("discoverProject", { workspaceRoot: root });
 				const steps = stepsFor(session, root, fixture);
 				const before = await variant.run(steps);

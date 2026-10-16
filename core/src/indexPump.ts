@@ -40,6 +40,7 @@ export interface IndexPumpContext {
 	rebindOne(module: string): Promise<void>;
 	queueRebinds(): void;
 	currentScope(): Promise<FileScope>;
+	currentScopeUnderGate(): Promise<FileScope>;
 	indexOne(module: string, depth?: IndexDepth, skipIfCurrent?: boolean): Promise<IndexOutcome>;
 	faultOutcome(module: string, error: unknown): IndexOutcome;
 	holdRebind(module: string, outcome: IndexOutcome): void;
@@ -223,7 +224,7 @@ export async function upgradeOne(this: IndexPumpContext, module: string): Promis
 		this.depths.set(module, "full");
 		try {
 			// A restarted daemon may be asked to upgrade before any scan computed the scope.
-			if (this.scope === null) await this.currentScope();
+			if (this.scope === null) await this.currentScopeUnderGate();
 			const outcome = await this.indexOne(module, "full");
 			// A row skipped for scope or ownership stays outline in the store, so it must leave the
 			// backlog or the pump spins on it forever.

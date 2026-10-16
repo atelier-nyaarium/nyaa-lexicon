@@ -1,3 +1,4 @@
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -253,7 +254,7 @@ export class RustProvider {
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new RustProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new RustProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new RustProvider(), SECRET_READERS));

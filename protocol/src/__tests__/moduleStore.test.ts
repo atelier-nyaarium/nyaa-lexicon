@@ -15,6 +15,7 @@ import {
 } from "../moduleStore";
 import type { IndexDepth, ProjectModel } from "../project";
 import { handlersFor } from "../providerKit";
+import { secretWire } from "./secretWire.js";
 
 ////////////////////////////////
 //  Fixtures
@@ -85,8 +86,8 @@ function toy(
 		...(probeBatch === undefined ? {} : { probeBatch }),
 		...(judgeLoadCycle === undefined ? {} : { judgeLoadCycle }),
 	};
-	const handlers = handlersFor(provider);
-	handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
+	const handlers = handlersFor(provider, {});
+	handlers.initialize({ workspaceRoot: root, protocolVersion: "0", policy: secretWire() } as never);
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
 }
@@ -586,20 +587,23 @@ describe("the module store's verdicts", () => {
 				for (const name of value.names) yield [`${project}:${name}`, module];
 			},
 		});
-		const handlers = handlersFor<Toy, string, string>({
-			store,
-			initialize: () => ({}) as never,
-			discoverProject: (workspaceRoot: string) => ({ model: model(workspaceRoot), project: prefix }),
-			parseFile: (_params: unknown, value: Toy) => value as never,
-			resolveImport: () => ({}) as never,
-			bind: () => ({}) as never,
-			typeOf: () => ({}) as never,
-			renameEdits: () => ({}) as never,
-			moveEdits: () => ({}) as never,
-			arrangeEdits: () => ({}) as never,
-			importEdits: () => ({}) as never,
-		});
-		handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
+		const handlers = handlersFor<Toy, string, string>(
+			{
+				store,
+				initialize: () => ({}) as never,
+				discoverProject: (workspaceRoot: string) => ({ model: model(workspaceRoot), project: prefix }),
+				parseFile: (_params: unknown, value: Toy) => value as never,
+				resolveImport: () => ({}) as never,
+				bind: () => ({}) as never,
+				typeOf: () => ({}) as never,
+				renameEdits: () => ({}) as never,
+				moveEdits: () => ({}) as never,
+				arrangeEdits: () => ({}) as never,
+				importEdits: () => ({}) as never,
+			},
+			{},
+		);
+		handlers.initialize({ workspaceRoot: root, protocolVersion: "0", policy: secretWire() } as never);
 		handlers.discoverProject({ workspaceRoot: root });
 		const before = store.get("one:x");
 		prefix = "two";
@@ -632,12 +636,13 @@ describe("the module store's fills", () => {
 		}).toEqual({ outside: undefined, inside: "x", y: [], x: ["a.toy", "c.toy"] });
 	});
 
-	it("never reads what the index denies, by name or through a link, and says so to the provider", () => {
+	it("closes policy-denied reads by name and through a link", () => {
+		const elsewhere = workspace({ "secret.toy": "y" });
 		const root = workspace({ "secret.toy": "s", "a.toy": "x" });
 		symlinkSync(path.join(root, "secret.toy"), path.join(root, "alias.toy"));
 		const store = moduleStore<Toy, null, string>({ read, entries });
 		const provider = toy(store, root);
-		provider.initialize({ workspaceRoot: root, protocolVersion: "0", deny: ["secret.toy"] });
+		provider.installPolicy({ policy: secretWire(["secret.toy"]) });
 		provider.discoverProject({ workspaceRoot: root });
 
 		expect({
@@ -645,9 +650,9 @@ describe("the module store's fills", () => {
 			linked: store.load("alias.toy"),
 			open: store.load("a.toy")?.text,
 			s: store.get("name:s"),
-			outside: store.policy.readable(path.join(tmpdir(), "elsewhere.toy")),
-			denied: store.policy.readable(path.join(root, "secret.toy")),
-		}).toEqual({ named: undefined, linked: undefined, open: "x", s: [], outside: true, denied: false });
+			outside: store.policy.readText(path.join(elsewhere, "secret.toy")),
+			denied: store.policy.readText(path.join(root, "secret.toy")),
+		}).toEqual({ named: undefined, linked: undefined, open: "x", s: [], outside: "y", denied: undefined });
 	});
 });
 
@@ -795,6 +800,20 @@ describe("the module store's layers", () => {
 		expect({ before, after: store.load("a.toy")?.text }).toEqual({ before: "x", after: "y" });
 	});
 
+	it("refreshes its read policy from the latest judge wire", () => {
+		const root = workspace({ "a.toy": "x" });
+		const store = moduleStore<Toy, null, string>({ read, entries });
+		const handlers = toy(store, root);
+		const policy = store.policy;
+		expect(policy.admits("private/secret.json")).toBe(true);
+
+		handlers.installPolicy({ policy: secretWire(["private/**"]) });
+
+		expect(store.policy).toBe(policy);
+		expect(policy.admits("private/secret.json")).toBe(false);
+		expect(policy.exists(path.join(root, "private", "secret.json"))).toBe(false);
+	});
+
 	it("refuses a transient layer inside another", () => {
 		const root = workspace({ "a.toy": "x" });
 		const store = moduleStore<Toy, null, string>({ read, entries });
@@ -833,20 +852,23 @@ describe("the module store's layers", () => {
 				return read(module, text, depth);
 			},
 		});
-		const handlers = handlersFor({
-			store,
-			initialize: () => ({}) as never,
-			discoverProject: (workspaceRoot: string) => ({ model: model(workspaceRoot), project: null }),
-			parseFile: (_params: unknown, value: Toy) => value as never,
-			resolveImport: () => ({}) as never,
-			bind: () => ({}) as never,
-			typeOf: () => ({}) as never,
-			renameEdits: () => ({}) as never,
-			moveEdits: () => ({}) as never,
-			arrangeEdits: () => ({}) as never,
-			importEdits: () => ({}) as never,
-		});
-		handlers.initialize({ workspaceRoot: root, protocolVersion: "0" } as never);
+		const handlers = handlersFor(
+			{
+				store,
+				initialize: () => ({}) as never,
+				discoverProject: (workspaceRoot: string) => ({ model: model(workspaceRoot), project: null }),
+				parseFile: (_params: unknown, value: Toy) => value as never,
+				resolveImport: () => ({}) as never,
+				bind: () => ({}) as never,
+				typeOf: () => ({}) as never,
+				renameEdits: () => ({}) as never,
+				moveEdits: () => ({}) as never,
+				arrangeEdits: () => ({}) as never,
+				importEdits: () => ({}) as never,
+			},
+			{},
+		);
+		handlers.initialize({ workspaceRoot: root, protocolVersion: "0", policy: secretWire() } as never);
 		handlers.discoverProject({ workspaceRoot: root });
 		const [first, second] = await Promise.all([store.load("a.toy"), store.load("a.toy")]);
 

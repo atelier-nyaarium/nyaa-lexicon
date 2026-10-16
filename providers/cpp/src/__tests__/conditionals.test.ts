@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 import { tokenize } from "../tokens.js";
@@ -157,8 +159,8 @@ describe("C++ conditional groups", () => {
 			"\ty++;",
 			"}",
 		].join("\n");
-		const provider = handlersFor(new CppProvider());
-		provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		const provider = handlersFor(new CppProvider(), SECRET_READERS);
+		provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 		const facts = provider.parseFile({ module: "alternatives.cpp", contentHash: "alternatives", text });
 		const lines = (symbolId: string) =>
 			facts.declarations.find((item) => item.symbolId === symbolId)?.range.start.line ?? -1;
@@ -189,8 +191,8 @@ describe("C++ conditional groups", () => {
 			"{ return 0; }",
 			"void use() { f(); S* p; g(1); }",
 		].join("\n");
-		const provider = handlersFor(new CppProvider());
-		provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		const provider = handlersFor(new CppProvider(), SECRET_READERS);
+		provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 		const facts = provider.parseFile({ module: "exclusive.cpp", contentHash: "exclusive", text });
 		const lines = (symbolId: string) =>
 			facts.declarations.find((item) => item.symbolId === symbolId)?.range.start.line ?? -1;
@@ -221,8 +223,12 @@ describe("C++ conditional groups", () => {
 			);
 			const text = `void f() {\n${branches.join("")}#endif\n${"\tx++;\n".repeat(32)}}\n`;
 			const meter = { steps: 0 };
-			const provider = handlersFor(new CppProvider(meter));
-			provider.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+			const provider = handlersFor(new CppProvider(meter), SECRET_READERS);
+			provider.initialize({
+				workspaceRoot: process.cwd(),
+				protocolVersion: PROTOCOL_VERSION,
+				policy: secretWire(),
+			});
 			const facts = provider.parseFile({ module: "branches.cpp", contentHash: "work", text });
 			const candidates = facts.references.at(-1)?.binding;
 			return {

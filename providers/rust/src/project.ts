@@ -1,6 +1,6 @@
 // Cargo packages, the crates they build and depend on, and the files `mod` declarations load.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
 	type Diagnostic,
@@ -173,9 +173,10 @@ function readManifest(
 	policy: ReadPolicy,
 ): { manifest?: TomlTable; diagnostics: Diagnostic[] } {
 	const cargo = path.join(root, directory, "Cargo.toml");
-	if (!existsSync(cargo) || !statSync(cargo).isFile() || !policy.readable(cargo)) return { diagnostics: [] };
+	const text = policy.readText(cargo);
+	if (text === undefined) return { diagnostics: [] };
 	try {
-		const manifest: unknown = Bun.TOML.parse(readFileSync(cargo, "utf8"));
+		const manifest: unknown = Bun.TOML.parse(text);
 		return isTable(manifest) ? { manifest, diagnostics: [] } : { diagnostics: [] };
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);

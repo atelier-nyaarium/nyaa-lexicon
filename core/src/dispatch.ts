@@ -345,6 +345,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		fileNotes: read((params) => service.fileNotes(params.module)),
 		moduleStatus: read((params) => service.moduleStatus(params.module)),
 		admittedModules: read((params) => service.admittedModules(params.modules)),
+		moduleSecretModes: read((params) => service.moduleSecretModes(params.modules)),
 		moduleDeclarations: read((params) => service.moduleDeclarations(params.module)),
 		moduleFacts: read((params) => service.moduleFacts(params.module)),
 		// Candidate parses read under the gate: an index parse landing between a candidate and its
@@ -537,6 +538,7 @@ export function createDispatch(
 		}
 		// Looked up by a runtime key, the handler's parameter is the intersection of every request.
 		const handler: { effect: Effect; run: (params: never, gate: Gate) => unknown } = handlers[method];
+		if (handler.effect !== "status") await service.refreshPolicyIfEvidenceMoved();
 		const run = () => timings.time(method, textSizes(args), async () => handler.run(args as never, gate));
 		const answer =
 			handler.effect === "read"

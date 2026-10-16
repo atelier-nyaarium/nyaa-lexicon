@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { storePaths } from "@nyaa-lexicon/client";
-import { resumeAbandonedDelete, runGuarded } from "../daemonCli";
+import { resumeAbandonedDelete, runGuarded, startupCountdown } from "../daemonCli";
 
 function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
 	let resolve: (value: T) => void = () => {};
@@ -76,6 +76,30 @@ describe("resuming a claim that stole a delete's lock", () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+});
+
+// Rewrites bypass the startup allowance.
+describe("the countdown a request is told while startup runs", () => {
+	const MINUTES = 60_000;
+	const compacting = { waitingFor: "the index to be compacted", patient: true };
+	const opening = { waitingFor: "the index to open", patient: false };
+
+	it("counts the allowance down to zero for a step that has an end", () => {
+		const left = (now: number) => startupCountdown(0, now, opening).retryInMs;
+
+		expect({ soon: left(1_000) > left(MINUTES), late: left(10 * MINUTES) }).toEqual({ soon: true, late: 0 });
+	});
+
+	it("stays positive and unchanged past the allowance for a patient step, and names it", () => {
+		const during = (now: number) => startupCountdown(0, now, compacting);
+
+		expect(during(10 * MINUTES)).toEqual({ ...during(1_000), waitingFor: "the index to be compacted" });
+		expect(during(10 * MINUTES).retryInMs).toBeGreaterThan(0);
+	});
+
+	it("counts from a reset start once the patient step is over", () => {
+		expect(startupCountdown(10 * MINUTES, 10 * MINUTES + 1_000, opening).retryInMs).toBeGreaterThan(0);
 	});
 });
 

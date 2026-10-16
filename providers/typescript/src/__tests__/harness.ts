@@ -2,12 +2,14 @@ import { afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	handlersFor,
 	PROTOCOL_VERSION,
 	type ProviderHandlers,
 	type ProviderNotificationHandlers,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { TypeScriptProvider } from "../main.js";
 
 const workspaces: string[] = [];
@@ -40,7 +42,7 @@ export function workspace(
 
 export function harness() {
 	const provider = new TypeScriptProvider();
-	const handlers = handlersFor(provider);
+	const handlers = handlersFor(provider, SECRET_READERS);
 	const wire = handlers as ProviderHandlers & ProviderNotificationHandlers;
 
 	return {
@@ -48,7 +50,7 @@ export function harness() {
 			const answer = handlers.initialize({
 				workspaceRoot,
 				protocolVersion: PROTOCOL_VERSION,
-				...(deny === undefined ? {} : { deny }),
+				policy: secretWire(deny),
 			});
 			handlers.discoverProject({ workspaceRoot });
 			return answer;

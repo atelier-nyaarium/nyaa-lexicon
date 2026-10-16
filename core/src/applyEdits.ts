@@ -6,7 +6,7 @@
 import { applyEdits, type FileEdits } from "@nyaa-lexicon/protocol";
 import type { WriteOutcome } from "./refusalSlots.js";
 import { editsRefused, moduleUnreadable } from "./refusals.js";
-import { type SourceReader, writableSource, writableText } from "./sourceRead.js";
+import { type ViewReader, writableSource, writableText } from "./sourceRead.js";
 
 export type { FileEdits } from "@nyaa-lexicon/protocol";
 
@@ -21,12 +21,12 @@ export type StagedEdits =
 ////////////////////////////////
 //  Functions & Helpers
 
-/** Splices every file's edits without writing. */
-export function stageAll(files: Array<Pick<FileEdits, "module" | "edits">>, readSource: SourceReader): StagedEdits {
+/** Splices edits without writing; refuses files hidden by policy. */
+export function stageAll(files: Array<Pick<FileEdits, "module" | "edits">>, readView: ViewReader): StagedEdits {
 	const staged: Array<{ module: string; text: string }> = [];
 
 	for (const file of files) {
-		const before = writableSource(file.module, readSource(file.module));
+		const before = writableSource(file.module, readView(file.module));
 		if ("refused" in before) return { applied: false, reason: before.refused, module: file.module };
 		if (before.text === null) return { applied: false, reason: moduleUnreadable(file.module), module: file.module };
 

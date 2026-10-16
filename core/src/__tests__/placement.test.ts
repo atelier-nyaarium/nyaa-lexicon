@@ -3,12 +3,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "../database";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
 import { KNOWLEDGE_SCHEMA, KnowledgeSubjects, mintSubjectId, normalizeSalvaged } from "../subjects";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import { writePlain } from "./admissions";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -198,7 +202,7 @@ describe("a rebuild across a compatibility key", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [declare(CART, "Cart", 0), declare(SHOP, "Shop", 1)],
@@ -242,7 +246,7 @@ describe("a rebuild across a compatibility key", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [declare(SHOP, "Shop", 0), declare(STORE, "Store", 1)],
@@ -272,10 +276,10 @@ describe("a rebuild across a compatibility key", () => {
 	});
 
 	it("carries an open refactor journal across the rebuild", () => {
-		expect(new TransactionManager(store, dir).start().started).toBe(true);
+		expect(new TransactionManager(store, dir, testPolicy(dir, undefined, store)).start().started).toBe(true);
 		store.close();
 
 		store = IndexStore.open(file, "major-b").store;
-		expect(new TransactionManager(store, dir).status().open).toBe(true);
+		expect(new TransactionManager(store, dir, testPolicy(dir, undefined, store)).status().open).toBe(true);
 	});
 });

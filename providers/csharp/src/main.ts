@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -414,7 +415,7 @@ export class CsharpProvider extends CsharpBinder {
 //  Functions & Helpers
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CsharpProvider()): void {
-	wireServeProvider(connection, handlersFor(provider));
+	wireServeProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new CsharpProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new CsharpProvider(), SECRET_READERS));

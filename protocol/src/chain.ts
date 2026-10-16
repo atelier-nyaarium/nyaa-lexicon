@@ -8,6 +8,7 @@
 import { comparePositions } from "./coordinates.js";
 import type { StoredDeclaration } from "./daemonShapes.js";
 import { defined } from "./defined.js";
+import type { ValueStatus } from "./secrets.js";
 import { isParameterSymbol, ownerOf, parseSymbolId } from "./symbolId.js";
 import type { Range, SymbolKind } from "./symbols.js";
 
@@ -20,6 +21,7 @@ export interface ChainCandidate {
 	kind: SymbolKind;
 	name: string;
 	range: Range;
+	valueStatus?: ValueStatus;
 	/** Absent for an `arguments` span, which has no name in the source. */
 	selectionRange?: Range;
 	/** The enclosing declarations by name, outermost first. */
@@ -318,6 +320,7 @@ function candidateOf(tree: ModuleTree, step: Step): ChainCandidate | null {
 		kind: declaration.kind,
 		name: declaration.name,
 		range: declaration.range,
+		...defined({ valueStatus: declaration.valueStatus }),
 		...defined({ selectionRange: declaration.selectionRange }),
 		containerPath: pathOf(tree, declaration),
 		segments: segmentsFor(tree, declaration),

@@ -15,6 +15,17 @@ const SYMBOL = {
 	docComment: "Adds a thing.",
 } as const;
 
+const SECRET_KEY = {
+	...SYMBOL,
+	name: "API_KEY",
+	kind: "property",
+	valueStatus: "set",
+	signature: undefined,
+	docComment: undefined,
+} as const;
+
+const EMPTY_SECRET_KEY = { ...SECRET_KEY, name: "EMPTY_KEY", valueStatus: "empty" } as const;
+
 const OTHER = { ...SYMBOL, symbolId: "lexicon typescript src/a.ts qty.", name: "qty", kind: "property" } as const;
 
 const RANGE = { start: { line: 3, column: 1 }, end: { line: 5, column: 2 } } as const;
@@ -90,6 +101,15 @@ export const CASES: Record<string, unknown[][]> = {
 			{
 				symbol: { ...SYMBOL, kind: "heading", signature: undefined, docComment: undefined },
 				members: [],
+				referenceCount: 0,
+				hierarchy: { supertypes: [], subtypes: [], ancestors: [], unboundSupertypes: [] },
+				graph: { fanOut: 0 },
+			},
+		],
+		[
+			{
+				symbol: SECRET_KEY,
+				members: [EMPTY_SECRET_KEY],
 				referenceCount: 0,
 				hierarchy: { supertypes: [], subtypes: [], ancestors: [], unboundSupertypes: [] },
 				graph: { fanOut: 0 },
@@ -324,10 +344,12 @@ export const CASES: Record<string, unknown[][]> = {
 		[{ symbols: [], text: "add", count: NONE }],
 		[{ symbols: [SYMBOL], text: "add", count: EXACT }],
 		[{ symbols: [SYMBOL], regex: "/a/", count: CAPPED }],
+		[{ symbols: [SECRET_KEY, EMPTY_SECRET_KEY], text: "API_KEY", count: EXACT }],
 	],
 	renderOutline: [
 		["src/a.ts", [], undefined],
 		["src/a.ts", [SYMBOL, OTHER], { notes: ["a provider note"] }],
+		[".env.local", [SECRET_KEY, EMPTY_SECRET_KEY]],
 	],
 	renderSymbolSource: [
 		[{ found: false, reason: "the index is stale", stale: true }],
@@ -351,6 +373,32 @@ export const CASES: Record<string, unknown[][]> = {
 				module: "src/a.ts",
 				range: SPAN,
 				text: "const a = 1;",
+				contentHash: "c0ffee",
+				spanHash: "5ba0",
+			},
+		],
+		[
+			{
+				found: true,
+				name: "API_KEY",
+				kind: "property",
+				module: ".env.local",
+				range: SPAN,
+				text: "API_KEY",
+				valueStatus: "set",
+				contentHash: "c0ffee",
+				spanHash: "5ba0",
+			},
+		],
+		[
+			{
+				found: true,
+				name: "EMPTY_KEY",
+				kind: "property",
+				module: ".env.local",
+				range: SPAN,
+				text: "EMPTY_KEY",
+				valueStatus: "empty",
 				contentHash: "c0ffee",
 				spanHash: "5ba0",
 			},

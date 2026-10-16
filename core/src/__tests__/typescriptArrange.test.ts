@@ -6,11 +6,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ResponseOf } from "@nyaa-lexicon/protocol";
 import { createDispatch } from "../dispatch";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Fixtures
@@ -48,7 +47,7 @@ beforeEach(async () => {
 	supervisor = new ProviderSupervisor();
 	await supervisor.start({ command: [process.execPath, "run", PROVIDER], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
-	dispatch = createDispatch(service, { transactions: new TransactionManager(store, root) });
+	dispatch = createDispatch(service, { transactions: new TransactionManager(store, root, service.policy) });
 	for (const module of Object.keys(FILES).filter((name) => name.endsWith(".ts"))) await service.indexFile(module);
 	await dispatch("refactorStart", {});
 });

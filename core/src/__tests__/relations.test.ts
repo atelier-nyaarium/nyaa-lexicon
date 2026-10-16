@@ -15,11 +15,11 @@ import * as refusal from "../refusals";
 import { RelationDiscovery } from "../relationDiscovery";
 import { RelationLedger } from "../relations";
 import { startRelationWork } from "../relationWork";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
-import { ProviderSupervisor } from "../supervisor";
+import { writePlain } from "./admissions";
 import { type FakeClock, fakeClock } from "./fakeClock";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -78,7 +78,7 @@ function call(target: string, from: string, line: number): Reference {
 }
 
 function plant(module: string, declarations: Declaration[], references: Reference[] = []): void {
-	store.replaceFile({
+	writePlain(store, {
 		module,
 		contentHash: `${module}:${JSON.stringify(declarations)}:${references.length}`,
 		declarations,

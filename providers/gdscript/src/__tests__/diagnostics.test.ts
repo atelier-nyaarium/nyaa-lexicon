@@ -1,14 +1,16 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { GDScriptProvider, TIERS } from "../main.js";
 
 const PROVIDER_ROOT = path.join(process.cwd(), "providers/gdscript");
 
 function diagnostics(text: string, module = "broken.gd") {
-	const handlers = handlersFor(new GDScriptProvider());
-	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new GDScriptProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: process.cwd() });
 	return handlers.parseFile({ module, contentHash: "diagnostics", text }).diagnostics;
 }

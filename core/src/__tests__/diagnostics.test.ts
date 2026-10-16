@@ -27,8 +27,8 @@ import {
 	startDiagnostics,
 	writeHeapSnapshot,
 } from "../diagnostics";
-import { ProviderSupervisor } from "../supervisor";
 import { fakeClock } from "./fakeClock";
+import { TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -147,6 +147,12 @@ describe("the collection on disk", () => {
 		const kept = { calls: [{ at: 1, stage: "parseFacts", ms: 412, sizes: { text: 9000 } }], stages: [] };
 		expect(harness({ timings: () => kept }).read().timings).toEqual(kept);
 		expect(harness().read().timings).toBeUndefined();
+	});
+
+	it("writes the index's scrub with its samples, and none when the daemon reports none", () => {
+		const scrub = { status: "deferred", major: 20, reason: "4 MB free, and the store holds 120 MB" } as const;
+		expect(harness({ store: () => ({ scrub }) }).read().store).toEqual({ scrub });
+		expect(harness().read().store).toBeUndefined();
 	});
 
 	it("leaves no temp file behind, and a file that always parses", () => {

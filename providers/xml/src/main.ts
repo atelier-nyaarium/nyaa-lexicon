@@ -1,4 +1,5 @@
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { readXml, type XmlFacts } from "@nyaa-lexicon/formats/xml";
 import {
 	type ArrangeEditsRequest,
@@ -136,6 +137,6 @@ export class XmlProvider {
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new XmlProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
-if (import.meta.main) runProviderOnStdio(handlersFor(new XmlProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new XmlProvider(), SECRET_READERS));

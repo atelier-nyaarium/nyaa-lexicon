@@ -29,10 +29,9 @@ import {
 	StreamMessageWriter,
 } from "vscode-jsonrpc/node";
 import type { z } from "zod";
-import { type Clock, systemClock } from "./clock.js";
+import type { Clock } from "./clock.js";
 import { withTimeout } from "./deadline.js";
 import { settleDeclaredTiers } from "./declaredTiers.js";
-import { denyGlobs, readScopeConfig } from "./fileScope.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import { RequestQueue } from "./requestQueue.js";
 import {
@@ -43,7 +42,8 @@ import {
 	routeModule,
 	routingContextOf,
 } from "./routing.js";
-import { Timings, textSizes } from "./timings.js";
+import type { PolicyChange, SecretPolicySnapshot } from "./secretPolicy.js";
+import { type Timings, textSizes } from "./timings.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -91,6 +91,8 @@ interface RunningProvider {
 	incarnation: number;
 	/** Unexpected deaths so far. At the cap the provider stays dead rather than crash-looping. */
 	deaths: number;
+	/** Installed judge revision. */
+	policyRevision: string | null;
 	/** Set by stop(), so a deliberate teardown is never mistaken for a crash to respawn from. */
 	stopping: boolean;
 }
@@ -117,13 +119,19 @@ export const INITIALIZING_CEILING_MS = 10 * 60_000;
 ////////////////////////////////
 //  Functions & Helpers
 
-/** A provider learns the scope's deny globs at every start, so none of its own reads reach them. */
-function initializeParams(workspaceRoot: string): {
+function initializeParams(
+	workspaceRoot: string,
+	policy: SecretPolicySnapshot["wire"],
+): {
 	workspaceRoot: string;
 	protocolVersion: string;
-	deny: string[];
+	policy: SecretPolicySnapshot["wire"];
 } {
-	return { workspaceRoot, protocolVersion: PROTOCOL_VERSION, deny: denyGlobs(readScopeConfig(workspaceRoot)) };
+	return {
+		workspaceRoot,
+		protocolVersion: PROTOCOL_VERSION,
+		policy,
+	};
 }
 
 /** An answered initialize makes a starting provider ready, unless it already said it is warming. */
@@ -158,10 +166,15 @@ export function absorbingWrites(stdin: Writable): Writable {
 //  Class
 
 export class ProviderSupervisor implements ProviderPort {
+	private readonly policySource: () => SecretPolicySnapshot;
+
 	constructor(
-		private readonly clock: Clock = systemClock,
-		private readonly timings: Timings = new Timings(clock),
-	) {}
+		private readonly clock: Clock,
+		private readonly timings: Timings,
+		policySource: () => SecretPolicySnapshot,
+	) {
+		this.policySource = policySource;
+	}
 
 	private readonly providers = new Map<string, RunningProvider>();
 	/** Minted per spawn, so a verdict for a dead process never reaches its replacement. */
@@ -169,6 +182,7 @@ export class ProviderSupervisor implements ProviderPort {
 	/** What stopAll would otherwise miss. */
 	private readonly starting = new Set<StartingProcess>();
 	private readonly exitListeners: Array<(exit: ProviderExit) => void> = [];
+	private readonly policyInvalidationListeners: Array<(providerId: string, modules: readonly string[]) => void> = [];
 	private routing: RoutingContext | undefined;
 	private evidence: (() => Iterable<string>) | undefined;
 
@@ -220,10 +234,11 @@ export class ProviderSupervisor implements ProviderPort {
 		}
 
 		let info: unknown;
+		const policy = this.policySource().wire;
 		try {
 			info = await withTimeout(
 				this.clock,
-				running.connection.sendRequest("initialize", initializeParams(workspaceRoot)),
+				running.connection.sendRequest("initialize", initializeParams(workspaceRoot, policy)),
 				timeout,
 				"initialize",
 				() => this.warmingGrace(running, timeout, "initialize"),
@@ -282,6 +297,7 @@ export class ProviderSupervisor implements ProviderPort {
 			workspaceRoot,
 			incarnation: this.incarnations++,
 			deaths: 0,
+			policyRevision: policy.revision,
 			stopping: false,
 		};
 		answeredInitialize(entry.status);
@@ -364,6 +380,7 @@ export class ProviderSupervisor implements ProviderPort {
 		if (!this.stillWanted(previous)) return;
 		let running: StartingProcess | undefined;
 		let words: ProviderWords;
+		let policyRevision: string;
 		try {
 			running = this.spawnProcess(previous.spec, previous.workspaceRoot);
 			this.starting.add(running);
@@ -371,14 +388,16 @@ export class ProviderSupervisor implements ProviderPort {
 			previous.status.phase = "starting";
 			const timeout = previous.spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 			const spawned = running;
+			const policy = this.policySource().wire;
 			const info = await withTimeout(
 				this.clock,
-				spawned.connection.sendRequest("initialize", initializeParams(previous.workspaceRoot)),
+				spawned.connection.sendRequest("initialize", initializeParams(previous.workspaceRoot, policy)),
 				timeout,
 				"initialize",
 				() => this.warmingGrace(spawned, timeout, "initialize"),
 			);
 			words = METHOD_SCHEMAS.initialize.response.parse(info).words;
+			policyRevision = policy.revision;
 		} catch (error) {
 			// The half-started child is reaped, and the failed attempt costs a death so retries
 			// stay bounded by the same cap as crashes.
@@ -411,7 +430,13 @@ export class ProviderSupervisor implements ProviderPort {
 			this.stopProcess(running);
 			return;
 		}
-		const entry: RunningProvider = { ...previous, ...running, words, incarnation: this.incarnations++ };
+		const entry: RunningProvider = {
+			...previous,
+			...running,
+			words,
+			policyRevision,
+			incarnation: this.incarnations++,
+		};
 		answeredInitialize(entry.status);
 		this.providers.set(previous.claims.providerId, entry);
 		this.watchForExit(entry);
@@ -475,6 +500,15 @@ export class ProviderSupervisor implements ProviderPort {
 	/** Who hears that a provider's process started again under the same id. */
 	respawnedFrom(listener: (providerId: string) => void): void {
 		this.respawned = listener;
+	}
+
+	policyInvalidatedFrom(listener: (providerId: string, modules: readonly string[]) => void): void {
+		this.policyInvalidationListeners.push(listener);
+	}
+
+	policyChanged(change: PolicyChange): void {
+		if (!change.moved) return;
+		for (const provider of this.providers.values()) provider.policyRevision = null;
 	}
 
 	/** Records the workspace extensions used by shared claims. */
@@ -548,6 +582,7 @@ export class ProviderSupervisor implements ProviderPort {
 		const stage = `${providerId}.${method}`;
 		return provider.queue.run(() =>
 			this.timings.time(stage, textSizes(params), async () => {
+				await this.installPolicy(provider, timeout);
 				let raw: unknown;
 				try {
 					// A death mid-request fails this caller through the queue, typed.
@@ -579,6 +614,28 @@ export class ProviderSupervisor implements ProviderPort {
 				return parsed;
 			}),
 		);
+	}
+
+	private async installPolicy(provider: RunningProvider, timeout: number): Promise<void> {
+		for (;;) {
+			const wire = this.policySource().wire;
+			if (provider.policyRevision === wire.revision) return;
+			const raw = await withTimeout(
+				this.clock,
+				provider.connection.sendRequest("installPolicy", { policy: wire }),
+				timeout,
+				"installPolicy",
+				() => this.warmingGrace(provider, timeout, "installPolicy"),
+			);
+			const { changed } = METHOD_SCHEMAS.installPolicy.response.parse(raw);
+			provider.policyRevision = wire.revision;
+			if (changed.length > 0)
+				for (const listener of this.policyInvalidationListeners) {
+					try {
+						listener(provider.claims.providerId, changed);
+					} catch {}
+				}
+		}
 	}
 
 	/**

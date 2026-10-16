@@ -5,12 +5,12 @@ import path from "node:path";
 import { type Conflict, hashContent } from "@nyaa-lexicon/protocol";
 import type { MethodResponse } from "../providerPort";
 import { landingUnchecked } from "../refusals";
-import { LexiconService } from "../service";
 import { fromText, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
+import { writePlain } from "./admissions";
 import { fakeSupervisor } from "./fakeProvider";
 import { forward, landed, named, sideEffect } from "./importEdges";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 /** Owns the `.ts` modules these fixtures plant, so an ask routes the way it does live. */
 const TS_CLAIMS = { providerId: "fake", language: "fake", extensions: [".ts"] };
@@ -202,13 +202,13 @@ describe("type hierarchy", () => {
 		const middle = type("Middle", "b.ref");
 		const leaf = type("Leaf", "b.ref");
 
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [base],
 			references: [],
 		});
-		store.replaceFile({
+		writePlain(store, {
 			module: "b.ref",
 			contentHash: "h2",
 			declarations: [middle, leaf],
@@ -267,13 +267,13 @@ describe("type hierarchy", () => {
 			binding: { status: "bound", symbolId: callee.symbolId, provenance: "bound" } as const,
 		}));
 
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [callee],
 			references: [],
 		});
-		store.replaceFile({
+		writePlain(store, {
 			module: "b.ref",
 			contentHash: "h2",
 			declarations: [caller],
@@ -302,8 +302,8 @@ describe("type hierarchy", () => {
 			role: "call" as const,
 			binding: { status: "bound", symbolId: callee.symbolId, provenance: "bound" } as const,
 		});
-		store.replaceFile({ module: "a.ref", contentHash: "h1", declarations: [callee], references: [] });
-		store.replaceFile({
+		writePlain(store, { module: "a.ref", contentHash: "h1", declarations: [callee], references: [] });
+		writePlain(store, {
 			module: "b.ref",
 			contentHash: "h2",
 			declarations: [],
@@ -330,13 +330,13 @@ describe("type hierarchy", () => {
 	it("ignores a reference that is not a call, so a hierarchy is not a mention list", () => {
 		const callee = type("target");
 		const caller = type("caller", "b.ref");
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [callee],
 			references: [],
 		});
-		store.replaceFile({
+		writePlain(store, {
 			module: "b.ref",
 			contentHash: "h2",
 			declarations: [caller],
@@ -363,7 +363,7 @@ describe("reading a symbol's source", () => {
 		const target = service.findByName("Cart")[0]?.symbolId;
 		if (!target) throw new Error("expected Cart");
 
-		const source = service.symbolSource({ symbolId: target });
+		const source = await service.symbolSource({ symbolId: target });
 
 		expect(source).toMatchObject({ found: true, module: "a.ref", name: "Cart" });
 		if (!source.found) throw new Error("expected a hit");
@@ -380,7 +380,7 @@ describe("reading a symbol's source", () => {
 		const target = service.findByName("Cart")[0]?.symbolId;
 		if (!target) throw new Error("expected Cart");
 
-		const source = service.symbolSource({ symbolId: target });
+		const source = await service.symbolSource({ symbolId: target });
 		if (!source.found) throw new Error("expected a hit");
 
 		const text = files.get("a.ref") as string;
@@ -397,15 +397,17 @@ describe("reading a symbol's source", () => {
 		if (!target) throw new Error("expected Cart");
 
 		files.set("a.ref", `// a line nobody indexed\n${CART}`);
-		const source = service.symbolSource({ symbolId: target });
+		const source = await service.symbolSource({ symbolId: target });
 
 		expect(source).toMatchObject({ found: false, stale: true });
 	});
 
 	it("says so when the address names nothing", async () => {
 		await boot();
-		expect(service.symbolSource({ symbolId: "lexicon reference a.ref Ghost#" })).toMatchObject({ found: false });
-		expect(service.symbolSource({})).toMatchObject({ found: false });
+		expect(await service.symbolSource({ symbolId: "lexicon reference a.ref Ghost#" })).toMatchObject({
+			found: false,
+		});
+		expect(await service.symbolSource({})).toMatchObject({ found: false });
 	});
 });
 
@@ -554,7 +556,7 @@ describe("planning a move", () => {
 			fromText((m) => files.get(m) ?? null),
 			dir,
 		);
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: built.currentHashOf("a.ref") as string,
 			declarations: [move],
@@ -625,7 +627,7 @@ describe("planning a move", () => {
 			dir,
 		);
 		const contentHash = built.currentHashOf("a.ref") as string;
-		store.replaceFile({ module: "a.ref", contentHash, declarations, references, imports });
+		writePlain(store, { module: "a.ref", contentHash, declarations, references, imports });
 		return built;
 	}
 
@@ -636,7 +638,7 @@ describe("planning a move", () => {
 		const shapeHelper = "lexicon reference a.ref Shape#helper.";
 		const remote = "lexicon reference b.ref Remote#";
 		files.set("b.ref", "export class Remote {}\n");
-		store.replaceFile({
+		writePlain(store, {
 			module: "b.ref",
 			contentHash: hashContent("export class Remote {}\n"),
 			declarations: [declared(remote, "Remote", 0, { exported: true })],
@@ -838,7 +840,7 @@ describe("answering about a symbol", () => {
 		if (!target) throw new Error("expected Cart");
 
 		// Written straight to the store: the reference provider does not emit references.
-		store.replaceFile({
+		writePlain(store, {
 			module: "uses.ref",
 			contentHash: "h2",
 			declarations: [],
@@ -895,7 +897,7 @@ describe("planning a rename", () => {
 	// asks anyone anything, which is the property the whole prepare step exists to have.
 	function plant() {
 		const target = "lexicon ts src/cart.ts add().";
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/cart.ts",
 			contentHash: "h1",
 			declarations: [
@@ -911,7 +913,7 @@ describe("planning a rename", () => {
 			],
 			references: [],
 		});
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/uses.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -947,7 +949,7 @@ describe("planning a rename", () => {
 	// would refuse most real renames, and staying quiet would claim a completeness we do not have.
 	it("warns about a same-spelled occurrence that never bound, rather than refusing or hiding it", async () => {
 		const target = plant();
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/other.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -981,7 +983,7 @@ describe("planning a rename", () => {
 	it("says an extension's receiver may own a member of the new name, and a plain function draws no such warning", async () => {
 		const plain = plant();
 		const extension = "lexicon kotlin src/ext.kt size().";
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/ext.kt",
 			contentHash: "h1",
 			declarations: [
@@ -1035,7 +1037,7 @@ describe("planning a rename", () => {
 		});
 
 		function plantParameter() {
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/cart.py",
 				contentHash: "h1",
 				declarations: [
@@ -1059,7 +1061,7 @@ describe("planning a rename", () => {
 				],
 				references: [],
 			});
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/uses.py",
 				contentHash: "h1",
 				declarations: [],
@@ -1124,7 +1126,7 @@ describe("planning a rename", () => {
 		// from a different function of the same name. Reported rather than guessed at.
 		it("warns about calls to the owner that did not bind, naming them", async () => {
 			const built = plantParameter();
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/dynamic.py",
 				contentHash: "h1",
 				declarations: [],
@@ -1165,7 +1167,7 @@ describe("planning a rename", () => {
 
 		it("blocks on a declaration in a file the rename rewrites, and points at it", async () => {
 			const target = plant();
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/uses.ts",
 				contentHash: "h2",
 				declarations: [planted("src/uses.ts", "append", 20)],
@@ -1192,7 +1194,7 @@ describe("planning a rename", () => {
 			const module = "src/meanings.ts";
 			const declared = [planted(module, "foo", 0), planted(module, "Bar", 3), planted(module, "Baz", 6)];
 			const meanings: Record<string, string[]> = { foo: ["value"], Bar: ["type"], Baz: ["value"] };
-			store.replaceFile({
+			writePlain(store, {
 				module,
 				contentHash: "h1",
 				declarations: declared,
@@ -1272,7 +1274,7 @@ describe("planning a rename", () => {
 				binding: { status: "bound" as const, symbolId: id(target), provenance: "bound" as const },
 				origin: { kind: "declaration" as const },
 			});
-			store.replaceFile({
+			writePlain(store, {
 				module,
 				contentHash: hashContent(text),
 				declarations: [
@@ -1321,7 +1323,7 @@ describe("planning a rename", () => {
 
 		it("blocks when the new name is already imported into a file it rewrites", async () => {
 			const target = plant();
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/uses.ts",
 				contentHash: "h2",
 				declarations: [],
@@ -1354,7 +1356,7 @@ describe("planning a rename", () => {
 		// and not under the name its source module uses.
 		it("checks what the importing file calls it, not what the source module does", async () => {
 			const target = plant();
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/uses.ts",
 				contentHash: "h2",
 				declarations: [],
@@ -1389,7 +1391,7 @@ describe("planning a rename", () => {
 		// Another module owning the name is ordinary. Only a clash inside a file being edited is one.
 		it("allows a name that is taken somewhere this rename never touches", async () => {
 			const target = plant();
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/unrelated.ts",
 				contentHash: "h1",
 				declarations: [planted("src/unrelated.ts", "append", 3)],
@@ -1415,7 +1417,7 @@ describe("planning a rename", () => {
 				binding: { status: "bound" as const, symbolId: target, provenance: "bound" as const },
 				origin: { kind: "import" as const, span: span(0, edge, 3) },
 			});
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/alias.ts",
 				contentHash: "h1",
 				declarations: [planted("src/alias.ts", "append", 3)],
@@ -1423,7 +1425,7 @@ describe("planning a rename", () => {
 				imports: [named("./cart", "add", span(0, 9, 3), { local: "X", localRange: span(0, 16, 1) })],
 				resolutions: toCart,
 			});
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/fwd.ts",
 				contentHash: "h1",
 				declarations: [planted("src/fwd.ts", "append", 3)],
@@ -1431,7 +1433,7 @@ describe("planning a rename", () => {
 				...forward("./cart", "add", span(0, 9, 3)),
 				resolutions: toCart,
 			});
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/mine.ts",
 				contentHash: "h1",
 				declarations: [],
@@ -1439,7 +1441,7 @@ describe("planning a rename", () => {
 				imports: [named("./cart", "add", span(0, 9, 3), { local: "append", localRange: span(0, 16, 6) })],
 				resolutions: toCart,
 			});
-			store.replaceFile({
+			writePlain(store, {
 				module: "src/ns.ts",
 				contentHash: "h1",
 				declarations: [],
@@ -1487,7 +1489,7 @@ describe("planning a rename", () => {
 				end: { line, character: start + length },
 			});
 			const twice = (module: string, conflict: Conflict) =>
-				store.replaceFile({
+				writePlain(store, {
 					module,
 					contentHash: "h1",
 					declarations: [],
@@ -1543,7 +1545,7 @@ describe("renaming a symbol that other files import", () => {
 	}
 
 	function declare() {
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/cart.ts",
 			contentHash: "h1",
 			declarations: [
@@ -1563,7 +1565,7 @@ describe("renaming a symbol that other files import", () => {
 
 	it("rewrites the name inside an import, which no reference row covers", async () => {
 		declare();
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/uses.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1589,7 +1591,7 @@ describe("renaming a symbol that other files import", () => {
 	// local span here would break the very file the rename was meant to keep working.
 	it("rewrites only the source half of an alias, never the local binding", async () => {
 		declare();
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/aliased.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1629,7 +1631,7 @@ describe("renaming a symbol that other files import", () => {
 		declare();
 		const span = { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } };
 		// The barrel re-exports from the declaring module.
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/index.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1639,7 +1641,7 @@ describe("renaming a symbol that other files import", () => {
 		});
 		store.settleProjections();
 		// The consumer imports the package, which lands on the barrel and not on the declaration.
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/far.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1667,7 +1669,7 @@ describe("renaming a symbol that other files import", () => {
 
 	it("ignores an import of the same name from somewhere else entirely", async () => {
 		declare();
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/elsewhere.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1687,7 +1689,7 @@ describe("renaming a symbol that other files import", () => {
 	it("keeps the old name at a stop the caller names, where the provider keeps names", async () => {
 		declare();
 		const span = { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } };
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/index.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1724,7 +1726,7 @@ describe("renaming a symbol that other files import", () => {
 
 	it("refuses while projections are unsettled, and when an import on its routes now lands elsewhere", async () => {
 		declare();
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/uses.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1748,7 +1750,7 @@ describe("renaming a symbol that other files import", () => {
 
 	it("refuses with a check it could not make when the provider cannot say where an import lands", async () => {
 		declare();
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/uses.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1793,7 +1795,7 @@ describe("searching literals", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1801,7 +1803,7 @@ describe("searching literals", () => {
 			imports: [],
 			literals: [literal("thing_happened", 0), literal("30", 1, "number", 30)],
 		});
-		store.replaceFile({
+		writePlain(store, {
 			module: "b.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1849,7 +1851,7 @@ describe("searching imports", () => {
 			fromText(() => null),
 			dir,
 		);
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -1945,7 +1947,7 @@ describe("planning a rename's writes", () => {
 
 	function plant(indexedHash = hashContent(cartText)) {
 		writeFileSync(path.join(dir, "cart.ts"), cartText);
-		store.replaceFile({
+		writePlain(store, {
 			module: "cart.ts",
 			contentHash: indexedHash,
 			declarations: [
@@ -2032,7 +2034,7 @@ describe("planning a rename's writes", () => {
 		const call = { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } };
 		const lossy = Buffer.from([...Buffer.from("add();\n// "), 0xc3, 0x28, 0x0a]);
 		writeFileSync(path.join(dir, "use.ts"), lossy);
-		store.replaceFile({
+		writePlain(store, {
 			module: "use.ts",
 			contentHash: hashContent(lossy.toString("utf8")),
 			declarations: [],

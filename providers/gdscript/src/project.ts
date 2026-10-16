@@ -1,6 +1,5 @@
 // Owns the project model: each `project.godot` scope, its singletons, and the scripts the engine runs.
 
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
 	type Diagnostic,
@@ -182,14 +181,9 @@ class ScopeReader {
 
 	private readText(module: string, consult = true): string | undefined {
 		const file = path.resolve(this.workspaceRoot, ...module.split("/"));
-		if (!this.policy.readable(file)) return undefined;
-		try {
-			const text = readFileSync(file, "utf8");
-			if (consult) this.consulted.add(module);
-			return text;
-		} catch {
-			return undefined;
-		}
+		const text = this.policy.readText(file);
+		if (text !== undefined && consult) this.consulted.add(module);
+		return text;
 	}
 }
 

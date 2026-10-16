@@ -9,12 +9,11 @@ import type { RenamePlan, ResponseOf } from "@nyaa-lexicon/protocol";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch, daemonHandlers } from "../dispatch";
 import { recoverSteps } from "../refactorStep";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import type { Gate } from "../stepRunners";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -63,7 +62,7 @@ async function workspace(language: "typescript" | "python", files: Record<string
 	const main = path.join(PROVIDERS, language, "src", "main.ts");
 	await supervisor.start({ command: [process.execPath, "run", main], timeoutMs: 30_000 }, root);
 	service = new LexiconService(store, supervisor, sourceReader(root), root);
-	transactions = new TransactionManager(store, root);
+	transactions = new TransactionManager(store, root, service.policy);
 	dispatch = createDispatch(service, { transactions });
 	const extension = language === "typescript" ? ".ts" : ".py";
 	for (const module of Object.keys(files).filter((name) => name.endsWith(extension))) {
@@ -406,7 +405,7 @@ describe("settling a TypeScript rename", () => {
 		expect(await rethrown(rename(idOf("Cart", "src/cart.ts"), "Basket"))).toThrow("died before finalizing");
 		expect(distinct(targetsIn("src/use.ts", "add"))).not.toEqual([add]);
 
-		const recovered = await recoverSteps(service, new TransactionManager(store, root));
+		const recovered = await recoverSteps(service, new TransactionManager(store, root, service.policy));
 
 		expect([...recovered.restored].sort()).toEqual(["src/cart.ts", "src/make.ts"]);
 		expect(changed()).toEqual({});

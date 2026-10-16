@@ -168,6 +168,10 @@ export function renderSymbolSource(source: SymbolSource): string {
 	}
 
 	const { start, end } = source.range;
+	const sourceText =
+		source.valueStatus === undefined
+			? source.text
+			: `${source.text} ${source.valueStatus === "set" ? "(redacted)" : "(empty)"}`;
 	return [
 		`# ${code(source.name)}`,
 		"",
@@ -175,7 +179,7 @@ export function renderSymbolSource(source: SymbolSource): string {
 		...(source.spanHash === undefined ? [] : [`Span hash: ${code(source.spanHash)}`]),
 		"",
 		"```",
-		source.text,
+		sourceText,
 		"```",
 	].join("\n");
 }

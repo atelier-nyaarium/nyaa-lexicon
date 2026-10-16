@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProviderCommand } from "../providers";
 import { lexiconRoot, startProviders } from "../providers";
-import { ProviderSupervisor } from "../supervisor";
+import { TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers

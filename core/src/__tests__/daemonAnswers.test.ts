@@ -23,13 +23,16 @@ import {
 	type ResponseOf,
 } from "@nyaa-lexicon/protocol";
 import { createDispatch, daemonHandlers, gateOf } from "../dispatch";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import type { Gate } from "../stepRunners";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
 import { BUILD_VERSION } from "../version";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 ////////////////////////////////
 //  Harness
@@ -80,8 +83,15 @@ async function openWorkspace(files: Record<string, string>, providers: string[],
 			supervisor.start({ command: [process.execPath, "run", main], timeoutMs: 60_000 }, workspace),
 		),
 	);
-	const service = new LexiconService(store, supervisor, sourceReader(workspace), workspace);
-	const refactor = { transactions: new TransactionManager(store, workspace) };
+	const service = new LexiconService(
+		store,
+		supervisor,
+		sourceReader(workspace),
+		workspace,
+		undefined,
+		testPolicy(workspace),
+	);
+	const refactor = { transactions: new TransactionManager(store, workspace, service.policy) };
 	await service.indexWorkspace();
 
 	return {
@@ -270,6 +280,12 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			{ module: "cart.ref", admitted: "discovered" },
 			{ module: "notes.txt", admitted: "discovered" },
 			{ module: "ghost.ref", admitted: null },
+		]);
+	},
+	moduleSecretModes: async () => {
+		expect(await ask("moduleSecretModes", { modules: ["cart.ref", "ghost.ref"] })).toEqual([
+			{ module: "cart.ref", mode: "plain" },
+			{ module: "ghost.ref", mode: "plain" },
 		]);
 	},
 	moduleDeclarations: async () => {

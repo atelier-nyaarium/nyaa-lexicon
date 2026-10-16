@@ -3,13 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { KNOWLEDGE_SWEEP_EVERY_MS, startLiveIndex } from "../liveIndex";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ORPHAN_TTL_MS, type SweepPass } from "../subjects";
 import { type FakeClock, fakeClock } from "./fakeClock";
 import { fakeSupervisor } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers

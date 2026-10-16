@@ -15,7 +15,6 @@ import { type IndexOutcome, REBIND_CAP, RESOLVE_RETRY_MS } from "../indexer";
 import type { MethodRequest, MethodResponse } from "../providerPort";
 import { journaledStep } from "../refactorStep";
 import type { ProviderClaims } from "../routing";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
@@ -25,6 +24,7 @@ import { fakeImports, fakeReExports, fakeUses } from "./fakeGrammar";
 import { fakeSupervisor, parseClasses, parseFake, rangesOf, resolveFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
 import { direct, forward, landed } from "./importEdges";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -394,7 +394,7 @@ describe("a road that does not ask who binds against its writes", () => {
 		const step = await journaledStep<{ ok: boolean }>(
 			{
 				service,
-				transactions: new TransactionManager(store, root),
+				transactions: new TransactionManager(store, root, service.policy),
 				write: (work) => service.gate.exclusive(async () => work()),
 			},
 			{
@@ -813,6 +813,28 @@ describe("rebind debt", () => {
 		await service.upgradeRemaining();
 
 		expect({ left, depth: store.depthOf("x.fake") }).toEqual({ left: "outline", depth: "full" });
+	});
+
+	it("pays an owed rebind before any scan computes scope", async () => {
+		await gitInit(root);
+		put("x.fake", "export class Foo {}\n");
+		service = bindingService();
+		await service.indexFile("x.fake");
+		await service.upgradeRemaining();
+		expect(store.depthOf("x.fake")).toBe("full");
+
+		store.oweRebinds(["x.fake"]);
+		service = bindingService();
+		let refreshes = 0;
+		const refresh = service.policy.refresh.bind(service.policy);
+		service.policy.refresh = async (...args) => {
+			refreshes++;
+			return refresh(...args);
+		};
+		service.payOwed();
+		await service.upgradeRemaining();
+
+		expect({ owed: store.owedRebindAfter(null), refreshes }).toEqual({ owed: null, refreshes: 1 });
 	});
 
 	// A parse that reads references binds against every move before it.

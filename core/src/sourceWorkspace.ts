@@ -3,14 +3,15 @@
 // Kept apart from the index because a stale answer IS the two disagreeing. Decides what to write;
 // sourceWriter.ts decides how.
 
-import { coordinatesOf, hashContent, type Range } from "@nyaa-lexicon/protocol";
+import { coordinatesOf, hashContent, type Range, type ValueStatus } from "@nyaa-lexicon/protocol";
 import type { PlannedSource, PlannedSourceRead } from "./refusalSlots.js";
 import type { Refusal } from "./refusals.js";
 import * as refusal from "./refusals.js";
 import {
+	hashOfView,
 	insideWorkspace,
-	type SourceReader,
-	textOf,
+	type MaskedView,
+	type ViewReader,
 	type WritableSource,
 	writableSource,
 	writableText,
@@ -23,7 +24,8 @@ export type { SymbolSource } from "@nyaa-lexicon/protocol";
 ////////////////////////////////
 //  Interfaces & Types
 
-type ModuleText = { text: string } | { refused: Refusal };
+/** Readable module text, its hash, and mask status. */
+type ModuleText = { text: string; hash: string; masked?: MaskedView } | { refused: Refusal };
 
 type Address = { symbolId?: string | undefined; factId?: string | undefined };
 
@@ -38,11 +40,11 @@ function sliceRange(text: string, range: Range): string | null {
 ////////////////////////////////
 //  Class
 
-/** Takes a reader, not node:fs: a fixture and an unsaved buffer are the same question. */
+/** Reads through policy views. */
 export class SourceWorkspace {
 	constructor(
 		private readonly store: IndexStore,
-		private readonly readSource: SourceReader,
+		private readonly readView: ViewReader,
 		private readonly workspaceRoot: string,
 	) {}
 
@@ -57,12 +59,25 @@ export class SourceWorkspace {
 	 * cutting at it produces something that looks like source and is not the symbol.
 	 */
 	symbolSource(address: Address): PlannedSource {
-		const read = this.sliced(address, (module) => {
-			const current = this.readSource(module);
-			if (current.kind === "outside") return { refused: refusal.moduleOutsideWorkspace(module) };
-			const text = textOf(current);
-			return text === null ? { refused: refusal.moduleNotOnDisk(module) } : { text };
-		});
+		const read = this.sliced(
+			address,
+			(module) => {
+				const view = this.readView(module);
+				switch (view.kind) {
+					case "plain":
+						return { text: view.text, hash: view.hash };
+					case "masked":
+						return { text: view.text, hash: view.hash, masked: view };
+					case "refused":
+						return { refused: refusal.secretFile(module) };
+					case "outside":
+						return { refused: refusal.moduleOutsideWorkspace(module) };
+					default:
+						return { refused: refusal.moduleNotOnDisk(module) };
+				}
+			},
+			true,
+		);
 		if (!read.found) return read;
 		const { fileText: _fileText, ...source } = read;
 		return source;
@@ -71,32 +86,45 @@ export class SourceWorkspace {
 	/** `symbolSource` through the writer's read, with the file text it sliced. */
 	symbolSourceRead(address: Address): PlannedSourceRead {
 		return this.sliced(address, (module) => {
-			const writable = this.writable(module);
+			const view = this.readView(module);
+			const writable = writableSource(module, view);
 			if ("refused" in writable) return writable;
-			return writable.text === null ? { refused: refusal.moduleNotOnDisk(module) } : { text: writable.text };
+			return view.kind === "plain"
+				? { text: view.text, hash: view.hash }
+				: { refused: refusal.moduleNotOnDisk(module) };
 		});
 	}
 
 	/** One module through `writableSource`. */
 	writable(module: string): WritableSource {
-		return writableSource(module, this.readSource(module));
+		return writableSource(module, this.readView(module));
 	}
 
-	private sliced(address: Address, read: (module: string) => ModuleText): PlannedSourceRead {
+	private sliced(address: Address, read: (module: string) => ModuleText, allowKey = false): PlannedSourceRead {
 		const located = this.locate(address);
 		if ("problem" in located) return { found: false, reason: located.problem };
 
-		const { module, range, name, kind } = located;
+		const { module, range, name, kind, valueStatus } = located;
 		const current = read(module);
 		if ("refused" in current) return { found: false, reason: current.refused };
-		const { text } = current;
+		const { text, hash, masked } = current;
+		const selection = located.selectionRange ?? range;
+		const valueKey = allowKey && valueStatus !== undefined && address.factId === undefined;
+		if (
+			masked !== undefined &&
+			(masked.omits(selection) ||
+				(address.factId !== undefined && masked.touches(range)) ||
+				(masked.hidden && valueStatus !== undefined && !valueKey))
+		)
+			return { found: false, reason: refusal.secretFile(module) };
 
 		const stored = this.store.contentHashOf(module);
-		if (stored !== null && stored !== hashContent(text)) {
+		if (stored !== null && stored !== hash) {
 			return { found: false, reason: refusal.moduleStale(module), stale: true };
 		}
 
-		const sliced = sliceRange(text, range);
+		const selected = valueKey ? selection : range;
+		const sliced = valueKey || masked === undefined ? sliceRange(text, selected) : masked.slice(selected);
 		if (sliced === null) return { found: false, reason: refusal.rangeOutsideModule(module) };
 
 		return {
@@ -104,9 +132,10 @@ export class SourceWorkspace {
 			module,
 			name,
 			kind,
-			range,
+			range: selected,
+			...(valueKey && valueStatus !== undefined ? { valueStatus } : {}),
 			text: sliced,
-			contentHash: hashContent(text),
+			contentHash: hash,
 			spanHash: hashContent(sliced),
 			fileText: text,
 		};
@@ -132,13 +161,13 @@ export class SourceWorkspace {
 
 	/** The hash of a module's current text, for a writer proving nothing moved since it planned. */
 	currentHashOf(module: string): string | null {
-		const text = this.currentText(module);
-		return text === null ? null : hashContent(text);
+		return hashOfView(this.readView(module));
 	}
 
-	/** A module's text on disk now; null when it is not readable text. */
+	/** Plain text on disk, or null when unreadable. */
 	currentText(module: string): string | null {
-		return textOf(this.readSource(module));
+		const view = this.readView(module);
+		return view.kind === "plain" ? view.text : null;
 	}
 
 	/**
@@ -159,17 +188,26 @@ export class SourceWorkspace {
 	}
 
 	/** One address, two spellings. A declaration is named by symbol id and a literal by fact id. */
-	private locate(
-		address: Address,
-	): { module: string; range: Range; name: string; kind: string } | { problem: Refusal } {
+	private locate(address: Address):
+		| {
+				module: string;
+				range: Range;
+				selectionRange?: Range;
+				valueStatus?: ValueStatus;
+				name: string;
+				kind: string;
+		  }
+		| { problem: Refusal } {
 		if (address.symbolId !== undefined) {
 			const declaration = this.store.declaration(address.symbolId);
 			if (!declaration) return { problem: refusal.subjectRefused(address.symbolId, this.store) };
 			return {
 				module: declaration.module,
 				range: declaration.range,
+				...(declaration.selectionRange === undefined ? {} : { selectionRange: declaration.selectionRange }),
 				name: declaration.name,
 				kind: declaration.kind,
+				...(declaration.valueStatus === undefined ? {} : { valueStatus: declaration.valueStatus }),
 			};
 		}
 

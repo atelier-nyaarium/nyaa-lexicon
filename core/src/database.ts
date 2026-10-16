@@ -1,5 +1,5 @@
 // The one way core opens a SQLite file. Each SQL text compiles once and is reused, since a statement
-// prepared on every call costs more than the write it runs.
+// prepared on every call costs more than the write it runs. Every connection zeroes deleted bytes.
 
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
@@ -32,13 +32,31 @@ export class Database {
 	/** Kept statements with an iteration open, which any other use of them would end. */
 	private readonly iterating = new Set<StatementSync>();
 
-	private constructor(private readonly db: DatabaseSync) {}
+	private constructor(
+		private readonly db: DatabaseSync,
+		private readonly busyMs: number,
+	) {}
 
 	/** `busyMs` 0 suits a best-effort write, which tries once rather than stall its caller. */
 	static open(file: string, options?: ConstructorParameters<typeof DatabaseSync>[1], busyMs = BUSY_MS): Database {
-		const opened = new Database(options === undefined ? new DatabaseSync(file) : new DatabaseSync(file, options));
+		const opened = new Database(
+			options === undefined ? new DatabaseSync(file) : new DatabaseSync(file, options),
+			busyMs,
+		);
 		opened.exec(`PRAGMA busy_timeout = ${busyMs}`);
+		// The opener configures deletion zeroing for every connection.
+		opened.exec("PRAGMA secure_delete = ON");
 		return opened;
+	}
+
+	/** Temporarily skips lock waits, then restores them. */
+	unwaited<T>(work: () => T): T {
+		this.exec("PRAGMA busy_timeout = 0");
+		try {
+			return work();
+		} finally {
+			this.exec(`PRAGMA busy_timeout = ${this.busyMs}`);
+		}
 	}
 
 	/**

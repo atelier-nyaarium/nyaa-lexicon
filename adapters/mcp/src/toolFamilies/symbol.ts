@@ -324,6 +324,11 @@ ${canonical} resolves to file ${module}.
 				? ""
 				: `
 - Name: line ${candidate.selectionRange.start.line + 1}, column ${candidate.selectionRange.start.character + 1}`;
+		const valueStatus =
+			candidate.valueStatus === undefined
+				? ""
+				: `
+- Value status: ${candidate.valueStatus}`;
 		const selection = hasSelection
 			? `
 - Requested selection: ${selectionText(target)}${outside ? `; outside declaration or source text` : unchecked ? `; exact bounds unchecked: ${unchecked}` : target.range !== undefined ? `; inside declaration and source text` : `; inside declaration`}`
@@ -335,7 +340,7 @@ ${canonical} resolves to file ${module}.
 ${canonical} resolves to ${candidate.kind} ${candidate.name} in ${module}.
 
 - Symbol ID: ${candidate.symbolId}
-- Declaration: lines ${targetStart}-${targetEnd} (zero-based range ${candidate.range.start.line}:${candidate.range.start.character}..${candidate.range.end.line}:${candidate.range.end.character})${name}${selection}
+- Declaration: lines ${targetStart}-${targetEnd} (zero-based range ${candidate.range.start.line}:${candidate.range.start.character}..${candidate.range.end.line}:${candidate.range.end.character})${name}${valueStatus}${selection}
 			`.trim(),
 			outside || unchecked !== undefined,
 		);
@@ -346,7 +351,8 @@ ${canonical} resolves to ${candidate.kind} ${candidate.name} in ${module}.
 			.map((candidate) => {
 				const first = candidate.range.start.line + 1;
 				const last = candidate.range.end.line + 1;
-				return `- ${candidate.kind} ${candidate.name} in ${module}, lines ${first}-${last}: ${candidate.symbolId}`;
+				const status = candidate.valueStatus === undefined ? "" : ` (${candidate.valueStatus})`;
+				return `- ${candidate.kind} ${candidate.name}${status} in ${module}, lines ${first}-${last}: ${candidate.symbolId}`;
 			})
 			.join("\n");
 		return text(

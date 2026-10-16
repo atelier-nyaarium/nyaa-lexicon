@@ -34,6 +34,9 @@ CREATE TABLE files (
   module      TEXT PRIMARY KEY,
   runtime     TEXT CHECK (runtime IN ('esm', 'cjs')),
   contentHash TEXT NOT NULL,
+  policyStamp TEXT,
+  -- How the row's bytes were admitted when it was written; NULL is plain, as is a row from before it was kept.
+  admittedAs  TEXT,
   indexedAt   INTEGER NOT NULL,
   -- Outline rows require a full parse.
   depth       TEXT NOT NULL DEFAULT 'full',
@@ -62,9 +65,11 @@ CREATE INDEX files_role ON files(role);
 
 -- Parse failures persist until a successful parse or file removal.
 CREATE TABLE parse_failures (
-  module   TEXT PRIMARY KEY,
-  reason   TEXT NOT NULL,
-  failedAt INTEGER NOT NULL
+	module      TEXT PRIMARY KEY,
+	reason      TEXT NOT NULL,
+	failedAt    INTEGER NOT NULL,
+	policyStamp TEXT,
+	admittedAs  TEXT
 );
 ${NOTES_TABLE}
 -- What a write moved of a module's surface, until the road that wrote it has made durable the
@@ -132,7 +137,8 @@ CREATE TABLE symbols (
   -- Null: the provider named no safe insertion line.
   memberInsertLine INTEGER,
   -- The provider's own word for the form, such as an extension or a trait method.
-  languageKind    TEXT
+  languageKind    TEXT,
+  valueStatus     TEXT CHECK (valueStatus IN ('set', 'empty'))
 );
 CREATE INDEX symbols_module ON symbols(module);
 CREATE INDEX symbols_name ON symbols(name);

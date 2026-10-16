@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,15 +8,11 @@ import { processesMatching } from "@nyaa-lexicon/client";
 import { PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { type NotificationMessage, StreamMessageWriter } from "vscode-jsonrpc/node";
-import {
-	absorbingWrites,
-	INITIALIZING_CEILING_MS,
-	type ProviderExit,
-	ProviderSupervisor,
-	ProviderUnavailableError,
-} from "../supervisor";
+import { systemClock } from "../clock";
+import { absorbingWrites, INITIALIZING_CEILING_MS, type ProviderExit, ProviderUnavailableError } from "../supervisor";
 import { Timings } from "../timings";
 import { fakeClock } from "./fakeClock";
+import { TestProviderSupervisor as ProviderSupervisor, testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -309,6 +305,89 @@ describe("when a provider dies", () => {
 		// The pid moving is the proof a NEW process answered, not a survivor.
 		expect(supervisor.pidOf("reference-provider")).not.toBe(firstPid);
 		expect(supervisor.running()).toHaveLength(1);
+	}, 30_000);
+
+	it("installs full policy before asks and respawns with its current wire", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "lexicon-respawn-policy-"));
+		const script = path.join(root, "policy.ts");
+		const seen = path.join(root, "events.jsonl");
+		writeFileSync(
+			script,
+			[
+				`import { appendFileSync } from "node:fs";`,
+				`import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from ${JSON.stringify(RPC)};`,
+				`const connection = createMessageConnection(new StreamMessageReader(process.stdin), new StreamMessageWriter(process.stdout));`,
+				`const record = (event) => appendFileSync(${JSON.stringify(seen)}, JSON.stringify(event) + "\\n");`,
+				`let revision = "";`,
+				`connection.onRequest("initialize", (params) => { revision = params.policy.revision; record({ method: "initialize", pid: process.pid, policy: params.policy }); return { providerId: "policy-provider", language: "policy", extensions: [".policy"], protocolVersion: ${JSON.stringify(PROTOCOL_VERSION)}, tiers: { projectModel: false, declarations: false, references: false, imports: false, binding: false, types: false, literals: false, comments: false, docs: false, metrics: false } }; });`,
+				`connection.onRequest("installPolicy", ({ policy }) => { revision = policy.revision; record({ method: "installPolicy", pid: process.pid, policy }); return { changed: ["src/secret.ts"] }; });`,
+				`connection.onRequest("discoverProject", () => { record({ method: "discoverProject", pid: process.pid, revision }); return { files: [], externalRoots: [], configFiles: [], diagnostics: [] }; });`,
+				`connection.onRequest("parseFile", (params) => ({ module: params.module, contentHash: params.contentHash, declarations: [], references: [], imports: [], literals: [], diagnostics: [] }));`,
+				`connection.listen();`,
+			].join("\n"),
+		);
+
+		writeFileSync(
+			path.join(root, "lexicon.json"),
+			JSON.stringify({ deny: ["**/first-secret/**"], secrets: { "**/*.json": { password: "redact" } } }),
+		);
+		const policy = testPolicy(root);
+		await policy.refresh({ kind: "startup" });
+		supervisor = new ProviderSupervisor(systemClock, new Timings(systemClock), () => policy.current);
+		policy.attach({
+			index: { installScope: () => {} },
+			journal: { policyChanged: () => {} },
+			providers: supervisor,
+		});
+		const invalidated: string[][] = [];
+		supervisor.policyInvalidatedFrom((_providerId, modules) => invalidated.push([...modules]));
+		try {
+			await supervisor.start({ command: [process.execPath, "run", script], timeoutMs: 15_000 }, root);
+			const readEvents = () =>
+				readFileSync(seen, "utf8")
+					.trim()
+					.split("\n")
+					.map((line) => JSON.parse(line) as { method: string; pid: number; policy?: unknown });
+			const initial = readEvents()[0];
+			expect(initial?.policy).toEqual(JSON.parse(JSON.stringify(policy.current.wire)));
+			await supervisor.askProvider("policy-provider", "discoverProject", { workspaceRoot: root });
+
+			writeFileSync(
+				path.join(root, "lexicon.json"),
+				JSON.stringify({ deny: ["**/second-secret/**"], secrets: { "**/*.yaml": { token: "omit" } } }),
+			);
+			const change = await policy.refresh({ kind: "events", modules: ["lexicon.json"] });
+			policy.policyChanged(change);
+			const beforeAsk = readEvents().length;
+			await supervisor.askProvider("policy-provider", "discoverProject", { workspaceRoot: root });
+			const requestMethods = readEvents()
+				.slice(beforeAsk)
+				.map(({ method }) => method);
+			expect(requestMethods).toEqual(["installPolicy", "discoverProject"]);
+			expect(readEvents()[beforeAsk]?.policy).toEqual(JSON.parse(JSON.stringify(policy.current.wire)));
+			expect(invalidated).toEqual([["src/secret.ts"]]);
+
+			const firstPid = initial?.pid;
+			if (firstPid === undefined) throw new Error("provider did not initialize");
+			process.kill(firstPid, "SIGKILL");
+
+			const deadline = Date.now() + 20_000;
+			let current = readEvents()
+				.filter(({ method }) => method === "initialize")
+				.at(-1);
+			while (Date.now() < deadline && current?.pid === firstPid) {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+				current = readEvents()
+					.filter(({ method }) => method === "initialize")
+					.at(-1);
+			}
+
+			expect(current?.pid).not.toBe(firstPid);
+			expect(current?.policy).toEqual(JSON.parse(JSON.stringify(policy.current.wire)));
+		} finally {
+			supervisor.stopAll();
+			rmSync(root, { recursive: true, force: true });
+		}
 	}, 30_000);
 
 	// A provider that answers different words on its second handshake, so a stale entry surviving

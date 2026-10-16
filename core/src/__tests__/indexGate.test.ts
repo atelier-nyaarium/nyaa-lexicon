@@ -5,13 +5,13 @@ import path from "node:path";
 import { hashContent } from "@nyaa-lexicon/protocol";
 import type { MethodRequest, ProviderPort } from "../providerPort";
 import { journaledStep } from "../refactorStep";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { TransactionManager } from "../transactions";
 import type { WorkspaceGate } from "../workspaceGate";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -256,7 +256,7 @@ describe("what a status says the index is doing", () => {
 		const stepping = journaledStep<string>(
 			{
 				service,
-				transactions: new TransactionManager(store, root),
+				transactions: new TransactionManager(store, root, service.policy),
 				write: (work) => service.gate.exclusive(async () => work()),
 			},
 			{

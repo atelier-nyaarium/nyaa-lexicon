@@ -1,4 +1,5 @@
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -125,7 +126,7 @@ export class MarkdownProvider {
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new MarkdownProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new MarkdownProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new MarkdownProvider(), SECRET_READERS));

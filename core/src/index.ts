@@ -27,17 +27,18 @@ export {
 export { createDispatch, daemonHandlers } from "./dispatch.js";
 export {
 	CONFIG_FILE,
+	collectScopeEvidence,
 	describeScope,
 	discoverSubmodules,
 	type FileScope,
-	fileScopeFor,
 	type GeneratedReason,
 	type GeneratedVerdict,
+	type GitTracking,
 	generatedVerdicts,
-	gitFiles,
 	includedFiles,
-	readScopeConfig,
 	type ScopeConfig,
+	type ScopeConfigRead,
+	scopeFor,
 } from "./fileScope.js";
 export { storeCompatibilityKey } from "./fingerprint.js";
 export { type Cycle, type Edge, findCycles } from "./graph.js";
@@ -104,6 +105,7 @@ export {
 	pageScanned,
 	wire,
 } from "./paging.js";
+export { type EvidenceKind, type EvidenceView, PolicyEvidence, type PolicyEvidenceInput } from "./policyEvidence.js";
 export {
 	type AdmitVerdict,
 	findProject,
@@ -157,6 +159,16 @@ export {
 	routingContextOf,
 } from "./routing.js";
 export { compileSearchRegex, type SearchPattern, searchTerm } from "./search.js";
+export {
+	type PolicyChange,
+	type PolicyIndex,
+	type PolicyJournal,
+	type PolicyTrigger,
+	SecretPolicy,
+	type SecretPolicyConfig,
+	type SecretPolicyInitialOptions,
+	SecretPolicySnapshot,
+} from "./secretPolicy.js";
 export { LexiconService } from "./service.js";
 export {
 	type BindOutcome,
@@ -169,13 +181,14 @@ export {
 } from "./sessionBinds.js";
 export { type FrameServer, serveFrames } from "./socketTransport.js";
 export {
+	type AllowedView,
 	fromText,
 	MAX_SOURCE_BYTES,
 	readSource,
-	type SourceRead,
+	type SealedRead,
 	type SourceReader,
 	sourceReader,
-	textOf,
+	type ViewReader,
 	type WritableSource,
 	writableSource,
 	writableText,
@@ -196,6 +209,7 @@ export {
 	type StoredReference,
 } from "./store.js";
 export { type ProviderExit, type ProviderSpec, ProviderSupervisor } from "./supervisor.js";
+export { Timings } from "./timings.js";
 export {
 	type FileImage,
 	type ImageScope,
@@ -207,6 +221,7 @@ export {
 	type TransactionStep,
 } from "./transactions.js";
 export {
+	type EventHasher,
 	hashContent,
 	isIgnored,
 	type RunningWatcher,

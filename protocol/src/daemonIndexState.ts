@@ -32,8 +32,9 @@ export const ModuleStatusSchema = z
 		module: z.string(),
 		/** On disk under the workspace, as the indexer's own reader sees it. */
 		exists: z.boolean(),
-		/** A provider owns it and the scope admits it. */
+		/** Provider-owned or index-read, subject to scope. */
 		claimed: z.boolean(),
+		/** Provider owner; absent for index reads. */
 		provider: z.string().optional(),
 		/** Why nothing will index it, when `claimed` is false. */
 		unclaimedReason: z.string().optional(),
@@ -56,6 +57,16 @@ export const AdmittedModuleSchema = z
 	.meta({ id: "AdmittedModule" });
 
 export type AdmittedModule = z.infer<typeof AdmittedModuleSchema>;
+
+export const ModuleSecretModeValueSchema = z.enum(["plain", "redact", "omit"]).meta({ id: "ModuleSecretMode" });
+
+export const ModuleSecretModeSchema = z
+	.object({ module: z.string(), mode: ModuleSecretModeValueSchema })
+	.meta({ id: "ModuleSecretModeAnswer" });
+
+export type ModuleSecretModeValue = z.infer<typeof ModuleSecretModeValueSchema>;
+
+export type ModuleSecretModeAnswer = z.infer<typeof ModuleSecretModeSchema>;
 
 /** What one read found. `detail` explains `binary`, `tooLarge`, or a link-outside `missing`. */
 export const SourceReadOutcomeSchema = z
@@ -135,6 +146,8 @@ export const IndexStatusSchema = z
 		failures: z.number(),
 		/** The first few failed files by path, each with the provider's reason. */
 		failed: z.array(failedFile),
+		/** Safe scope configuration notes. */
+		scopeNotes: z.array(z.string()).optional(),
 		/** The file asked about, when it is one of the failures. */
 		concerning: failedFile.optional(),
 		/** Files the index already holds, from this scan or any earlier one. */

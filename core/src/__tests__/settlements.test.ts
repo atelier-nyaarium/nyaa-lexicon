@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashBytes } from "@nyaa-lexicon/protocol";
-import { JOURNAL_TABLE_NAMES, SETTLED_IMAGES_KEPT, SETTLEMENTS_KEPT } from "../journalSchema";
+import { JOURNAL_TABLE_NAMES, JOURNAL_TABLES, SETTLED_IMAGES_KEPT, SETTLEMENTS_KEPT } from "../journalSchema";
 import { IndexStore } from "../store";
 import { TransactionManager } from "../transactions";
+import { testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -48,7 +49,7 @@ beforeEach(() => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-settle-"));
 	file = path.join(root, ".index.sqlite");
 	store = IndexStore.open(file).store;
-	manager = new TransactionManager(store, root);
+	manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 	write("a.ts", "opened\n");
 });
 
@@ -111,13 +112,15 @@ describe("a settlement written at close", () => {
 	it("records a revert that recovery finished after the daemon died", () => {
 		manager.start();
 		step({ "a.ts": "stepped\n" });
-		const dying = new TransactionManager(store, root, undefined, () => {
-			throw new Error("died after restoring");
+		const dying = new TransactionManager(store, root, testPolicy(root, undefined, store), {
+			failAfterRestore: () => {
+				throw new Error("died after restoring");
+			},
 		});
 		expect(() => dying.revert(dying.status().drifted)).toThrow("died after restoring");
 		expect(manager.settlements(0).settlements).toEqual([]);
 
-		new TransactionManager(store, root).recover();
+		new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 
 		expect(manager.settlements(0).settlements).toMatchObject([
 			{ outcome: "reverted", files: [{ module: "a.ts", settled: hash("opened\n") }] },
@@ -128,7 +131,7 @@ describe("a settlement written at close", () => {
 		manager.start("own");
 		step({ "a.ts": "own step\n" });
 
-		new TransactionManager(store, root).recover();
+		new TransactionManager(store, root, testPolicy(root, undefined, store)).recover();
 
 		expect(manager.settlements(0).settlements).toMatchObject([
 			{ origin: "own", outcome: "committed", files: [{ module: "a.ts", settled: hash("own step\n") }] },
@@ -196,7 +199,7 @@ describe("the journal across a rebuild", () => {
 	it("keeps an open refactor's noted edits, the settlements and the ledger id", () => {
 		store.close();
 		store = IndexStore.open(file, "9").store;
-		manager = new TransactionManager(store, root);
+		manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 		manager.start();
 		manager.track("a.ts");
 		noted("a.ts", "settled\n");
@@ -209,7 +212,7 @@ describe("the journal across a rebuild", () => {
 
 		const reopened = IndexStore.open(file, "10");
 		store = reopened.store;
-		manager = new TransactionManager(store, root);
+		manager = new TransactionManager(store, root, testPolicy(root, undefined, store));
 
 		expect(reopened.rebuilt).toBe(true);
 		expect(manager.status()).toEqual(before.status);
@@ -231,8 +234,13 @@ describe("the journal table registry", () => {
 				.sort();
 
 		expect(names("table")).toEqual([...JOURNAL_TABLE_NAMES].sort());
-		expect(names("trigger").length).toBeGreaterThan(0);
-		for (const trigger of names("trigger")) {
+		const revisionTriggers = names("trigger").filter((trigger) =>
+			/_revision_(insert|update|delete)$/.test(trigger),
+		);
+		expect(revisionTriggers.length).toBe(
+			3 * JOURNAL_TABLE_NAMES.filter((table) => JOURNAL_TABLES[table].revision).length,
+		);
+		for (const trigger of revisionTriggers) {
 			expect(JOURNAL_TABLE_NAMES.some((table) => trigger.startsWith(`${table}_revision_`))).toBe(true);
 		}
 	});

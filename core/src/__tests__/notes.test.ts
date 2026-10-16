@@ -1,17 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { workspaceKey } from "@nyaa-lexicon/client";
-import { formatRef, type NoteAuthor, type SymbolKind } from "@nyaa-lexicon/protocol";
+import { formatRef, NOTE_MAX, type NoteAuthor, type SymbolKind } from "@nyaa-lexicon/protocol";
 import type { NoteWrite } from "../notes";
 import * as refusal from "../refusals";
-import { LexiconService } from "../service";
-import { fromText } from "../sourceRead";
+import { fromText, sourceReader } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
 import { KNOWLEDGE_VIEWS } from "../subjects";
-import { ProviderSupervisor } from "../supervisor";
+import { forgetPlain, writePlain } from "./admissions";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -36,7 +40,7 @@ function plant(
 	module: string,
 	entries: Array<{ symbolId: string; name: string; digest: string; containerId?: string; kind?: SymbolKind }>,
 ): void {
-	store.replaceFile({
+	writePlain(store, {
 		module,
 		contentHash: entries.map((entry) => entry.digest).join(""),
 		declarations: entries.map((entry, line) => ({
@@ -86,6 +90,19 @@ function reopen(): void {
 		fromText(() => null),
 		dir,
 	);
+}
+
+async function denyModule(module: string, reconcile = true): Promise<void> {
+	service = new LexiconService(
+		store,
+		new ProviderSupervisor(),
+		fromText(() => null),
+		dir,
+		undefined,
+		testPolicy(dir, { deny: [module] }),
+	);
+	await service.currentScope();
+	if (reconcile) await service.reconcileSecretPolicy();
 }
 
 beforeEach(() => {
@@ -202,6 +219,11 @@ describe("writing a note", () => {
 		});
 		expect(service.readNote(BASKET)).toBeNull();
 	});
+
+	it("measures the note limit on stored text", () => {
+		const text = `Holds carts.${" ".repeat(NOTE_MAX)}`;
+		expect(saved(service.writeNote(note({ text })))).toMatchObject({ text: "Holds carts." });
+	});
 });
 
 describe("a note's refs over time", () => {
@@ -264,6 +286,117 @@ describe("a note's refs over time", () => {
 			expect.objectContaining({ written: ref("a.ref"), state: "ok" }),
 		]);
 		expect(service.noteBacklinks("a.ref").notes.map((entry) => entry.symbolId)).toEqual([BASKET]);
+	});
+
+	it("reads a denied module ref as withheld", async () => {
+		writeFileSync(path.join(dir, "a.ref"), "Cart");
+		const text = `Holds carts. See [the file](${ref("a.ref")}).`;
+		plant("a.ref", []);
+		saved(service.writeNote(note({ text })));
+		await denyModule("a.ref");
+
+		expect(service.readNote(BASKET)).toMatchObject({ links: [{ written: ref("a.ref"), state: "withheld" }] });
+	});
+
+	it("reads a symbol ref in a denied module as withheld", async () => {
+		writeFileSync(path.join(dir, "a.ref"), "Cart");
+		saved(service.writeNote(note()));
+		await denyModule("a.ref");
+
+		expect(service.readNote(BASKET)).toMatchObject({
+			links: [{ written: ref("a.ref", "Cart"), state: "withheld" }],
+		});
+	});
+
+	it("keeps a denied module ref through an unchanged save and an edit", async () => {
+		writeFileSync(path.join(dir, "a.ref"), "Cart");
+		const text = `Holds carts. See [the file](${ref("a.ref")}).`;
+		plant("a.ref", []);
+		saved(service.writeNote(note({ text })));
+		await denyModule("a.ref");
+
+		expect(service.writeNote(note({ text, expectedRevision: 1 }))).toMatchObject({
+			outcome: "saved",
+			note: {
+				revision: 2,
+				links: [{ written: ref("a.ref"), state: "withheld" }],
+			},
+		});
+
+		const edited = `Keeps the file ref.\n\n${text}`;
+		expect(saved(service.writeNote(note({ text: edited, expectedRevision: 2 })))).toMatchObject({
+			revision: 3,
+			text: edited,
+			links: [{ written: ref("a.ref"), state: "withheld" }],
+		});
+	});
+
+	it("keeps backlinks to a denied module", async () => {
+		writeFileSync(path.join(dir, "a.ref"), "Cart");
+		const text = `Holds carts. See [the file](${ref("a.ref")}).`;
+		plant("a.ref", []);
+		saved(service.writeNote(note({ text })));
+		await denyModule("a.ref");
+
+		expect(service.noteBacklinks("a.ref").notes).toEqual([{ symbolId: BASKET, summary: text }]);
+	});
+
+	it("keeps a ref after its file leaves the index", () => {
+		plant("a.ref", []);
+		const text = `Holds carts. See [the file](${ref("a.ref")}).`;
+		saved(service.writeNote(note({ text })));
+		forgetPlain(store, "a.ref");
+
+		expect(service.readNote(BASKET)).toMatchObject({ links: [{ written: ref("a.ref"), state: "broken" }] });
+		expect(saved(service.writeNote(note({ text, expectedRevision: 1 })))).toMatchObject({
+			revision: 2,
+			links: [{ written: ref("a.ref"), state: "broken" }],
+		});
+	});
+
+	it("refuses a new link to a denied file with its reason", async () => {
+		writeFileSync(path.join(dir, "a.ref"), "Cart");
+		plant("a.ref", []);
+		await denyModule("a.ref", false);
+		expect(store.depthOf("a.ref")).not.toBeNull();
+
+		const outcome = service.writeNote(note({ text: `Holds carts. See [the file](${ref("a.ref")}).` }));
+		expect(outcome).toMatchObject({
+			outcome: "refused",
+			reason: refusal.noteRefsWithheld(1),
+			refs: [{ problem: refusal.refModuleWithheld("a.ref") }],
+		});
+	});
+
+	it("reads unreadable guarded files as withheld and refuses new refs", () => {
+		service = new LexiconService(store, new ProviderSupervisor(), sourceReader(dir), dir);
+		writeFileSync(path.join(dir, "credentials.json"), '{"token":"value"}');
+		plant("credentials.json", []);
+		const text = `Holds carts. See [the file](${ref("credentials.json")}).`;
+		saved(service.writeNote(note({ text })));
+		writeFileSync(path.join(dir, "credentials.json"), new Uint8Array([0]));
+
+		expect(service.readNote(BASKET)).toMatchObject({
+			links: [{ written: ref("credentials.json"), state: "withheld" }],
+		});
+		const outcome = service.writeNote(
+			note({ symbolId: CART, text: `Holds carts. See [the file](${ref("credentials.json")}).` }),
+		);
+		expect(outcome).toMatchObject({
+			outcome: "refused",
+			reason: refusal.noteRefsWithheld(1),
+			refs: [{ problem: refusal.refModuleWithheld("credentials.json") }],
+		});
+	});
+
+	it("links an omitted file by its module path", () => {
+		writeFileSync(path.join(dir, "server.key"), "hidden");
+		plant("server.key", []);
+		saved(service.writeNote(note({ text: `Holds carts. See [the file](${ref("server.key")}).` })));
+
+		expect(service.readNote(BASKET)?.links).toEqual([
+			expect.objectContaining({ written: ref("server.key"), kind: "file", state: "ok" }),
+		]);
 	});
 });
 

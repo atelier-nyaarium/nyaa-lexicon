@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { composeSymbolId, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CppProvider } from "../main.js";
 import { parseCppFile } from "../parser.js";
 
@@ -20,8 +22,8 @@ function makeWorkspace(files: Record<string, string>): string {
 }
 
 function wire(root = process.cwd()) {
-	const handlers = handlersFor(new CppProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new CppProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
 }
@@ -413,6 +415,7 @@ describe("C++ structural coverage", () => {
 			"importEdits",
 			"indexRoots",
 			"initialize",
+			"installPolicy",
 			"judgeLoadCycle",
 			"moduleAdmission",
 			"moveEdits",

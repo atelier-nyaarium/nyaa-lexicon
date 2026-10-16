@@ -7,10 +7,11 @@ import { type Clock, systemClock } from "../clock.js";
 import { involves } from "../describeLoadCycle.js";
 import { createDispatch } from "../dispatch.js";
 import type { MethodRequest, MethodResponse } from "../providerPort.js";
-import { LexiconService } from "../service.js";
 import { sourceReader } from "../sourceRead.js";
-import { IndexStore, type ReplaceFileInput } from "../store.js";
+import { type FileWrite, IndexStore } from "../store.js";
+import { writePlain } from "./admissions.js";
 import { fakeSupervisor } from "./fakeProvider.js";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -53,7 +54,7 @@ function file(
 	partner: string | null,
 	declarations: ReturnType<typeof declared>[],
 	reads: ReturnType<typeof crossing>[],
-): ReplaceFileInput {
+): FileWrite {
 	const imports =
 		partner === null
 			? []
@@ -142,7 +143,8 @@ beforeEach(() => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-describe-cycle-"));
 	store = IndexStore.open(path.join(root, "index.sqlite")).store;
 	store.recordProjectFingerprint("fake", "fp");
-	store.replaceFile(
+	writePlain(
+		store,
 		file(
 			"a.fake",
 			"b.fake",
@@ -150,7 +152,8 @@ beforeEach(() => {
 			[crossing("B", 3)],
 		),
 	);
-	store.replaceFile(
+	writePlain(
+		store,
 		file(
 			"b.fake",
 			"a.fake",
@@ -162,7 +165,7 @@ beforeEach(() => {
 			[crossing("A", 5)],
 		),
 	);
-	store.replaceFile(file("c.fake", null, [declared("c.fake", "C", line(1))], []));
+	writePlain(store, file("c.fake", null, [declared("c.fake", "C", line(1))], []));
 });
 
 afterEach(() => {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { FACT_KINDS, parseFactId } from "./factId.js";
 import { ExportSchema, ImportEdgeSchema, LandingSchema, LiteralSchema } from "./project.js";
+import { ValueStatusSchema } from "./secrets.js";
 import { DeclarationSchema, RangeSchema, ReferenceOriginSchema, ReferenceRoleSchema } from "./symbols.js";
 
 ////////////////////////////////
@@ -30,6 +31,7 @@ export const StoredDeclarationSchema = DeclarationSchema.extend({
 	/** Names this row, as find_literals and rename stops name theirs. */
 	factId: z.string(),
 	module: z.string(),
+	valueStatus: ValueStatusSchema.optional(),
 }).meta({ id: "StoredDeclaration" });
 
 export type StoredDeclaration = z.infer<typeof StoredDeclarationSchema>;

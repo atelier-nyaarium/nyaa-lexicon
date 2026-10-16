@@ -453,6 +453,24 @@ describe("reading a store's diagnostics", () => {
 		expect(without).toMatch(/## Reports\n\nNone\./);
 	});
 
+	it("says when the start deferred the index's scrub, and that it ran, but nothing when none was due", () => {
+		const shown = (data: Diagnostics) =>
+			projectDiagnosticsTool(
+				deps([store()], undefined, { diagnostics: () => ({ state: "present", file: FILE, data }) }),
+				{ store: "proj-abc123" },
+			).content[0]?.text ?? "";
+		const reason = "4 MB free, and the store holds 120 MB";
+
+		expect(shown(collection({ store: { scrub: { status: "deferred", major: 20, reason } } }))).toContain(
+			`- Scrub: deferred under major 20 (${reason}); the next daemon start tries again`,
+		);
+		expect(shown(collection({ store: { scrub: { status: "done", major: 20, ms: 4_200 } } }))).toContain(
+			"- Scrub: rewrote freed pages under major 20 in 4200 ms",
+		);
+		expect(shown(collection({ store: { scrub: null } }))).not.toContain("Scrub:");
+		expect(shown(collection())).not.toContain("Scrub:");
+	});
+
 	it("renders an empty collection without inventing rows", () => {
 		const empty = collection({ peaks: [], incidents: [], samples: [] });
 		const body = projectDiagnosticsTool(

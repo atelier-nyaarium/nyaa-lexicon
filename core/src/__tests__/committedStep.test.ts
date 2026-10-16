@@ -17,12 +17,15 @@ import {
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { createDispatch, daemonHandlers, gateOf } from "../dispatch";
 import { lexiconRoot } from "../providers";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import type { Gate } from "../stepRunners";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { type StepOutcome, TransactionManager } from "../transactions";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -65,7 +68,7 @@ class ThrowsAt extends TransactionManager {
 		root: string,
 		private readonly at: "beginStep" | "written",
 	) {
-		super(store, root);
+		super(store, root, testPolicy(root, undefined, store));
 	}
 
 	override beginStep(...args: Parameters<TransactionManager["beginStep"]>): StepOutcome {
@@ -150,8 +153,8 @@ beforeEach(async () => {
 		{ platform: process.platform, env: { XDG_STATE_HOME: root }, home: root },
 	);
 	await supervisor.start({ command: [...launch, "run", FIXTURE], timeoutMs: 30_000 }, root);
-	service = new LexiconService(store, supervisor, sourceReader(root), root);
-	transactions = new TransactionManager(store, root);
+	service = new LexiconService(store, supervisor, sourceReader(root), root, undefined, testPolicy(root));
+	transactions = new TransactionManager(store, root, service.policy);
 	dispatch = createDispatch(service, { transactions });
 	put("a.ref", ORIGINAL);
 	await service.indexFile("a.ref");
@@ -283,8 +286,12 @@ describe("a committed step a client names", () => {
 	it("reads as interrupted to a daemon that did not run it", async () => {
 		transactions.claimStep("s3", "move");
 		expect(transactions.stepOutcome("s3")).toEqual({ status: "planning" });
-		expect(new TransactionManager(store, root).stepOutcome("s3")).toEqual({ status: "interrupted" });
-		expect(new TransactionManager(store, root).cancelStep("s3")).toMatchObject({ cancelled: false });
+		expect(new TransactionManager(store, root, service.policy).stepOutcome("s3")).toEqual({
+			status: "interrupted",
+		});
+		expect(new TransactionManager(store, root, service.policy).cancelStep("s3")).toMatchObject({
+			cancelled: false,
+		});
 	});
 });
 
@@ -404,7 +411,7 @@ describe("putting a committed step back through its reverse", () => {
 
 describe("a committed step the daemon died inside", () => {
 	it("is closed by recovery, with the files put back and the knowledge where it was", async () => {
-		const crashing = new CrashAfterWrite(store, root);
+		const crashing = new CrashAfterWrite(store, root, service.policy);
 		const died = committed(
 			"refactorRenameCommitted",
 			{ symbolId: CART, newName: "Basket", bases: await renameBases(CART, "Basket") },
@@ -415,7 +422,7 @@ describe("a committed step the daemon died inside", () => {
 		expect(read("a.ref")).toBe("export class Basket {}\n");
 
 		// As the daemon starts: recover, then reindex what came back.
-		const recovered = new TransactionManager(store, root).recover();
+		const recovered = new TransactionManager(store, root, service.policy).recover();
 		for (const module of recovered.restored) await service.indexFile(module);
 
 		expect(recovered).toMatchObject({ restored: ["a.ref"], conflicts: [] });

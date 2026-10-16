@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
+import { writePlain } from "./admissions";
 import { type FakeClock, fakeClock } from "./fakeClock";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -29,8 +33,9 @@ beforeEach(() => {
 		fromText(() => null),
 		dir,
 		clock,
+		testPolicy(dir),
 	);
-	store.replaceFile({
+	writePlain(store, {
 		module: "a.ref",
 		contentHash: "h1",
 		declarations: [

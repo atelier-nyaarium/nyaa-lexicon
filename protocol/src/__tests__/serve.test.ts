@@ -92,7 +92,7 @@ describe("a notification", () => {
 	// The seam is additive or it is not shippable: a provider written before it must not change.
 	it("leaves a provider predating it wired to nothing, and still answering", async () => {
 		const answering = { parseFile: () => ({ declarations: [] }) } as unknown as ProviderMethods;
-		const wired = handlersFor(answering);
+		const wired = handlersFor(answering, {});
 		expect(Object.keys(wired)).not.toContain("moduleAdmission");
 		expect(Object.keys(wired)).not.toContain("forgetModule");
 
@@ -155,8 +155,8 @@ describe("a notification", () => {
 		let hooked: ProviderEvents | undefined;
 		const stateless = { connected: (events: ProviderEvents) => (hooked = events) } as unknown as ProviderMethods;
 		const served = [
-			pair(handlersFor({ store } as unknown as StoreProvider<{ diagnostics: [] }, null, never>)),
-			pair(handlersFor(stateless)),
+			pair(handlersFor({ store } as unknown as StoreProvider<{ diagnostics: [] }, null, never>, {})),
+			pair(handlersFor(stateless, {})),
 		];
 		const told = served.map(({ daemon }) => {
 			const heard: unknown[] = [];

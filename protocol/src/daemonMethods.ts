@@ -33,6 +33,7 @@ import {
 	ModuleFactsResultSchema,
 	ModuleProblemsRequestSchema,
 	ModuleProblemsResponseSchema,
+	ModuleSecretModeSchema,
 	ModuleStatusSchema,
 	MostReferencedResultSchema,
 	MoveOutcomeSchema,
@@ -299,6 +300,7 @@ const FindImports = z
 	})
 	.meta({ id: "FindImportsRequest" });
 const AdmittedModules = z.object({ modules: z.array(ModulePath).max(512) }).meta({ id: "AdmittedModulesRequest" });
+const ModuleSecretModes = z.object({ modules: z.array(ModulePath).max(512) }).meta({ id: "ModuleSecretModesRequest" });
 const SymbolSource = z
 	.object({ symbolId: z.string().min(1).optional(), factId: z.string().min(1).optional() })
 	.meta({ id: "SymbolSourceRequest" });
@@ -636,6 +638,14 @@ export const DAEMON_METHODS = {
 	admittedModules: {
 		request: AdmittedModules,
 		response: z.array(AdmittedModuleSchema),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Per-module secret modes. */
+	moduleSecretModes: {
+		request: ModuleSecretModes,
+		response: z.array(ModuleSecretModeSchema),
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",

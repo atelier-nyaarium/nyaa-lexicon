@@ -1,4 +1,5 @@
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { readText } from "@nyaa-lexicon/formats/text";
 import {
 	type ArrangeEditsRequest,
@@ -130,4 +131,4 @@ export class TextProvider implements ProviderMethods {
 }
 
 const provider = new TextProvider();
-if (import.meta.main) runProviderOnStdio(handlersFor(provider));
+if (import.meta.main) runProviderOnStdio(handlersFor(provider, SECRET_READERS));

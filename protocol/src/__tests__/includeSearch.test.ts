@@ -10,6 +10,7 @@ import {
 	includeSearchDirectories,
 } from "../includeSearch.js";
 import { readPolicy } from "../readPolicy.js";
+import { secretWire } from "./secretWire.js";
 
 function workspace(run: (root: string) => void): void {
 	const root = mkdtempSync(path.join(os.tmpdir(), "lexicon-include-search-"));
@@ -46,7 +47,7 @@ describe("include search primitives", () => {
 		workspace((root) => {
 			for (const name of ["include", "src/include", ".git/include", "private/include"])
 				mkdirSync(path.join(root, name), { recursive: true });
-			const policy = readPolicy(root, ["private/**"]);
+			const policy = readPolicy(root, secretWire(["private/**"]));
 
 			expect(discoverIncludeDirectories(root, { anywhere: [".git"] }, policy)).toEqual([
 				path.join(root, "include"),
@@ -98,12 +99,14 @@ describe("include search primitives", () => {
 				expect(
 					findWorkspaceInclude(
 						root,
-						readPolicy(root, ["private/**"]),
+						readPolicy(root, secretWire(["private/**"])),
 						[path.join(root, "private"), path.join(root, "include")],
 						"api.h",
 					),
 				).toEqual({ module: "include/api.h" });
-				expect(findWorkspaceInclude(root, readPolicy(root), [outside], "api.h")).toEqual({ outside: true });
+				expect(findWorkspaceInclude(root, readPolicy(root, secretWire()), [outside], "api.h")).toEqual({
+					outside: true,
+				});
 			} finally {
 				rmSync(outside, { recursive: true, force: true });
 			}

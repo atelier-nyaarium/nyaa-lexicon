@@ -18,6 +18,7 @@ import {
 	type SampleContext,
 	SELF_REPORT,
 	SNAPSHOT_RE,
+	type StoreState,
 } from "./diagnosticFiles.js";
 import type { ProviderExit } from "./supervisor.js";
 import type { Recorded } from "./timings.js";
@@ -91,6 +92,8 @@ export interface CollectorOptions {
 	writeMs?: number;
 	/** The daemon's sparse timings, written with its samples. */
 	timings?: () => Recorded;
+	/** Index state captured with its samples. */
+	store?: () => StoreState;
 }
 
 export interface Collector {
@@ -316,6 +319,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 
 	function current(): Diagnostics {
 		const recorded = options.timings?.();
+		const store = options.store?.();
 		const host = readHost();
 		return {
 			version: 2,
@@ -333,6 +337,7 @@ export function startDiagnostics(options: CollectorOptions): Collector {
 			incidents: [...incidents],
 			samples: [...samples],
 			...(recorded === undefined ? {} : { timings: recorded }),
+			...(store === undefined ? {} : { store }),
 		};
 	}
 

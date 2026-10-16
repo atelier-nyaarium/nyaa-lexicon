@@ -15,12 +15,14 @@ export type FileEvent =
 
 /** What the store is told. Nothing else is a valid outcome, so a caller cannot invent one. */
 export type Invalidation =
-	| { action: "reindex"; module: string; contentHash: string | null; providerId: string }
+	| { action: "reindex"; module: string; contentHash: string | null }
 	| { action: "forget"; module: string }
 	| { action: "ignore"; module: string; reason: string };
 
 export interface InvalidationContext {
 	route: (module: string) => Route;
+	/** Whether the index reads secret keys itself. */
+	readsItself: (module: string) => boolean;
 	/** The hash the index already holds for this module, or null when it holds none. */
 	indexedHash: (module: string) => string | null;
 }
@@ -51,18 +53,15 @@ export function decideInvalidation(event: FileEvent, context: InvalidationContex
 		return { action: "ignore", module: event.module, reason: UNCHANGED_REASON };
 	}
 
-	const route = context.route(event.module);
-	if (!route.owned) {
-		const reason = route.reason === "contested" ? `claimed by ${route.providerIds.join(", ")}` : "unclaimed";
-		return { action: "ignore", module: event.module, reason };
+	if (!context.readsItself(event.module)) {
+		const route = context.route(event.module);
+		if (!route.owned) {
+			const reason = route.reason === "contested" ? `claimed by ${route.providerIds.join(", ")}` : "unclaimed";
+			return { action: "ignore", module: event.module, reason };
+		}
 	}
 
-	return {
-		action: "reindex",
-		module: event.module,
-		contentHash: event.contentHash,
-		providerId: route.providerId,
-	};
+	return { action: "reindex", module: event.module, contentHash: event.contentHash };
 }
 
 /**

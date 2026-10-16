@@ -8,10 +8,11 @@ import { defined } from "@nyaa-lexicon/protocol";
 import type { Clock, TimerHandle } from "./clock.js";
 import type { IndexOutcome } from "./indexer.js";
 import { coalesce, type FileEvent } from "./invalidation.js";
+import type { EvidenceKind } from "./policyEvidence.js";
 import type { LexiconService } from "./service.js";
 import { BatchFailed, lostRetryMs } from "./store.js";
 import type { SweepReport } from "./subjects.js";
-import { readEvent, watchWorkspace } from "./watcher.js";
+import { type EventHasher, readEvent, watchWorkspace } from "./watcher.js";
 
 ////////////////////////////////
 //  Interfaces & Types
@@ -54,7 +55,7 @@ export interface LiveIndex {
 }
 
 export interface HeldBatches {
-	push: (events: FileEvent[]) => void;
+	push: (events: FileEvent[], evidence?: readonly EvidenceKind[]) => void;
 	/** Releases what is held as one batch once `scan` settles; at once with none. Settles as `scan` did. */
 	until: (scan: Promise<void> | undefined) => Promise<void>;
 }
@@ -75,33 +76,38 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 	let timer: TimerHandle | null = null;
 	let retry: TimerHandle | null = null;
 	const lost = new Set<string>();
+	const lostEvidence = new Set<EvidenceKind>();
 	let losses = 0;
+	const hash: EventHasher = (read) => options.service.hashOfRead(read);
 
 	// Paths, not events: each is read from disk at the retry, so a file that came back or went since
 	// is taken as it is now, never as the lost event saw it.
-	const retryLost = (events: FileEvent[]) => {
+	const retryLost = (events: FileEvent[], evidence: readonly EvidenceKind[]) => {
 		for (const event of events) lost.add(event.module);
+		for (const key of evidence) lostEvidence.add(key);
 		if (retry !== null || stopped) return;
 		retry = options.clock.setTimer(() => {
 			retry = null;
-			const again = [...lost].map((module) => readEvent(options.workspaceRoot, module));
+			const again = [...lost].map((module) => readEvent(options.workspaceRoot, module, hash));
+			const evidenceAgain = [...lostEvidence];
 			lost.clear();
-			if (!stopped) queue.push(again);
+			lostEvidence.clear();
+			if (!stopped) queue.push(again, evidenceAgain);
 		}, lostRetryMs(losses++));
 	};
 
 	// Skipped before the gate is even asked for, so a batch that arrives after the daemon was asked
 	// to stop never queues behind its teardown.
-	const apply = async (events: Parameters<LexiconService["applyBatch"]>[0]) => {
+	const apply = async (events: Parameters<LexiconService["applyBatch"]>[0], evidence: readonly EvidenceKind[]) => {
 		if (options.stopping?.() === true) return [];
 		try {
 			const outcomes = await options.service.gate.exclusive(() =>
-				options.service.applyBatch(events, options.stopping),
+				options.service.applyBatch(events, options.stopping, evidence),
 			);
 			losses = 0;
 			return outcomes;
 		} catch (error) {
-			if (error instanceof BatchFailed) retryLost(events);
+			if (error instanceof BatchFailed) retryLost(events, evidence);
 			throw error;
 		}
 	};
@@ -132,7 +138,8 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 	const held = holdBatches(queue.push, stop);
 	const watcher = watchWorkspace({
 		workspaceRoot: options.workspaceRoot,
-		onBatch: held.push,
+		onBatch: (files, evidence) => held.push(files, evidence),
+		hash,
 		// The index's own scope, so an ignored directory's churn is never read.
 		scope: options.service.watchScope(),
 		...defined({ debounceMs: options.debounceMs, maxWaitMs: options.maxWaitMs }),
@@ -169,23 +176,33 @@ export function startLiveIndex(options: LiveIndexOptions): LiveIndex {
 }
 
 /** Holds batches until the scan settles, coalesced per module, then releases them as one. A rejection drops what follows. */
-export function holdBatches(push: (events: FileEvent[]) => void, onRefused: () => void): HeldBatches {
-	let state: { kind: "holding"; events: FileEvent[] } | { kind: "released" } | { kind: "refused" } = {
+export function holdBatches(
+	push: (events: FileEvent[], evidence?: readonly EvidenceKind[]) => void,
+	onRefused: () => void,
+): HeldBatches {
+	let state:
+		| { kind: "holding"; events: FileEvent[]; evidence: Set<EvidenceKind> }
+		| { kind: "released" }
+		| { kind: "refused" } = {
 		kind: "holding",
 		events: [],
+		evidence: new Set(),
 	};
 
 	const release = () => {
 		if (state.kind !== "holding") return;
-		const { events } = state;
+		const { events, evidence } = state;
 		state = { kind: "released" };
-		if (events.length > 0) push(events);
+		if (events.length > 0 || evidence.size > 0) push(events, [...evidence]);
 	};
 
 	return {
-		push: (events) => {
-			if (state.kind === "released") push(events);
-			else if (state.kind === "holding") state.events = coalesce([...state.events, ...events]);
+		push: (events, evidence = []) => {
+			if (state.kind === "released") push(events, evidence);
+			else if (state.kind === "holding") {
+				state.events = coalesce([...state.events, ...events]);
+				for (const key of evidence) state.evidence.add(key);
+			}
 		},
 		until: (scan) => {
 			if (scan === undefined) {
@@ -208,11 +225,11 @@ export function holdBatches(push: (events: FileEvent[]) => void, onRefused: () =
  * through a real filesystem would make a queue's correctness depend on inotify timing.
  */
 export function serializeBatches(
-	apply: (events: FileEvent[]) => Promise<IndexOutcome[]>,
+	apply: (events: FileEvent[], evidence: readonly EvidenceKind[]) => Promise<IndexOutcome[]>,
 	onApplied?: (outcomes: IndexOutcome[]) => void,
 	onError?: (error: unknown) => void,
 ): {
-	push: (events: FileEvent[]) => void;
+	push: (events: FileEvent[], evidence?: readonly EvidenceKind[]) => void;
 	run: (work: () => Promise<void>) => Promise<void>;
 	settled: () => Promise<void>;
 } {
@@ -231,11 +248,11 @@ export function serializeBatches(
 	};
 
 	return {
-		push: (events) =>
+		push: (events, evidence = []) =>
 			void run(async () => {
 				// Applied first, THEN reported. `onApplied?.(await apply(events))` short-circuits its
 				// own argument when nobody is listening, so the index would silently never update.
-				const outcomes = await apply(events);
+				const outcomes = await apply(events, evidence);
 				onApplied?.(outcomes);
 			}),
 		run,

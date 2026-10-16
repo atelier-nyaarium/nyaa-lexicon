@@ -20,11 +20,14 @@ What to write is the `write_note` prompt: what the symbol is for, then only what
 doc comment do not show.
 
 A ref is a link, `[label](project-ref://<workspace-key>/path:Scope:Name)`, or `[label](project-ref://<workspace-key>/path)` for a file, anywhere in
-the text, a mermaid `click` line included; never inside other code. Saving resolves each to a
+the text, a mermaid `click` line included; never inside other code. Saving resolves submitted refs to a
 subject in the same project as the note; use that project's workspace key, shown by `list_projects`.
 Saving refuses a broken, ambiguous or foreign-project ref with candidates and its text offset (`at`).
+Refs already stored by the note remain linked when its text is saved again, even if the target is
+withheld or gone. A submitted ref to a withheld module is refused with that reason. Reads show withheld refs
+as withheld and missing targets as broken. `noteBacklinks` keeps summaries that name withheld files.
 Refs are stored by subject, so a read renders each at its target's current address and a rename needs
-no rewrite. `noteBacklinks` reads them back.
+no rewrite.
 
 Advisories are computed on read: the symbol's source changed since the revision was saved, or a
 ref's target is gone or changed.

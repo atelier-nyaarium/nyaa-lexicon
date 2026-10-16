@@ -1,5 +1,6 @@
 import path from "node:path";
 import { type JsonFacts, readJson } from "@nyaa-lexicon/formats/json";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -185,7 +186,7 @@ export class JsonProvider {
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new JsonProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new JsonProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new JsonProvider(), SECRET_READERS));

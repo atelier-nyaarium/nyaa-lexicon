@@ -11,6 +11,7 @@ import {
 	type StoredImport,
 	type StoredReference,
 } from "../store.js";
+import { writePlain } from "./admissions";
 import { EMPTY_READS } from "./emptyReads";
 import { fakeClock } from "./fakeClock";
 import { edge } from "./importEdges";
@@ -232,7 +233,7 @@ describe("a read context stamps what it read", () => {
 		const dir = mkdtempSync(path.join(tmpdir(), "lexicon-stamp-"));
 		const store = IndexStore.open(path.join(dir, "index.sqlite"), undefined, undefined, fakeClock()).store;
 		const commit = (rows: StoredDeclaration[]) =>
-			store.replaceFile({ module: SHOP, contentHash: "same-bytes", declarations: rows, references: [] });
+			writePlain(store, { module: SHOP, contentHash: "same-bytes", declarations: rows, references: [] });
 		try {
 			commit([inShop[0] as StoredDeclaration]);
 			const context = new ReadContext(store);
@@ -250,7 +251,7 @@ describe("a read context stamps what it read", () => {
 		const dir = mkdtempSync(path.join(tmpdir(), "lexicon-stamp-"));
 		const store = IndexStore.open(path.join(dir, "index.sqlite"), undefined, undefined, fakeClock()).store;
 		const commit = (module: string, rows: StoredDeclaration[]) =>
-			store.replaceFile({ module, contentHash: `${module} ${rows.length}`, declarations: rows, references: [] });
+			writePlain(store, { module, contentHash: `${module} ${rows.length}`, declarations: rows, references: [] });
 		try {
 			commit(SHOP, [inShop[0] as StoredDeclaration]);
 			const loose = new ReadContext(store);

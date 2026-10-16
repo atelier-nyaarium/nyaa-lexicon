@@ -268,6 +268,8 @@ export function fakeSupervisor(options: FakeOptions = {}): ProviderPort {
 		respawnedFrom: (listener) => {
 			respawned = listener;
 		},
+		policyChanged: () => {},
+		policyInvalidatedFrom: () => {},
 		admission: (providerId, given, verdict) => {
 			// Dropped as the supervisor drops it: a verdict for a process that has been replaced.
 			if (given !== incarnation.current) return;

@@ -21,6 +21,7 @@ import {
 	storeKeyFor,
 } from "../projectStores";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 import { fakeClock } from "./fakeClock";
 
 ////////////////////////////////
@@ -58,7 +59,7 @@ function seedOrphan(name: string, seenAt: number): string {
 function indexFileAt(workspaceRoot: string, clock: Clock): void {
 	const paths = workspacePaths(host, workspaceRoot);
 	const indexed = IndexStore.open(paths.index, null, workspaceRoot, clock).store;
-	indexed.replaceFile({ module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
+	writePlain(indexed, { module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
 	indexed.close();
 }
 
@@ -147,7 +148,7 @@ describe("listing what this machine has indexed", () => {
 		const paths = workspacePaths(host, workDir);
 		mkdirSync(paths.dir, { recursive: true });
 		const indexed = IndexStore.open(paths.index, null, workDir).store;
-		indexed.replaceFile({
+		writePlain(indexed, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: [],
@@ -275,7 +276,7 @@ describe("when a workspace was last seen", () => {
 		const key = seedStore(workDir, clock);
 		const indexed = IndexStore.open(workspacePaths(host, workDir).index, null, workDir, clock).store;
 		clock.advance(2 * DAY);
-		indexed.replaceFile({ module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
+		writePlain(indexed, { module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
 		indexed.close();
 
 		const [store] = listProjectStores(NOBODY_ALIVE, host);
@@ -353,7 +354,7 @@ describe("the stamp's own re-check right before it writes", () => {
 		const directory = workspacePaths(host, workDir).dir;
 		const { store } = IndexStore.open(storePaths(directory).index, null, workDir);
 		const attempt = await store.pass(async () => {
-			store.replaceFile({ module: "held.ref", contentHash: "h", declarations: [], references: [] });
+			writePlain(store, { module: "held.ref", contentHash: "h", declarations: [], references: [] });
 			const started = performance.now();
 			const stamped = stampIndex(directory, NOBODY_ALIVE, NOW);
 			return { stamped, waited: performance.now() - started < 500 };
@@ -382,7 +383,7 @@ describe("pruning orphans", () => {
 			undefined,
 			fakeClock(NOW - PRUNE_AFTER_MS - DAY),
 		);
-		unrecorded.store.replaceFile({ module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
+		writePlain(unrecorded.store, { module: "src/a.ts", contentHash: "h1", declarations: [], references: [] });
 		unrecorded.store.close();
 		const served = path.join(workDir, "served");
 		mkdirSync(served);

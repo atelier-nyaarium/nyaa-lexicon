@@ -5,6 +5,7 @@ import path from "node:path";
 import { composeSymbolId, type Declaration } from "@nyaa-lexicon/protocol";
 import { IndexReadModel } from "../indexReads";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 
 let dir: string;
 let store: IndexStore;
@@ -39,7 +40,7 @@ afterEach(() => {
 describe("a symbol search past its page", () => {
 	it("answers a floor of limit + 1, and an exact count once the page holds everything", () => {
 		const names = Array.from({ length: 60 }, (_, index) => `thing${index}`);
-		store.replaceFile({
+		writePlain(store, {
 			module: "src/a.ts",
 			contentHash: "h1",
 			declarations: names.map(declaration),

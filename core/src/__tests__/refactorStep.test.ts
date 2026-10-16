@@ -15,6 +15,7 @@ import { changedWhilePlanned } from "../refusals";
 import type { LexiconService } from "../service";
 import { IndexStore } from "../store";
 import { type RefactorIssue, type StepPhase, TransactionManager } from "../transactions";
+import { testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -112,7 +113,7 @@ function run(parts: Partial<PlannedStep> = {}, hold: StepPolicy = "join"): Promi
 beforeEach(() => {
 	root = mkdtempSync(path.join(tmpdir(), "lexicon-step-"));
 	store = IndexStore.open(path.join(root, ".index.sqlite")).store;
-	transactions = new TransactionManager(store, root);
+	transactions = new TransactionManager(store, root, testPolicy(root, undefined, store));
 	reindexed = [];
 	failReindexOf = null;
 	answers = new Map();
@@ -244,6 +245,31 @@ describe("the workspace's fix command", () => {
 		});
 	});
 
+	it("keeps the existing failure detail for guarded fix output", async () => {
+		const policy = testPolicy(root, { secrets: { "**/src/a.json": { password: "redact" } } });
+		transactions = new TransactionManager(store, root, policy);
+		policy.attach({
+			index: { installScope: () => {} },
+			journal: transactions,
+			providers: { policyChanged: () => {} },
+		});
+		write("src/a.json", '{"public":"before"}\n');
+		transactions.start();
+		fixer = (modules) => {
+			for (const module of modules) write(module, '{"password":"FIX_OUTPUT_SECRET_VALUE"}\n');
+			return { ran: true, failed: "FIX_OUTPUT_SECRET_VALUE" };
+		};
+		const outcome = await run({
+			modules: ["src/a.json"],
+			writes: [over("src/a.json", '{"public":"before"}\n', '{"public":"after"}\n')],
+			reindex: ["src/a.json"],
+		});
+
+		const details = outcome.issues.filter((issue) => issue.kind === "FixFailed").map((issue) => issue.detail);
+		expect(details).toEqual(["the fix command failed"]);
+		expect(store.heldImage("src/a.json", hashContent('{"password":"FIX_OUTPUT_SECRET_VALUE"}\n'))).toBeNull();
+	});
+
 	it("names a written file the fix deleted, and keeps the planned after-image", async () => {
 		transactions.start();
 		fixer = (modules) => {
@@ -339,7 +365,7 @@ describe("the one failure policy every operation now shares", () => {
 				if (phase === "written") write("src/a.ts", "saved by the editor\n");
 				super.completeStep(stepNo, phase);
 			}
-		})(store, root);
+		})(store, root, testPolicy(root, undefined, store));
 		transactions.start();
 		const outcome = await run();
 
@@ -432,7 +458,7 @@ describe("a step that opens its own transaction when none is open", () => {
 			override beginStep(): never {
 				throw new Error("EACCES");
 			}
-		})(store, root);
+		})(store, root, testPolicy(root, undefined, store));
 		const outcome = await run({}, "joinOrOwn");
 
 		expect(outcome.ok).toBe(false);

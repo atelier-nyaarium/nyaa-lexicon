@@ -13,6 +13,9 @@ export const ENTRYPOINTS = [
 	{ source: path.join("adapters", "lsp", "src", "main.ts"), out: "lsp.js" },
 ];
 
+/** Workers run inside the parent without runtime guards. */
+export const WORKERS = [{ source: path.join("core", "src", "statementWorker.ts"), out: "statementWorker.js" }];
+
 export const SMOKE_FAILURE = "failed to start";
 
 interface ReleaseTimerHandle {

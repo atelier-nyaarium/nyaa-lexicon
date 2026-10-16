@@ -21,6 +21,11 @@ export async function gitAdd(root: string, ...paths: string[]): Promise<void> {
 	await run("git", ["add", ...paths], { cwd: root });
 }
 
+/** Removes index entries only. */
+export async function gitRmCached(root: string, ...paths: string[]): Promise<void> {
+	await run("git", ["rm", "--cached", "--", ...paths], { cwd: root });
+}
+
 /** Commits what is staged at `root`, with a fixed identity so no host's git config is needed. */
 export async function gitCommit(root: string, message: string): Promise<void> {
 	await run(
@@ -30,6 +35,11 @@ export async function gitCommit(root: string, message: string): Promise<void> {
 			cwd: root,
 		},
 	);
+}
+
+/** Adds a detached worktree. */
+export async function gitWorktreeAdd(root: string, at: string): Promise<void> {
+	await run("git", ["worktree", "add", "--detach", "-q", at, "HEAD"], { cwd: root });
 }
 
 /**

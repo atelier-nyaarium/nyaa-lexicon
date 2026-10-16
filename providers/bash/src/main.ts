@@ -2,6 +2,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -205,13 +206,18 @@ export class BashProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string, scope?: string[]): { model: ProjectModel; project: null } {
+	discoverProject(
+		workspaceRoot: string,
+		_previous: null | undefined,
+		scope?: string[],
+	): { model: ProjectModel; project: null } {
 		return {
 			model: discoverByWalk(workspaceRoot, {
 				extensions: EXTENSIONS,
 				filenames: FILENAMES,
 				shebangs: SHEBANGS,
 				excludedDirectories: EXCLUDED_DIRECTORIES,
+				policy: this.store.policy,
 				scope,
 			}),
 			project: null,
@@ -356,7 +362,7 @@ export class BashProvider {
 //  Main
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new BashProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new BashProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new BashProvider(), SECRET_READERS));

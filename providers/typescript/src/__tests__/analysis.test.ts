@@ -8,6 +8,7 @@ import {
 	type ProjectModel,
 	parseSymbolId,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import type { TypeScriptAnalyzer } from "../analyzer.js";
 import { TypeScriptProvider, warmingHandlers } from "../main.js";
 import { harness, workspace } from "./harness.js";
@@ -268,7 +269,7 @@ describe("checker-backed analysis", () => {
 				// A turn later, when a written notice has gone out.
 				setTimeout(() => record(`${phase} out`), 0);
 			};
-			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 			handlers.discoverProject({ workspaceRoot: root });
 			// The warm starts after discovery returns, so a fake build set now is the one it runs.
 			let built = false;
@@ -333,7 +334,7 @@ describe("checker-backed analysis", () => {
 		const handlers = warmingHandlers(provider);
 		const phases: [string, boolean][] = [];
 		provider.store.announcePhase = (phase) => phases.push([phase, provider.store.project.analyzer?.cold() ?? true]);
-		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 		handlers.discoverProject({ workspaceRoot: root });
 		const facts = await handlers.parseFile({ module: "a.ts", contentHash: "a", text });
 
@@ -631,6 +632,31 @@ describe("checker-backed analysis", () => {
 			provenance: "declared",
 		});
 		expect(provider.programStats()).toMatchObject({ programGenerations: 2 });
+		provider.shutdown();
+	});
+
+	it("closes a newly secret module without restarting", () => {
+		const secret = 'export const token = "STALE_POLICY_SECRET";\n';
+		const use = 'import { token } from "./secret"; export const exposed = token;\n';
+		const root = workspace({
+			"tsconfig.json": JSON.stringify({ include: ["*.ts"] }),
+			"secret.ts": secret,
+			"use.ts": use,
+		});
+		const provider = harness();
+		provider.initialize(root);
+		provider.parseFile({ module: "secret.ts", contentHash: "secret", text: secret });
+		const facts = provider.parseFile({ module: "use.ts", contentHash: "use", text: use });
+		const exposed = facts.declarations.find(({ name }) => name === "exposed");
+		const before = provider.typeOf({ symbolId: exposed?.symbolId ?? "" });
+
+		expect(JSON.stringify(before)).toContain("STALE_POLICY_SECRET");
+
+		const installed = provider.handlers.installPolicy({ policy: secretWire(["secret.ts"]) });
+		const after = provider.typeOf({ symbolId: exposed?.symbolId ?? "" });
+
+		expect(JSON.stringify(after)).not.toContain("STALE_POLICY_SECRET");
+		expect(installed.changed).toContain("secret.ts");
 		provider.shutdown();
 	});
 

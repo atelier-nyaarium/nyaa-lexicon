@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { CONFORMANCE_POLICY } from "../conformance/policy.js";
 import { DAEMON_METHODS } from "../daemonMethods";
 import { isProviderMethod, METHOD_SCHEMAS, PROVIDER_METHODS } from "../methods";
 import { BindingSchema, TypeInfoSchema } from "../values";
@@ -8,6 +9,22 @@ import { checkCompatibility, isCompatibleProtocol, PROTOCOL_VERSION, parseVersio
 //  Tests
 
 describe("method table", () => {
+	it("requires the full policy wire on initialize and installPolicy", () => {
+		const request = { workspaceRoot: "/workspace", protocolVersion: PROTOCOL_VERSION, policy: CONFORMANCE_POLICY };
+
+		expect(METHOD_SCHEMAS.initialize.request.parse(request)).toEqual(request);
+		expect(
+			METHOD_SCHEMAS.initialize.request.safeParse({
+				workspaceRoot: request.workspaceRoot,
+				protocolVersion: request.protocolVersion,
+				deny: ["private/**"],
+			}).success,
+		).toBe(false);
+		expect(METHOD_SCHEMAS.installPolicy.request.parse({ policy: CONFORMANCE_POLICY })).toEqual({
+			policy: CONFORMANCE_POLICY,
+		});
+	});
+
 	it("names arrange declarations and comments with exactly one id", () => {
 		const request = DAEMON_METHODS.previewArrange.request;
 		const base = { toModule: "src/target.ts", placements: [{ symbolId: "symbol" }] };
@@ -41,6 +58,14 @@ describe("method table", () => {
 			}),
 		).toEqual({ drifted: [{ module: "src/file.ts", contentHash: null }] });
 		expect(DAEMON_METHODS.refactorRevert.request.safeParse({ drifted: ["src/file.ts"] }).success).toBe(false);
+	});
+
+	it("caps and normalizes module secret mode requests", () => {
+		const request = DAEMON_METHODS.moduleSecretModes.request;
+		const tooMany = Array.from({ length: 513 }, (_, index) => `file-${index}.json`);
+		expect(request.parse({ modules: ["./src/./secrets.yaml"] })).toEqual({ modules: ["src/secrets.yaml"] });
+		expect(request.safeParse({ modules: tooMany.slice(0, 512) }).success).toBe(true);
+		expect(request.safeParse({ modules: tooMany }).success).toBe(false);
 	});
 
 	it("validates editor write notes", () => {
@@ -276,6 +301,10 @@ describe("uncertainty is representable, certainty-without-evidence is not", () =
 	it("accepts a provider that answers unknown with a reason", () => {
 		const unknown = { status: "unknown", reason: "NotImplemented" } as const;
 		expect(TypeInfoSchema.parse(unknown)).toEqual(unknown);
+		expect(BindingSchema.parse({ ...unknown, detail: "details withheld" })).toEqual({
+			...unknown,
+			detail: "details withheld",
+		});
 	});
 
 	it("refuses an unknown with no reason", () => {

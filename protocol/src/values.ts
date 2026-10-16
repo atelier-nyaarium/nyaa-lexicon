@@ -76,6 +76,11 @@ export const BindingSchema = z
 			/** Prose for a human; the reason is the machine-readable part. */
 			detail: z.string().optional(),
 		}),
+		z.object({
+			status: z.literal("unknown"),
+			reason: UnknownReasonSchema,
+			detail: z.string().optional(),
+		}),
 	])
 	.meta({ id: "Binding" });
 

@@ -125,8 +125,8 @@ const LOCKFILES = ["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "p
 export function readableSystem(policy: ReadPolicy): ts.System {
 	return {
 		...ts.sys,
-		readFile: (fileName, encoding) => (policy.readable(fileName) ? ts.sys.readFile(fileName, encoding) : undefined),
-		fileExists: (fileName) => policy.readable(fileName) && ts.sys.fileExists(fileName),
+		readFile: (fileName) => policy.readText(fileName),
+		fileExists: (fileName) => policy.exists(fileName),
 	};
 }
 

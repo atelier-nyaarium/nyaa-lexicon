@@ -73,49 +73,110 @@ asks it where the install record's release now is.
 
 ## Storage
 
-SQLite in WAL mode: many readers, the daemon as sole writer. Reverse lookup is the reason. Nothing
-at a definition records who uses it, so "who calls this" is a search in any design that does not
-keep a dual inverted index, and an indexed read in one that does.
+SQLite uses WAL mode for concurrent readers and one daemon writer. Definitions do not record their
+callers, so reverse lookup requires a search unless a dual inverted index is maintained.
 
-Two rules hold the design together:
+Storage follows two rules:
 
-- **The database is a fact store, never the algorithm.** SQL fetches candidate rows by index.
-  Traversal, cycle finding and ranking are application code. No recursive CTEs.
-- **The index is always derivable.** A schema mismatch or an unreadable file is a rebuild, never
-  data loss, so no migration path has to be carried forever. The one exception is the knowledge
-  layer: notes and stated relations cannot be regenerated from source, so they are salvaged across
-  a rebuild with their subjects and links. Stated relation proposals are preserved; computed relations
-  are never stored, and relation feedback and discovery's tables start empty. Every salvaged row is
-  normalized to a closed value and placed
-  through the identity owner's one placement method; a row it cannot read or place is a count in
-  the daemon log, never a merge. A new schema's first open copies the newest readable older index
-  forward (`core/src/indexSeed.ts`) and migrates the copy.
+- **SQL fetches indexed candidates.** Application code handles traversal, cycle finding and ranking.
+  Recursive CTEs are excluded.
+- **The index is derivable.** Schema mismatches and unreadable files trigger a rebuild. Notes and
+  stated relations cannot be regenerated, so rebuilds salvage their subjects and links. Stated
+  proposals persist; computed relations do not. Relation feedback and discovery tables start empty.
+  Each salvaged row is normalized to a closed value and placed through the identity owner's single
+  placement method. Unreadable or unplaceable rows are counted in the daemon log, never merged. A
+  schema's first open seeds the index from the newest readable older index via `core/src/indexSeed.ts`;
+  the older index remains read-only.
 
-**What the index admitted is published, after it is written.** Once the core has asked for a parse,
-any failure but a provider outage refuses it: a thrown request, an `error` diagnostic, `admitFacts`
-reading an id the store cannot spell, or a store fault under the commit. Each leaves the file's
-previous facts standing, so a provider filling its cross-file state from its own answer holds facts
-the store does not, and binds names to symbols the store has never had. `core/src/indexer.ts` is the one publisher, through
-`ProviderPort.admission`, and it publishes after `store.replaceFile` returns on the commit road and
-after the failure is recorded on each refusal road, so a provider is never told a decision the index
-has not taken. `admission-publish-residue.test.ts` holds the single owner and every ordering.
+**Purge clears deleted bytes.** Connections zero freed pages, but existing files
+can contain unzeroed pages. `storePurge.ts` runs `VACUUM` once per major version on first open. It
+truncates the WAL, then records the major in store metadata; a crash before that record repeats the
+rewrite. The rewrite is deferred if either the store volume or SQLite temp volume has less free space
+than the store size. The temp volume is the first usable of `SQLITE_TMPDIR`, `TMPDIR`, `/var/tmp`,
+`/usr/tmp`, and `/tmp`; capacity is counted twice when both paths share a volume. A file held by
+another connection also defers the rewrite to the next open, and diagnostics report the reason. Files
+created during open, including rebuilt and seeded files, record the major immediately. Older-schema
+sibling indexes are not deleted.
 
-The verdict is whole-file because admission is: `admitFacts` throws on the first id it cannot read
-and the store writes nothing, so there is no surviving subset to name. It names the provider that
-ANSWERED the parse rather than whoever owns the module when it is published, unlike a forget, which
-every provider hears: ownership can move between the two, and a newcomer has nothing staged to
-settle. A provider outage publishes nothing, since the index keeps what it had and there is nobody
-to tell. A parse the core never asked for publishes nothing either, which is why a file made
-readable again with no watcher event stays out until something parses it.
+**Rebuilds stage a complete store file.** In-place drops zero freed pages. `createStoreFile` in
+`core/src/store.ts` creates a store from salvaged knowledge for
+both rebuilds and seeds. It writes the schema beside the old file as `<index>.seeding`, restores
+notes, relations and the refactor journal in one commit ending at the schema version, then closes the
+file cleanly. `installStaged` in `storePurge.ts` truncates the old connection's WAL, closes it,
+removes its `-wal`, `-shm` and `-journal` files, then renames the staged file over the old file. A
+crash before rename leaves the old store whole because its WAL is truncated; a crash after rename
+leaves the staged store. The next open removes an abandoned `.seeding` file. If another connection
+holds a frame of the old file, replacement fails and the next start retries. The staged file records
+the current major and needs no rewrite.
+
+The daemon runs the rewrite in a worker with its own connection (`core/src/statementWorker.ts`,
+bundled as `dist/statementWorker.js`) after claiming its lock and socket but before opening the
+store. While it runs, requests receive `starting` with the current step and retry guidance, without
+using the startup allowance. Daemon exit terminates the worker and rolls back the rewrite. Rebuilds
+run during open and need no rewrite because staged files record the current major. `StorePurge` owns
+the statement and marker; the worker executes the statement it receives.
+
+**The index publishes admission after recording it.** Once core requests a parse, any failure other
+than provider outage refuses it: a thrown request, an `error` diagnostic, an unreadable fact id, or a
+store fault during commit. Refusal preserves the file's previous facts. A provider that fills
+cross-file state from its own answer can retain facts absent from the store and bind names to unknown
+symbols. `core/src/indexer.ts` publishes through `ProviderPort.admission` after `store.replaceFile`
+commits or the refusal is recorded. `admission-publish-residue.test.ts` verifies ownership and order.
+
+Admission is whole-file: `admitFacts` throws on the first unreadable id and the store writes nothing,
+so no partial result survives. The verdict names the provider that answered, not the module's owner
+at publication time. Admission goes only to that provider; forgets go to all providers. Ownership
+can change, and the destination owner has nothing staged. Provider outages publish nothing because
+the index keeps its previous facts and no provider can receive the notice. Unrequested parses publish
+nothing. Restored files remain out of the index until parsed if no watcher event arrives.
 `protocol/src/moduleStore.ts` owns provider state. See `docs/provider-protocol.md` for its
 contract.
 
-A `files` row also carries git's word on whether the file is generated, three-valued: `yes`, `no`,
-or `unknown` with the reason git could not say. The indexer asks git once per admission for every
-candidate and once per import-closure round for what it reached past admission, writes the verdict
-with the file's facts, and refreshes every stored row from the map before it prunes, so a file a
-pass left unread carries the attributes as they stand. Reachability reads only a clean `yes`; the
-knowledge layer's seeded fallback reads the rest (`docs/knowledge-layer.md`).
+`files` rows record Git's generated status as `yes`, `no`, or `unknown` with a reason. The indexer
+checks every candidate at admission and imported files beyond admission once per import-closure
+round. It stores status with facts, then refreshes rows before pruning. Unread files retain their
+current status. Reachability reads only `yes`; the knowledge layer's seeded fallback reads the other
+values (`docs/knowledge-layer.md`).
+
+## Secret policy
+
+`SecretPolicySnapshot` combines configured rules, Git tracking and contained symlink aliases. It
+classifies files as `plain`, `keys`, `masked`, `omit` or `withheld`. `plain` passes content through.
+`keys` stores declarations and `set` or `empty` status when a reader exists. `masked` hides matched
+values, omits selected subtrees and filters sensitive facts. `omit` keeps an indexed file with no
+facts and a refused-view hash. It remains linkable, but no content is revealed or sent to a provider.
+`withheld` stores no facts and a generic failure for sensitive non-text files, reader depth or size
+overflow, or key-path rules without a reader.
+
+`assessSecretText` in `protocol/src/secretDecision.ts` decides each text. Readers in
+`formats/src/secret/` parse dotenv, JSON and YAML; `verifySecretSyntax` checks that every byte is
+claimed or inert. The decision applies name matching, document checks, hazard scope and masking. If
+readers cannot fully decide a text, the union of their parses determines masking while retaining key
+names. The config schema,
+decision and judge share the matcher grammar from `protocol/src/secretMatchers.ts`.
+`docs/provider-protocol.md` defines the rules.
+
+`core/src/sourceRead.ts` seals each read to its module and holds no text. Only the snapshot opens it
+into a `plain`, `masked` or `refused` view. A masked view blanks hidden values and records allowed
+slices. Guarded-file hashes use the view hash shared by the index, drift check and watcher; raw hashes
+are unavailable.
+
+The indexer gets one `ModuleVerdict` per parse and follows its route. `provider` sends source text to
+its provider, then filters returned facts. `reader` stores whole-file secret keys without provider
+ownership. `omit` keeps an indexed row without facts or revealed content. `none` covers missing or
+unreadable text. The verdict supplies failure messages: the original error for plain files and fixed
+text for other routes. The store accepts only verdict-supplied failures.
+
+Policy reconciliation purges rows with obsolete stamps. Plain files use a null stamp; non-plain
+stamps hash the rule and `SECRET_SYNTAX_VERSION`. Increment this version when reader decisions
+change. At startup, rows with older versions are forgotten before parsing, including JSON and YAML
+rows. Forget operations commit in batches with one WAL truncate per batch; the journal reconciles
+once after the final batch. Files reparse on their next scan. Refactor snapshots exclude files the
+effective policy marks sensitive. Journal checks use current path text, regardless of image-held bytes.
+
+Before dispatch answers, it stats evidence subscriptions. If one moved, policy refresh and index
+reconciliation run under the exclusive gate first. Source content is not restatted per query. A
+file edited into a secret can still be answered until its watcher event is processed.
 
 ## Reads
 
@@ -183,45 +244,39 @@ the class rather than an observed gap.
 
 ## Diagnostics
 
-A daemon that dies of its heap leaves nothing to read on its own. Two owners change that.
+The diagnostics collection and reports remain readable after daemon exit.
 
-- **`procfs.ts`**, in `client/` since a client judges a lock holder's liveness by the same read, is
-  the only reader of `/proc`: a process's identity, its resident size and high-water mark, the
-  host's memory. Null where there is no procfs, never a guess, and a residue test keeps the mount
-  out of every other module in the client, core and the adapters.
-- **`diagnostics.ts`** owns the collection in `diagnostics.json` beside the index: a ring of
-  samples (the daemon's heap, every provider's RSS and high-water, what the daemon was doing), a
-  ring of incidents (a provider death with its signal and last size), and a peak per process. It
-  is rewritten whole, temp file then rename, on a rate limit and immediately on an incident or at
-  shutdown, so it never grows with uptime and a reader never meets half a file.
+- **`procfs.ts`** is the only `/proc` reader. Clients use it to judge lock-holder liveness; it
+  returns process identity, resident size, high-water mark and host memory, or `null` without
+  procfs. Residue tests forbid `/proc` reads elsewhere in client, core and adapters.
+- **`diagnostics.ts`** owns `diagnostics.json` beside the index. It stores sample rings (daemon heap
+  and activity, provider RSS and high-water), incident rings (provider deaths, signal and last size),
+  and one peak per process. It writes through a temporary file and rename. Sample writes are
+  rate-limited; incidents and shutdown trigger immediate writes. The collection stays bounded and
+  readers see a complete file.
+  It records whether startup deferred the index scrub or completed it.
 
-The daemon watches its own resident size against the host's memory as procfs states it: the
-runtime states no heap limit, and the OS kills at exhaustion. Crossing the high-water mark writes
-one compact JSON to `reports/`, the sample with the resident size and the host's total, latched
-until it falls back below the low-water mark; a limit set below the host's, a cgroup's, is not
-seen. A heap snapshot beside it is opt-in,
-`LEXICON_HEAP_SNAPSHOT=1`, at gigabytes each. A provider's death leaves an incident in the
-collection with its signal and last size; nothing is asked of a provider while it lives. `reports/`
-is created owner-only and pruned to the newest eight reports and two heap snapshots. The MCP tool
-`project_diagnostics` reads the collection and the reports from disk by store key, no daemon needed.
+The daemon compares resident size with host memory from procfs. The runtime sets no heap limit, so
+the OS may kill it at exhaustion. Crossing the high-water mark writes a compact JSON report to
+`reports/` with resident size and host total. The report trigger stays latched until size falls below
+the low-water mark. Cgroup limits below host memory are not detected. Heap snapshots are opt-in via
+`LEXICON_HEAP_SNAPSHOT=1` and can use gigabytes. Provider deaths add incidents with signal and last
+size; live providers are not queried. The owner-only `reports/` directory keeps the newest eight
+reports and two heap snapshots. MCP tool `project_diagnostics` reads collection and reports by store
+key without a daemon.
 
-The supervisor absorbs writes to a dead child. `vscode-jsonrpc` rethrows a failed pipe write into
-a promise nobody holds, an unhandled rejection the daemon would die of. The death reaches the
-caller through the provider's request queue instead, which fails the request in flight and every
-one waiting with the same typed error. Nothing per provider is raced against a request: a race
-against a promise that lives as long as the provider keeps one reaction per request until the
-provider dies, and `core/src/deadline.ts` is the one module that races at all, minting its own
-second arm so nothing raced outlives the call.
+The supervisor absorbs writes to dead children because `vscode-jsonrpc` can surface failed pipe
+writes as unhandled rejections. The provider request queue reports child death as one typed error to
+the in-flight caller and all queued callers. Requests are not raced against provider lifetime; such
+races retain per-request reactions until death. `core/src/deadline.ts` owns the only race and adds a
+second arm that expires with the call.
 
-A git call, the python provider's import probe and the runtime version probe all run through
-`protocol/src/boundedChild.ts`'s `runBounded`, the one owner of a bounded, reaped child process:
-spawned `detached`, bounded by a timeout that kills the whole process group and reaps it, since a
-shell script's own forked helper can inherit the child's stdout pipe and outlive a plain
-`child.kill`. The owner tracks every process group its own process spawned and kills what remains
-on `process.on("exit", ...)`, registered once in the module, plus the daemon's own explicit
-shutdown step for ordered cleanup; a SIGKILL of the owning process itself cannot be covered. The
-provider supervisor (`core/src/supervisor.ts`) spawns long-lived providers instead of a single
-bounded run, and is the one exception left outside the owner.
+Git calls, the Python import probe and the runtime version probe use `runBounded` in
+`protocol/src/boundedChild.ts`. It starts detached process groups, kills the group on timeout and
+reaps it. This handles helpers that inherit stdout and outlive `child.kill()`. The owner tracks each
+group and kills remaining children on `process.on("exit", ...)`, registered once, plus an explicit
+daemon shutdown step for ordered cleanup. It cannot handle `SIGKILL` of the owner. The provider
+supervisor (`core/src/supervisor.ts`) is outside this owner because it starts long-lived processes.
 
 ## Where a comment gets its meaning
 
@@ -570,22 +625,22 @@ path with its known state. Its other wire fields are described in `docs/daemon-p
 
 ### Fix on write
 
-`lexicon.json` may name a `fix` command as an argument list, such as
-`["bunx", "biome", "check", "--write"]`. Every journaled step runs it once its writes land, with
-no shell, the written modules appended as `./path`, from the workspace root, under a timeout. The
-step then records each written file as it stands as that step's output hash, before
-`completeStep`, so Undo and the settlement ledger treat the fixed text as the step's own. A run that
-does not exit cleanly adds a `FixFailed` issue and keeps the step. So does a written file the run
-deleted, which keeps its planned image. A crash during the run leaves files matching neither image,
-which recovery reports as a conflict.
+`lexicon.json` may specify `fix` as an argument list, such as
+`["bunx", "biome", "check", "--write"]`. Each journaled step runs it after writes land, without a
+shell, from the workspace root, under a timeout. Written modules are appended as `./path`. Before
+`completeStep`, each written file's post-fix hash becomes the step's output; Undo and the settlement
+ledger use that text. An unclean exit adds a `FixFailed` issue and preserves the step. Deleting a
+written file also adds `FixFailed` and preserves its planned image. A crash during the command may
+leave files matching neither image; recovery reports a conflict.
 
-The command must write only the files it is given; the journal does not track others. On Windows
-it must be an executable, not a `.cmd` shim, since nothing runs through a shell. An editor save
-that lands while the command runs becomes part of the step's output.
+The command may write only the supplied files; the journal ignores other paths. On Windows, it must
+be an executable, not a `.cmd` shim, because no shell runs it. Editor saves during the command become
+part of the step output.
 
-`fixText` formats text before it is written: an argument list run with no shell from the workspace
-root, `{module}` in an argument replaced by `./path`, the text on stdin and the result on stdout,
-under the same bounds. An arrangement's preview runs it, so the step writes the previewed bytes.
+`fixText` formats text before writing. It runs an argument list without a shell from the workspace
+root, replaces `{module}` with `./path`, sends text on stdin and reads stdout under the same bounds.
+An arrangement preview runs the formatter, so the step writes the previewed bytes. Both commands use
+the config adopted by the index. `lexicon.json` edits apply in the next watcher batch or scan.
 
 ### Revisions and drift
 

@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { fakeSupervisor } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService, testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -31,7 +31,7 @@ beforeEach(async () => {
 	put("gen/types.fake", "export class Types {}\n");
 	put("stray.fake", "export class Stray {}\n");
 	put("vault.fake", "export class Vault {}\n");
-	service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root);
+	service = new LexiconService(store, fakeSupervisor(), sourceReader(root), root, undefined, testPolicy(root));
 });
 
 afterEach(() => {

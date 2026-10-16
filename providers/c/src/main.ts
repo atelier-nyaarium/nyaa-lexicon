@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { IncludeSearch } from "@nyaa-lexicon/formats/compile-commands";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -427,7 +428,7 @@ export class CProvider {
 //  Functions & Helpers
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new CProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
 
-if (import.meta.main) runProviderOnStdio(handlersFor(new CProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new CProvider(), SECRET_READERS));

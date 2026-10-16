@@ -3,12 +3,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { moduleOutsideWorkspace } from "../refusals";
-import { LexiconService } from "../service";
 import { fromText, OUTSIDE_WORKSPACE_REASON, type SourceReader, sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { readEvent } from "../watcher";
 import { fakeSupervisor } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -70,9 +70,9 @@ describe("a link whose real path leaves the workspace", () => {
 		const [inside] = service.findByName("Inside");
 		link(path.join(outside, "secret.fake"), "a.fake");
 
-		const source = service.symbolSource({ symbolId: inside?.symbolId as string });
+		const source = await service.symbolSource({ symbolId: inside?.symbolId as string });
 		expect(() => service.writeModule("a.fake", "export class Written {}\n", null)).toThrow();
-		const outcomes = await service.applyBatch([readEvent(root, "a.fake")]);
+		const outcomes = await service.applyBatch([readEvent(root, "a.fake", (read) => service.hashOfRead(read))]);
 
 		expect({
 			source,

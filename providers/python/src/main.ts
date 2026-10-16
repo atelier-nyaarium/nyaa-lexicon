@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	asyncModuleStore,
@@ -271,7 +272,11 @@ export class PythonProvider {
 		};
 	}
 
-	discoverProject(workspaceRoot: string, scope?: string[]): { model: ProjectModel; project: null } {
+	discoverProject(
+		workspaceRoot: string,
+		_previous: null | undefined,
+		scope?: string[],
+	): { model: ProjectModel; project: null } {
 		const root = path.resolve(workspaceRoot);
 		try {
 			if (!existsSync(root)) {
@@ -573,7 +578,7 @@ function unknownType(reason: UnknownReason, detail: string): TypeInfo {
 // contract is written sync-only for every other language, and the wire dispatch loop awaits
 // whatever a handler returns regardless of this declared type.
 export function wireHandlers(provider: PythonProvider): ReturnType<typeof handlersFor> {
-	return handlersFor(provider);
+	return handlersFor(provider, SECRET_READERS);
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new PythonProvider()): void {

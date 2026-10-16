@@ -2,29 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-	connect,
-	DaemonError,
-	type PlatformEnv,
-	type Session,
-	workspacePaths,
-	writeInstallRecord,
-} from "@nyaa-lexicon/client";
+import { connect, DaemonError, type PlatformEnv, type Session, workspacePaths } from "@nyaa-lexicon/client";
 import { rejection, rethrown } from "@nyaa-lexicon/protocol/rejection";
 import { type DaemonOptions, type RunningDaemon, startDaemon } from "../daemon";
-import { lexiconRoot } from "../providers";
 
 ////////////////////////////////
 //  Helpers
 
 const STATS = { hits: 0, misses: 0, entries: 0, generation: 0 };
-
-// The install IS this checkout, so the lock's bundle stamp and the install's come from one file;
-// a copy with a matched mtime compared unequal on one filesystem and read as a rebuilt daemon.
-const INSTALL = lexiconRoot();
-const whenBuilt = ["daemon.js", "version.json"].every((file) => existsSync(path.join(INSTALL, "dist", file)))
-	? it
-	: it.skip;
 
 let state: string;
 let workspace: string;
@@ -50,7 +35,7 @@ beforeEach(() => {
 	state = mkdtempSync(path.join(tmpdir(), "lexicon-connect-state-"));
 	workspace = mkdtempSync(path.join(tmpdir(), "lexicon-connect-work-"));
 	host = { platform: "linux", env: { XDG_STATE_HOME: state }, home: state };
-	// connect() reads the live host, so the record and the lock land in this test's state root.
+	// Keep daemon locks isolated.
 	previousStateHome = process.env["XDG_STATE_HOME"];
 	process.env["XDG_STATE_HOME"] = state;
 });
@@ -68,8 +53,7 @@ afterEach(async () => {
 //  Tests
 
 describe("a session over a daemon this process started", () => {
-	whenBuilt("reaches it through the record and answers through the facade", async () => {
-		writeInstallRecord(INSTALL, host);
+	it("reaches it through the lock and answers through the facade", async () => {
 		const running = await launch({ handle: async (method) => (method === "cacheStats" ? STATS : null) });
 
 		const session = await open({ workspaceRoot: workspace });
@@ -78,8 +62,7 @@ describe("a session over a daemon this process started", () => {
 		expect(session.lock().token).toBe(running.lock.token);
 	});
 
-	whenBuilt("gives up on a starting daemon at zero patience, naming what it waited on", async () => {
-		writeInstallRecord(INSTALL, host);
+	it("gives up on a starting daemon at zero patience, naming what it waited on", async () => {
 		await launch({
 			early: () => ({ kind: "starting", retryInMs: 60_000, waitingFor: "the language providers to start" }),
 		});
@@ -91,8 +74,7 @@ describe("a session over a daemon this process started", () => {
 		expect(await rejection(failed)).toMatchObject({ waitingFor: "the language providers to start" });
 	});
 
-	whenBuilt("stops it on request and returns once the lock is gone", async () => {
-		writeInstallRecord(INSTALL, host);
+	it("stops it on request and returns once the lock is gone", async () => {
 		// Answered before stopping, as the daemon program does, or the caller reads its own success
 		// as a dropped connection.
 		await launch({
@@ -111,8 +93,7 @@ describe("a session over a daemon this process started", () => {
 		expect(existsSync(lockFile)).toBe(false);
 	});
 
-	whenBuilt("stops only the daemon that refused, never the one that replaced it", async () => {
-		writeInstallRecord(INSTALL, host);
+	it("stops only the daemon that refused, never the one that replaced it", async () => {
 		await launch({ handle: async () => Promise.reject(new Error("warmup failed: provider outage")) });
 		const session = await open({ workspaceRoot: workspace });
 		const refused: unknown = await session.indexStatus({}).catch((error: unknown) => error);
@@ -127,8 +108,7 @@ describe("a session over a daemon this process started", () => {
 });
 
 describe("a session that may not start a daemon", () => {
-	whenBuilt("fails notRunning with no daemon, and an aborted connect fails closed; neither spawns", async () => {
-		writeInstallRecord(INSTALL, host);
+	it("fails notRunning with no daemon, and an aborted connect fails closed; neither spawns", async () => {
 		const lockFile = workspacePaths(host, workspace).lockFile;
 		const causeOf = (connecting: Promise<Session>) =>
 			connecting.then(

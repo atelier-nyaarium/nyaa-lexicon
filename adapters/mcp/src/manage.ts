@@ -81,7 +81,7 @@ export const PROJECT_DIAGNOSTICS_DESCRIPTION = `
 
 Read a store's daemon, providers, and adjacent reports from disk. Works after the daemon dies.
 
-Pass a key or directory from \`list_project_stores\`. Shows peaks against host memory, newest incidents first with daemon activity, sampled range, sparse timings per daemon and provider method, report triggers and memory, and snapshot sizes.
+Pass a key or directory from \`list_project_stores\`. Shows peaks against host memory, newest incidents first with daemon activity, sampled range, sparse timings per daemon and provider method, report triggers and memory, snapshot sizes, and a deferred index scrub.
 `.trim();
 
 export const DELETE_STORE_DESCRIPTION = `
@@ -362,6 +362,13 @@ function timingLines(timings: Diagnostics["timings"]): string[] {
 		});
 }
 
+function scrubLines(store: Diagnostics["store"]): string[] {
+	const scrub = store?.scrub;
+	if (scrub === undefined || scrub === null) return [];
+	if (scrub.status === "done") return [`- Scrub: rewrote freed pages under major ${scrub.major} in ${scrub.ms} ms`];
+	return [`- Scrub: deferred under major ${scrub.major} (${scrub.reason}); the next daemon start tries again`];
+}
+
 export function renderDiagnostics(
 	label: string,
 	file: string,
@@ -440,6 +447,7 @@ export function renderDiagnostics(
 		`- Workspace: ${data.workspaceRoot}`,
 		`- Memory: ${host}`,
 		`- Sampler: ${data.host.sampler}; runtime: ${data.host.runtime}`,
+		...scrubLines(data.store),
 		"",
 		`## Peaks`,
 		"",

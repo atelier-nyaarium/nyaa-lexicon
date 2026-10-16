@@ -9,10 +9,13 @@ import path from "node:path";
 import { refuseRuntime } from "@nyaa-lexicon/client";
 import { systemClock } from "./clock.js";
 import { describeStart, startProviders } from "./providers.js";
+import { SecretPolicy } from "./secretPolicy.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
 import { ProviderSupervisor } from "./supervisor.js";
+import { Timings } from "./timings.js";
+import { TransactionManager } from "./transactions.js";
 
 ////////////////////////////////
 //  Main
@@ -33,11 +36,17 @@ async function main(argv: string[]): Promise<void> {
 	// The one entry point that builds no daemon; it reads the system clock by name.
 	const clock = systemClock;
 	const { store } = IndexStore.open(":memory:", undefined, undefined, clock);
-	const supervisor = new ProviderSupervisor(clock);
+	const policy = SecretPolicy.initial({ root, clock, store });
+	const supervisor = new ProviderSupervisor(clock, new Timings(clock), () => policy.current);
+	const service = new LexiconService(store, supervisor, sourceReader(root), root, clock, policy);
+	const journal = new TransactionManager(store, root, policy);
+	policy.attach({ index: service.indexer, journal, providers: supervisor });
+	await service.gate.exclusive(async () => {
+		await policy.refresh({ kind: "startup" });
+		await service.reconcileSecretPolicy();
+	});
 	const providers = await startProviders(supervisor, root);
 	console.log(`providers:\n${describeStart(providers)}`);
-
-	const service = new LexiconService(store, supervisor, sourceReader(root), root, clock);
 
 	const started = clock.now();
 	const outcomes = await service.indexWorkspace();

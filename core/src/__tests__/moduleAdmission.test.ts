@@ -5,11 +5,11 @@ import path from "node:path";
 import type { ModuleAdmission } from "@nyaa-lexicon/protocol";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers

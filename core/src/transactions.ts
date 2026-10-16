@@ -1,11 +1,7 @@
-// The refactor journal: the one module that reads or writes the refactor_ tables.
+// Owns refactor journal reads and writes.
 //
-// A residue test holds that ownership, because the journal is the only record of what a
-// half-applied refactor used to look like. A second writer that got a phase transition slightly
-// wrong would not corrupt a query, it would lose the ability to put files back.
-//
-// Files are snapshotted as raw bytes. A source file that is not valid UTF-8 still has to come back
-// byte-identical, and hashing decoded text would let two different files share an image.
+// Plain images hash raw bytes.
+// Guarded images keep view hashes.
 
 import {
 	closeSync,
@@ -24,7 +20,6 @@ import {
 	type CommittedFile,
 	type CommittedStep,
 	CommittedStepSchema,
-	hashBytes,
 	type LedgerMark,
 	MAX_SOURCE_BYTES,
 	moduleOf,
@@ -65,6 +60,7 @@ import {
 	refactorDriftChangedSinceShown,
 	refactorPathLeavesWorkspace,
 	restoreFailed,
+	secretFile,
 	stepOutsideBases,
 	transactionAlreadyOpen,
 	undoWouldDiscard,
@@ -77,6 +73,7 @@ import {
 	writeRefactorMismatch,
 	writeTooLarge,
 } from "./refusals.js";
+import type { AdmittedBytes, JournalAdmission, PolicyChange, SecretPolicy } from "./secretPolicy.js";
 import { sweepTemporary, writeSourceFile } from "./sourceWriter.js";
 import type { IndexStore } from "./store.js";
 import type { AppliedRebind, KeptRebind, RebindEntry, RebindEvidence, RebindResult } from "./subjects.js";
@@ -91,6 +88,11 @@ import { writableText } from "./sourceRead.js";
 /** Where a snapshot belongs. The baseline is what revert restores; a step image is what undo does. */
 export type ImageScope = "baseline" | "step";
 
+interface Settlement {
+	transactionId: string;
+	outcome: "committed" | "reverted";
+}
+
 /** What a file looked like, and whether it was there at all. Absent and empty are different. */
 export interface FileImage {
 	module: string;
@@ -98,15 +100,33 @@ export interface FileImage {
 	hash: string | null;
 }
 
+export interface TransactionManagerOptions {
+	now?: () => number;
+	failAfterRestore?: () => void;
+}
+
 type Foreign = "link" | "directory" | "special";
 
-type PathState = FileImage | { module: string; foreign: Foreign | "outside" };
+type PathState =
+	| FileImage
+	| { module: string; foreign: Foreign | "outside" }
+	| { module: string; guarded: true; hash: string; view: JournalAdmission; reason: Refusal };
+
+type Look =
+	| { kind: "file"; admitted: AdmittedBytes }
+	| { kind: "guarded"; view: JournalAdmission; reason: Refusal }
+	| { kind: "missing" }
+	| { kind: "link"; target: string }
+	| { kind: "directory" }
+	| { kind: "special"; identity: string }
+	| { kind: "outside" };
 
 /** Blocked means a path is in the way; failed means a disk error. */
 type Restore = "restored" | "blocked" | "failed";
 
 type DiskState =
 	| { module: string; kind: "file"; hash: string }
+	| { module: string; kind: "guarded"; hash: string }
 	| { module: string; kind: "missing" }
 	| { module: string; kind: "link"; target: string }
 	| { module: string; kind: "directory" }
@@ -215,7 +235,7 @@ function encoded(
 }
 
 function holds(current: PathState, existed: boolean, hash: string | null): boolean {
-	return !("foreign" in current) && current.existed === existed && current.hash === hash;
+	return !("foreign" in current) && !("guarded" in current) && current.existed === existed && current.hash === hash;
 }
 
 /** A step image of a module the step left as found: nothing of the step to restore there. */
@@ -239,6 +259,8 @@ function sameDiskState(left: DiskState, right: DiskState): boolean {
 	switch (left.kind) {
 		case "file":
 			return right.kind === "file" && left.hash === right.hash;
+		case "guarded":
+			return false;
 		case "link":
 			return right.kind === "link" && left.target === right.target;
 		case "special":
@@ -261,6 +283,9 @@ function parseDiskStates(raw: string | null): DiskState[] | null {
 			if (typeof state !== "object" || state === null || typeof state.module !== "string") return null;
 			switch (state.kind) {
 				case "file":
+					if (typeof state.hash !== "string") return null;
+					break;
+				case "guarded":
 					if (typeof state.hash !== "string") return null;
 					break;
 				case "missing":
@@ -293,19 +318,26 @@ function parseDiskStates(raw: string | null): DiskState[] | null {
 export class TransactionManager {
 	/** Client steps this daemon is running; a row naming any other was left by one that stopped. */
 	private readonly liveSteps = new Set<string>();
+	private readonly now: () => number;
+	private readonly failAfterRestore: (() => void) | undefined;
+	private admittedUnder: string | null = null;
 
 	constructor(
 		private readonly store: IndexStore,
 		private readonly workspaceRoot: string,
-		private readonly now: () => number = () => systemClock.now(),
-		private readonly failAfterRestore?: () => void,
-	) {}
+		private readonly policy: SecretPolicy,
+		options: TransactionManagerOptions = {},
+	) {
+		this.now = options.now ?? (() => systemClock.now());
+		this.failAfterRestore = options.failAfterRestore;
+	}
 
 	////////////////////////////////
 	//  Lifecycle
 
 	/** Opens the workspace transaction. See `docs/daemon-protocol.md` `refactorStart`. */
 	start(origin: TransactionOrigin = "explicit"): StartedTransaction {
+		this.settle();
 		const open = this.openTransaction();
 		if (open) return { started: false, id: open.id, reason: transactionAlreadyOpen() };
 
@@ -334,6 +366,7 @@ export class TransactionManager {
 
 	/** Records the opening image. See `docs/architecture.md` Refactor transactions. */
 	track(module: string): TrackedFile {
+		this.settle();
 		const ledger = this.ledger();
 		const open = this.openTransaction();
 		if (!open) return { tracked: false, refactor: null, ledger, reason: noTransactionOpen() };
@@ -343,12 +376,46 @@ export class TransactionManager {
 		const image = this.snapshot(module);
 		if ("foreign" in image)
 			return { tracked: false, refactor, ledger, reason: notARegularFile(module, image.foreign) };
+		if ("guarded" in image) return { tracked: false, refactor: null, ledger, reason: image.reason };
 		this.claimBaseline(open.id, image);
 		return { tracked: true, refactor, ledger };
 	}
 
+	readmit(change?: PolicyChange): { purged: number } {
+		const stale = this.store.unadmittedReferences();
+		for (const admission of this.store.admissions()) {
+			const affected =
+				change === undefined ||
+				change.affected === "all" ||
+				change.affected.modules.has(admission.module) ||
+				change.affected.prefixes.some((prefix) => prefix === "" || admission.module.startsWith(`${prefix}/`));
+			if (!affected) continue;
+			const confirmed = this.policy.confirm(
+				admission,
+				() => this.store.heldImage(admission.module, admission.hash)?.bytes ?? null,
+			);
+			if (confirmed.kind === "withheld") stale.push({ module: admission.module, hash: admission.hash });
+			else if (confirmed.value.stamp !== admission.stamp) this.store.restamp(confirmed.value);
+		}
+		const pairs = [...new Map(stale.map((pair) => [`${pair.module}\u0000${pair.hash}`, pair])).values()];
+		const purged = pairs.length === 0 ? 0 : this.store.purgeImages(pairs);
+		this.store.pruneBlobs();
+		this.admittedUnder = this.policy.revision;
+		return { purged };
+	}
+
+	policyChanged(change: PolicyChange): void {
+		if (this.admittedUnder !== null && (change.moved || this.admittedUnder !== this.policy.revision))
+			this.readmit(change);
+	}
+
+	private settle(): void {
+		if (this.admittedUnder !== this.policy.revision) this.readmit();
+	}
+
 	/** Applies an editor state note. See `docs/daemon-protocol.md` `refactorNoteWrite`. */
 	noteWrite(module: string, state: { contentHash: string } | { absent: true }): NotedFileWrite {
+		this.settle();
 		const open = this.openTransaction();
 		if (!open) return { noted: false, reason: noTransactionOpen() };
 
@@ -359,12 +426,14 @@ export class TransactionManager {
 			"absent" in state
 				? { module, existed: false, hash: null }
 				: { module, existed: true, hash: state.contentHash };
-		const current = this.observe(module);
-		if (!diskStateHoldsImage(current.state, expected.existed, expected.hash)) {
+		const current = this.look(module);
+		if (current.kind === "guarded") return { noted: false, reason: current.reason };
+		const currentState = this.diskStateOf(module, current);
+		if (!diskStateHoldsImage(currentState, expected.existed, expected.hash)) {
 			return { noted: false, reason: notedWriteDoesNotMatch(module) };
 		}
 
-		this.noteKnown(open.id, module, expected.hash, current.bytes);
+		this.noteKnown(open.id, module, current.kind === "file" ? current.admitted : null);
 		return { noted: true };
 	}
 
@@ -375,11 +444,21 @@ export class TransactionManager {
 		expect: string | null,
 		refactor?: string | null,
 	): WrittenFile {
+		this.settle();
+		const open = this.openTransaction();
 		if (content !== null && "text" in content) {
 			const unencodable = writableText(module, content.text);
 			if (unencodable !== null) return { written: false, refused: "unencodable", reason: unencodable };
 		}
 		const bytes = content === null ? null : "text" in content ? Buffer.from(content.text, "utf8") : content.bytes;
+		const admitted = bytes === null ? null : this.policy.admitBytes(module, bytes);
+		if (admitted?.kind === "withheld")
+			return {
+				written: false,
+				refused: "refactor",
+				reason: admitted.reason,
+				openRefactor: open === null ? null : { id: open.id },
+			};
 		if (bytes !== null && bytes.length > MAX_SOURCE_BYTES) {
 			return {
 				written: false,
@@ -387,19 +466,25 @@ export class TransactionManager {
 				reason: writeTooLarge(module, bytes.length, MAX_SOURCE_BYTES),
 			};
 		}
-
 		// Leaf links can escape.
 		const full = this.contained(module);
 		if (full === null || resolveContained(this.workspaceRoot, module).kind === "outside") {
 			return { written: false, refused: "outside", reason: writeLeavesWorkspace(module) };
 		}
-		const leaf = readLeaf(full);
+		const leaf = this.look(module);
 		if (leaf.kind === "directory")
 			return { written: false, refused: "directory", reason: writeOverDirectory(module) };
 		if (leaf.kind === "link" || leaf.kind === "special") {
 			return { written: false, refused: "notAFile", reason: writeOverNonFile(module, leaf.kind) };
 		}
-		const open = this.openTransaction();
+		if (leaf.kind === "guarded") {
+			return {
+				written: false,
+				refused: "refactor",
+				reason: leaf.reason,
+				openRefactor: open === null ? null : { id: open.id },
+			};
+		}
 		if (refactor !== undefined && (open?.id ?? null) !== refactor) {
 			return {
 				written: false,
@@ -408,7 +493,7 @@ export class TransactionManager {
 				openRefactor: open === null ? null : { id: open.id },
 			};
 		}
-		const current = leaf.kind === "file" ? hashBytes(leaf.bytes) : null;
+		const current = leaf.kind === "file" ? leaf.admitted.hash : null;
 		if (current !== expect) {
 			return { written: false, refused: "changed", reason: writeChanged(module, current), contentHash: current };
 		}
@@ -420,8 +505,8 @@ export class TransactionManager {
 		}
 		if (bytes === null) rmSync(full, { force: true });
 		else writeSourceFile(full, bytes);
-		const contentHash = bytes === null ? null : hashBytes(bytes);
-		if (open !== null) this.noteKnown(open.id, module, contentHash, bytes);
+		const contentHash = admitted?.kind === "admitted" ? admitted.value.hash : null;
+		if (open !== null) this.noteKnown(open.id, module, admitted?.kind === "admitted" ? admitted.value : null);
 		return {
 			written: true,
 			contentHash,
@@ -431,13 +516,30 @@ export class TransactionManager {
 	}
 
 	/** Keeps known bytes for settlement. */
-	private noteKnown(transactionId: string, module: string, hash: string | null, bytes: Uint8Array | null): void {
+	private noteKnown(transactionId: string, module: string, admitted: AdmittedBytes | null): void {
 		this.store.journalWrite((db) => {
-			if (hash !== null && bytes !== null) this.store.putBlob(hash, bytes);
+			if (admitted !== null) this.store.putBlobWithin(db, admitted);
 			db.prepare(
 				"UPDATE refactor_known_states SET existed = ?, contentHash = ?, edited = 1 WHERE transactionId = ? AND module = ?",
-			).run(hash === null ? 0 : 1, hash, transactionId, module);
+			).run(admitted === null ? 0 : 1, admitted?.hash ?? null, transactionId, module);
 		});
+	}
+
+	private held(
+		module: string,
+		hash: string,
+	): { kind: "admitted"; value: AdmittedBytes } | { kind: "missing" } | { kind: "withheld"; reason: Refusal } {
+		const stored = this.store.heldImage(module, hash);
+		if (stored === null) return { kind: "withheld", reason: secretFile(module) };
+		if (stored.bytes === null) {
+			const confirmed = this.policy.confirm(stored, () => null);
+			if (confirmed.kind === "withheld") return confirmed;
+			return stored.stamp === null ? { kind: "missing" } : { kind: "withheld", reason: secretFile(module) };
+		}
+		const confirmed = this.policy.confirmHeld(stored, stored.bytes);
+		if (confirmed.kind === "withheld") return confirmed;
+		if (confirmed.value.stamp !== stored.stamp) this.store.putBlob(confirmed.value);
+		return confirmed;
 	}
 
 	/** Reads the opening image. See `docs/daemon-protocol.md` `refactorBeforeImage`. */
@@ -457,8 +559,10 @@ export class TransactionManager {
 
 		const contentHash = image.beforeHash;
 		if (contentHash === null) throw new Error(`tracked baseline has no content hash: ${module}`);
-		const bytes = this.store.blob(contentHash);
-		if (bytes === null) throw new Error(`tracked baseline bytes are missing: ${module}`);
+		const held = this.held(module, contentHash);
+		if (held.kind !== "admitted")
+			return held.kind === "withheld" ? { tracked: false, reason: held.reason } : { tracked: false };
+		const bytes = held.value.bytes;
 		const payload = encoded(contentHash, bytes);
 		if (!content) return { tracked: true, existed: true, contentHash, encoding: payload.encoding, omitted: true };
 		return { tracked: true, existed: true, ...payload };
@@ -530,8 +634,9 @@ export class TransactionManager {
 		if (row === undefined) return { held: false };
 		const hash = row[side];
 		if (hash === null) return { held: true, absent: true };
-		const bytes = this.store.blob(hash);
-		return bytes === null ? { held: false } : { held: true, ...encoded(hash, bytes) };
+		const held = this.held(module, hash);
+		if (held.kind === "withheld") return { held: false, reason: held.reason };
+		return held.kind === "missing" ? { held: false } : { held: true, ...encoded(hash, held.value.bytes) };
 	}
 
 	/** Reads transaction state. See `docs/daemon-protocol.md` `refactorStatus`. */
@@ -607,6 +712,7 @@ export class TransactionManager {
 		stepId: string,
 		kind: "rename" | "move",
 	): { claimed: true } | { claimed: false; outcome: ClientStepOutcome } {
+		this.settle();
 		const outcome = this.stepOutcome(stepId);
 		if (outcome.status !== "unknown") return { claimed: false, outcome };
 		this.liveSteps.add(stepId);
@@ -623,11 +729,13 @@ export class TransactionManager {
 
 	/** Past its last check, inside the gate: false when a cancel came first, and the step must not write. */
 	proceedStep(stepId: string): boolean {
+		this.settle();
 		return this.moveStep(stepId, "planning", "writing");
 	}
 
 	/** Cancels a step still planning; one past its last check answers as it will. */
 	cancelStep(stepId: string): StepCancel {
+		this.settle();
 		const cancelled = this.moveStep(stepId, "planning", "cancelled");
 		if (cancelled) this.liveSteps.delete(stepId);
 		return { cancelled, outcome: this.stepOutcome(stepId) };
@@ -635,6 +743,7 @@ export class TransactionManager {
 
 	/** A cancelled step keeps that as its outcome. */
 	answerStep(stepId: string, answer: CommittedStep): void {
+		this.settle();
 		this.liveSteps.delete(stepId);
 		this.store.journalWrite((db) => {
 			db.prepare(
@@ -645,6 +754,7 @@ export class TransactionManager {
 
 	/** A step that threw has no answer to keep; its refactor settled or recovery settles it. */
 	abandonStep(stepId: string): void {
+		this.settle();
 		this.liveSteps.delete(stepId);
 		this.store.journalWrite((db) => {
 			db.prepare(
@@ -687,14 +797,21 @@ export class TransactionManager {
 		plannedText?: ReadonlyArray<{ module: string; text: string }>,
 		expect?: { writes: string[]; bases: StepBase[] },
 	): StepOutcome {
+		this.settle();
 		const open = this.openTransaction();
 		if (!open) return { ok: false, reason: noTransactionOpen() };
-
+		const plannedImages = new Map<string, AdmittedBytes>();
+		for (const planned of plannedText ?? []) {
+			const admitted = this.policy.admitBytes(planned.module, Buffer.from(planned.text, "utf8"));
+			if (admitted.kind === "withheld") return { ok: false, reason: admitted.reason };
+			plannedImages.set(planned.module, admitted.value);
+		}
 		const stepNo = this.nextStepNo(open.id);
 		const images: FileImage[] = [];
 		for (const module of modules) {
 			const image = this.snapshot(module);
 			if ("foreign" in image) return { ok: false, reason: notARegularFile(module, image.foreign) };
+			if ("guarded" in image) return { ok: false, reason: image.reason };
 			images.push(image);
 		}
 
@@ -721,38 +838,42 @@ export class TransactionManager {
 			const known = this.knownState(open.id, image.module);
 			const beforeEdited = known?.edited === true && holds(image, known.existed, known.hash);
 			// Store a known output hash before a write so recovery can identify its result.
-			const planned = plannedText?.find((entry) => entry.module === image.module);
-			const bytes = planned === undefined ? null : Buffer.from(planned.text, "utf8");
-			const written =
-				bytes === null ? undefined : { module: image.module, existed: true, hash: hashBytes(bytes) };
-			// Settlement images read these bytes.
-			if (bytes !== null && written !== undefined) this.store.putBlob(written.hash, bytes);
+			const written = plannedImages.get(image.module);
+			if (written !== undefined) this.store.putBlob(written);
 			// A module the step only reindexes stands as found, so a save racing the step stays drift.
-			const after = written ?? (plannedText !== undefined && image.existed ? image : undefined);
+			const after =
+				written === undefined
+					? plannedText !== undefined && image.existed
+						? image
+						: undefined
+					: { module: image.module, existed: true, hash: written.hash };
 			this.writeImage(open.id, "step", stepNo, image, after, beforeEdited);
 		}
 
 		return { ok: true, stepNo };
 	}
 
-	/** A fix rewrote a written file inside its step: the file as it now stands is the step's after-image.
-	 * False when it no longer stands as a file, which keeps the planned image. */
-	restampAfter(stepNo: number, module: string): boolean {
+	/** Records fix output; non-files retain planned images. */
+	restampAfter(stepNo: number, module: string): "restamped" | "notAFile" | "guarded" {
+		this.settle();
 		const open = this.openTransaction();
-		if (!open) return false;
+		if (!open) return "notAFile";
 		const after = this.snapshot(module);
-		if ("foreign" in after || !after.existed) return false;
+		if ("foreign" in after || (!("guarded" in after) && !after.existed)) return "notAFile";
+		const hash = after.hash;
+		if ("guarded" in after) this.store.admit(after.view);
 		this.store.journalWrite((db) => {
 			db.prepare(
 				`UPDATE refactor_images SET existsAfter = 1, afterHash = ?
 				 WHERE transactionId = ? AND scope = 'step' AND stepNo = ? AND module = ?`,
-			).run(after.hash, open.id, stepNo, module);
+			).run(hash, open.id, stepNo, module);
 		});
-		return true;
+		return "guarded" in after ? "guarded" : "restamped";
 	}
 
 	/** Records step output. See `docs/architecture.md` Refactor transactions. */
 	completeStep(stepNo: number, phase: StepPhase): void {
+		this.settle();
 		const open = this.openTransaction();
 		if (!open) return;
 
@@ -771,14 +892,18 @@ export class TransactionManager {
 				}
 				// Non-file paths have unknown after-images.
 				const after = this.snapshot(module);
-				const existsAfter = "foreign" in after || after.existed ? 1 : 0;
+				const guarded = "guarded" in after;
+				if (guarded) this.store.admit(after.view);
+				const existsAfter = "foreign" in after || guarded || after.existed ? 1 : 0;
 				const afterHash = "foreign" in after ? null : after.hash;
 				this.store.journalWrite((db) => {
 					db.prepare(
 						`UPDATE refactor_images SET existsAfter = ?, afterHash = ?
 						 WHERE transactionId = ? AND scope = 'step' AND stepNo = ? AND module = ?`,
 					).run(existsAfter, afterHash, open.id, stepNo, module);
-					if (!("foreign" in after)) {
+					if (guarded) {
+						this.writeKnownState(db, open.id, module, true, after.hash, false);
+					} else if (!("foreign" in after)) {
 						this.writeKnownState(db, open.id, module, after.existed, after.hash, false);
 					}
 				});
@@ -796,6 +921,7 @@ export class TransactionManager {
 
 	/** Journals subject moves. See `core/src/subjects.ts` `rebindBack`. */
 	rebind(stepNo: number, entries: RebindEntry[], evidence: RebindEvidence): RebindResult {
+		this.settle();
 		const open = this.openTransaction();
 		if (!open) throw new Error("no refactor transaction is open");
 		return this.store.journalWrite((db) => {
@@ -840,6 +966,7 @@ export class TransactionManager {
 
 	/** Drops unwritten step data; optionally removes the baseline. */
 	releaseModule(stepNo: number, module: string, untrack: boolean): void {
+		this.settle();
 		const open = this.openTransaction();
 		if (!open) return;
 		this.store.journalWrite((db) => {
@@ -864,6 +991,7 @@ export class TransactionManager {
 	}
 
 	recordIssues(stepNo: number, issues: RefactorIssue[]): void {
+		this.settle();
 		const open = this.openTransaction();
 		if (!open || issues.length === 0) return;
 
@@ -882,6 +1010,7 @@ export class TransactionManager {
 
 	/** Restores the newest step. See `docs/architecture.md` Refactor transactions. */
 	undo(expect?: Expectation): UndoneStep {
+		this.settle();
 		const open = this.openTransaction();
 		if (!this.asShown(open, expect)) return { undone: false, reason: refactorChangedSinceShown() };
 		if (!open) return { undone: false, reason: noTransactionOpen() };
@@ -913,6 +1042,7 @@ export class TransactionManager {
 		for (const image of images) {
 			if (image.afterHash === null || unwritten(image)) continue;
 			const current = this.snapshot(image.module);
+			if ("guarded" in current) return { undone: false, reason: pathInTheWay([image.module], "undo") };
 			// A file at its before-image needs no restore.
 			if (holds(current, image.existedBefore, image.beforeHash)) continue;
 			if ("foreign" in current || current.hash !== image.afterHash) {
@@ -932,9 +1062,11 @@ export class TransactionManager {
 
 	/** Restores tracked baselines. See `docs/daemon-protocol.md` `refactorRevert`. */
 	revert(drifted: TransactionStatus["drifted"], expect?: Expectation): RevertedTransaction {
+		this.settle();
 		const open = this.openTransaction();
 		if (!this.asShown(open, expect)) return { reverted: false, modules: [], reason: refactorChangedSinceShown() };
 		if (!open) return { reverted: false, modules: [], reason: noTransactionOpen() };
+		const images = this.imagesOf(open.id, "baseline", 0);
 		const intent = this.recoveryIntent(open.id);
 		if (intent !== null && intent.operation !== "revert") {
 			return { reverted: false, modules: [], reason: recoveryPending(intent.operation) };
@@ -944,7 +1076,6 @@ export class TransactionManager {
 			return { reverted: false, modules: [], reason: refactorDriftChangedSinceShown() };
 		}
 
-		const images = this.imagesOf(open.id, "baseline", 0);
 		const diskStates =
 			observed === null
 				? (intent?.diskStates ?? null)
@@ -984,6 +1115,7 @@ export class TransactionManager {
 
 	/** Closes the transaction. See `docs/daemon-protocol.md` `refactorCommit`. */
 	commit(options: { force?: boolean | undefined; expect?: Expectation | undefined } = {}): CommittedTransaction {
+		this.settle();
 		const open = this.openTransaction();
 		if (!this.asShown(open, options.expect)) {
 			return { committed: false, issues: [], reason: refactorChangedSinceShown() };
@@ -1009,6 +1141,7 @@ export class TransactionManager {
 
 	/** Resumes journaled recovery. See `docs/architecture.md` Refactor transactions. */
 	recover(): Recovered {
+		this.settle();
 		this.sweepTemporaries();
 
 		const open = this.openTransaction();
@@ -1091,6 +1224,10 @@ export class TransactionManager {
 					failed = true;
 					continue;
 				}
+				if ("guarded" in current) {
+					conflicts.push(image.module);
+					continue;
+				}
 
 				if (holds(current, image.existedBefore, image.beforeHash)) {
 					this.rememberRestored(open.id, image);
@@ -1167,13 +1304,20 @@ export class TransactionManager {
 		stepNo: number | null,
 		diskStates: DiskState[] | null = null,
 	): void {
-		this.store.journalWrite((db) =>
-			db
-				.prepare(
-					"INSERT INTO refactor_recovery_intents (transactionId, operation, stepNo, diskStates) VALUES (?, ?, ?, ?)",
-				)
-				.run(transactionId, operation, stepNo, diskStates === null ? null : JSON.stringify(diskStates)),
-		);
+		const admissions = (diskStates ?? []).flatMap((state) => {
+			if (state.kind !== "file" && state.kind !== "guarded") return [];
+			const current = this.look(state.module);
+			if (current.kind === state.kind && current.kind === "file" && current.admitted.hash === state.hash)
+				return [current.admitted];
+			if (current.kind === "guarded" && current.view.hash === state.hash) return [current.view];
+			throw new Error("disk state moved before recovery journaling");
+		});
+		this.store.journalWrite((db) => {
+			for (const admission of admissions) this.store.admitWithin(db, admission);
+			db.prepare(
+				"INSERT INTO refactor_recovery_intents (transactionId, operation, stepNo, diskStates) VALUES (?, ?, ?, ?)",
+			).run(transactionId, operation, stepNo, diskStates === null ? null : JSON.stringify(diskStates));
+		});
 	}
 
 	private finalizeUndo(transactionId: string, stepNo: number): UndoneStep {
@@ -1213,7 +1357,7 @@ export class TransactionManager {
 		const kept = this.store.journalWrite((db) => {
 			const kept: KeptRebind[] = [];
 			for (const applied of moves) kept.push(...this.store.subjects.rebindBack(applied).kept);
-			this.drop(db, transactionId, "reverted");
+			this.drop(db, { transactionId, outcome: "reverted" });
 			db.prepare("DELETE FROM refactor_recovery_intents WHERE transactionId = ?").run(transactionId);
 			return kept;
 		});
@@ -1231,47 +1375,79 @@ export class TransactionManager {
 		return where.kind === "outside" ? null : where.path;
 	}
 
-	/** Reads regular files; escaping parents count as links. */
-	private snapshot(module: string): PathState {
+	private look(module: string): Look {
 		const full = this.contained(module);
-		if (full === null) return { module, foreign: "outside" };
+		if (full === null) return { kind: "outside" };
 		const leaf = readLeaf(full);
-		if (leaf.kind === "missing") return { module, existed: false, hash: null };
-		if (leaf.kind !== "file") return { module, foreign: leaf.kind };
-
-		const hash = hashBytes(leaf.bytes);
-		this.store.putBlob(hash, leaf.bytes);
-		return { module, existed: true, hash };
-	}
-
-	private diskState(module: string): DiskState {
-		return this.observe(module).state;
-	}
-
-	/** Hashes and retains bytes from one read. */
-	private observe(module: string): { state: DiskState; bytes: Buffer | null } {
-		const full = this.contained(module);
-		if (full === null) return { state: { module, kind: "outside" }, bytes: null };
-		const leaf = readLeaf(full);
-		if (leaf.kind === "missing") return { state: { module, kind: "missing" }, bytes: null };
-		if (leaf.kind === "file")
-			return { state: { module, kind: "file", hash: hashBytes(leaf.bytes) }, bytes: leaf.bytes };
+		if (leaf.kind === "missing") return { kind: "missing" };
+		if (leaf.kind === "file") {
+			const result = this.policy.admitBytes(module, leaf.bytes);
+			return result.kind === "admitted"
+				? { kind: "file", admitted: result.value }
+				: { kind: "guarded", reason: result.reason, view: result.view };
+		}
 		if (leaf.kind === "link") {
 			try {
-				return { state: { module, kind: "link", target: readlinkSync(full) }, bytes: null };
+				return { kind: "link", target: readlinkSync(full) };
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT")
-					return { state: { module, kind: "missing" }, bytes: null };
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
 				throw error;
 			}
 		}
-		if (leaf.kind === "directory") return { state: { module, kind: "directory" }, bytes: null };
+		if (leaf.kind === "directory") return { kind: "directory" };
 		const found = lstatOf(full);
-		const state: DiskState =
-			found === null
-				? { module, kind: "missing" }
-				: { module, kind: "special", identity: `${found.dev}:${found.ino}:${found.mode}` };
-		return { state, bytes: null };
+		return found === null
+			? { kind: "missing" }
+			: { kind: "special", identity: `${found.dev}:${found.ino}:${found.mode}` };
+	}
+
+	/** Reads and retains a policy-admitted image. */
+	private snapshot(module: string): PathState {
+		const found = this.look(module);
+		switch (found.kind) {
+			case "file":
+				this.store.putBlob(found.admitted);
+				return { module, existed: true, hash: found.admitted.hash };
+			case "missing":
+				return { module, existed: false, hash: null };
+			case "guarded":
+				return {
+					module,
+					guarded: true,
+					hash: found.view.hash,
+					view: found.view,
+					reason: found.reason,
+				};
+			case "outside":
+				return { module, foreign: "outside" };
+			case "link":
+			case "directory":
+			case "special":
+				return { module, foreign: found.kind };
+		}
+	}
+
+	private diskStateOf(module: string, found: Look): DiskState {
+		switch (found.kind) {
+			case "file":
+				return { module, kind: "file", hash: found.admitted.hash };
+			case "guarded":
+				return { module, kind: "guarded", hash: found.view.hash };
+			case "missing":
+				return { module, kind: "missing" };
+			case "link":
+				return { module, kind: "link", target: found.target };
+			case "directory":
+				return { module, kind: "directory" };
+			case "special":
+				return { module, kind: "special", identity: found.identity };
+			case "outside":
+				return { module, kind: "outside" };
+		}
+	}
+
+	private diskState(module: string): DiskState {
+		return this.diskStateOf(module, this.look(module));
 	}
 
 	private observeKnownStates(
@@ -1282,7 +1458,12 @@ export class TransactionManager {
 		const drifted = known.flatMap((state, index) => {
 			const current = diskStates[index];
 			if (current === undefined || diskStateHoldsImage(current, state.existed, state.hash)) return [];
-			return [{ module: state.module, contentHash: current.kind === "file" ? current.hash : null }];
+			return [
+				{
+					module: state.module,
+					contentHash: current.kind === "file" || current.kind === "guarded" ? current.hash : null,
+				},
+			];
 		});
 		return {
 			diskStates,
@@ -1368,6 +1549,8 @@ export class TransactionManager {
 			const full = this.contained(image.module);
 			if (full === null) return "blocked";
 			if (lstatOf(full)?.isDirectory() === true) return "blocked";
+			const current = this.look(image.module);
+			if (current.kind === "guarded" || current.kind === "outside") return "blocked";
 
 			if (!image.existedBefore) {
 				rmSync(full, { force: true });
@@ -1375,13 +1558,12 @@ export class TransactionManager {
 			}
 
 			// Skip identical bytes to preserve the timestamp and avoid a watcher event.
-			const leaf = readLeaf(full);
-			if (leaf.kind === "file" && hashBytes(leaf.bytes) === image.beforeHash) return "restored";
+			if (current.kind === "file" && current.admitted.hash === image.beforeHash) return "restored";
 
-			const bytes = image.beforeHash === null ? null : this.store.blob(image.beforeHash);
-			if (bytes === null) return "restored";
+			const held = image.beforeHash === null ? null : this.held(image.module, image.beforeHash);
+			if (held === null || held.kind !== "admitted") return "blocked";
 
-			writeSourceFile(full, bytes);
+			writeSourceFile(full, held.value.bytes);
 			return "restored";
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
@@ -1605,12 +1787,12 @@ export class TransactionManager {
 
 	/** Writes settlement snapshots before pruning blobs. */
 	private close(transactionId: string, outcome: "committed" | "reverted"): void {
-		this.store.journalWrite((db) => this.drop(db, transactionId, outcome));
+		this.store.journalWrite((db) => this.drop(db, { transactionId, outcome }));
 		this.store.pruneBlobs();
 	}
 
-	/** Settles the transaction and removes rows atomically. */
-	private drop(db: Database, transactionId: string, outcome: "committed" | "reverted"): void {
+	/** Atomic settlement. */
+	private drop(db: Database, { transactionId, outcome }: Settlement): void {
 		const origin =
 			(
 				db.prepare("SELECT origin FROM refactor_transactions WHERE id = ?").get(transactionId) as
@@ -1641,9 +1823,12 @@ export class TransactionManager {
 			const state = known.get(baseline.module);
 			// Revert uses baseline state.
 			const settled = outcome === "reverted" || state === undefined ? opened : state;
-			const disk = this.diskState(baseline.module);
+			const observed = this.look(baseline.module);
+			const disk = this.diskStateOf(baseline.module, observed);
 			const drifted = !diskStateHoldsImage(disk, settled !== null, settled);
-			const driftedHash = drifted && disk.kind === "file" ? disk.hash : null;
+			const driftedHash = drifted && (disk.kind === "file" || disk.kind === "guarded") ? disk.hash : null;
+			if (drifted && observed.kind === "file") this.store.admitWithin(db, observed.admitted);
+			if (drifted && observed.kind === "guarded") this.store.admitWithin(db, observed.view);
 			settle.run(Number(lastInsertRowid), baseline.module, opened, settled, drifted ? 1 : 0, driftedHash);
 		}
 

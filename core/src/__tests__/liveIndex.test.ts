@@ -8,13 +8,13 @@ import type { IndexOutcome } from "../indexer";
 import type { FileEvent } from "../invalidation";
 import { holdBatches, type LiveIndex, LOST_RETRY_MS, serializeBatches, startLiveIndex } from "../liveIndex";
 import type { MethodRequest, ProviderPort } from "../providerPort";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { BatchFailed, IndexStore } from "../store";
 import { fakeClock } from "./fakeClock";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
 import { busyAtBegin, failingCommit } from "./storeFailures";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers

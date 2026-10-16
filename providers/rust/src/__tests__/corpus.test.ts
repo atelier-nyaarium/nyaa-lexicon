@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { coordinatesOf, type FileFacts, FileFactsSchema, handlersFor, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { typeBrackets } from "../angles.js";
 import { RustProvider } from "../main.js";
 import { tokenize } from "../tokens.js";
@@ -53,8 +55,8 @@ corpusTest(
 		if (!corpusPresent) throw new Error("ripgrep corpus is absent; run bun run corpora");
 		const files = rustFiles(root);
 		const provider = new RustProvider();
-		const handlers = handlersFor(provider);
-		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		const handlers = handlersFor(provider, SECRET_READERS);
+		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 		handlers.discoverProject({ workspaceRoot: root });
 		// A span whose range does not cut its own text back out attaches to the wrong symbol, and only
 		// real source has the string forms that break that.

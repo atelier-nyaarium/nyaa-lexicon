@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, withOccurrences } from "@nyaa-lexicon/protocol";
 import { TIERS, XmlProvider } from "../main.js";
 
@@ -9,7 +10,7 @@ describe("XML provider", () => {
 	});
 
 	it("keeps duplicate element ids distinct", () => {
-		const handler = handlersFor(new XmlProvider());
+		const handler = handlersFor(new XmlProvider(), SECRET_READERS);
 		const facts = handler.parseFile({ module: "a.xml", contentHash: "h", text: "<root><item/><item/></root>" });
 		const settled = withOccurrences(facts);
 		expect(settled.declarations.filter((d) => d.kind === "property").map((d) => d.symbolId)).toEqual([

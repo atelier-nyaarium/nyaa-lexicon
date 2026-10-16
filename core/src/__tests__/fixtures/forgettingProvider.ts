@@ -33,6 +33,7 @@ const handlers: ProviderHandlers & ProviderNotificationHandlers = {
 		},
 		words: { keywords: [], builtins: [], literals: [] },
 	}),
+	installPolicy: () => ({ changed: [] }),
 	discoverProject: () => ({ files: [], externalRoots: [], configFiles: [], diagnostics: [] }),
 	probeFile: (params) => handlers.parseFile(params),
 	probeBatch: () => ({ status: "unsupported" }),

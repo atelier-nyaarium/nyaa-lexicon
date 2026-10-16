@@ -49,17 +49,17 @@ export const NoteLinkSchema = z
 	.object({
 		/** As the writer wrote it. */
 		written: z.string(),
-		/** At the target's current address; the written text when broken. */
+		/** Current address; written text if unavailable. */
 		current: z.string(),
-		/** The target symbol's current id; absent for a module ref and when broken. */
+		/** Target id; absent for module refs. */
 		symbolId: z.string().optional(),
-		/** The target's declaration kind, or `file`; absent when broken. */
+		/** Kind or `file`; absent when unavailable. */
 		kind: z.string().optional(),
 		/**
-		 * `broken`: the target is gone. `changed`: its source changed since the note was saved.
-		 * A file ref is never `changed`: every edit would make that state permanent.
+		 * `broken`: target missing. `withheld`: module hidden. `changed`: source differs.
+		 * File refs never have the `changed` state.
 		 */
-		state: z.enum(["ok", "changed", "broken"]),
+		state: z.enum(["ok", "changed", "broken", "withheld"]),
 	})
 	.meta({ id: "NoteLink" });
 

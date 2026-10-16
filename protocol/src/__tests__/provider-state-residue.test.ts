@@ -12,21 +12,14 @@ const SKIP_DIRS = new Set(["dist", "node_modules", ".tsbuild", "__tests__"]);
 
 const READ_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises", "@nyaa-lexicon/protocol"]);
 
-const CONTENT_READS = new Set(["readFileSync", "readFile", "readWorkspaceFile", "openSync", "createReadStream"]);
-
-/** Allowed configuration and asset reads. */
-const ALLOWED_READS: Record<string, string> = {
-	"rust/src/project.ts": "Cargo.toml",
-	"c/src/project.ts": "compile_commands.json at the root and in build*/ directories",
-	"cpp/src/project.ts": "compile_commands.json at the root and in build*/ directories",
-	"csharp/src/project.ts": "*.csproj, Directory.Build.props and the workspace .props or .targets files they import",
-	"gdscript/src/project.ts": "project.godot, the scenes it starts and .uid sidecars",
-	"typescript/src/analyzer.ts": "types and display of files the index does not hold",
-	"typescript/src/project.ts": "tsconfig and package.json",
-};
-
-/** Reads package metadata while resolving a specifier. */
-const DECLARATION_READS = new Map([["nearestPackage", "reads package.json for package resolution"]]);
+const CONTENT_READS = new Set([
+	"readFileSync",
+	"readFile",
+	"readWorkspaceFile",
+	"readWorkspaceHead",
+	"openSync",
+	"createReadStream",
+]);
 
 const COLLECTIONS = new Set(["Map", "Set", "WeakMap", "WeakSet", "Array"]);
 
@@ -71,7 +64,10 @@ function contentReads(parsed: ParsedSource): Array<{ node: ts.Node; name: string
 	const named = callsIn(parsed.source).flatMap((call) => {
 		const callee = calleeOf(call);
 		if (callee === undefined) return [];
-		const read = CONTENT_READS.has(callee.name) || (callee.receiver === "Bun" && callee.name === "file");
+		const read =
+			(callee.receiver === undefined && CONTENT_READS.has(callee.name)) ||
+			(callee.receiver === "Bun" && callee.name === "file") ||
+			(callee.receiver === "ts.sys" && callee.name === "readFile");
 		return read ? [{ node: call as ts.Node, name: callee.name }] : [];
 	});
 	const seen = new Set(named.map(({ node }) => node));
@@ -79,15 +75,6 @@ function contentReads(parsed: ParsedSource): Array<{ node: ts.Node; name: string
 		.filter(({ call }) => !seen.has(call))
 		.map(({ call, name }) => ({ node: call, name }));
 	return [...named, ...imported];
-}
-
-function enclosingFunctionName(node: ts.Node): string | undefined {
-	for (let at = node.parent; at !== undefined; at = at.parent) {
-		if ((ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) && at.name && ts.isIdentifier(at.name)) {
-			return at.name.text;
-		}
-	}
-	return undefined;
 }
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
@@ -200,35 +187,27 @@ describe("provider state lives in the kit's module store", () => {
 			'import * as fs from "fs";\nfs.readFileSync(path);\n',
 			'const { readFile } = require("node:fs/promises");\nreadFile(path);\n',
 			"Bun.file(path).text();\n",
+			"ts.sys.readFile(path);\n",
+			'import { readWorkspaceFile } from "@nyaa-lexicon/protocol";\nreadWorkspaceFile(root, module);\n',
+			'import { readWorkspaceHead } from "@nyaa-lexicon/protocol";\nreadWorkspaceHead(root, module);\n',
 		];
 
-		expect(planted.map((text) => contentReads(parseSource("planted.ts", text)).length)).toEqual([1, 1, 1, 1]);
+		expect(planted.map((text) => contentReads(parseSource("planted.ts", text)).length)).toEqual([
+			1, 1, 1, 1, 1, 1, 1,
+		]);
 	});
 
-	it("reads no module text off disk outside the kit", () => {
+	it("reads workspace text only through the policy", () => {
 		const offenders: string[] = [];
-		const reading = new Set<string>();
-		const declarationReads: string[] = [];
 		for (const { files } of parsedProviders()) {
 			for (const parsed of files) {
-				const file = relative(PROVIDERS, parsed.file);
 				for (const { node, name } of contentReads(parsed)) {
-					const declaration = enclosingFunctionName(node);
-					if (declaration !== undefined && DECLARATION_READS.has(declaration)) {
-						declarationReads.push(declaration);
-						continue;
-					}
-					if (Object.hasOwn(ALLOWED_READS, file)) reading.add(file);
-					else offenders.push(`${where(parsed, node)} ${name}`);
+					offenders.push(`${where(parsed, node)} ${name}`);
 				}
 			}
 		}
 
-		expect(offenders, "read module text through the store; list a config or asset read in ALLOWED_READS").toEqual(
-			[],
-		);
-		expect(Object.keys(ALLOWED_READS).filter((file) => !reading.has(file))).toEqual([]);
-		expect(declarationReads).toEqual(["nearestPackage"]);
+		expect(offenders, "read workspace text through the protocol policy").toEqual([]);
 	});
 
 	it("keeps no other state beside the store", () => {

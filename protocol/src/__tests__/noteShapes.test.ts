@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { NoteOutcomeSchema, NoteSchema } from "../noteShapes.js";
+import { NoteLinkSchema, NoteOutcomeSchema, NoteSchema } from "../noteShapes.js";
 
 describe("note wire shapes", () => {
 	it("strips retired confirmation, doubt and proposal fields", () => {
@@ -41,5 +41,15 @@ describe("note wire shapes", () => {
 	it("accepts saved outcomes and rejects proposed outcomes", () => {
 		expect(NoteOutcomeSchema.parse({ outcome: "saved", note: null })).toEqual({ outcome: "saved", note: null });
 		expect(NoteOutcomeSchema.safeParse({ outcome: "proposed", note: {} }).success).toBe(false);
+	});
+
+	it("accepts withheld refs as a note link state", () => {
+		expect(
+			NoteLinkSchema.parse({
+				written: "project-ref://test-project/keys/server.key",
+				current: "project-ref://test-project/keys/server.key",
+				state: "withheld",
+			}),
+		).toMatchObject({ state: "withheld" });
 	});
 });

@@ -244,6 +244,11 @@ when the scope admits it to auto-discovery, `imported` when the last pass reache
 import, and `null` when the scope denies it or nothing reaches it. `moduleStatus.claimed` is broader:
 a claim admits any path a caller names, and the text provider claims every file.
 
+`moduleSecretModes` answers, for up to 512 modules, whether a client may use the text as `plain`,
+must `redact` it, or must `omit` it. Matcher rules are judged against current text; if the file is
+missing or unreadable, the answer uses the path rule alone. An existing whole-file `omit` remains
+listed and indexed, with no content or keys revealed. The response contains only `module` and `mode`.
+
 ## Refactor methods
 
 `renameEdits` returns either a plan with changed files or a refusal with the plan and reason.
@@ -526,7 +531,9 @@ declaration rows, from ONE synchronous snapshot: `core/src/moduleDeclarations.ts
 completion, a residue forbids `await` and `async` in it, so no field describes a different
 version of the file than another. `moduleStatus` and `declarationsIn` keep their shapes as older
 views of the same store, each answered on its own; a consumer that wants "cannot disagree" asks
-the one method. `fileNotes` is a different question, the diagnostics the snapshot does not carry.
+the one method. Whole-file `omit` is not a scope denial: it reports the existing indexed file with
+no declarations and a refused-view hash. `fileNotes` is a different question, the diagnostics the
+snapshot does not carry.
 
 The hash is `hashContent` in the protocol package, the one implementation the daemon files under
 and a consumer compares against: the first 32 hex characters of the sha256 of the file's UTF-8

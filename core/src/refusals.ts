@@ -81,6 +81,12 @@ export function noteRefsRefused(count: number): Refusal {
 	);
 }
 
+export function noteRefsWithheld(count: number): Refusal {
+	return mint(
+		`${count} ref${count === 1 ? " names" : "s name"} a file withheld from the index. Keep the note text and remove the link, or correct the module path`,
+	);
+}
+
 ////////////////////////////////
 //  Relations
 
@@ -114,6 +120,12 @@ export function relationNotLocal(kind: string): Refusal {
 
 export function refModuleNotIndexed(module: string): Refusal {
 	return mint(`${module} is not an indexed file. Index it, or correct the module path in the link`);
+}
+
+export function refModuleWithheld(module: string): Refusal {
+	return mint(
+		`${module} is withheld from the index. Keep the note text and remove the link, or correct the module path`,
+	);
 }
 
 export function refNamesNothing(module: string): Refusal {
@@ -332,6 +344,10 @@ export function noProviderOwns(module: string, detail?: string): Refusal {
 	return mint(
 		`no provider owns ${module}${detail === undefined ? "" : `: ${detail}`}. Only a claimed file can be rewritten`,
 	);
+}
+
+export function secretFile(module: string): Refusal {
+	return mint(`${module} is a secret file and cannot be read or journaled by refactor tools`);
 }
 
 /** The provider's own refusal, named with the module it was asked about. */

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import ts from "typescript";
+import { calleeOf, callsIn, parseSource } from "../astResidue";
 import { readWorkspaceFile, readWorkspaceHead } from "../sourceFile";
 import { resolveContained } from "../workspacePath";
 
@@ -54,9 +56,9 @@ describe("where a module's real path lands", () => {
 			dirOut: resolveContained(root, "dir-out/secret.ts"),
 			escape: resolveContained(root, "../secret.ts"),
 		}).toEqual({
-			plain: { kind: "file", path: real },
-			fileIn: { kind: "file", path: real },
-			dirIn: { kind: "file", path: real },
+			plain: { kind: "file", path: real, real: "inner/real.ts" },
+			fileIn: { kind: "file", path: real, real: "inner/real.ts" },
+			dirIn: { kind: "file", path: real, real: "inner/real.ts" },
 			fileOut: { kind: "outside" },
 			dirOut: { kind: "outside" },
 			escape: { kind: "outside" },
@@ -96,11 +98,28 @@ describe("where a module's real path lands", () => {
 		expect(resolveContained(alias, "inner/real.ts")).toEqual({
 			kind: "file",
 			path: path.join(root, "inner", "real.ts"),
+			real: "inner/real.ts",
 		});
 	});
 });
 
 describe("reading a module inside the workspace", () => {
+	it("opens resolved files without following a replacement link", () => {
+		const file = path.join(import.meta.dir, "../sourceFile.ts");
+		const source = parseSource(file, readFileSync(file, "utf8")).source;
+		const guarded = (node: ts.Node): boolean => {
+			if (ts.isPropertyAccessExpression(node) && node.name.text === "O_NOFOLLOW") return true;
+			let found = false;
+			ts.forEachChild(node, (child) => {
+				found ||= guarded(child);
+			});
+			return found;
+		};
+		const calls = callsIn(source).filter((call) => calleeOf(call)?.name === "openSync");
+
+		expect(calls.some((call) => call.arguments[1] !== undefined && guarded(call.arguments[1]))).toBe(true);
+	});
+
 	it("reads through a link that stays inside, and refuses one that leaves", () => {
 		expect({
 			fileIn: readWorkspaceFile(root, "file-in.ts"),
@@ -110,7 +129,7 @@ describe("reading a module inside the workspace", () => {
 			dangling: readWorkspaceFile(root, "dangling.ts"),
 			directory: readWorkspaceFile(root, "inner"),
 		}).toEqual({
-			fileIn: { kind: "text", text: "#!/usr/bin/env bun\ninside\n", lossless: true },
+			fileIn: { kind: "text", text: "#!/usr/bin/env bun\ninside\n", lossless: true, real: "inner/real.ts" },
 			dirIn: "text",
 			fileOut: { kind: "outside" },
 			dirOut: { kind: "outside" },
@@ -131,8 +150,8 @@ describe("reading a module inside the workspace", () => {
 			odd: readWorkspaceFile(root, "odd.ps1").kind,
 			nul: readWorkspaceFile(root, "nul.ts").kind,
 		}).toEqual({
-			le: { kind: "text", text, lossless: false, encoding: "utf-16le" },
-			be: { kind: "text", text, lossless: false, encoding: "utf-16be" },
+			le: { kind: "text", text, lossless: false, encoding: "utf-16le", real: "le.ps1" },
+			be: { kind: "text", text, lossless: false, encoding: "utf-16be", real: "be.ps1" },
 			odd: "binary",
 			nul: "binary",
 		});

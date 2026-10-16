@@ -16,22 +16,17 @@ import type {
 	IndexStatus,
 	ModuleAdmission,
 	ModuleDeclarations,
+	ModuleSecretModeAnswer,
+	ModuleSecretModeValue,
 	ModuleStatus,
 	ResolutionMode,
 } from "@nyaa-lexicon/protocol";
-import { defined, hashContent } from "@nyaa-lexicon/protocol";
+import { DEFAULT_EXCLUDED_DIRECTORIES, defined, resolveContained } from "@nyaa-lexicon/protocol";
 import { directoryEntries, underExcludedDirectory } from "@nyaa-lexicon/protocol/excludedDirectories";
 import type { Clock, TimerHandle } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
-import {
-	type FileScope,
-	fileScopeFor,
-	type GeneratedVerdict,
-	generatedVerdicts,
-	gitIgnored,
-	includedFiles,
-} from "./fileScope.js";
+import { type FileScope, type GeneratedVerdict, generatedVerdicts, gitIgnored, includedFiles } from "./fileScope.js";
 import { importTarget } from "./imports.js";
 import {
 	ensurePumping as coordinateEnsurePumping,
@@ -51,6 +46,7 @@ import type { FileEvent } from "./invalidation.js";
 import { decideInvalidation, UNCHANGED_REASON } from "./invalidation.js";
 import { type ModuleClaim, moduleDeclarations, statusOf } from "./moduleDeclarations.js";
 import { patternDigests } from "./patternDigest.js";
+import type { EvidenceKind } from "./policyEvidence.js";
 import type { MethodResponse, ProviderPort } from "./providerPort.js";
 import {
 	type ImporterIndex,
@@ -76,11 +72,25 @@ import {
 } from "./rebindScheduler.js";
 import type { ResultCache } from "./resultCache.js";
 import type { Route } from "./routing.js";
+import type {
+	AdmittedAs,
+	ModuleVerdict,
+	PolicyAffected,
+	PolicyChange,
+	ProviderVerdict,
+	ReaderVerdict,
+	SecretAdmission,
+	SecretPolicy,
+	UnparsedVerdict,
+} from "./secretPolicy.js";
 import {
 	DENIED_BY_SCOPE_REASON,
+	hashOfView,
 	insideWorkspace,
 	OUTSIDE_WORKSPACE_REASON,
 	readHead,
+	type SealedRead,
+	type SealedText,
 	type SourceReader,
 	unreadableReason,
 } from "./sourceRead.js";
@@ -117,6 +127,25 @@ type WarmCoverage =
 	| { state: "covered" }
 	| { state: "failed"; reason: string };
 
+function scopeWithObserved(scope: FileScope, observed: ReadonlySet<string>): FileScope {
+	const admitted = new Set([...observed].filter((module) => scope.admitsEvent(module)));
+	const known = scope.known === null ? null : new Set([...scope.known, ...admitted]);
+	return {
+		...scope,
+		known,
+		allows: (module) => scope.allows(module) || admitted.has(module),
+	};
+}
+
+function mergeAffected(current: PolicyAffected | null, next: PolicyAffected): PolicyAffected {
+	if (current === "all" || next === "all") return "all";
+	if (current === null) return next;
+	return {
+		modules: new Set([...current.modules, ...next.modules]),
+		prefixes: [...new Set([...current.prefixes, ...next.prefixes])].sort(),
+	};
+}
+
 /** The indexer's own failure, in one wording, so the record and the verdict read alike. */
 function indexerFault(error: unknown): string {
 	return `the indexer failed on this file: ${error instanceof Error ? error.message : String(error)}`;
@@ -144,6 +173,19 @@ const ACTIVITY_ORDER: ReadonlyArray<IndexActivity["kind"]> = ["refactor", "batch
 /** The depth a pass ends at: an outline floor is a first read the pump carries to full. */
 function settledDepth(depth: IndexDepth | undefined): IndexDepth | undefined {
 	return depth === "outline" ? "full" : depth;
+}
+
+function secretModeOf(as: AdmittedAs): ModuleSecretModeValue {
+	switch (as) {
+		case "plain":
+			return "plain";
+		case "keys":
+		case "masked":
+		case "withheld":
+			return "redact";
+		case "omit":
+			return "omit";
+	}
 }
 
 /** A synchronous scope read reached before any admission ever ran. A caller ordering bug, not a user's. */
@@ -223,6 +265,7 @@ export class WorkspaceIndexer {
 		private readonly clock: Clock,
 		/** The service's one gate. Every road this indexer drives itself takes it, one file at a time. */
 		private readonly gate: WorkspaceGate,
+		private readonly secretPolicy: SecretPolicy,
 	) {
 		// A route asked before the first scan still sees the workspace, from whatever admission last
 		// completed: evidenceFrom is synchronous, and admission now asks git asynchronously.
@@ -230,6 +273,7 @@ export class WorkspaceIndexer {
 		supervisor.headFrom((module) => readHead(this.workspaceRoot, module));
 		// A provider process starting again may answer what its predecessor failed or refused.
 		supervisor.respawnedFrom(() => this.queueRebinds());
+		supervisor.policyInvalidatedFrom((_providerId, modules) => this.queueProviderInvalidations(modules));
 		this.entries = directoryEntries(workspaceRoot);
 		// Collaborators share a live view; this class retains ownership of the state.
 		this.workspaceScanContext = this.createWorkspaceScanContext();
@@ -412,6 +456,7 @@ export class WorkspaceIndexer {
 			rebindOne: (module) => owner.rebindOne(module),
 			queueRebinds: () => owner.queueRebinds(),
 			currentScope: () => owner.currentScope(),
+			currentScopeUnderGate: () => owner.currentScopeUnderGate(),
 			indexOne: owner.indexOne.bind(owner),
 			faultOutcome: (module, error) => owner.faultOutcome(module, error),
 			holdRebind: (module, outcome) => owner.holdRebind(module, outcome),
@@ -497,12 +542,14 @@ export class WorkspaceIndexer {
 			parseAndStore: (module, depth) => owner.parseAndStore(module, depth),
 			faultOutcome: (module, error) => owner.faultOutcome(module, error),
 			currentScope: () => owner.currentScope(),
+			currentScopeUnderGate: () => owner.currentScopeUnderGate(),
 			indexOne: owner.indexOne.bind(owner),
 		};
 	}
 
 	/** What a workspace directory holds, for a marker beside an output directory. Renewed by each admission. */
 	private entries: (directory: string) => readonly string[];
+	private includeCache: { key: string; files: string[] } | null = null;
 
 	/** What the last prune kept; null until one has run, and the timer's sweep judges nothing before that. */
 	private reachable: Set<string> | null = null;
@@ -515,6 +562,11 @@ export class WorkspaceIndexer {
 	/** Keeps a restarted daemon's generations apart from this one's. */
 	private readonly epoch = randomUUID();
 	private scope: FileScope | null = null;
+	private baseScope: FileScope | null = null;
+	private readonly observedModules = new Set<string>();
+	private policyPending = true;
+	private pendingAffected: PolicyAffected | null = "all";
+	private installedPolicyRevision: string | null = null;
 	/** For the synchronous evidence callback alone: as fresh as the last admission, which every create or delete renews. */
 	private lastAdmitted: Admitted | null = null;
 	/** Each provider's discovered files, replaced whole whenever it states its project again. */
@@ -561,6 +613,8 @@ export class WorkspaceIndexer {
 	private importers: ImporterIndex | null = null;
 	/** Modules whose import rows were written since the index last read them. */
 	private readonly importsWritten = new Set<string>();
+	private readonly providerInvalidations = new Set<string>();
+	private providerInvalidationsQueued = false;
 	private readonly workspaceScanContext: WorkspaceScanContext;
 	private readonly pumpContext: IndexPumpContext;
 	private readonly rebindContext: RebindSchedulerContext;
@@ -579,28 +633,115 @@ export class WorkspaceIndexer {
 		return this.gate.exclusive(work);
 	}
 
-	/**
-	 * Asks git for the scope. Only a first computation, with no prior scope to fall back on, records
-	 * the failure the way a failed warmup pass does, so a request refuses with the reason instead of
-	 * a caller meeting a bare rejection. A later refresh failing keeps serving the scope already held;
-	 * its caller's own error handling logs it, and the next batch or warm retries. Never caches a
-	 * rejection: the field this writes to stays untouched on failure, so the next call retries.
-	 */
-	private async computeScope(): Promise<FileScope> {
-		try {
-			return await fileScopeFor(this.workspaceRoot, undefined, this.clock);
-		} catch (error) {
-			if (this.scope === null) {
+	/** Scope for surface glob resolution. */
+	async currentScope(): Promise<FileScope> {
+		if (this.scope === null) await this.gate.exclusive(() => this.currentScopeUnderGate());
+		return this.scopeOrThrow();
+	}
+
+	/** Computes missing scope under the workspace gate. */
+	async currentScopeUnderGate(): Promise<FileScope> {
+		if (this.scope === null) {
+			try {
+				await this.secretPolicy.refresh({ kind: "startup" });
+			} catch (error) {
 				this.coverage = { state: "failed", reason: error instanceof Error ? error.message : String(error) };
+				throw error;
 			}
-			throw error;
+		}
+		return this.scopeOrThrow();
+	}
+
+	async auditPolicy(): Promise<void> {
+		await this.alone(async () => {
+			const previousRevision = this.secretPolicy.current.revision;
+			const change = await this.secretPolicy.refresh({ kind: "audit" });
+			const affected =
+				change.affected === "all" || change.affected.modules.size > 0 || change.affected.prefixes.length > 0;
+			if (previousRevision !== change.revision || affected) console.log("secret policy evidence drift");
+			this.reconcilePolicy();
+		});
+	}
+
+	installScope(scope: FileScope, change?: PolicyChange): void {
+		this.baseScope = scope;
+		const previousRevision = this.installedPolicyRevision;
+		this.scope = scopeWithObserved(scope, this.observedModules);
+		this.installedPolicyRevision = this.secretPolicy.current.revision;
+		this.entries = directoryEntries(this.workspaceRoot);
+		if (change !== undefined) {
+			this.pendingAffected = mergeAffected(this.pendingAffected, change.affected);
+			this.policyPending = true;
+			this.invalidateGenerated(change.affected);
+			if (change.affected === "all" || change.admissionMoved) this.includeCache = null;
+		} else if (previousRevision !== this.installedPolicyRevision) {
+			this.pendingAffected = mergeAffected(this.pendingAffected, "all");
+			this.policyPending = true;
+			this.generated.clear();
 		}
 	}
 
-	/** Refreshed at the start of every scan. Public for the resolver's surface globs. */
-	async currentScope(): Promise<FileScope> {
-		this.scope ??= await this.computeScope();
-		return this.scope;
+	private invalidateGenerated(affected: PolicyAffected): void {
+		if (affected === "all") {
+			this.generated.clear();
+			return;
+		}
+		const matches = (module: string) =>
+			affected.modules.has(module) ||
+			affected.prefixes.some((prefix) => prefix === "" || module.startsWith(`${prefix}/`));
+		for (const module of this.generated.keys()) if (matches(module)) this.generated.delete(module);
+	}
+
+	private invalidateGeneratedAttributes(module: string): void {
+		if (module.split("/").at(-1) !== ".gitattributes") return;
+		const prefix = module.slice(0, Math.max(0, module.lastIndexOf("/")));
+		for (const path of this.generated.keys())
+			if (prefix === "" || path === prefix || path.startsWith(`${prefix}/`)) this.generated.delete(path);
+	}
+
+	private observeEvents(events: readonly FileEvent[]): void {
+		const scope = this.baseScope;
+		if (scope === null || scope.mode !== "git") return;
+		let moved = false;
+		for (const event of events) {
+			if (event.kind === "deleted") {
+				moved = this.observedModules.delete(event.module) || moved;
+			} else if (
+				this.store.contentHashOf(event.module) === null &&
+				!scope.allows(event.module) &&
+				scope.admitsEvent(event.module)
+			) {
+				const size = this.observedModules.size;
+				this.observedModules.add(event.module);
+				moved = this.observedModules.size !== size || moved;
+			}
+		}
+		if (moved) this.installScope(scope);
+	}
+
+	reconcilePolicy(): string[] {
+		if (!this.policyPending || this.pendingAffected === null) return [];
+		const affected = this.pendingAffected;
+		this.pendingAffected = null;
+		this.policyPending = false;
+		const stale = new Set(
+			this.store
+				.policyStampsOf(
+					affected === "all" ? [] : [...affected.modules],
+					affected === "all" ? [""] : [...affected.prefixes],
+				)
+				.filter(({ module, stamp }) => stamp !== this.secretPolicy.current.answer(module).stamp)
+				.map(({ module }) => module),
+		);
+		for (const module of stale) this.forgetFile(module, this.secretPolicy.current.admission(module));
+		const change = this.secretPolicy.lastChange;
+		if (change !== null) this.secretPolicy.policyChanged(change);
+		this.store.whenCommitted((committed) => {
+			if (committed) return;
+			this.pendingAffected = mergeAffected(this.pendingAffected, affected);
+			this.policyPending = true;
+		});
+		return [...stale];
 	}
 
 	/**
@@ -612,6 +753,12 @@ export class WorkspaceIndexer {
 		return this.scope;
 	}
 
+	/** Whether the index reads secret keys itself. */
+	private readsItself(module: string): boolean {
+		const answer = this.secretPolicy.current.answer(module);
+		return answer.kind === "wholeRedact" || (answer.kind === "omit" && answer.by === "secret");
+	}
+
 	/**
 	 * What the watcher may read unasked: admitted by the scope as it stands, held by the index, or a
 	 * config file a provider consults. A config under an ignored directory still states the rules.
@@ -621,13 +768,32 @@ export class WorkspaceIndexer {
 	 */
 	watchScope(): WatchScope {
 		return {
+			subscriptions: () => this.secretPolicy.evidence.subscriptions(),
+			onSubscriptionsChanged: (listener) => {
+				return this.secretPolicy.evidence.onSubscriptionsChanged(listener);
+			},
+			watchesModule: (module) =>
+				this.secretPolicy.evidence.inputsFor({ module }).length > 0 || this.secretPolicy.discovers(module),
 			admits: (module) => {
+				if (
+					this.secretPolicy.evidence.current() !== null &&
+					this.secretPolicy.evidence.inputsFor({ module }).length > 0
+				)
+					return true;
 				const scope = this.scopeOrThrow();
+				if (scope.denies(module)) return false;
 				if (scope.allows(module) || this.store.contentHashOf(module) !== null) return true;
+				const answer = this.secretPolicy.current.answer(module);
+				if (answer.kind === "wholeRedact" || (answer.kind === "omit" && answer.by === "secret")) return true;
 				return this.configFiles.has(module) && !scope.denies(module);
 			},
 			ignored: (modules) => gitIgnored(this.workspaceRoot, modules, this.clock),
 		};
+	}
+
+	/** Hash of policy-visible text. */
+	hashOfRead(read: SealedText): string {
+		return this.secretPolicy.current.view(read).hash;
 	}
 
 	/**
@@ -660,28 +826,147 @@ export class WorkspaceIndexer {
 		// any scan has run. The synchronous scope reads below (claimOf, rootDepth's default) must not
 		// be the first to ask for it, and a shared claim's routing needs the evidence callback seeded
 		// once, or it reads as nothing until a real scan runs.
-		if (this.lastAdmitted === null) await this.admitted();
-		else await this.currentScope();
+		if (this.lastAdmitted === null) {
+			await this.currentScopeUnderGate();
+			await this.admitted();
+		} else await this.currentScope();
+		const policyForgotten = this.reconcilePolicy();
+		const scope = this.scopeOrThrow();
+		if (scope.denies(module))
+			return this.unadmitted(module, DENIED_BY_SCOPE_REASON, policyForgotten.includes(module));
 		const claim = this.claimOf(module);
 		if (!claim.claimed) return this.unadmitted(module, claim.unclaimedReason);
 
 		const read = this.readSource(module);
 		if (read.kind === "outside") return this.unadmitted(module, OUTSIDE_WORKSPACE_REASON);
+		const verdict = this.secretPolicy.current.verdict(read);
 		if (read.kind === "missing") {
-			return this.outcome(module, "missing", undefined, this.forgetFile(module));
+			return this.outcome(module, "missing", undefined, this.forgetFile(module, verdict.admission));
 		}
-		if (read.kind !== "text") {
-			// Whatever it held before is not this file; the failure says why it holds nothing now.
-			const forgotten = this.forgetFile(module);
-			const failure = unreadableReason(read);
-			this.store.recordFailure(module, failure);
-			this.upgradeFailed.add(module);
-			return this.outcome(module, read.kind, failure, forgotten);
+		try {
+			if (verdict.guarded) this.providerFailures.delete(module);
+			// Directly read modules join provider routing evidence.
+			if (read.kind === "text") this.supervisor.observeModule(module);
+			switch (verdict.route) {
+				case "none":
+					return this.withhold(module, read, verdict);
+				case "omit":
+					return this.storeOmitted(module, verdict, skipIfCurrent);
+				case "reader":
+					return this.storeKeys(module, verdict, skipIfCurrent);
+				case "provider":
+					return await this.parseProvided(module, verdict, depth, skipIfCurrent);
+				default:
+					return verdict satisfies never;
+			}
+		} catch (error) {
+			// Guarded faults use verdicts; plain faults propagate.
+			if (!verdict.guarded || error instanceof BatchFailed) throw error;
+			return this.faulted(module, error, verdict);
 		}
-		const text = read.text;
-		// Read, so it exists: evidence for a shared claim that no scan has seen.
-		this.supervisor.observeModule(module);
+	}
 
+	/** No parse: non-text or fully hidden. */
+	private withhold(module: string, read: SealedRead, verdict: UnparsedVerdict): IndexOutcome {
+		this.forgetFile(module, verdict.admission);
+		const unreadable = read.kind === "binary" || read.kind === "tooLarge" ? read : null;
+		const failure = verdict.failure(unreadable === null ? null : unreadableReason(unreadable));
+		this.store.recordFailure(module, failure, verdict.admission);
+		this.upgradeFailed.add(module);
+		return this.outcome(module, unreadable === null ? "parseFailed" : unreadable.kind, failure);
+	}
+
+	/** The index reads keys; providers do not. */
+	private storeKeys(module: string, verdict: ReaderVerdict, skipIfCurrent: boolean): IndexOutcome {
+		const admission = verdict.admission;
+		const unchanged =
+			skipIfCurrent &&
+			this.store.contentHashOf(module) === verdict.hash &&
+			this.store.policyStampOf(module) === admission.stamp &&
+			this.store.depthOf(module) === "full";
+		if (unchanged) return this.outcome(module, "current");
+		this.forgetFile(module, admission);
+		const declarations = [...verdict.declarations];
+		const fresh = this.store.depthOf(module) === null;
+		try {
+			this.store.replaceFile({
+				module,
+				contentHash: verdict.hash,
+				admission,
+				declarations,
+				references: [],
+				imports: [],
+				literals: [],
+				depth: "full",
+				comments: [],
+				docs: [],
+				notes: [],
+				content: "data",
+			});
+		} catch (error) {
+			const lost = this.store.lostBatch();
+			if (lost !== null) throw lost;
+			return this.faulted(module, error, verdict);
+		}
+		this.importsWritten.add(module);
+		this.settleProjections();
+		this.caches.facts.invalidate();
+		this.upgradeFailed.delete(module);
+		if (fresh) this.newInPass.add(module);
+		return { module, action: "indexed", declarations: declarations.length };
+	}
+
+	private storeOmitted(
+		module: string,
+		verdict: Extract<ModuleVerdict, { readonly route: "omit" }>,
+		skipIfCurrent: boolean,
+	): IndexOutcome {
+		const admission = verdict.admission;
+		const unchanged =
+			skipIfCurrent &&
+			this.store.contentHashOf(module) === verdict.hash &&
+			this.store.policyStampOf(module) === admission.stamp &&
+			this.store.depthOf(module) === "full";
+		if (unchanged) return this.outcome(module, "current");
+		this.forgetFile(module, admission);
+		const fresh = this.store.depthOf(module) === null;
+		try {
+			this.store.replaceFile({
+				module,
+				contentHash: verdict.hash,
+				admission,
+				declarations: [],
+				references: [],
+				imports: [],
+				literals: [],
+				depth: "full",
+				comments: [],
+				docs: [],
+				notes: [],
+				content: "data",
+			});
+		} catch (error) {
+			const lost = this.store.lostBatch();
+			if (lost !== null) throw lost;
+			return this.faulted(module, error, verdict);
+		}
+		this.importsWritten.add(module);
+		this.settleProjections();
+		this.caches.facts.invalidate();
+		this.upgradeFailed.delete(module);
+		if (fresh) this.newInPass.add(module);
+		return { module, action: "indexed", declarations: 0 };
+	}
+
+	/** Providers parse full text; facts are filtered after. */
+	private async parseProvided(
+		module: string,
+		verdict: ProviderVerdict,
+		depth: IndexDepth,
+		skipIfCurrent: boolean,
+	): Promise<IndexOutcome> {
+		const admission = verdict.admission;
+		const readHash = verdict.hash;
 		// One resolution for the parse and its verdict. Routing moves on the evidence above, and a
 		// verdict reaching a provider that did not answer settles nothing while the one that did
 		// keeps the parse.
@@ -697,49 +982,51 @@ export class WorkspaceIndexer {
 		// Of the text actually read, never the caller's. A watcher hashes at event time and this
 		// reads later, so trusting the argument would store facts from one version of a file under
 		// the hash of another, and every staleness check downstream would compare the wrong pair.
-		const readHash = hashContent(text);
-
 		// Preserve deeper facts when owner matches or is unrecorded, and the project reads files as it did.
 		const writer = this.store.writerOf(module);
 		if (
 			skipIfCurrent &&
 			!this.restated.has(parser.providerId) &&
 			this.store.contentHashOf(module) === readHash &&
+			this.store.policyStampOf(module) === admission.stamp &&
 			(writer ?? parser.providerId) === parser.providerId
 		) {
 			const held = this.store.depthOf(module);
 			const satisfied = held === "full" || held === "surface" || held === depth;
 			if (satisfied) {
 				// Final facts outrank a failure row.
-				if (held !== "outline") this.store.clearFailure(module);
+				if (held !== "outline") this.store.clearFailure(module, admission);
 				// A row from before content was recorded learns it without a parse.
 				this.store.recordContent(module, parser.content);
 				return this.outcome(module, "current");
 			}
 		}
-
+		if (verdict.guarded) {
+			this.forgetFile(module, admission);
+		}
 		let facts: MethodResponse<"parseFile">;
 		try {
 			facts = await this.supervisor.askProvider(parser.providerId, "parseFile", {
 				module,
 				contentHash: readHash,
-				text,
+				text: verdict.input,
 				...(depth === "full" ? {} : { depth }),
 			});
 		} catch (error) {
-			const failure = error instanceof Error ? error.message : String(error);
 			if (error instanceof ProviderUnavailableError) {
-				// An outage, not a refusal: the index keeps what it had and nobody is there to tell.
+				const failure = verdict.failure(error);
+				if (verdict.guarded) this.store.recordFailure(module, failure, admission);
 				this.providerFailures.set(module, failure);
 				return this.outcome(module, "providerDown", failure);
 			}
-			return this.refuseParse(answered, module, readHash, failure);
+			return this.refuseParse(answered, module, readHash, verdict, error);
 		}
+		facts = verdict.facts(facts);
 		const errors = facts.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
 		if (errors.length > 0) {
 			// An answer, not a throw: the file is the reason, and a caller reindexing a restored file
 			// must not fail on it. Recorded here so every caller's failure reaches coverage.
-			return this.refuseParse(answered, module, readHash, errors.map((d) => d.message).join("; "));
+			return this.refuseParse(answered, module, readHash, verdict, errors.map((d) => d.message).join("; "));
 		}
 		// Below error, kept with the facts.
 		const notes: FileNote[] = facts.diagnostics.flatMap((diagnostic) =>
@@ -767,6 +1054,7 @@ export class WorkspaceIndexer {
 				module,
 				...(facts.runtime === undefined ? {} : { runtime: facts.runtime }),
 				contentHash: readHash,
+				admission,
 				declarations: facts.declarations,
 				references: facts.references,
 				imports: facts.imports,
@@ -775,7 +1063,7 @@ export class WorkspaceIndexer {
 				depth: storedDepth,
 				comments:
 					storedDepth === "full"
-						? attachComments(facts.declarations, facts.comments ?? [], text, facts.blankLines)
+						? attachComments(facts.declarations, facts.comments ?? [], verdict.input, facts.blankLines)
 						: [],
 				docs: facts.docs ?? [],
 				notes,
@@ -785,7 +1073,7 @@ export class WorkspaceIndexer {
 				// supervisor drops a comments field from a provider that never declared the tier.
 				digests:
 					storedDepth === "full"
-						? patternDigests(facts.declarations, facts.comments, facts.literals, text)
+						? patternDigests(facts.declarations, facts.comments, facts.literals, verdict.allowed)
 						: [],
 				generated: generatedVerdict,
 				role: facts.role,
@@ -801,6 +1089,7 @@ export class WorkspaceIndexer {
 					answered,
 					module,
 					readHash,
+					verdict,
 					`the provider's answer was refused: ${error.message}`,
 				);
 			}
@@ -808,11 +1097,11 @@ export class WorkspaceIndexer {
 			// Answered rather than rethrown, so the fault is recorded before the provider is told; a lost
 			// batch records none and ends the pass once the provider is told.
 			const lost = this.store.lostBatch();
-			const outcome = lost === null ? this.faultOutcome(module, error) : undefined;
+			const outcome = lost === null ? this.faulted(module, error, verdict) : undefined;
 			this.publish(answered, {
 				module,
 				contentHash: readHash,
-				outcome: { status: "refused", reason: indexerFault(error) },
+				outcome: { status: "refused", reason: verdict.failure(indexerFault(error)) },
 			});
 			if (outcome === undefined) throw lost;
 			return outcome;
@@ -874,14 +1163,22 @@ export class WorkspaceIndexer {
 	}
 
 	/**
-	 * The index takes none of this parse and keeps the file's previous facts.
+	 * Plain-file refusal preserves previous facts.
 	 *
 	 * Recorded before it is published, so a provider is never told a verdict the index has not
 	 * taken. The provider is told because the refusal happens after it answered: its own cross-file
 	 * state holds the facts this just declined, and nothing else would ever say so.
 	 */
-	private refuseParse(answered: Parser, module: string, contentHash: string, failure: string): IndexOutcome {
-		this.store.recordFailure(module, failure);
+	private refuseParse(
+		answered: Parser,
+		module: string,
+		contentHash: string,
+		verdict: ModuleVerdict,
+		error: unknown,
+	): IndexOutcome {
+		if (verdict.guarded) this.forgetFile(module, verdict.admission);
+		const failure = verdict.failure(error);
+		this.store.recordFailure(module, failure, verdict.admission);
 		this.upgradeFailed.add(module);
 		this.publish(answered, { module, contentHash, outcome: { status: "refused", reason: failure } });
 		return this.outcome(module, "parseFailed", failure);
@@ -935,6 +1232,7 @@ export class WorkspaceIndexer {
 
 	/** Stores declarations and imports before full facts. */
 	async warmupWorkspace(onProgress?: (done: number, total: number) => void): Promise<IndexOutcome[]> {
+		this.coverage = { state: "discovering" };
 		return this.during(this.scanning(), () => this.runWorkspaceScan("outline", onProgress));
 	}
 
@@ -942,6 +1240,15 @@ export class WorkspaceIndexer {
 		floor: "full" | "outline",
 		onProgress?: (done: number, total: number) => void,
 	): Promise<IndexOutcome[]> {
+		this.generated.clear();
+		await this.alone(async () => {
+			try {
+				await this.secretPolicy.refresh({ kind: "startup" });
+			} catch (error) {
+				this.coverage = { state: "failed", reason: error instanceof Error ? error.message : String(error) };
+				throw error;
+			}
+		});
 		return coordinateWorkspaceScan.call(this.workspaceScanContext, floor, onProgress);
 	}
 
@@ -989,8 +1296,10 @@ export class WorkspaceIndexer {
 	 */
 	private async restatements(
 		modules: readonly string[],
+		refreshAll = false,
 	): Promise<Array<{ providerId: string; fingerprint: string; written: string[] }>> {
 		const providers = new Set(modules.flatMap((module) => [...(this.configFiles.get(module) ?? [])]));
+		if (refreshAll) for (const provider of this.supervisor.running()) providers.add(provider.providerId);
 		const owed: Array<{ providerId: string; fingerprint: string; written: string[] }> = [];
 		const scope = providers.size === 0 ? undefined : await this.discoveryScope();
 		for (const providerId of providers) {
@@ -1131,9 +1440,10 @@ export class WorkspaceIndexer {
 	}
 
 	/** A module nothing may index keeps no facts. */
-	private unadmitted(module: string, reason: string): IndexOutcome {
+	private unadmitted(module: string, reason: string, reconciled = false): IndexOutcome {
 		const held = this.store.contentHashOf(module) !== null || this.store.parseFailureOf(module) !== null;
-		return this.outcome(module, "unclaimed", reason, held && this.forgetFile(module));
+		const forgot = held && this.forgetFile(module, this.secretPolicy.current.admission(module));
+		return this.outcome(module, "unclaimed", reason, forgot || reconciled);
 	}
 
 	/** Exclude failures from the retryable background backlog. */
@@ -1164,18 +1474,30 @@ export class WorkspaceIndexer {
 		}
 	}
 
+	/** Unclassified faults follow module policy. */
 	private faultOutcome(module: string, error: unknown): IndexOutcome {
-		const failure = error instanceof Error ? error.message : String(error);
+		return this.faulted(module, error, this.secretPolicy.current.verdict(module));
+	}
+
+	private faulted(module: string, error: unknown, verdict: ModuleVerdict): IndexOutcome {
+		if (verdict.guarded) this.forgetFile(module, verdict.admission);
 		// Recorded under its own wording, so the file shows among the failures without being blamed. An
 		// index write, so after a lost batch it refuses and the pass ends: a loss is no file's fault.
-		this.store.recordFailure(module, indexerFault(error));
+		this.store.recordFailure(module, verdict.failure(indexerFault(error)), verdict.admission);
 		this.upgradeFailed.add(module);
-		return this.outcome(module, "fault", failure);
+		return this.outcome(module, "fault", verdict.failure(error));
 	}
 
 	/** Whether anything will index a module: the scope's word, then the routing's, then its owner's exclusions. */
 	claimOf(module: string): ModuleClaim {
-		if (this.scopeOrThrow().denies(module)) return { claimed: false, unclaimedReason: DENIED_BY_SCOPE_REASON };
+		const scope = this.scopeOrThrow();
+		const answer = this.secretPolicy.current.answer(module);
+		if (scope.denies(module)) return { claimed: false, unclaimedReason: DENIED_BY_SCOPE_REASON };
+		if (answer.kind === "wholeRedact" || (answer.kind === "omit" && answer.by === "secret")) {
+			return underExcludedDirectory(module, DEFAULT_EXCLUDED_DIRECTORIES, this.entries)
+				? { claimed: false, unclaimedReason: EXCLUDED_DIRECTORY_REASON }
+				: { claimed: true };
+		}
 		const route = this.supervisor.route(module);
 		// The one check: roots, followed imports and every explicit index road all ask here.
 		if (this.excludedByOwner(module, route)) return { claimed: false, unclaimedReason: EXCLUDED_DIRECTORY_REASON };
@@ -1233,7 +1555,8 @@ export class WorkspaceIndexer {
 				if (
 					!indexExisting &&
 					this.store.contentHashOf(module) !== null &&
-					settledDepth(previousDepths.get(module)) === settledDepth(this.depths.get(module))
+					settledDepth(previousDepths.get(module)) === settledDepth(this.depths.get(module)) &&
+					this.store.policyStampOf(module) === this.secretPolicy.current.answer(module).stamp
 				)
 					continue;
 				outcomes.push(
@@ -1260,28 +1583,51 @@ export class WorkspaceIndexer {
 		const outcomes: IndexOutcome[] = [];
 		for (const module of this.store.indexedFiles()) {
 			if (reachable.has(module)) continue;
-			outcomes.push(this.outcome(module, "unclaimed", "no longer a root or reachable", this.forgetFile(module)));
+			const admission = this.secretPolicy.current.admission(module);
+			outcomes.push(
+				this.outcome(module, "unclaimed", "no longer a root or reachable", this.forgetFile(module, admission)),
+			);
 		}
 		// A failure row for a file that was never stored has no files row to sweep it away with.
 		for (const { module } of this.store.parseFailures()) {
-			if (!reachable.has(module) && this.store.contentHashOf(module) === null) this.store.clearFailure(module);
+			if (!reachable.has(module) && this.store.contentHashOf(module) === null)
+				this.store.clearFailure(module, this.secretPolicy.current.admission(module));
 		}
 		return outcomes;
 	}
 
-	/** Every module the scope admits, owned by a provider or not. Rebuilds the scope from git each time. */
-	private async admitted(extra: Iterable<string> = [], gone: Iterable<string> = []): Promise<Admitted> {
-		this.scope = await this.computeScope();
-		this.entries = directoryEntries(this.workspaceRoot);
-		const named = includedFiles(this.workspaceRoot, this.scope.include);
+	/** Includes providerless modules. */
+	private async admitted(
+		extra: Iterable<string> = [],
+		gone: Iterable<string> = [],
+		preparedScope?: FileScope,
+	): Promise<Admitted> {
+		if (preparedScope === undefined) {
+			if (this.scope === null) throw new ScopeNotComputedError();
+		} else {
+			this.installScope(preparedScope);
+		}
+		const scope = this.scopeOrThrow();
+		const includeKey = JSON.stringify(scope.include);
+		if (this.includeCache?.key !== includeKey)
+			this.includeCache = { key: includeKey, files: includedFiles(this.workspaceRoot, scope.include) };
+		const named = this.includeCache.files;
 		const namedSet = new Set(named);
 		const goneSet = new Set(gone);
 		const discovered = [...this.discovered.values()].flatMap((files) => [...files]);
-		const everything = [...new Set([...(this.scope.known ?? []), ...discovered, ...named, ...extra])].filter(
-			(module) => !goneSet.has(module),
-		);
-		const candidates = everything.filter((module) => this.scope?.allows(module) ?? true);
-		this.generated = await generatedVerdicts(this.workspaceRoot, candidates, this.clock);
+		const everything = [
+			...new Set([
+				...(scope.known ?? []),
+				...(this.secretPolicy.evidence.current()?.collected.ignoredSecrets ?? []),
+				...discovered,
+				...named,
+				...extra,
+			]),
+		].filter((module) => !goneSet.has(module));
+		const candidates = everything.filter((module) => scope.allows(module));
+		const missing = candidates.filter((module) => !this.generated.has(module));
+		for (const [module, verdict] of await generatedVerdicts(this.workspaceRoot, missing, this.clock))
+			this.generated.set(module, verdict);
 		const reachable = candidates.filter(
 			(module) => namedSet.has(module) || this.generated.get(module)?.status !== "yes",
 		);
@@ -1305,15 +1651,20 @@ export class WorkspaceIndexer {
 		return this.generated.get(module) as GeneratedVerdict;
 	}
 
-	private async rootModules(extra: Iterable<string> = [], gone: Iterable<string> = []): Promise<Set<string>> {
-		const { everything, candidates, reachable } = await this.admitted(extra, gone);
+	private async rootModules(
+		extra: Iterable<string> = [],
+		gone: Iterable<string> = [],
+		preparedScope?: FileScope,
+	): Promise<Set<string>> {
+		const { everything, candidates, reachable } = await this.admitted(extra, gone, preparedScope);
+		this.reconcilePolicy();
 		// Evidence before ownership: a shared claim is decided by what the scope admits.
 		this.supervisor.observeWorkspace(reachable);
 		const roots = new Set(reachable.filter((module) => this.claimOf(module).claimed));
 		const byProvider = new Map<string, string[]>();
 		for (const module of roots) {
 			const claim = this.claimOf(module);
-			if (!claim.claimed) continue;
+			if (!claim.claimed || claim.provider === undefined) continue;
 			const providerId = claim.provider;
 			const owned = byProvider.get(providerId) ?? [];
 			owned.push(module);
@@ -1363,7 +1714,7 @@ export class WorkspaceIndexer {
 			const route = this.supervisor.route(module);
 			if (!route.owned || route.providerId === writer) continue;
 			// Keep dependency reads available.
-			dropped = this.store.forgetFile(module) || dropped;
+			dropped = this.store.forgetFile(module, this.secretPolicy.current.admission(module)) || dropped;
 			this.importsWritten.add(module);
 			this.supervisor.release(module, writer);
 		}
@@ -1380,8 +1731,8 @@ export class WorkspaceIndexer {
 		return ceiling === "surface" ? "surface" : floor;
 	}
 
-	private forgetFile(module: string): boolean {
-		const removed = this.store.forgetFile(module);
+	private forgetFile(module: string, admission: SecretAdmission): boolean {
+		const removed = this.store.forgetFile(module, admission);
 		this.settleProjections();
 		this.importsWritten.add(module);
 		// Told regardless: a provider may still hold the file.
@@ -1406,6 +1757,31 @@ export class WorkspaceIndexer {
 
 	private queueRebinds(): void {
 		scheduleQueueRebinds.call(this.rebindContext);
+	}
+
+	private queueProviderInvalidations(modules: readonly string[]): void {
+		for (const module of modules) this.providerInvalidations.add(module);
+		if (this.providerInvalidationsQueued || this.providerInvalidations.size === 0) return;
+		this.providerInvalidationsQueued = true;
+		void this.gate
+			.exclusive(async () => {
+				const changed = [...this.providerInvalidations].sort();
+				this.providerInvalidations.clear();
+				const index = await this.importIndex();
+				const importers = new Set<string>();
+				if (index.complete) {
+					for (const module of changed)
+						for (const importer of index.importersOf(module)) importers.add(importer);
+				} else {
+					for (const module of this.store.indexedFiles()) importers.add(module);
+				}
+				for (const module of [...importers].sort()) await this.indexFile(module);
+			})
+			.catch(() => {})
+			.finally(() => {
+				this.providerInvalidationsQueued = false;
+				if (this.providerInvalidations.size > 0) this.queueProviderInvalidations([]);
+			});
 	}
 
 	private retryResolving(moved: Iterable<string>): void {
@@ -1492,6 +1868,7 @@ export class WorkspaceIndexer {
 			stored: this.store.totals().files,
 			failures: this.store.parseFailureCount(),
 			failed: this.store.parseFailures(NAMED_FAILURES),
+			...(this.secretPolicy.notes.length === 0 ? {} : { scopeNotes: [...this.secretPolicy.notes] }),
 			...(concerned === null ? {} : { concerning: concerned }),
 			fullFiles: depths.full + depths.surface,
 			outlineFiles: depths.outline,
@@ -1508,10 +1885,49 @@ export class WorkspaceIndexer {
 		return statusOf(module, this.claimOf(module), denied ? null : this.readSource(module), this.store);
 	}
 
+	/** Reports indexed, withheld, or unindexed targets. */
+	noteModuleState(module: string): "indexed" | "withheld" | "unindexed" {
+		const answer = this.secretPolicy.current.answer(module);
+		const denied = this.scope?.denies(module) === true || (answer.kind === "omit" && answer.by === "deny");
+		if (denied) return this.moduleExists(module) ? "withheld" : "unindexed";
+
+		const depth = this.store.depthOf(module);
+		if (answer.kind === "plain") return depth === null ? "unindexed" : "indexed";
+		if (answer.kind === "omit" && answer.by === "secret")
+			return depth !== null && this.moduleExists(module) ? "indexed" : "unindexed";
+
+		const read = this.readSource(module);
+		if (read.kind === "missing" || read.kind === "outside") return "unindexed";
+		const verdict = this.secretPolicy.current.verdict(read);
+		if (verdict.guarded && verdict.route === "none") return "withheld";
+		return depth === null ? "unindexed" : "indexed";
+	}
+
+	private moduleExists(module: string): boolean {
+		try {
+			const contained = resolveContained(this.workspaceRoot, module);
+			return contained.kind === "file" && statSync(contained.path).isFile();
+		} catch {
+			return false;
+		}
+	}
+
 	/** Why the index may read a module: discovered by scope, or reached by import. Narrower than a claim. */
 	async admittedModules(modules: string[]): Promise<AdmittedModule[]> {
 		const scope = await this.currentScope();
 		return modules.map((module) => ({ module, admitted: this.admissionIn(scope, module) }));
+	}
+
+	async moduleSecretModes(modules: string[]): Promise<ModuleSecretModeAnswer[]> {
+		await this.currentScope();
+		const current = this.secretPolicy.current;
+		return modules.map((module) => {
+			const answer = current.answer(module);
+			if (answer.kind !== "matchers") return { module, mode: secretModeOf(current.admission(module).as) };
+			const read = this.readSource(module);
+			const admission = read.kind === "text" ? current.admission(read) : current.admission(module);
+			return { module, mode: secretModeOf(admission.as) };
+		});
 	}
 
 	private admissionIn(scope: FileScope, module: string): AdmittedModule["admitted"] {
@@ -1527,6 +1943,7 @@ export class WorkspaceIndexer {
 			claimOf: (m) => this.claimOf(m),
 			denies: (m) => this.scopeOrThrow().denies(m),
 			readSource: this.readSource,
+			hashOfRead: (read) => this.hashOfRead(read),
 			store: this.store,
 		});
 	}
@@ -1561,11 +1978,20 @@ export class WorkspaceIndexer {
 	 * indexed above stays fully written, and what is left is re-read by the next daemon's warm scan,
 	 * since its stored hash no longer matches.
 	 */
-	applyBatch(events: FileEvent[], shouldAbandon?: () => boolean): Promise<IndexOutcome[]> {
-		return this.pass(() => this.applyEvents(events, shouldAbandon));
+	applyBatch(
+		events: FileEvent[],
+		shouldAbandon?: () => boolean,
+		evidence: readonly EvidenceKind[] = [],
+	): Promise<IndexOutcome[]> {
+		return this.pass(() => this.applyEvents(events, shouldAbandon, evidence));
 	}
 
-	private async applyEvents(events: FileEvent[], shouldAbandon?: () => boolean): Promise<IndexOutcome[]> {
+	private async applyEvents(
+		events: FileEvent[],
+		shouldAbandon?: () => boolean,
+		suppliedEvidence: readonly EvidenceKind[] = [],
+	): Promise<IndexOutcome[]> {
+		let effectiveEvents = events;
 		const progress = { done: 0, total: events.length };
 		const doing: Doing = { kind: "batch", counts: () => progress };
 		// Many parses beyond the batch's own files are named and counted, so a long hold reads as what it is.
@@ -1582,9 +2008,59 @@ export class WorkspaceIndexer {
 			if (this.coverage.state === "discovering" || this.coverage.state === "outlining") {
 				throw new Error("live indexing cannot run under the warmup pass");
 			}
-			const decisions = events.map((event) =>
+			if (this.scope === null) {
+				await this.currentScopeUnderGate();
+				await this.admitted();
+			}
+			effectiveEvents = this.expandLinkEvents(events);
+			progress.total = effectiveEvents.length;
+			const evidenceKinds = new Set(suppliedEvidence);
+			for (const event of effectiveEvents)
+				for (const kind of this.secretPolicy.evidence.inputsFor(event)) evidenceKinds.add(kind);
+			const configRefresh = evidenceKinds.has("config");
+			const gitRefresh =
+				evidenceKinds.has("repositories") || [...evidenceKinds].some((kind) => kind.startsWith("listing:"));
+			let refreshedScope: FileScope | undefined;
+			let resolutionPolicyChanged = false;
+			let policyForgotten: string[] = [];
+			for (const event of effectiveEvents)
+				if (event.kind === "changed") this.invalidateGeneratedAttributes(event.module);
+			const previousScope = this.scope;
+			const previousRevision = this.secretPolicy.current.revision;
+			const policyChange = await this.secretPolicy.refresh({
+				kind: "events",
+				modules: effectiveEvents.map((event) => event.module),
+				changed: effectiveEvents
+					.filter((event) => event.kind === "changed" && this.store.contentHashOf(event.module) === null)
+					.map((event) => event.module),
+				evidence: suppliedEvidence,
+			});
+			const refreshScope =
+				policyChange.affected === "all" ||
+				policyChange.affected.modules.size > 0 ||
+				policyChange.affected.prefixes.length > 0 ||
+				policyChange.admissionMoved;
+			if (refreshScope) {
+				refreshedScope = this.scopeOrThrow();
+				resolutionPolicyChanged =
+					previousScope === null ||
+					JSON.stringify([previousRevision, previousScope.bundles]) !==
+						JSON.stringify([this.secretPolicy.current.revision, refreshedScope.bundles]);
+				policyForgotten = this.reconcilePolicy();
+			}
+			this.observeEvents(effectiveEvents);
+			progress.total = effectiveEvents.length;
+			const guardedEvents = effectiveEvents.map((event) => {
+				if (event.kind !== "changed") return event;
+				if (this.secretPolicy.current.answer(event.module).kind === "plain") return event;
+				const read = this.readSource(event.module);
+				if (this.secretPolicy.current.admission(read).as === "plain") return event;
+				return { ...event, contentHash: hashOfView(this.secretPolicy.current.view(read)) };
+			});
+			const decisions = guardedEvents.map((event) =>
 				decideInvalidation(event, {
 					route: (module) => this.supervisor.route(module),
+					readsItself: (module) => this.readsItself(module),
 					indexedHash: (module) => this.store.contentHashOf(module),
 				}),
 			);
@@ -1599,32 +2075,43 @@ export class WorkspaceIndexer {
 				this.queueRebinds();
 			}
 			// Decided before admission: a save that changed nothing asks neither git nor a provider.
-			if (unchanged.length === decisions.length) {
+			if (unchanged.length === decisions.length && !refreshScope) {
 				return decisions.map((decision) => this.outcome(decision.module, "current", UNCHANGED_REASON));
 			}
 			this.newInPass = new Set();
 			const outcomes: IndexOutcome[] = [];
 			const previousRoots = this.roots;
 			const previousDepths = this.depths;
-			const changed = events.filter((event) => event.kind === "changed").map((event) => event.module);
-			const deleted = events.filter((event) => event.kind === "deleted").map((event) => event.module);
+			const changed = effectiveEvents.filter((event) => event.kind === "changed").map((event) => event.module);
+			const newFiles = changed.filter((module) => this.store.contentHashOf(module) === null);
+			const deleted = effectiveEvents.filter((event) => event.kind === "deleted").map((event) => event.module);
 			for (const files of this.discovered.values()) for (const module of deleted) files.delete(module);
 			// Asked of the config files as providers named them before this batch: a restated project
 			// may stop naming the very file that restated it.
-			const touchedConfig = decisions.some((decision) => this.configFiles.has(decision.module));
 			// A provider whose config the batch touched states its project, and its files, before
 			// anything is read under it or the roots are counted.
-			const restated = await this.restatements(decisions.map((decision) => decision.module));
-			const roots = await this.rootModules(changed, deleted);
+			const restated = await this.restatements(
+				decisions.map((decision) => decision.module),
+				configRefresh,
+			);
+			const roots = await this.rootModules(newFiles, deleted, refreshedScope);
 			this.roots = roots;
 			this.depths = new Map([...roots].map((module) => [module, this.rootDepth(module)]));
+			for (const module of policyForgotten) {
+				if (previousRoots.has(module) && !roots.has(module))
+					outcomes.push(this.outcome(module, "unclaimed", "no longer a root or reachable", true));
+			}
 			// A provider resolves against the files on DISK, not against what this index holds, so only a
 			// file arriving or leaving, or a config restating the rules, moves where a specifier lands.
 			// Editing a body moves none of them, which is the ordinary batch. Asked of the roots the scope
 			// just decided, so a write the workspace does not admit retires nothing.
+			const rootsChanged =
+				[...previousRoots].some((module) => !roots.has(module)) ||
+				[...roots].some((module) => !previousRoots.has(module));
 			const moved =
-				touchedConfig ||
+				(resolutionPolicyChanged && refreshScope) ||
 				restated.length > 0 ||
+				rootsChanged ||
 				decisions.some(
 					(decision) =>
 						decision.action === "forget" ||
@@ -1649,8 +2136,14 @@ export class WorkspaceIndexer {
 				}
 				if (decision.action === "forget") {
 					pending.delete(decision.module);
+					const admission = this.secretPolicy.current.admission(decision.module);
 					outcomes.push(
-						this.outcome(decision.module, "missing", undefined, this.forgetFile(decision.module)),
+						this.outcome(
+							decision.module,
+							"missing",
+							undefined,
+							this.forgetFile(decision.module, admission),
+						),
 					);
 					continue;
 				}
@@ -1684,6 +2177,8 @@ export class WorkspaceIndexer {
 				const reread = [...roots].filter((module) => {
 					// A parse failure is about the file's own bytes, so only its own event can mean they moved.
 					const refused = previousRoots.has(module) && this.store.parseFailureOf(module) !== null;
+					// Preserve cached facts across git-only refreshes.
+					if (gitRefresh && !configRefresh && this.store.contentHashOf(module) !== null) return false;
 					const current =
 						this.store.contentHashOf(module) !== null &&
 						previousRoots.has(module) &&
@@ -1753,5 +2248,14 @@ export class WorkspaceIndexer {
 		} finally {
 			this.doing.delete(doing);
 		}
+	}
+
+	private expandLinkEvents(events: readonly FileEvent[]): FileEvent[] {
+		const observed = new Set(events.map((event) => event.module));
+		const aliases = new Map<string, FileEvent>();
+		for (const event of events)
+			for (const module of this.secretPolicy.evidence.aliasesOf(event.module))
+				if (!observed.has(module)) aliases.set(module, { kind: "changed", module, contentHash: null });
+		return [...events, ...aliases.values()];
 	}
 }

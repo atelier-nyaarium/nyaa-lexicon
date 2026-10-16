@@ -1,5 +1,6 @@
 import path from "node:path";
 import { type HtmlFacts, readHtml } from "@nyaa-lexicon/formats/html";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type Binding,
@@ -120,6 +121,6 @@ export class HtmlProvider {
 }
 
 export function serve(connection: ReturnType<typeof createMessageConnection>, provider = new HtmlProvider()): void {
-	serveProvider(connection, handlersFor(provider));
+	serveProvider(connection, handlersFor(provider, SECRET_READERS));
 }
-if (import.meta.main) runProviderOnStdio(handlersFor(new HtmlProvider()));
+if (import.meta.main) runProviderOnStdio(handlersFor(new HtmlProvider(), SECRET_READERS));

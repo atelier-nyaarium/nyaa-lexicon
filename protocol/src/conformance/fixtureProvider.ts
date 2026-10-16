@@ -200,6 +200,7 @@ export const fixtureHandlers: ProviderHandlers = {
 		tiers: REFERENCE_TIERS,
 		words: REFERENCE_WORDS,
 	}),
+	installPolicy: () => ({ changed: [] }),
 	renameEdits: makeFixtureRenameEdits,
 	moveEdits: makeFixtureMoveEdits,
 	arrangeEdits: makeFixtureArrangeEdits,

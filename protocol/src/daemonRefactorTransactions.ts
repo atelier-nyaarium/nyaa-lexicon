@@ -115,10 +115,10 @@ export const RefactorSettlementsSchema = z
 
 export type RefactorSettlements = z.infer<typeof RefactorSettlementsSchema>;
 
-/** False: pruned or unknown. */
+/** False: unavailable or refused. */
 export const RefactorSettledImageSchema = z
 	.union([
-		z.object({ held: z.literal(false) }),
+		z.object({ held: z.literal(false), reason: z.string().optional() }),
 		z.object({ held: z.literal(true), absent: z.literal(true) }),
 		z.object({ held: z.literal(true), contentHash: z.string(), encoding: z.literal("text"), text: z.string() }),
 		z.object({ held: z.literal(true), contentHash: z.string(), encoding: z.literal("base64"), bytes: z.string() }),

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	type ArrangeMember,
@@ -14,6 +15,7 @@ import {
 	PROTOCOL_VERSION,
 	type Range,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { extractDeclarationsCore } from "../extractCore.js";
 import { GDScriptProvider } from "../main.js";
 
@@ -86,8 +88,8 @@ function part(module: string, text: string, fields: Partial<ArrangeEditsRequest>
 }
 
 function arrange(root: string, request: ArrangeEditsRequest) {
-	const handlers = handlersFor(new GDScriptProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new GDScriptProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers.arrangeEdits(request);
 }

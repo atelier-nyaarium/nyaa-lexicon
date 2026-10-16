@@ -53,7 +53,7 @@ function paintDeclarations(
 	return declarations.map((declaration) => ({ kind: declaration.kind, range: declarationRange(declaration) }));
 }
 
-/** An unbound row keeps its reason in `provenance`; an ambiguous one keeps a provenance there instead. */
+/** Unbound rows retain reasons; ambiguous rows retain provenance. */
 function storedReason(reference: StoredReference): UnknownReason | undefined {
 	if (reference.targetId !== null) return undefined;
 	const reason = UnknownReasonSchema.safeParse(reference.provenance);
@@ -80,7 +80,11 @@ function paintCandidateReferences(references: readonly Reference[]): PaintFacts[
 		const { binding } = reference;
 		const target = binding.status === "bound" ? binding.symbolId : null;
 		const reason =
-			binding.status === "unbound" ? binding.reason : binding.status === "ambiguous" ? "Ambiguous" : undefined;
+			binding.status === "unbound" || binding.status === "unknown"
+				? binding.reason
+				: binding.status === "ambiguous"
+					? "Ambiguous"
+					: undefined;
 		return {
 			role: reference.role,
 			range: reference.range,

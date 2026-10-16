@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type ArrangeEditsRequest,
 	BindingSchema,
@@ -18,6 +19,7 @@ import {
 	type RenameEditsRequest,
 	TypeInfoSchema,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { CProvider, REFERENCE_ROLES, TIERS } from "../main.js";
 import { bindingCandidates, parseC } from "../parser.js";
 import { lexC } from "../tokens.js";
@@ -47,8 +49,8 @@ function rangeAt(text: string, value: string, from = 0): Range {
 }
 
 function started(root = workspace({})) {
-	const handlers = handlersFor(new CProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new CProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return handlers;
 }
@@ -99,8 +101,12 @@ afterEach(() => {
 
 describe("C provider protocol", () => {
 	test("declares C files, supported reference roles, and implemented tiers", () => {
-		const handlers = handlersFor(new CProvider());
-		const response = handlers.initialize({ workspaceRoot: process.cwd(), protocolVersion: PROTOCOL_VERSION });
+		const handlers = handlersFor(new CProvider(), SECRET_READERS);
+		const response = handlers.initialize({
+			workspaceRoot: process.cwd(),
+			protocolVersion: PROTOCOL_VERSION,
+			policy: secretWire(),
+		});
 
 		expect(InitializeResponseSchema.parse(response).language).toBe("c");
 		expect(response.providerId).toBe("c-provider");
@@ -120,6 +126,7 @@ describe("C provider protocol", () => {
 			"importEdits",
 			"indexRoots",
 			"initialize",
+			"installPolicy",
 			"judgeLoadCycle",
 			"moduleAdmission",
 			"moveEdits",
@@ -1991,8 +1998,8 @@ describe("C binding and imports", () => {
 			"src/main.c": '#include "secret.h"\n#include <hidden.h>\n',
 		});
 		const resolveWith = (deny: string[]) => {
-			const handlers = handlersFor(new CProvider());
-			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, deny });
+			const handlers = handlersFor(new CProvider(), SECRET_READERS);
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire(deny) });
 			handlers.discoverProject({ workspaceRoot: root });
 			return ['"secret.h"', "<hidden.h>"].map((specifier) =>
 				handlers.resolveImport({ fromModule: "src/main.c", specifier }),
@@ -2087,9 +2094,9 @@ describe("C binding and imports", () => {
 			const uses = Array.from({ length: count }, (_, index) => `v${index} + u${index}`).join(" + ");
 			const text = `${includes}\nint run(void) { return ${uses}; }\n`;
 			const meter = { steps: 0 };
-			const handlers = handlersFor(new CProvider(meter));
+			const handlers = handlersFor(new CProvider(meter), SECRET_READERS);
 			const root = workspace({ ...headers, "main.c": text });
-			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+			handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 			handlers.discoverProject({ workspaceRoot: root });
 			facts(handlers, "main.c", text);
 			meter.steps = 0;

@@ -2,17 +2,19 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, type ImportResolution, PROTOCOL_VERSION } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { REFERENCE_ROLES, RustProvider, TIERS } from "../main.js";
 
 const roots: string[] = [];
 
 function client(provider: RustProvider) {
-	const handlers = handlersFor(provider);
+	const handlers = handlersFor(provider, SECRET_READERS);
 	return {
 		handlers,
 		initialize: (workspaceRoot: string) =>
-			handlers.initialize({ workspaceRoot, protocolVersion: PROTOCOL_VERSION }),
+			handlers.initialize({ workspaceRoot, protocolVersion: PROTOCOL_VERSION, policy: secretWire() }),
 		discoverProject: (workspaceRoot: string) => handlers.discoverProject({ workspaceRoot }),
 		parseFile: (params: Parameters<typeof handlers.parseFile>[0]) => handlers.parseFile(params),
 		resolveImport: (params: Parameters<typeof handlers.resolveImport>[0]) => handlers.resolveImport(params),
@@ -379,8 +381,8 @@ test("answers a base-module symbol import from the text the store holds", () => 
 
 test("answers every protocol method, including explicit refusals", () => {
 	const provider = new RustProvider();
-	const handlers = handlersFor(provider);
-	const info = handlers.initialize({ workspaceRoot: "/workspace", protocolVersion: "1.0.0" });
+	const handlers = handlersFor(provider, SECRET_READERS);
+	const info = handlers.initialize({ workspaceRoot: "/workspace", protocolVersion: "1.0.0", policy: secretWire() });
 	const rename = handlers.renameEdits({ module: "src/lib.rs", text: "", oldName: "a", newName: "b", sites: [] });
 	const move = handlers.moveEdits({
 		module: "src/lib.rs",
@@ -845,8 +847,8 @@ test("rejects a module path outside the workspace without reading it", () => {
 test("wires handlers to the same provider instance", () => {
 	const root = workspace({ "src/lib.rs": "pub fn add() {}\n" });
 	const provider = new RustProvider();
-	const handlers = handlersFor(provider);
-	const initialized = handlers.initialize({ workspaceRoot: root, protocolVersion: "1.0.0" });
+	const handlers = handlersFor(provider, SECRET_READERS);
+	const initialized = handlers.initialize({ workspaceRoot: root, protocolVersion: "1.0.0", policy: secretWire() });
 	const discovered = handlers.discoverProject({ workspaceRoot: root });
 	const parsed = handlers.parseFile({ module: "src/lib.rs", contentHash: "handlers", text: "pub fn add() {}\n" });
 	const add = parsed.declarations.find((declaration) => declaration.name === "add");

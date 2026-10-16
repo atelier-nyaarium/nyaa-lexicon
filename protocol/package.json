@@ -12,6 +12,9 @@
 		"./noteRefs": "./src/noteRefs.ts",
 		"./refTargets": "./src/refTargets.ts",
 		"./rejection": "./src/conformance/rejection.ts",
+		"./secretDecision": "./src/secretDecision.ts",
+		"./secretJudge": "./src/secretJudge.ts",
+		"./secretSyntax": "./src/secretSyntax.ts",
 		"./symbolId": "./src/symbolId.ts",
 		"./toy": "./src/conformance/toyLexer.ts"
 	},

@@ -15,8 +15,9 @@ any branch on language, which a residue test enforces.
 ## Methods
 
 ```
-initialize(workspaceRoot, protocolVersion, deny)
+initialize(workspaceRoot, protocolVersion, policy)
                              -> { providerId, language, extensions[], protocolVersion, tiers, ... }
+installPolicy(policy)        -> { changed[] }
 discoverProject(root)        -> ProjectModel { files[], resolutionRules, externalRoots[] }
 parseFile(module, hash, text)-> FileFacts { declarations[], references[], imports[], literals[], comments[], docs[] }
 probeFile(module, hash, text)-> FileFacts, derived by handlersFor; the provider holds what it held before
@@ -31,9 +32,9 @@ importEdits(request)         -> ImportEditsResponse
 shutdown()
 ```
 
-`FileFacts` also carries the facts core decides from instead of reading source text:
-`blankLines`, each container's `memberInsertLine`, and each comment's `codeBefore` and `codeAfter`.
-`docs/parsing.md` defines each. The facts a rename routes by are under Imports, exports and origins.
+Core derives `blankLines`, each container's `memberInsertLine`, and each comment's `codeBefore` and
+`codeAfter` for `FileFacts`; see `docs/parsing.md`. Rename routing uses facts under Imports, exports
+and origins.
 
 Three notifications travel the other way without an answer:
 
@@ -44,25 +45,28 @@ moduleAdmission(module, contentHash, outcome)
                              what the index did with the parse you just answered
 ```
 
-The core sends `forgetModule` to every running provider when it removes a module. This happens when
-the file is deleted, exceeds the size limit, becomes binary, or leaves scope. The notification
-follows earlier requests on the provider queue. A store-backed provider withholds the module until
-a parse is admitted. A provider without a store has no handler for it and ignores it.
+The core sends `forgetModule` to every running provider when a file is deleted, exceeds the size
+limit, becomes binary, or leaves scope. It queues the notification after earlier requests. A
+store-backed provider hides the module until a parse is admitted; providers without a store ignore it.
 
-The core sends `releaseModule` to a module's former owner only, when a shared claim moves the module
-to another provider. A header claimed by C moves to C++ once a C++ source appears beside it. The
-former owner still reads the module as a dependency, so a store-backed provider drops what the index
-admitted and fills it from disk.
+The core sends `releaseModule` only to the former owner when a shared claim moves a module. For
+example, C++ claims a C header when a C++ source appears beside it. The former owner may still read
+the header as a dependency, so its store-backed provider drops the indexed value and reads it from
+disk.
 
-A provider tells core one thing unasked: `providerPhase(phase, label?)`, `initializing` before heavy
-setup such as a compiler's program build and `ready` after, so a status line can show it warming.
-`label` says what it is doing, such as "building the TypeScript program", and core keeps the last
-one given. A store-backed provider calls `store.announcePhase(phase, label?)`; any other gets the
-sender from `ProviderMethods.connected` or from what `runProviderOnStdio` returns. It is
-fire-and-forget from any turn, a timer's included, and sends nothing before the provider is served.
-An older core ignores it. While a provider is initializing, core holds its requests past their
-timeout and gives each a whole budget once it is ready. A provider initializing for ten minutes is
-taken as wedged: core kills it, and it respawns as after any death.
+`initialize` requires the complete secret-policy wire. The provider kit stores it as `store.policy`
+and passes it to the active judge. Before a request under a different policy revision, the supervisor
+waits for `installPolicy`. Its response lists previously read modules whose access class changed; the
+supervisor invalidates them before using cached facts. Respawn initialization receives the current
+wire.
+
+Providers can notify core with `providerPhase(phase, label?)`. They send `initializing` before heavy
+setup and `ready` after; an optional label describes the work, and core retains the latest label.
+Store-backed providers call `store.announcePhase`; others use the sender from
+`ProviderMethods.connected` or `runProviderOnStdio`. Notifications are fire-and-forget from any turn,
+including timers, and are sent only after serving starts. Cores without `providerPhase` support
+ignore them. Core holds requests during initialization without using their timeout, then grants each
+its full budget. Core kills and restarts a provider that initializes for ten minutes.
 
 ## What the index admitted
 
@@ -188,86 +192,131 @@ belongs to the declaration it parameterizes.
 
 ## Declaring what you cover
 
-A tier boolean may not be an unqualified claim over a vocabulary. Declaring the `references` tier
-REQUIRES listing the roles extracted, refused by the schema rather than by convention, and emitting
-a role outside that list fails conformance. So the declaration cannot over-claim or under-claim.
+The `references` tier lists the roles a provider extracts. The schema requires the list, and
+conformance rejects emitted roles outside it.
 
-The tiers are a planning hint and a coverage report. Nothing consults them before making a call.
+Tiers report coverage; they do not gate calls.
 
-`syntaxDiagnostics` is the one tier that is not about coverage. It says parseFile reports a syntax
-error as an error diagnostic, which is what lets a caller validate candidate text before writing
-it. A lenient extractor recovers from anything and returns nothing, so silence from a provider that
-never declared the tier means unchecked rather than clean. Absent is therefore different from
-false, and conformance fails a provider that declares it and then stays quiet on invalid text.
+`syntaxDiagnostics` states that `parseFile` reports syntax errors as error diagnostics. Callers can
+use it to validate candidate text before writing. A lenient extractor may recover without reporting
+an error, so no declaration means unchecked, not clean. Absence differs from `false`; conformance
+rejects a provider that declares the tier but stays silent on invalid text.
 
-`fileRoles` requires a `role` on each code-file parse. `library` means no entry pattern is
-recognized. Initializers and decorators may still run at load. `entry` carries `how`: `main`,
-`guardedMain` or `topLevel`. `main` requires the `symbolId` of a declaration in the same file;
-the other entry kinds omit it. `unknown` carries a reason when a candidate cannot be classified.
-Without the tier, the wire drops `role`. Conformance fails if a tier-declaring provider omits it.
+`fileRoles` requires a `role` on each code-file parse. `library` means no entry pattern matches;
+initializers and decorators may still run at load. `entry` includes `how`: `main`, `guardedMain` or
+`topLevel`. `main` requires a same-file declaration's `symbolId`; other kinds omit it. `unknown`
+includes a reason when classification is uncertain. Without the tier, the wire drops `role`;
+conformance rejects omissions when the tier is declared.
 
-The role is source-local. Assignments for exports, polyfills and module setup are declarative,
+Roles classify source-local behavior. Export, polyfill and module-setup assignments are declarative
 regardless of value. Conditional setup remains declarative when its branches only declare or
-initialize the module. This includes `if`, `try`, blocks and labeled blocks, Python `TYPE_CHECKING`
-and `ImportError` forms, and Bash `if` and brace groups. Bash `source` and `.` commands also count
-as setup. A run-as-program guard nested in setup remains `guardedMain`. Code in its `else` body
-makes the file `topLevel`. Kotlin `@JvmStatic main` in an object or companion object is a `main`
-entry.
+initialize the module. This includes `if`, `try`, blocks, labeled blocks, Python `TYPE_CHECKING` and
+`ImportError` forms, and Bash `if` and brace groups. Bash `source` and `.` commands count as setup.
+A run-as-program guard nested in setup remains `guardedMain`; code in its `else` body makes the file
+`topLevel`. Kotlin `@JvmStatic main` in an object or companion object is a `main` entry.
 
-`content` says what the claimed files ARE: `code` declares behavior, `data` declares structure (a
-JSON or YAML key is a `property` declaration, and a fixture has thousands), `document` is prose under
-headings, `text` is prose with no structure at all. Absent means code. The core records it per file
-from the provider that owned the read, and `overview` counts files and symbols per class, ranks the
-largest code modules apart from the largest data files, and counts text files on a row of their own
-without ranking them, since they hold no symbols. It is one declaration for everything the provider
-claims: a code provider that also claims a data file, as GDScript does `project.godot`, reports it
-as code, which is honest about who answers for it.
+`content` classifies claimed files: `code` declares behavior; `data` declares structure, with JSON
+and YAML keys as `property` declarations; `document` is prose under headings; `text` is unstructured
+prose. It defaults to `code`. Core records the class per file from its owner. `overview` counts files
+and symbols per class, ranks the largest code modules and data files separately, and lists text files
+without ranking them because they have no symbols. A provider declares one class for all its claims.
+A code provider that claims data, such as GDScript's `project.godot`, reports `code`.
 
-`words` is the vocabulary facts cannot give: `keywords` (reserved and contextual, as written),
-`builtins` (types or values the language ships, never declared in user code, e.g. `string`, `Int`),
-and `literals` (the literal words, e.g. `true`, `null`, `None`). A highlighter paints these from the
-provider and everything else from facts. A data format declares empty `keywords` and `builtins`, and
-only the literal words it actually has (JSON: `true`, `false`, `null`). Absent means every list
-empty, so an older provider still parses; conformance is what actually fails a provider whose
-`content` is `code` (or absent) and whose `keywords` is empty.
+`words` supplies `keywords` (reserved and contextual words), `builtins` (language-provided types or
+values absent from user code, such as `string` and `Int`), and `literals` (`true`, `null`, `None`).
+Highlighters use provider words and facts for other names. Data formats declare empty `keywords` and
+`builtins`, plus their literal words (`true`, `false`, `null` for JSON). Absent lists default to
+empty, preserving compatibility with providers that omit them. Conformance rejects code providers
+whose `keywords` are empty when `content` is `code` or absent.
 
-`sharedExtensions` claims an extension only when the workspace contains a file with one of its
-`beside` extensions. The evidence is every file the scope admits, owned by a provider or not, read
-before any ownership is decided; a file indexed outside a scan adds itself to it. It outranks a plain claim on that extension, while two holding shared claims
-contest the file. A filename claim outranks both. Routing then considers a fallback claim.
+`sharedExtensions` claims an extension only when the workspace contains a file with a `beside`
+extension. Evidence includes every file admitted by scope, regardless of owner, and is read before
+ownership is decided. A file indexed outside a scan also adds evidence. Shared claims outrank plain
+claims; multiple shared claimants contest the file. Filename claims outrank both, and fallback claims
+are considered last.
 
-`shebangs` claims a file with no extension whose first line names one of the listed interpreters,
-as `shebangInterpreter` names them: `bash` for `#!/bin/bash`, `#!/usr/bin/env bash` and
-`#!/usr/bin/env -S bash -e` alike. It ranks with a filename claim, so two providers claiming one
-interpreter contest the file, and an extension decides before any shebang is read. The core and the
-walk each read the opening bytes of an extensionless file for its first line, and only when some
-provider claims a shebang.
+`shebangs` claims extensionless files whose first line names a listed interpreter, using the forms
+recognized by `shebangInterpreter`; for Bash, these include `#!/bin/bash`, `#!/usr/bin/env bash` and
+`#!/usr/bin/env -S bash -e`. Shebang claims share filename priority, so providers claiming the same
+interpreter contest. Extension claims route before shebang checks. Core and workspace walks read
+opening bytes only for extensionless files when a provider claims shebangs.
 
-`excludedDirectories` names the directories a provider's sources never live in. An `anywhere` name,
-such as `.git` or `__pycache__`, is excluded at any depth. A `beside` group's output names, such as
-Rust's `target` or C#'s `obj` and `bin`, are excluded directly under the workspace root or directly
-beside one of the group's `markers`, such as `Cargo.toml` or `*.csproj`. Elsewhere a directory so
-named is source, such as pip's `build` package. A name or marker may hold one `*`.
+`excludedDirectories` lists directories that cannot contain provider source. An `anywhere` name,
+such as `.git` or `__pycache__`, is excluded at any depth. A `beside` output, such as Rust's
+`target` or C#'s `obj` and `bin`, is excluded directly under the workspace root or beside a matching
+marker such as `Cargo.toml` or `*.csproj`. Elsewhere the same name may be source, such as pip's `build`
+package. A name or marker may contain one `*`.
 
-A claimed file under an excluded directory is never a root, tracked or not, unless the provider's
-own discovery names it (a C forced-include header), and core follows no import into one. Until a
-provider's first discovery in a daemon, a file the index already holds stays. Declare exactly the
-set passed to `walkWorkspace`, whose walked and scoped forms skip the same directories. Absent
-excludes nothing: a provider that declares none, as TypeScript does for its `node_modules` surfaces,
-has every tracked file it claims rooted and every import followed, and its walk skips the default
-names at any depth.
+A claimed file under an excluded directory is not a root, tracked or not, unless provider discovery
+names it, such as a C forced-include header. Core also skips imports into excluded directories. Until
+the provider's first discovery in a daemon, an indexed file remains. Declare the exact set passed to
+`walkWorkspace`; walked and scoped forms skip the same directories. An absent declaration excludes
+nothing. TypeScript declares none, so every tracked file it claims is a root and every import is
+followed; its walk still skips default names at any depth.
 
-In Git mode, tracked files remain in scope even under a default-excluded directory a provider does
-not declare. An ignored file never enters scope unless explicitly included.
-Use `deny` for tracked secrets, such as `**/*.pem`, `**/id_rsa`, `**/id_ed25519` and `**/.env*`.
-`**/.git/**` is always denied. Denied files are excluded from indexing, and no provider reads one.
-`initialize` carries the scope's `deny` globs, the built-in one included. The kit's module store never
-fills a denied file, and `store.policy` gates every read a provider makes itself, such as a compiler
-host, a config file or a scene. A denied glob matches a file by its name and, through a link, by its
-real path. A file outside the workspace stays readable, since no workspace glob names it.
+In Git mode, tracked files stay in scope under default-excluded directories a provider does not
+declare. Explicit includes and whole-file `redact` or `omit` can admit ignored files. The policy judge
+classifies paths, including symlink aliases, as `open`, `closed` or `bytes`. `closed` paths stay out of
+provider reads. Provider reads treat `bytes` as `open` and deny only `closed`. The judge gets the full
+policy wire from `initialize` or `installPolicy`; `discoverProject` has no separate deny list.
+Workspace rules do not apply outside the workspace.
 
-Indexing, the watcher and the provider probe read through the guarded source reader. Transaction snapshots
-read bytes for byte-exact rollback and never send those bytes to a provider.
+`lexicon.json` maps secret-file globs to `redact`, `omit` or nested matchers. Globs accept leading
+`./` and brace alternatives, such as `"./**/*.{pem,key}"`. Project globs are case-sensitive;
+policy built-ins are case-insensitive, while provider reads match them case-sensitively. Project
+rules replace built-ins and combine with each other. `@untracked` limits a rule to untracked files,
+even when Git is unavailable. `omit` takes precedence over `redact`.
+
+Bare key names match at any depth; dotted paths start at the document root. `*` matches one key or
+array item. `path=value` applies nested rules only when the path has that scalar. Key-level `redact`
+masks values; `omit` removes selected keys and descendants and wins overlapping rules. Whole-file
+`omit` keeps an existing file indexed without facts or revealed content. Whole-file `redact` retains key
+declarations with `set` or `empty` status. Without a key reader, whole-file redaction stores no facts.
+
+JSON, YAML and dotenv readers expose keys and mirror their consumers: dotenv-js, compose-go and
+POSIX shells for dotenv; RFC 8259 and JSONC parsers for JSON; Kubernetes YAML 1.1 with merge keys
+and YAML 1.2 parsers for YAML. Readers report nodes, each name spelling, and hazards for bytes their
+parsers disagree on. They do not decide policy; `assessSecretText` in
+`protocol/src/secretDecision.ts` applies the shared decision.
+
+Structure uses the union of consumer parses: any node or key spelling a consumer sees can match.
+Keys match provider spellings, other consumer spellings and source spellings. `path=value` uses the
+intersection: all consumers must agree on the value. If a parse is uncertain, both outcomes are
+evaluated and masking covers either. Undecidable documents are masked by the union while retaining
+key names. Aliased Kubernetes Secrets, `.env` `source` lines and YAML root merges retain their keys.
+`withheld` applies to non-text files, reader depth or size overflow, and key-path rules on formats
+without readers. Text that contains none of a rule's selected names stays plain without document
+parsing.
+
+A hazard identifies the node subtree it can change, whether it can set names spelled in its bytes or
+any name, and whether it moves following nodes. Regions that could contain selected names are
+hidden; keys inside reshaped regions stay hidden. Unrelated hazards leave the document plain, so
+broken JSON or YAML keeps provider diagnostics, including truncated `package.json`; truncated
+`kubectl` output is masked.
+
+`empty` means every consumer reads an empty value; otherwise status is `set`. Whole-file YAML keys
+use provider YAML 1.2 names, and symbol ids use those names. Sensitive diagnostics and parse failures
+say `secret file; details withheld`; plain files retain provider diagnostics.
+
+Truncated YAML remains valid, so a cut cannot be distinguished from an ending. Parsers outside the
+declared consumer set, such as Python or Ruby dotenv parsers, are not included.
+
+Built-in `**/*.yaml`, `**/*.yml`, and `**/*.json` rules redact `data` and `stringData` in
+`kind=Secret` documents, and those keys under `items.*` in `kind=List` documents. Whole-file
+redaction covers `**/credentials.json`, `**/.credentials.json`, `**/.docker/config.json`,
+`**/.kube/config`, `**/credentials`, `**/.npmrc`, and `**/.pypirc`. Whole-file omission covers
+`**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.pfx`, `**/*.jks`, `**/*.keystore`, `**/*.ppk`,
+`**/id_rsa`, `**/id_dsa`, `**/id_ecdsa`, `**/id_ed25519`, `**/.git-credentials`, `**/.netrc`,
+`**/_netrc`, `**/.pgpass`, and `**/.htpasswd`. Built-in `**/.env*` redaction applies only to
+untracked files. Refactor previews and journals refuse files with redacted or omitted values.
+
+Workspace reads are sealed to their module; only policy opens them. The indexer gets a verdict, the
+watcher preflights through the same filter, and policy supplies the file hash. Providers parse full
+source text; core filters returned facts. Guarded-file hashes blank hidden values
+and record their positions. The index, drift check and watcher share each hash. Source answers and
+rename staging use policy views, replacing hidden spans with `(redacted)` and never staging guarded files.
+Journal snapshots check policy before storing bytes. Allowed images preserve exact bytes and never
+reach providers.
 
 ## What a diagnostic's severity does
 
@@ -775,7 +824,6 @@ Every stateful provider uses the kit's module store.
 
 ## Versioning
 
-Negotiated at initialize and additive-only within a major, so an older provider keeps working
-against a newer core for the methods it implements; a method a later minor adds needs a provider
-update. A major mismatch is refused rather than attempted. For imports, `resolveImport` answers a
-landing, and an import is a list of edges.
+Version 9 requires the policy in `initialize` and defines `installPolicy`; version 8 providers are
+refused. Changes within one major are additive. `resolveImport` answers an import landing, and each
+import is a list of edges.

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,17 +15,19 @@ import {
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
 import type { Clock } from "../clock";
 import { earlyAnswer, refusalFor, warmRefusal } from "../daemonCli";
-import * as realFileScope from "../fileScope";
+import type { GitRunner } from "../fileScope";
+import { runGit } from "../fileScope";
 import type { ProviderPort } from "../providerPort";
 import type { ProviderClaims } from "../routing";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
 import { ProviderUnavailableError } from "../supervisor";
+import { failPlain } from "./admissions";
 import { fakeClock } from "./fakeClock";
 import { fakeClasses } from "./fakeGrammar";
 import { fakeSupervisor, importsFrom, resolveFake } from "./fakeProvider";
-import { gitInit } from "./gitFixture";
+import { gitAdd, gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService, testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -409,17 +411,16 @@ describe("warmup pass", () => {
 	it("refuses with the reason after a scope computation fails, then serves once a retry answers", async () => {
 		await initGit();
 		put("a.fake", "export class A {}\n");
-		const original = realFileScope.fileScopeFor;
+		service = serviceOver(depthSupervisor(["a.fake"], true, []));
+		const evidence = service.policy.evidence;
+		const original = evidence.refresh.bind(evidence);
 		let calls = 0;
-		mock.module("../fileScope", () => ({
-			...realFileScope,
-			fileScopeFor: (...args: Parameters<typeof original>) => {
-				calls++;
-				return calls === 1 ? Promise.reject(new Error("git unreachable")) : original(...args);
-			},
-		}));
+		evidence.refresh = async (...args) => {
+			calls++;
+			if (calls === 1) throw new Error("git unreachable");
+			return original(...args);
+		};
 		try {
-			service = serviceOver(depthSupervisor(["a.fake"], true, []));
 			expect(await rethrown(service.currentScope())).toThrow("git unreachable");
 			expect(calls).toBe(1);
 
@@ -437,45 +438,39 @@ describe("warmup pass", () => {
 			expect(warmRefusal(service)).toBeNull();
 			expect(service.findByName("A")).toHaveLength(1);
 		} finally {
-			mock.restore();
+			evidence.refresh = original;
 		}
 	});
 
-	// A scope already held is not the same as none: a refresh's own git failure is not the first
-	// computation's, so it must not wedge every later request behind a restart.
-	it("keeps serving the scope already held when a later refresh's git call fails", async () => {
+	it("fails closed when a later git refresh cannot read the repository", async () => {
 		await initGit();
 		put("a.fake", "export class A {}\n");
-		service = serviceOver(depthSupervisor(["a.fake", "b.fake"], true, []));
+		put(".env", "API_KEY=PRIVATE_VALUE\n");
+		await gitAdd(root, ".env");
+		let failGit = false;
+		const run: GitRunner = (clock, cwd, args, options) =>
+			failGit ? Promise.resolve({ code: null, stdout: "" }) : runGit(clock, cwd, args, options);
+		const policy = testPolicy(root, undefined, store, run);
+		service = new LexiconService(
+			store,
+			depthSupervisor(["a.fake"], true, []),
+			sourceReader(root),
+			root,
+			undefined,
+			policy,
+		);
 
-		// The first computation succeeds: a real scope and healthy coverage.
 		await service.warmupWorkspace();
 		expect(warmRefusal(service)).toBeNull();
 		expect(service.findByName("A")).toHaveLength(1);
+		expect(policy.current.answer(".env").kind).toBe("plain");
 
-		// Only the refresh call fails: every other call, including one that outlives a leaked
-		// restore, falls through to the real answer rather than wedging every test after this one.
-		const original = realFileScope.fileScopeFor;
-		let calls = 0;
-		mock.module("../fileScope", () => ({
-			...realFileScope,
-			fileScopeFor: (...args: Parameters<typeof original>) => {
-				calls++;
-				return calls === 1 ? Promise.reject(new Error("git unreachable")) : original(...args);
-			},
-		}));
-		try {
-			put("b.fake", "export class B {}\n");
-			expect(
-				await rethrown(service.applyBatch([{ kind: "changed", module: "b.fake", contentHash: "b-1" }])),
-			).toThrow("git unreachable");
+		failGit = true;
+		await service.applyBatch([], undefined, ["repositories", "listing:"]);
 
-			// The scope held from the first computation still serves; nothing here demands a restart.
-			expect(warmRefusal(service)).toBeNull();
-			expect(service.findByName("A")).toHaveLength(1);
-		} finally {
-			mock.restore();
-		}
+		expect((await service.currentScope()).mode).toBe("walk");
+		expect(policy.current.answer(".env").kind).toBe("wholeRedact");
+		expect(service.findByName("A")).toHaveLength(1);
 	});
 
 	it("bounds tree-first preparation across import resolution", async () => {
@@ -761,7 +756,7 @@ describe("warmup pass", () => {
 		await service.warmupWorkspace();
 		await service.upgradeRemaining();
 		// What a timed-out re-read leaves.
-		store.recordFailure("a.fake", "timed out");
+		failPlain(store, "a.fake", "timed out");
 		expect(service.indexStatus().failures).toBe(1);
 
 		await service.indexFile("a.fake", "full", true);

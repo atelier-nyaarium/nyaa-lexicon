@@ -2,7 +2,7 @@
 // The core and a provider building its own workspace index read through it, so the two never admit
 // different files.
 
-import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { firstLineOf } from "./shebang.js";
 import { resolveContained } from "./workspacePath.js";
 
@@ -15,20 +15,22 @@ export type SourceFileRead =
 			text: string;
 			/** Re-encoding `text` as UTF-8 gives back the bytes read; a BOM does. */
 			lossless: boolean;
+			/** The workspace-relative opened path. */
+			real: string;
 			/** Present for a UTF-16 file, decoded faithfully though not losslessly as UTF-8. */
 			encoding?: "utf-16le" | "utf-16be";
 	  }
 	/** Absent, or not a regular file. */
 	| { kind: "missing" }
 	/** Present, but the read failed; a later read may succeed. */
-	| { kind: "unreadable" }
-	| { kind: "binary" }
-	| { kind: "tooLarge"; bytes: number };
+	| { kind: "unreadable"; real?: string }
+	| { kind: "binary"; real: string }
+	| { kind: "tooLarge"; bytes: number; real: string };
 
 /** Its real path leaves the workspace, through a link. */
 export type OutsideRead = { kind: "outside" };
 
-type Opened = { kind: "open"; fd: number } | OutsideRead | { kind: "missing" } | { kind: "unreadable" };
+type Opened = { kind: "open"; fd: number; real: string } | OutsideRead | { kind: "missing" } | { kind: "unreadable" };
 
 ////////////////////////////////
 //  Constants
@@ -61,7 +63,7 @@ export function readWorkspaceFile(root: string, module: string): SourceFileRead 
 	const opened = openContained(root, module);
 	if (opened.kind !== "open") return opened;
 	try {
-		return readSourceFile(opened.fd);
+		return readSourceFile(opened.fd, opened.real);
 	} finally {
 		closeSync(opened.fd);
 	}
@@ -82,18 +84,20 @@ export function readWorkspaceHead(root: string, module: string): string | undefi
 function openContained(root: string, module: string): Opened {
 	for (let attempt = 0; attempt < OPEN_ATTEMPTS; attempt++) {
 		let fd: number;
+		let real: string;
 		try {
 			const where = resolveContained(root, module);
 			if (where.kind === "outside") return where;
 			if (where.kind === "absent") return { kind: "missing" };
+			real = where.real ?? module;
 			// Before open: opening a FIFO blocks until someone writes it.
 			if (!statSync(where.path).isFile()) return { kind: "missing" };
-			fd = openSync(where.path, "r");
+			fd = openSync(where.path, constants.O_RDONLY | constants.O_NOFOLLOW);
 		} catch (error) {
 			return missing(error) ? { kind: "missing" } : { kind: "unreadable" };
 		}
 		const still = stillContained(root, module, fd);
-		if (still === "same") return { kind: "open", fd };
+		if (still === "same") return { kind: "open", fd, real };
 		closeSync(fd);
 		if (still !== "moved") return { kind: still };
 	}
@@ -117,20 +121,20 @@ function stillContained(
 	}
 }
 
-function readSourceFile(fd: number): SourceFileRead {
+function readSourceFile(fd: number, real: string): SourceFileRead {
 	try {
 		const size = fstatSync(fd).size;
-		if (size > MAX_SOURCE_BYTES) return { kind: "tooLarge", bytes: size };
+		if (size > MAX_SOURCE_BYTES) return { kind: "tooLarge", bytes: size, real };
 		// Bounded by the size seen, so a file growing under the read cannot outrun the limit.
 		const buffer = Buffer.allocUnsafe(size);
 		const bytes = buffer.subarray(0, readSync(fd, buffer, 0, size, 0));
 		const encoding = utf16Of(bytes);
-		if (encoding !== undefined) return utf16Text(bytes, encoding);
-		if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { kind: "binary" };
+		if (encoding !== undefined) return utf16Text(bytes, encoding, real);
+		if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return { kind: "binary", real };
 		const text = bytes.toString("utf8");
-		return { kind: "text", text, lossless: roundTrips(text, bytes) };
+		return { kind: "text", text, lossless: roundTrips(text, bytes), real };
 	} catch {
-		return { kind: "unreadable" };
+		return { kind: "unreadable", real };
 	}
 }
 
@@ -142,12 +146,16 @@ function utf16Of(bytes: Buffer): "utf-16le" | "utf-16be" | undefined {
 }
 
 /** Decoded whole, the mark kept as U+FEFF as a UTF-8 file's is. Not UTF-8, so no write lands on it. */
-function utf16Text(bytes: Buffer, encoding: "utf-16le" | "utf-16be"): SourceFileRead {
+function utf16Text(
+	bytes: Buffer,
+	encoding: "utf-16le" | "utf-16be",
+	real: string,
+): Extract<SourceFileRead, { kind: "text" | "binary" }> {
 	try {
 		const text = new TextDecoder(encoding, { ignoreBOM: true, fatal: true }).decode(bytes);
-		return { kind: "text", text, lossless: false, encoding };
+		return { kind: "text", text, lossless: false, encoding, real };
 	} catch {
-		return { kind: "binary" };
+		return { kind: "binary", real };
 	}
 }
 

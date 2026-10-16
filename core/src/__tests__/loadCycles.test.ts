@@ -7,11 +7,12 @@ import { ErrorCodes, ResponseError } from "vscode-jsonrpc/node";
 import type { Clock } from "../clock.js";
 import { createDispatch } from "../dispatch.js";
 import type { MethodRequest, MethodResponse, ProviderPort } from "../providerPort.js";
-import { LexiconService } from "../service.js";
 import { sourceReader } from "../sourceRead.js";
-import { IndexStore, type ReplaceFileInput } from "../store.js";
+import { type FileWrite, IndexStore } from "../store.js";
+import { forgetPlain, writePlain } from "./admissions.js";
 import { fakeClock } from "./fakeClock.js";
 import { fakeSupervisor } from "./fakeProvider.js";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 const RANGE = { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } };
 const NEXT_LINE = { start: { line: 1, character: 0 }, end: { line: 1, character: 8 } };
@@ -22,9 +23,9 @@ function file(
 	module: string,
 	imports: Array<{ target: string; elided?: boolean; loads?: "static" | "deferred"; typeOnly?: boolean }>,
 	hash = module,
-	references: NonNullable<ReplaceFileInput["references"]> = [],
+	references: NonNullable<FileWrite["references"]> = [],
 	runtime: "esm" | "cjs" | null = "cjs",
-): ReplaceFileInput {
+): FileWrite {
 	return {
 		module,
 		contentHash: hash,
@@ -110,15 +111,15 @@ afterEach(() => {
 
 describe("module load cycles", () => {
 	it("finds components and their external entry, tainted only by an undecided edge inside or a missing runtime", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("c.fake", [{ target: "c.fake", elided: false }]));
-		store.replaceFile(file("d.fake", [{ target: "e.fake" }]));
-		store.replaceFile(file("e.fake", [{ target: "d.fake", elided: false }]));
-		store.replaceFile(file("entry.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("f.fake", [{ target: "g.fake", elided: false }, { target: "leaf.fake" }]));
-		store.replaceFile(file("g.fake", [{ target: "f.fake", elided: false }]));
-		store.replaceFile(file("h.fake", [{ target: "h.fake", elided: false }], "h.fake", [], null));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("c.fake", [{ target: "c.fake", elided: false }]));
+		writePlain(store, file("d.fake", [{ target: "e.fake" }]));
+		writePlain(store, file("e.fake", [{ target: "d.fake", elided: false }]));
+		writePlain(store, file("entry.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("f.fake", [{ target: "g.fake", elided: false }, { target: "leaf.fake" }]));
+		writePlain(store, file("g.fake", [{ target: "f.fake", elided: false }]));
+		writePlain(store, file("h.fake", [{ target: "h.fake", elided: false }], "h.fake", [], null));
 
 		const cycles = await service().moduleCycles({ includeUnread: true });
 		expect(cycles.map((cycle) => [cycle.modules, cycle.entries, cycle.unknowns])).toEqual([
@@ -131,21 +132,22 @@ describe("module load cycles", () => {
 	});
 
 	it("loads through a type-only edge emit keeps, never one it has not decided, and counts no crossing on it", async () => {
-		store.replaceFile(
+		writePlain(
+			store,
 			file("a.fake", [{ target: "b.fake", typeOnly: true, elided: false }], "a.fake", [crossing("T")]),
 		);
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("c.fake", [{ target: "d.fake", typeOnly: true }]));
-		store.replaceFile(file("d.fake", [{ target: "c.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("c.fake", [{ target: "d.fake", typeOnly: true }]));
+		writePlain(store, file("d.fake", [{ target: "c.fake", elided: false }]));
 
 		const cycles = await service().moduleCycles({ includeUnread: true });
 		expect(cycles.map((cycle) => [cycle.modules, cycle.crossings])).toEqual([[["a.fake", "b.fake"], []]]);
 	});
 
 	it("uses the kit default unknown and publishes complete bad and fine judgments", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("c.fake", [{ target: "c.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("c.fake", [{ target: "c.fake", elided: false }]));
 		const defaultAnswer = await service().moduleCycles({ module: "a.fake", includeUnread: true });
 		expect(defaultAnswer[0]?.verdict).toBe("unknown");
 
@@ -169,15 +171,15 @@ describe("module load cycles", () => {
 	});
 
 	it("continues partial work with a fresh provider request, across unrelated writes between slices", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("unrelated.fake", []));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("unrelated.fake", []));
 		const slices: Array<string | undefined> = [];
 		const provider = fakeSupervisor({
 			answers: {
 				judgeLoadCycle: (request) => {
 					slices.push(request.partial);
-					store.replaceFile(file("unrelated.fake", [], `unrelated${slices.length}`));
+					writePlain(store, file("unrelated.fake", [], `unrelated${slices.length}`));
 					return request.partial === undefined ? { partial: "slice-1" } : judged(request);
 				},
 			},
@@ -187,8 +189,8 @@ describe("module load cycles", () => {
 	});
 
 	it("discards an answer whose evidence names a hash the index does not hold, with no write between", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
 		const verdictWith = async (contentHash: (module: string) => string) => {
 			const provider = fakeSupervisor({
 				answers: {
@@ -212,14 +214,14 @@ describe("module load cycles", () => {
 	});
 
 	it("discards evidence after a member hash changes and invalidates a judgment for a new importer", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
 		let count = 0;
 		const provider = fakeSupervisor({
 			answers: {
 				judgeLoadCycle: (request) => {
 					count++;
-					if (count === 1) store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }], "moved"));
+					if (count === 1) writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }], "moved"));
 					return judged(request);
 				},
 			},
@@ -227,20 +229,20 @@ describe("module load cycles", () => {
 		const svc = service(provider);
 		expect((await svc.moduleCycles({ module: "a.fake", includeUnread: true }))[0]?.verdict).toBe("unknown");
 		await svc.moduleCycles({ module: "a.fake", includeUnread: true });
-		store.replaceFile(file("entry.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("entry.fake", [{ target: "a.fake", elided: false }]));
 		const updated = await svc.moduleCycles({ module: "a.fake", includeUnread: true });
 		expect(updated[0]?.entries).toEqual(["a.fake"]);
 		expect(count).toBeGreaterThan(1);
 	});
 
 	it("discards a judgment when an evidenced occurrence lands on another module", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
 		const provider = fakeSupervisor({
 			answers: {
 				judgeLoadCycle: (request) => {
-					store.replaceFile(file("b.fake", [{ target: "c.fake", elided: false }]));
-					store.replaceFile(file("c.fake", [{ target: "a.fake", elided: false }]));
+					writePlain(store, file("b.fake", [{ target: "c.fake", elided: false }]));
+					writePlain(store, file("c.fake", [{ target: "a.fake", elided: false }]));
 					return judged(request, {
 						evidence: request.members.map((member) => ({
 							...member,
@@ -259,8 +261,8 @@ describe("module load cycles", () => {
 	});
 
 	it("asks again once the provider writes another set of modules, and keeps the answer across an edit", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("unrelated.fake", []));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("unrelated.fake", []));
 		let calls = 0;
 		const provider = fakeSupervisor({
 			answers: {
@@ -276,12 +278,12 @@ describe("module load cycles", () => {
 			return { verdict, calls };
 		};
 		const asks = [await ask()];
-		store.replaceFile(file("unrelated.fake", [], "edited"));
+		writePlain(store, file("unrelated.fake", [], "edited"));
 		asks.push(await ask());
 		// A module the scope newly admits, or a new file, may assign what the answer read as never assigned.
-		store.replaceFile(file("admitted.fake", []));
+		writePlain(store, file("admitted.fake", []));
 		asks.push(await ask());
-		store.forgetFile("unrelated.fake");
+		forgetPlain(store, "unrelated.fake");
 		asks.push(await ask());
 		expect(asks).toEqual([
 			{ verdict: "fine", calls: 1 },
@@ -292,9 +294,9 @@ describe("module load cycles", () => {
 	});
 
 	it("publishes an answer whose evidence names any number of modules outside the component", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
 		const read = Array.from({ length: 2_001 }, (_, at) => `read${at}.fake`);
-		for (const module of read) store.replaceFile(file(module, []));
+		for (const module of read) writePlain(store, file(module, []));
 		const provider = fakeSupervisor({
 			answers: {
 				judgeLoadCycle: (request) =>
@@ -312,7 +314,7 @@ describe("module load cycles", () => {
 	it("lands and validates each occurrence of one specifier by its resolution mode", async () => {
 		writeFileSync(path.join(root, "a.fake"), "import\nrequire\n");
 		writeFileSync(path.join(root, "i.fake"), "import a\n");
-		store.replaceFile(file("i.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("i.fake", [{ target: "a.fake", elided: false }]));
 		const edge = { kind: "sideEffect" as const, bindsLocally: false, certainty: { status: "known" as const } };
 		const loading = { loads: "static" as const, elided: false };
 		const runs = async (requireLanding: string) => {
@@ -401,7 +403,7 @@ describe("module load cycles", () => {
 	});
 
 	it("names why asking failed: a deadline, a dead provider, a refusal, or no such method", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
 		const throwing = (error: Error) => fakeSupervisor({ answers: { judgeLoadCycle: () => Promise.reject(error) } });
 		const reasonOf = async (provider: ProviderPort) =>
 			(await service(provider).moduleCycles({ includeUnread: true }))[0]?.unknowns;
@@ -423,10 +425,10 @@ describe("module load cycles", () => {
 	});
 
 	it("counts deferred external imports as entries and caps entries instead of members", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("outside-static.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("outside.fake", [{ target: "b.fake", loads: "deferred", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("outside-static.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("outside.fake", [{ target: "b.fake", loads: "deferred", elided: false }]));
 		let memberCount = 0;
 		const provider = fakeSupervisor({
 			answers: {
@@ -440,18 +442,19 @@ describe("module load cycles", () => {
 		expect(first[0]?.entries).toEqual(["a.fake", "b.fake"]);
 		const modules = Array.from({ length: 33 }, (_, index) => `m${index}.fake`);
 		for (let index = 0; index < modules.length; index++) {
-			store.replaceFile(
+			writePlain(
+				store,
 				file(modules[index]!, [{ target: modules[(index + 1) % modules.length]!, elided: false }]),
 			);
 		}
-		store.replaceFile(file("outside2.fake", [{ target: modules[0]!, elided: false }]));
+		writePlain(store, file("outside2.fake", [{ target: modules[0]!, elided: false }]));
 		await service(provider).moduleCycles({ module: modules[0], includeUnread: true });
 		expect(memberCount).toBe(33);
 	});
 
 	it("does not return an earlier bad answer after another component finishes", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "b.fake", elided: false }]));
 		let release!: () => void;
 		let entered!: () => void;
 		const waiting = new Promise<void>((resolve) => (release = resolve));
@@ -470,15 +473,15 @@ describe("module load cycles", () => {
 		});
 		const pending = service(provider).moduleCycles({ includeUnread: true });
 		await started;
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }], "changed"));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }], "changed"));
 		release();
 		const answer = await pending;
 		expect(answer.find((item) => item.modules.includes("a.fake"))?.verdict).toBe("unknown");
 	});
 
 	it("lets an index write pass between provider slices through dispatch", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
 		writeFileSync(path.join(root, "a.fake"), "class A {}");
 		let release!: () => void;
 		let entered!: () => void;
@@ -506,8 +509,9 @@ describe("module load cycles", () => {
 	});
 
 	it("counts value reads through a runtime edge into the component, bound or not, and lists the first twenty", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(
+			store,
 			file("b.fake", [{ target: "a.fake", elided: false }], "b.fake", [
 				crossing("ThroughBarrel"),
 				{
@@ -531,7 +535,7 @@ describe("module load cycles", () => {
 			...crossing(`R${line}`),
 			range: { start: { line, character: 0 }, end: { line, character: 2 } },
 		}));
-		store.replaceFile(file("c.fake", [{ target: "c.fake", elided: false }], "c.fake", reads));
+		writePlain(store, file("c.fake", [{ target: "c.fake", elided: false }], "c.fake", reads));
 
 		const [ab, c] = await service().moduleCycles({ includeUnread: true });
 		expect({
@@ -550,8 +554,8 @@ describe("module load cycles", () => {
 	});
 
 	it("rejudges conclusive and failed cache entries when a project fingerprint moves", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("r.fake", [{ target: "r.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("r.fake", [{ target: "r.fake", elided: false }]));
 		const calls = { a: 0, r: 0 };
 		const provider = fakeSupervisor({
 			answers: {
@@ -579,7 +583,7 @@ describe("module load cycles", () => {
 	});
 
 	it("starts one judgment for two simultaneous queries while a changed cache entry is checked", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
 		let calls = 0;
 		const provider = fakeSupervisor({
 			answers: {
@@ -599,10 +603,10 @@ describe("module load cycles", () => {
 	});
 
 	it("never judges an unread component by default, and fills the limit past a filtered verdict", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "c.fake", elided: false }]));
-		store.replaceFile(file("c.fake", [{ target: "b.fake", elided: false }], "c.fake", [crossing("Imported")]));
-		store.replaceFile(file("d.fake", [{ target: "d.fake", elided: false }], "d.fake", [crossing("Self")]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "c.fake", elided: false }]));
+		writePlain(store, file("c.fake", [{ target: "b.fake", elided: false }], "c.fake", [crossing("Imported")]));
+		writePlain(store, file("d.fake", [{ target: "d.fake", elided: false }], "d.fake", [crossing("Self")]));
 		const requested: string[][] = [];
 		const provider = fakeSupervisor({
 			answers: {
@@ -620,9 +624,9 @@ describe("module load cycles", () => {
 
 	it("retries a budget judgment after ten minutes or when its evidence moves, not on an unrelated write", async () => {
 		// `a` is answered as past its budget; `p` never finishes, so core stops it at the slice cap.
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("p.fake", [{ target: "p.fake", elided: false }]));
-		store.replaceFile(file("unrelated.fake", []));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("p.fake", [{ target: "p.fake", elided: false }]));
+		writePlain(store, file("unrelated.fake", []));
 		const clock = fakeClock();
 		const starts = { a: 0, p: 0 };
 		const provider = fakeSupervisor({
@@ -639,12 +643,12 @@ describe("module load cycles", () => {
 		const asks: Array<typeof starts> = [];
 		for (const [index, wait] of [0, 61_000, 540_000].entries()) {
 			clock.advance(wait);
-			store.replaceFile(file("unrelated.fake", [], `unrelated${index}`));
+			writePlain(store, file("unrelated.fake", [], `unrelated${index}`));
 			await svc.moduleCycles({ includeUnread: true });
 			asks.push({ ...starts });
 		}
 		for (const module of ["a.fake", "p.fake"])
-			store.replaceFile(file(module, [{ target: module, elided: false }], "moved"));
+			writePlain(store, file(module, [{ target: module, elided: false }], "moved"));
 		await svc.moduleCycles({ includeUnread: true });
 		asks.push({ ...starts });
 		expect(asks).toEqual([
@@ -656,7 +660,7 @@ describe("module load cycles", () => {
 	});
 
 	it("asks again after a provider restart rather than holding the discarded answer", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }]));
 		const incarnation = { current: 1 };
 		let calls = 0;
 		const provider = fakeSupervisor({
@@ -678,7 +682,7 @@ describe("module load cycles", () => {
 	it("holds provider state for at most four judgments per provider and queues the rest", async () => {
 		const modules = Array.from({ length: 8 }, (_, index) => `m${index}.fake`);
 		for (const module of modules)
-			store.replaceFile(file(module, [{ target: module, elided: false }], module, [crossing("X")]));
+			writePlain(store, file(module, [{ target: module, elided: false }], module, [crossing("X")]));
 		let release!: () => void;
 		const blocked = new Promise<void>((resolve) => (release = resolve));
 		const open = new Set<string>();
@@ -708,8 +712,8 @@ describe("module load cycles", () => {
 	});
 
 	it("joins asks for one component across unrelated writes, and drops a superseded judgment's provider state", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
 		const releasedJudgments: Array<{ providerId: string; partial: string }> = [];
 		let release!: () => void;
 		let entered!: () => void;
@@ -739,11 +743,11 @@ describe("module load cycles", () => {
 		const joined = [ask()];
 		await started;
 		for (let index = 0; index < 3; index++) {
-			store.replaceFile(file(`unrelated${index}.fake`, []));
+			writePlain(store, file(`unrelated${index}.fake`, []));
 			joined.push(ask());
 			await new Promise((resolve) => setTimeout(resolve, 20));
 		}
-		store.replaceFile(file("entry.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("entry.fake", [{ target: "a.fake", elided: false }]));
 		const replacing = ask();
 		await replacement;
 		release();
@@ -755,9 +759,9 @@ describe("module load cycles", () => {
 	});
 
 	it("joins a run from a newer view when an ask still holds an older one", async () => {
-		store.replaceFile(file("a.fake", [{ target: "a.fake", elided: false }], "a.fake", [crossing("X")]));
-		store.replaceFile(file("b.fake", [{ target: "c.fake", elided: false }], "b.fake", [crossing("X")]));
-		store.replaceFile(file("c.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "a.fake", elided: false }], "a.fake", [crossing("X")]));
+		writePlain(store, file("b.fake", [{ target: "c.fake", elided: false }], "b.fake", [crossing("X")]));
+		writePlain(store, file("c.fake", [{ target: "b.fake", elided: false }]));
 		const { promise: aBlocked, resolve: releaseA } = Promise.withResolvers<void>();
 		const { promise: bBlocked, resolve: releaseB } = Promise.withResolvers<void>();
 		const { promise: aStarted, resolve: aEntered } = Promise.withResolvers<void>();
@@ -785,7 +789,7 @@ describe("module load cycles", () => {
 		// Reads b and c with both as entries, then waits on a, which sorts first.
 		const older = svc.moduleCycles({});
 		await aStarted;
-		store.replaceFile(file("outside.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("outside.fake", [{ target: "b.fake", elided: false }]));
 		const newer = svc.moduleCycles({ module: "b.fake" });
 		await bWaiting;
 		releaseA();
@@ -809,12 +813,12 @@ describe("module load cycles", () => {
 				[crossing("X")],
 			);
 		const pair = () => {
-			store.replaceFile(read("a.fake", ["b.fake"], "a1"));
-			store.replaceFile(read("b.fake", ["a.fake"], "b1"));
+			writePlain(store, read("a.fake", ["b.fake"], "a1"));
+			writePlain(store, read("b.fake", ["a.fake"], "b1"));
 		};
 		pair();
-		store.replaceFile(file("c.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("d.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("c.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("d.fake", [{ target: "a.fake", elided: false }]));
 		let during: (() => void) | null = null;
 		const provider = fakeSupervisor({
 			answers: {
@@ -827,13 +831,13 @@ describe("module load cycles", () => {
 		});
 		// a and b split into two read cycles, a with d and b with c, while the provider judges them.
 		during = () => {
-			store.replaceFile(read("a.fake", ["d.fake"], "a2"));
-			store.replaceFile(read("b.fake", ["c.fake"], "b2"));
+			writePlain(store, read("a.fake", ["d.fake"], "a2"));
+			writePlain(store, read("b.fake", ["c.fake"], "b2"));
 		};
 		const limited = await service(provider).moduleCycles({ limit: 1 });
 		// b joins an unread cycle with c and a leaves every cycle, while the provider judges a's.
 		pair();
-		during = () => store.replaceFile(file("b.fake", [{ target: "c.fake", elided: false }], "b3"));
+		during = () => writePlain(store, file("b.fake", [{ target: "c.fake", elided: false }], "b3"));
 		const filtered = await service(provider).moduleCycles({ module: "a.fake", limit: 5 });
 		expect({ limited: limited.length, filtered: filtered.map((cycle) => cycle.modules) }).toEqual({
 			limited: 1,
@@ -842,16 +846,16 @@ describe("module load cycles", () => {
 	});
 
 	it("publishes the entries a component holds when its judgment ends, not when it began", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
-		store.replaceFile(file("outside1.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("outside1.fake", [{ target: "a.fake", elided: false }]));
 		const asked: string[][] = [];
 		const provider = fakeSupervisor({
 			answers: {
 				judgeLoadCycle: (request) => {
 					asked.push(request.entries);
 					if (asked.length === 1)
-						store.replaceFile(file("outside2.fake", [{ target: "b.fake", elided: false }]));
+						writePlain(store, file("outside2.fake", [{ target: "b.fake", elided: false }]));
 					return judged(request);
 				},
 			},
@@ -872,8 +876,8 @@ describe("module load cycles", () => {
 	});
 
 	it("never fails a judgment, or its other askers, for one asker's gate budget", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }], "a.fake", [crossing("X")]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
 		const { promise: sliceBlocked, resolve: releaseSlice } = Promise.withResolvers<void>();
 		const { promise: started, resolve: entered } = Promise.withResolvers<void>();
 		let slices = 0;
@@ -904,8 +908,8 @@ describe("module load cycles", () => {
 	});
 
 	it("builds the view a query judges from one facts generation while writes land between its reads", async () => {
-		store.replaceFile(file("a.fake", [{ target: "b.fake", elided: false }]));
-		store.replaceFile(file("b.fake", [{ target: "a.fake", elided: false }]));
+		writePlain(store, file("a.fake", [{ target: "b.fake", elided: false }]));
+		writePlain(store, file("b.fake", [{ target: "a.fake", elided: false }]));
 		// The first two counting reads each land a write first: the cycle breaks, then closes again.
 		let writes = 0;
 		const writing = new Proxy(store, {
@@ -917,7 +921,7 @@ describe("module load cycles", () => {
 					if (writes < 2) {
 						writes++;
 						const targets = writes === 1 ? [] : [{ target: "a.fake", elided: false }];
-						target.replaceFile(file("b.fake", targets, `b${writes}`));
+						writePlain(target, file("b.fake", targets, `b${writes}`));
 					}
 					return target.importUseCounts(...args);
 				};
@@ -943,7 +947,7 @@ describe("module load cycles", () => {
 	it("asks the process that answers after a slot wait, and holds the answer for that process", async () => {
 		const blockers = ["m0.fake", "m1.fake", "m2.fake", "m3.fake"];
 		for (const module of [...blockers, "late.fake"])
-			store.replaceFile(file(module, [{ target: module, elided: false }], module, [crossing("X")]));
+			writePlain(store, file(module, [{ target: module, elided: false }], module, [crossing("X")]));
 		const incarnation = { current: 1 };
 		const { promise: blocked, resolve: release } = Promise.withResolvers<void>();
 		let entered = 0;

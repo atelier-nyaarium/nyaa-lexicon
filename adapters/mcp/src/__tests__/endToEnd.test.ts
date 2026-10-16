@@ -17,7 +17,10 @@ import {
 	ownSource,
 	ProviderSupervisor,
 	type RunningDaemon,
+	SecretPolicy,
 	startDaemon,
+	systemClock,
+	Timings,
 } from "@nyaa-lexicon/core";
 import { formatRef } from "@nyaa-lexicon/protocol";
 import { rethrown } from "@nyaa-lexicon/protocol/rejection";
@@ -118,15 +121,24 @@ beforeEach(async () => {
 	files = new Map();
 
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
-	supervisor = new ProviderSupervisor();
-	await supervisor.start({ command: [process.execPath, "run", REFERENCE], timeoutMs: 15_000 }, dir);
+	const policy = SecretPolicy.initial({ root: dir, store });
+	supervisor = new ProviderSupervisor(systemClock, new Timings(systemClock), () => policy.current);
 
 	const service = new LexiconService(
 		store,
 		supervisor,
 		fromText((module) => files.get(module) ?? null),
 		dir,
+		systemClock,
+		policy,
 	);
+	policy.attach({
+		index: service.indexer,
+		journal: { policyChanged: () => {} },
+		providers: supervisor,
+	});
+	await service.gate.exclusive(() => policy.refresh({ kind: "startup" }));
+	await supervisor.start({ command: [process.execPath, "run", REFERENCE], timeoutMs: 15_000 }, dir);
 	const outcome = await startDaemon({
 		workspaceRoot: dir,
 		handle: createDispatch(service),

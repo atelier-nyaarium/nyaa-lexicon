@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { handlersFor, hashContent, PROTOCOL_VERSION, parseSymbolId } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { runSuite } from "../../../../protocol/src/conformance/runner.js";
 import { type ProbeBatchCase, ProbeBatchCaseSchema } from "../../../../protocol/src/conformance/types.js";
 import { GDScriptProvider } from "../main.js";
@@ -39,9 +41,9 @@ function workspace(files: Record<string, string>): string {
 }
 
 function started() {
-	const provider = handlersFor(new GDScriptProvider());
+	const provider = handlersFor(new GDScriptProvider(), SECRET_READERS);
 	const root = workspace(FILES);
-	provider.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	provider.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	provider.discoverProject({ workspaceRoot: root });
 	const held = () =>
 		(["a.gd", "b.gd"] as const).map((module) =>

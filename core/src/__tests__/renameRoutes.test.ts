@@ -33,6 +33,7 @@ import {
 } from "../refusals";
 import { type ModuleTiers, mentionsOf, type ResolvedRoutes, resolveRoutes, startKey } from "../renameRoutes";
 import { IndexStore, type StoredDeclaration } from "../store";
+import { writePlain } from "./admissions";
 import { direct, edge, forward, forwarding, landed, named } from "./importEdges";
 
 ////////////////////////////////
@@ -105,7 +106,7 @@ function write(module: string, shape: Shape = {}): void {
 		exported: true,
 	}));
 	const lands = Object.entries(shape.lands ?? {}).map(([specifier, to]) => [specifier, landed(to)] as const);
-	store.replaceFile({
+	writePlain(store, {
 		module,
 		contentHash: JSON.stringify(shape),
 		declarations: [...declarations, ...(shape.members ?? [])],

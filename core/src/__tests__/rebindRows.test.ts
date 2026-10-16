@@ -3,11 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { LexiconService } from "../service";
 import { fromText } from "../sourceRead";
 import { IndexStore, SCHEMA_VERSION } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { TransactionManager } from "../transactions";
+import { writePlain } from "./admissions";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -34,7 +34,7 @@ function declaration(symbolId: string, name: string, line = 0) {
 }
 
 function plant(module = "a.ref", symbolId = CART, name = "Cart"): void {
-	store.replaceFile({
+	writePlain(store, {
 		module: module,
 		contentHash: "h1",
 		declarations: [declaration(symbolId, name)],
@@ -68,7 +68,7 @@ function reopen(): ReturnType<typeof IndexStore.open> {
 /** A move of a.ref into b.ref, written and rebound, left unfinished. */
 function journalMove(entries: Array<{ from: string; to: string }>): TransactionManager {
 	writeFileSync(path.join(dir, "a.ref"), "before\n");
-	const transactions = new TransactionManager(store, dir);
+	const transactions = new TransactionManager(store, dir, service.policy);
 	transactions.start();
 	const begun = transactions.beginStep("move", ["a.ref", "b.ref"], { rebind: { entries, evidence: "journalMove" } });
 	if (!begun.ok) throw new Error(begun.reason);
@@ -107,7 +107,7 @@ afterEach(() => {
 
 describe("what a step moved is rows, not JSON", () => {
 	it("writes one row per applied move in the order applied, and the plan keeps only what was decided", async () => {
-		store.replaceFile({
+		writePlain(store, {
 			module: "a.ref",
 			contentHash: "h1",
 			declarations: [declaration(CART, "Cart"), declaration(TOTAL, "Total", 1)],
@@ -171,7 +171,7 @@ describe("what a step moved is rows, not JSON", () => {
 
 		journalMove([{ from: CART, to: MOVED }]);
 		expect(rows()).toHaveLength(1);
-		expect(new TransactionManager(store, dir).commit().committed).toBe(true);
+		expect(new TransactionManager(store, dir, service.policy).commit().committed).toBe(true);
 		expect(rows()).toHaveLength(0);
 	});
 
@@ -197,7 +197,7 @@ describe("what a step moved is rows, not JSON", () => {
 		plant();
 		record(CART);
 		const onward = "lexicon reference c.ref Cart#";
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		const begun = transactions.beginStep("move", [], {});
 		if (!begun.ok) throw new Error(begun.reason);
@@ -316,7 +316,7 @@ describe("a reversal commits with its journal, or not at all", () => {
 	it("moves nothing when the rows cannot be written", async () => {
 		plant();
 		record(CART);
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		const begun = transactions.beginStep("move", [], {});
 		if (!begun.ok) throw new Error(begun.reason);
@@ -376,12 +376,14 @@ describe("a recovery intent survives the filesystem gap", () => {
 		plant();
 		record(CART);
 		journalMove([{ from: CART, to: MOVED }]);
-		const failing = new TransactionManager(store, dir, undefined, () => {
-			throw new Error("injected after restore");
+		const failing = new TransactionManager(store, dir, service.policy, {
+			failAfterRestore: () => {
+				throw new Error("injected after restore");
+			},
 		});
 
 		expect(() => failing.undo()).toThrow("injected after restore");
-		const recovered = new TransactionManager(store, dir).recover();
+		const recovered = new TransactionManager(store, dir, service.policy).recover();
 
 		expect(recovered.unreversed).toEqual([]);
 		expect(noteAt(CART)).toBe("A shopping cart.");
@@ -393,12 +395,14 @@ describe("a recovery intent survives the filesystem gap", () => {
 		plant();
 		record(CART);
 		journalMove([{ from: CART, to: MOVED }]);
-		const failing = new TransactionManager(store, dir, undefined, () => {
-			throw new Error("injected after restore");
+		const failing = new TransactionManager(store, dir, service.policy, {
+			failAfterRestore: () => {
+				throw new Error("injected after restore");
+			},
 		});
 
 		expect(() => failing.revert(failing.status().drifted)).toThrow("injected after restore");
-		const recovered = new TransactionManager(store, dir);
+		const recovered = new TransactionManager(store, dir, service.policy);
 		expect(recovered.revert(recovered.status().drifted).reverted).toBe(true);
 		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
@@ -411,7 +415,7 @@ describe("a store from before the table", () => {
 		plant();
 		record(CART);
 		const subjectId = store.subjects.forAddress(CART)?.subjectId as string;
-		const transactions = new TransactionManager(store, dir);
+		const transactions = new TransactionManager(store, dir, service.policy);
 		transactions.start();
 		const begun = transactions.beginStep("move", [], {
 			rebind: { entries: [{ from: CART, to: MOVED }], evidence: "journalMove", applied: applied(subjectId) },
@@ -497,7 +501,7 @@ describe("a store from before the table", () => {
 		expect(reopen().dropped).toBeUndefined();
 		expect(rows()).toHaveLength(1);
 
-		new TransactionManager(store, dir).recover();
+		new TransactionManager(store, dir, service.policy).recover();
 		expect(noteAt(CART)).toBe("A shopping cart.");
 		expect(store.subjects.forAddress(MOVED)).toBeNull();
 	});
@@ -523,14 +527,14 @@ describe("a store from before the table", () => {
 
 		expect(opened.rebuilt).toBe(true);
 		expect(rows()).toHaveLength(1);
-		new TransactionManager(store, dir).recover();
+		new TransactionManager(store, dir, service.policy).recover();
 		expect(noteAt(CART)).toBe("A shopping cart.");
 	});
 
 	it("lifts nothing from a closed transaction", async () => {
 		await journalAsJson(() => []);
 		reopen();
-		const recovered = new TransactionManager(store, dir);
+		const recovered = new TransactionManager(store, dir, service.policy);
 		expect(recovered.revert(recovered.status().drifted).reverted).toBe(true);
 		store.close();
 		const raw = new DatabaseSync(file);
@@ -558,7 +562,7 @@ describe("across a rebuild", () => {
 
 		expect(opened.rebuilt).toBe(true);
 		expect(rows()).toHaveLength(1);
-		const outcome = new TransactionManager(store, dir).recover();
+		const outcome = new TransactionManager(store, dir, service.policy).recover();
 		expect(outcome.unreversed).toEqual([]);
 		expect(noteAt(CART)).toBe("A shopping cart.");
 	});

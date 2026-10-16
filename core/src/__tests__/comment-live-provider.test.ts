@@ -9,12 +9,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { discoverProviders, lexiconRoot, startProviders } from "../providers";
-import { LexiconService } from "../service";
+import { startProviders } from "../providers";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { gitAdd, gitInit } from "./gitFixture";
+import {
+	TestLexiconService as LexiconService,
+	TestProviderSupervisor as ProviderSupervisor,
+	testPolicy,
+} from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -24,9 +27,16 @@ let store: IndexStore;
 let supervisor: ProviderSupervisor;
 
 /** Only TypeScript: this proves the seam, and every other provider would add a startup for it. */
-const TYPESCRIPT_ONLY = (await discoverProviders(lexiconRoot())).filter(
-	(command) => command.directory === "typescript",
-);
+const TYPESCRIPT_ONLY = [
+	{
+		directory: "typescript",
+		command: [
+			process.execPath,
+			"run",
+			path.join(import.meta.dirname, "..", "..", "..", "providers", "typescript", "src", "main.ts"),
+		],
+	},
+];
 
 const SOURCE = [
 	"// A run of two lines,",
@@ -58,40 +68,33 @@ afterEach(() => {
 //  Tests
 
 describe("a real provider's comments, attached by core", () => {
-	it.skipIf(TYPESCRIPT_ONLY.length === 0)(
-		"groups, attaches and stores what the provider actually emitted",
-		async () => {
-			mkdirSync(path.join(root, "src"), { recursive: true });
-			writeFileSync(path.join(root, "src", "work.ts"), SOURCE);
-			// File discovery is git-scoped, so an unversioned directory indexes nothing at all.
-			await gitInit(root);
-			await gitAdd(root, "-A");
+	it("groups, attaches and stores what the provider actually emitted", async () => {
+		mkdirSync(path.join(root, "src"), { recursive: true });
+		writeFileSync(path.join(root, "src", "work.ts"), SOURCE);
+		// Git discovery ignores untracked files.
+		await gitInit(root);
+		await gitAdd(root, "-A");
 
-			await startProviders(supervisor, root, { commands: TYPESCRIPT_ONLY });
-			const service = new LexiconService(store, supervisor, sourceReader(root), root);
-			await service.indexWorkspace();
+		await startProviders(supervisor, root, { commands: TYPESCRIPT_ONLY });
+		const service = new LexiconService(store, supervisor, sourceReader(root), root, undefined, testPolicy(root));
+		await service.indexWorkspace();
 
-			const work = service.findByName("work")[0];
-			expect(work).toBeDefined();
+		const work = service.findByName("work")[0];
+		expect(work).toBeDefined();
 
-			// The wrapped run is ONE fact whose text spans the break, which is the whole point of
-			// grouping and the thing a per-line implementation passes every unit test while failing.
-			const documentation = service.describe(work?.symbolId ?? "")?.symbol.docComment;
-			expect(documentation).toBe("A run of two lines, wrapped mid-sentence.");
+		// Grouping keeps one fact across the line break.
+		const documentation = service.describe(work?.symbolId ?? "")?.symbol.docComment;
+		expect(documentation).toBe("A run of two lines, wrapped mid-sentence.");
 
-			// A body comment is a note about the function, never its documentation.
-			expect(service.describe(work?.symbolId ?? "")?.comments?.map((item) => item.text)).toEqual([
-				"why this order",
-			]);
+		// Body comments do not document functions.
+		expect(service.describe(work?.symbolId ?? "")?.comments?.map((item) => item.text)).toEqual(["why this order"]);
 
-			// Searchable by a phrase the raw text never spells contiguously.
-			expect(service.findComments({ text: "lines, wrapped" }).total).toBe(1);
+		// Search may cross source fragments.
+		expect(service.findComments({ text: "lines, wrapped" }).total).toBe(1);
 
-			// Fenced by blank lines, so it names neither neighbour.
-			const floating = service.findComments({ text: "Not attached" }).comments[0];
-			expect(floating?.form).toBe("standalone");
-			expect(floating?.anchor).toBeNull();
-		},
-		60_000,
-	);
+		// Blank lines separate both neighbors.
+		const floating = service.findComments({ text: "Not attached" }).comments[0];
+		expect(floating?.form).toBe("standalone");
+		expect(floating?.anchor).toBeNull();
+	}, 60_000);
 });

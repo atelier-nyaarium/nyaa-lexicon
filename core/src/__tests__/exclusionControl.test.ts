@@ -7,11 +7,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ModuleExclusion } from "@nyaa-lexicon/protocol";
 import { createDispatch } from "../dispatch";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
-import { ProviderSupervisor } from "../supervisor";
 import { gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService, TestProviderSupervisor as ProviderSupervisor } from "./testPolicy";
 
 ////////////////////////////////
 //  Harness
@@ -25,14 +24,18 @@ const VISIBLE: Record<string, string> = {
 	"app.json": '{\n\t"region": "us-east"\n}\n',
 };
 
-// One value shared by two hidden files, and one a hidden file shares with a visible one.
-const HIDDEN: Record<string, string> = {
-	".env": "OPENAI_API_KEY=sk-abc123live\n",
-	"secrets/credentials.json": '{\n\t"apiKey": "sk-a-live-999",\n\t"apiKeyExample": "sk-a-placeholder"\n}\n',
-	"secrets/credentials.prod.json": '{\n\t"apiKey": "sk-a-live-999"\n}\n',
+const EXCLUDED: Record<string, string> = {
+	"query-targets/README.md": "# Keys\n\nA key looks like sk-a-excluded-doc.\n",
+	"query-targets/one.json": '{\n\t"apiKey": "sk-a-excluded-live-999",\n\t"shared": "sk-a-shared"\n}\n',
+	"query-targets/two.json": '{\n\t"apiKey": "sk-a-excluded-live-999",\n\t"shared": "sk-a-shared"\n}\n',
 };
 
-const EXCLUDE: ModuleExclusion = { hide: ["**/.env*", "**/credentials*.json"] };
+const SECRET: Record<string, string> = {
+	".env": "OPENAI_API_KEY=sk-abc123live\n",
+	"secrets/credentials.json": '{\n\t"apiKey": "sk-a-live-999",\n\t"apiKeyExample": "sk-a-placeholder"\n}\n',
+};
+
+const EXCLUDE: ModuleExclusion = { hide: ["**/query-targets/**"] };
 
 interface Workspace {
 	ask: (method: string, params: unknown) => Promise<unknown>;
@@ -87,7 +90,10 @@ let holding: Workspace;
 let control: Workspace;
 
 beforeAll(async () => {
-	[holding, control] = await Promise.all([open({ ...VISIBLE, ...HIDDEN }), open(VISIBLE)]);
+	[holding, control] = await Promise.all([
+		open({ ...VISIBLE, ...EXCLUDED, ...SECRET }),
+		open({ ...VISIBLE, ...SECRET }),
+	]);
 });
 
 afterAll(() => {
@@ -98,16 +104,20 @@ afterAll(() => {
 ////////////////////////////////
 //  Tests
 
-describe("a search that excludes the secret files", () => {
-	it("finds the secrets when nothing is excluded, so the control has something to hide", async () => {
+describe("a search that excludes matched modules", () => {
+	it("finds excluded fixture values without exclusions", async () => {
 		const docs = (await holding.ask("findDocs", { regex: "/sk-a/" })) as { docs: Array<{ module: string }> };
-		expect(docs.docs.map((doc) => doc.module)).toContain(".env");
+		expect(docs.docs.map((doc) => doc.module)).toContain("query-targets/README.md");
 		const literals = (await holding.ask("findLiterals", { regex: "/sk-a/" })) as {
 			literals: Array<{ module: string }>;
 		};
-		expect(literals.literals.map((literal) => literal.module)).toContain("secrets/credentials.json");
+		expect(literals.literals.map((literal) => literal.module)).toContain("query-targets/one.json");
 		const shared = (await holding.ask("sharedLiterals", { minimumFiles: 2 })) as Shared[];
-		expect(shared.map((row) => row.value)).toContain("sk-a-live-999");
+		expect(shared.map((row) => row.value)).toContain("sk-a-shared");
+
+		const secretDocs = (await holding.ask("findDocs", { text: "sk-abc123live" })) as { total: number };
+		const secretLiterals = (await holding.ask("findLiterals", { value: "sk-a-live-999" })) as { total: number };
+		expect({ docs: secretDocs.total, literals: secretLiterals.total }).toEqual({ docs: 0, literals: 0 });
 	});
 
 	it.each(QUERIES)("%s %j answers exactly as a workspace without them", async (method, params) => {

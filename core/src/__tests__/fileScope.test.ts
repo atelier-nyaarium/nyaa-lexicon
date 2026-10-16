@@ -1,22 +1,33 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { globToRegExp } from "@nyaa-lexicon/protocol";
+import type { FileScope, GitRunner, ScopeConfig } from "../fileScope";
 import {
 	describeScope,
 	discoverSubmodules,
-	fileScopeFor,
 	generatedVerdicts,
-	gitFiles,
 	gitIgnored,
 	includedFiles,
 	isExternalModule,
 	runGit,
 	submoduleRoots,
 } from "../fileScope";
+import { watchWorkspace } from "../watcher";
 import { fakeClock } from "./fakeClock";
 import { gitAdd, gitClone, gitCommit, gitConfig, gitInit, gitSubmoduleAdd, gitSubmoduleUpdate } from "./gitFixture";
+import { hashOfRead } from "./reads";
+import { testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -27,6 +38,20 @@ function write(root: string, module: string, text = "x\n") {
 	const full = path.join(root, module);
 	mkdirSync(path.dirname(full), { recursive: true });
 	writeFileSync(full, text);
+}
+
+async function policyScope(root: string, config?: ScopeConfig, runGit?: GitRunner) {
+	if (config !== undefined) write(root, "lexicon.json", JSON.stringify(config));
+	const policy = testPolicy(root, undefined, undefined, runGit);
+	const installed: { scope: FileScope | null } = { scope: null };
+	policy.attach({
+		index: { installScope: (scope) => (installed.scope = scope) },
+		journal: { policyChanged: () => {} },
+		providers: { policyChanged: () => {} },
+	});
+	await policy.refresh({ kind: "startup" });
+	if (installed.scope === null) throw new Error("expected the policy to install a scope");
+	return { policy, scope: installed.scope };
 }
 
 /** A real repository, because the whole point is that git answers rather than we do. */
@@ -95,9 +120,12 @@ describe("what git ignores", () => {
 });
 
 describe("what git says belongs to the project", () => {
-	it("lists untracked files that are not ignored", async () => {
-		const root = await repo({ "src/a.ts": "" });
-		expect((await gitFiles(root))?.has("src/a.ts")).toBe(true);
+	it("lists the project's tracked and untracked files", async () => {
+		const root = await repo({ "src/a.ts": "", "notes.txt": "" });
+		const { scope } = await policyScope(root);
+
+		expect(scope.known?.has("src/a.ts")).toBe(true);
+		expect(scope.known?.has("notes.txt")).toBe(true);
 	});
 
 	/**
@@ -107,16 +135,20 @@ describe("what git says belongs to the project", () => {
 	 * mounts a home directory inside it. Without this the index describes somebody else's plugins
 	 * while looking like it describes yours.
 	 */
-	it("excludes an ignored directory entirely", async () => {
+	it("keeps ignored non-secret files out and discovers ignored secrets", async () => {
 		const root = await repo(
-			{ "src/a.ts": "", "volumes/home/plugin.py": "", ".env": "SECRET=1" },
-			"volumes/\n.env\n",
+			{ "src/a.ts": "", "volumes/home/plugin.py": "", ".env": "SECRET=1", "server.key": "PRIVATE" },
+			"volumes/\n.env\nserver.key\n",
 		);
-		const known = await gitFiles(root);
+		const { policy, scope } = await policyScope(root);
 
-		expect(known?.has("src/a.ts")).toBe(true);
-		expect(known?.has("volumes/home/plugin.py")).toBe(false);
-		expect(known?.has(".env")).toBe(false);
+		expect(scope.known?.has("src/a.ts")).toBe(true);
+		expect(scope.known?.has("volumes/home/plugin.py")).toBe(false);
+		expect(scope.known?.has(".env")).toBe(true);
+		expect(scope.known?.has("server.key")).toBe(true);
+		expect(scope.denies("server.key")).toBe(false);
+		expect(scope.allows("server.key")).toBe(true);
+		expect(policy.current.answer("server.key")).toMatchObject({ kind: "omit", by: "secret" });
 	});
 
 	it("never runs the fsmonitor command a repository's own config names", async () => {
@@ -127,14 +159,17 @@ describe("what git says belongs to the project", () => {
 		chmodSync(path.join(root, "fsmonitor.sh"), 0o755);
 		await gitConfig(root, "core.fsmonitor", path.join(root, "fsmonitor.sh"));
 
-		expect((await gitFiles(root))?.has("src/a.ts")).toBe(true);
+		const { scope } = await policyScope(root);
+		expect(scope.known?.has("src/a.ts")).toBe(true);
 		expect(existsSync(marker)).toBe(false);
 	});
 
-	it("answers null outside a repository, which is not the same as an empty project", async () => {
+	it("uses walk mode outside a repository", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "lexicon-nogit-"));
 		roots.push(root);
-		expect(await gitFiles(root)).toBeNull();
+		const { scope } = await policyScope(root);
+		expect(scope.mode).toBe("walk");
+		expect(scope.known).toBeNull();
 	});
 });
 
@@ -192,15 +227,27 @@ describe("the scoping rule", () => {
 
 	it("lets an explicit include override an exclude", async () => {
 		const root = await repo({ "generated/a.ts": "", "src/a.ts": "" });
-		const scope = await fileScopeFor(root, { include: ["generated/**"], exclude: ["generated/**"] });
+		const { scope } = await policyScope(root, { include: ["generated/**"], exclude: ["generated/**"] });
 
 		expect(scope.allows("generated/a.ts")).toBe(true);
 		expect(scope.allows("src/a.ts")).toBe(true);
 	});
 
+	it("keeps a tracked conditional omission plain", async () => {
+		const root = await repo({ ".env.local": "API_KEY=value\n" });
+		await gitAdd(root, ".env.local");
+		const { policy, scope } = await policyScope(root, {
+			secrets: { "**/.env*": { "@untracked": "omit" } },
+		});
+
+		expect(scope.denies(".env.local")).toBe(false);
+		expect(scope.allows(".env.local")).toBe(true);
+		expect(policy.current.access(".env.local")).toBe("open");
+	});
+
 	it("lets deny, its own and the built-in `.git`, override an explicit include", async () => {
 		const root = await repo({ "reference/a.ts": "", "src/a.ts": "" });
-		const scope = await fileScopeFor(root, { include: ["reference/**", ".git/**"], deny: ["reference/**"] });
+		const { scope } = await policyScope(root, { include: ["reference/**", ".git/**"], deny: ["reference/**"] });
 
 		expect(scope.allows("reference/a.ts")).toBe(false);
 		expect(scope.denies("reference/a.ts")).toBe(true);
@@ -212,7 +259,7 @@ describe("the scoping rule", () => {
 
 	it("marks only configured bundle globs for surface indexing", async () => {
 		const root = await repo({ "opaque/runtime.js": "", "src/a.js": "" });
-		const scope = await fileScopeFor(root, { bundles: ["opaque/**"] });
+		const { scope } = await policyScope(root, { bundles: ["opaque/**"] });
 
 		expect(scope.surface("opaque/runtime.js")).toBe(true);
 		expect(scope.surface("src/a.js")).toBe(false);
@@ -220,7 +267,7 @@ describe("the scoping rule", () => {
 
 	it("refuses an ignored file to auto-discovery", async () => {
 		const root = await repo({ "src/a.ts": "", "dist/built.js": "" }, "dist/\n");
-		const scope = await fileScopeFor(root);
+		const { scope } = await policyScope(root, {});
 
 		expect(scope.mode).toBe("git");
 		expect(scope.allows("src/a.ts")).toBe(true);
@@ -231,7 +278,7 @@ describe("the scoping rule", () => {
 	// naming it, so it wins over the ignore that would otherwise hide it.
 	it("allows an ignored file that was named explicitly", async () => {
 		const root = await repo({ "src/a.ts": "", "dist/built.js": "" }, "dist/\n");
-		const scope = await fileScopeFor(root, { include: ["dist/**"] });
+		const { scope } = await policyScope(root, { include: ["dist/**"] });
 
 		expect(scope.allows("dist/built.js")).toBe(true);
 	});
@@ -263,7 +310,7 @@ describe("the scoping rule", () => {
 	it("allows everything outside a repository, and reports that it is doing so", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "lexicon-nogit-"));
 		roots.push(root);
-		const scope = await fileScopeFor(root);
+		const { scope } = await policyScope(root, {});
 
 		expect(scope.mode).toBe("walk");
 		expect(scope.allows("anything/at/all.ts")).toBe(true);
@@ -343,6 +390,144 @@ describe("submodules", () => {
 		await gitSubmoduleAdd(root, source, "sub");
 
 		expect(await submoduleRoots(root)).toEqual(new Set(["sub"]));
+	});
+
+	it("keeps submodule paths out of the parent evidence", async () => {
+		const source = await submoduleSource();
+		const root = await repo({});
+		await gitSubmoduleAdd(root, source, "sub");
+		await gitCommit(root, "add submodule");
+		const calls: string[] = [];
+		const countingGit: GitRunner = (clock, cwd, args, options) => {
+			calls.push(`${cwd}:${args[0]}`);
+			return runGit(clock, cwd, args, options);
+		};
+		const { policy, scope } = await policyScope(root, { include: ["sub/**"] }, countingGit);
+		const collected = policy.evidence.current()?.collected;
+
+		expect(collected?.repositories.map(({ prefix }) => prefix)).toEqual([""]);
+		expect(collected?.repositories[0]?.gitlinks).toEqual(new Set(["sub"]));
+		expect(collected?.modules.has("sub/inner.txt")).toBe(false);
+		expect(scope.known?.has("sub/inner.txt")).toBe(false);
+		expect(scope.allows("sub/inner.txt")).toBe(false);
+		expect(calls).toHaveLength(3);
+		expect(calls.every((call) => call.startsWith(`${root}:`))).toBe(true);
+	});
+
+	it("uses an included standalone repository's own tracking", async () => {
+		const root = await repo({});
+		const nested = path.join(root, "vendor/lib");
+		write(root, "vendor/lib/.env", "API_KEY=private\n");
+		await gitInit(nested);
+		await gitAdd(nested, ".env");
+
+		const included = await policyScope(root, { include: ["vendor/lib/**"] });
+		const excluded = await policyScope(root, {});
+
+		expect(included.policy.evidenceInputs.map(({ kind }) => kind)).toContain("listing:vendor/lib");
+		expect(included.scope.known?.has("vendor/lib/.env")).toBe(true);
+		expect(included.policy.current.answer("vendor/lib/.env").kind).toBe("plain");
+		expect(included.scope.allows("vendor/lib/.env")).toBe(true);
+		expect(excluded.scope.known?.has("vendor/lib/.env")).toBe(false);
+		expect(excluded.policy.current.answer("vendor/lib/.env").kind).toBe("wholeRedact");
+	});
+
+	it("treats an included repository that cannot answer as untracked", async () => {
+		const root = await repo({});
+		const nested = path.join(root, "vendor/lib");
+		write(root, "vendor/lib/.env", "API_KEY=private\n");
+		await gitInit(nested);
+		writeFileSync(path.join(nested, ".git", "index"), "not an index");
+
+		const { policy, scope } = await policyScope(root, { include: ["vendor/lib/**"] });
+		const repository = policy.evidence
+			.current()
+			?.collected.repositories.find(({ prefix }) => prefix === "vendor/lib");
+
+		expect(repository?.state).toBe("failed");
+		expect(scope.known?.has("vendor/lib/.env")).toBe(false);
+		expect(policy.current.answer("vendor/lib/.env").kind).toBe("wholeRedact");
+	});
+
+	it("keeps an included repository's gitlinks outside its scope", async () => {
+		const source = await submoduleSource();
+		const root = await repo({});
+		const nested = path.join(root, "vendor/lib");
+		mkdirSync(nested, { recursive: true });
+		await gitInit(nested);
+		await gitSubmoduleAdd(nested, source, "sub");
+		await gitCommit(nested, "add submodule");
+
+		const { policy, scope } = await policyScope(root, { include: ["vendor/lib/**"] });
+		const repositories = policy.evidence.current()?.collected.repositories;
+
+		expect(repositories?.map(({ prefix }) => prefix)).toEqual(["", "vendor/lib"]);
+		expect(scope.known?.has("vendor/lib/sub/inner.txt")).toBe(false);
+		expect(scope.allows("vendor/lib/sub/inner.txt")).toBe(false);
+	});
+
+	it("revises only for tracked secret paths and link topology", async () => {
+		const root = await repo({ "src/config.json": "{}\n", "plain.ts": "export {};\n" });
+		await gitAdd(root, "src/config.json", "plain.ts");
+		const { policy: initialPolicy } = await policyScope(root, {});
+
+		write(root, "unrelated.ts", "export {};\n");
+		await gitAdd(root, "unrelated.ts");
+		const { policy: unrelatedPolicy } = await policyScope(root, {});
+		expect(unrelatedPolicy.current.revision).toBe(initialPolicy.current.revision);
+
+		symlinkSync("config.json", path.join(root, "src/credentials.json"));
+		await gitAdd(root, "src/credentials.json");
+		const { policy: linkedPolicy } = await policyScope(root, {});
+		expect(linkedPolicy.current.revision).not.toBe(unrelatedPolicy.current.revision);
+		expect(linkedPolicy.current.answer("src/config.json").kind).toBe("wholeRedact");
+	});
+
+	it("subscribes to the absolute index path named by a submodule root", async () => {
+		const source = await submoduleSource();
+		write(source, ".gitignore", ".env.local\n");
+		await gitAdd(source, ".gitignore");
+		await gitCommit(source, "ignore local env");
+		const parent = await repo({});
+		await gitSubmoduleAdd(parent, source, "sub");
+		await gitCommit(parent, "add submodule");
+		const root = path.join(parent, "sub");
+		write(root, ".env.local", "API_KEY=private\n");
+		const { policy } = await policyScope(root, {});
+		const gitFile = readFileSync(path.join(root, ".git"), "utf8").trim();
+		const gitDirectory = gitFile.replace(/^gitdir: /, "");
+		const submoduleIndex = path.resolve(root, gitDirectory, "index");
+		const subscriptions = policy.evidence.subscriptions();
+		expect(subscriptions.some(({ path: subscribed }) => subscribed === submoduleIndex)).toBe(true);
+		expect(policy.evidence.current()?.collected.ignoredSecrets).toContain(".env.local");
+
+		let notified: (() => void) | undefined;
+		const changed = new Promise<void>((resolve) => {
+			notified = resolve;
+		});
+		const watcher = watchWorkspace({
+			workspaceRoot: root,
+			debounceMs: 5,
+			scope: {
+				subscriptions: () => subscriptions,
+				onSubscriptionsChanged: () => () => {},
+				watchesModule: () => false,
+				admits: () => true,
+				ignored: async () => new Set(),
+			},
+			hash: hashOfRead,
+			onBatch: (_files, evidence) => {
+				if (evidence.includes("listing:")) notified?.();
+			},
+		});
+		write(root, "trigger.ts");
+		await gitAdd(root, "trigger.ts");
+		const observed = await Promise.race([
+			changed.then(() => true),
+			new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3_000)),
+		]);
+		watcher.stop();
+		expect(observed).toBe(true);
 	});
 
 	it("answers the rest of a batch correctly when one path reaches into a submodule", async () => {
@@ -445,5 +630,56 @@ describe("submodules", () => {
 		// never asked at all.
 		const ignored = await gitIgnored(root, ["sub\\inner.txt"]);
 		expect(ignored?.has("sub\\inner.txt")).toBe(false);
+	});
+});
+
+describe("secret configuration fallback", () => {
+	it("keeps the last valid policy until a new config parses", async () => {
+		const root = await repo({});
+		write(root, "lexicon.json", JSON.stringify({ secrets: { "**/private.json": "omit" } }));
+		const policy = testPolicy(root);
+		await policy.refresh({ kind: "startup" });
+		const firstConfig = policy.config;
+		write(root, "lexicon.json", JSON.stringify({ secrets: { "**/*.json": { "@unknown": "omit" } } }));
+		await policy.refresh({ kind: "events", modules: ["lexicon.json"] });
+
+		expect(policy.config.secrets).toEqual(firstConfig.secrets);
+		expect(policy.notes[0]).toContain("last valid secret rules are active");
+		expect(policy.current.access("private.json")).toBe("closed");
+
+		write(root, "lexicon.json", JSON.stringify({ secrets: { "**/*.{yaml,}": "redact" } }));
+		await policy.refresh({ kind: "events", modules: ["lexicon.json"] });
+		expect(policy.config.secrets).toEqual(firstConfig.secrets);
+		expect(policy.notes[0]).toContain('"**/*.{yaml,}"');
+
+		const replacement = { secrets: { "**/credentials.json": "omit" } } as const;
+		write(root, "lexicon.json", JSON.stringify(replacement));
+		await policy.refresh({ kind: "events", modules: ["lexicon.json"] });
+		expect(policy.config.secrets).toEqual(replacement.secrets);
+	});
+
+	it("adopts a new deny beside invalid secrets", async () => {
+		const root = await repo({});
+		write(root, "lexicon.json", JSON.stringify({ secrets: { "**/private.json": "omit" } }));
+		const policy = testPolicy(root);
+		const installed: { scope: FileScope | null } = { scope: null };
+		policy.attach({
+			index: { installScope: (scope) => (installed.scope = scope) },
+			journal: { policyChanged: () => {} },
+			providers: { policyChanged: () => {} },
+		});
+		await policy.refresh({ kind: "startup" });
+		const secrets = policy.config.secrets;
+		write(root, "lexicon.json", JSON.stringify({ deny: ["private/**"], secrets: { "**/*.{yaml,}": "redact" } }));
+		await policy.refresh({ kind: "events", modules: ["lexicon.json"] });
+		if (installed.scope === null) throw new Error("expected the policy to install a scope");
+
+		expect(policy.notes[0]).toContain("last valid secret rules are active");
+		expect({
+			deny: policy.config.deny,
+			secrets: policy.config.secrets,
+			denied: installed.scope.denies("private/a.txt"),
+			kept: installed.scope.denies("private.json"),
+		}).toEqual({ deny: ["private/**"], secrets, denied: true, kept: false });
 	});
 });

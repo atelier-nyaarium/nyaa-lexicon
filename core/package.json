@@ -9,6 +9,7 @@
 	},
 	"dependencies": {
 		"@nyaa-lexicon/client": "workspace:*",
+		"@nyaa-lexicon/formats": "workspace:*",
 		"@nyaa-lexicon/protocol": "workspace:*",
 		"@types/mdast": "4.0.4",
 		"mdast-util-from-markdown": "2.0.3",

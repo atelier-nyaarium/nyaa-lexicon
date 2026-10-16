@@ -10,8 +10,12 @@ import {
 	LexiconService,
 	ownSource,
 	ProviderSupervisor,
+	SecretPolicy,
 	sourceReader,
 	startProviders,
+	systemClock,
+	Timings,
+	TransactionManager,
 } from "@nyaa-lexicon/core";
 import { daemonReads, deferredReads, type LexiconReads, localReads } from "./reads.js";
 import { LspServer, pathFromUri } from "./server.js";
@@ -73,10 +77,24 @@ function rootFrom(params: unknown): string | null {
  */
 async function buildLocal(workspaceRoot: string, hold: (index: LocalIndex) => void): Promise<LexiconReads> {
 	const { store } = IndexStore.open(":memory:");
-	const supervisor = new ProviderSupervisor();
+	const policy = SecretPolicy.initial({ root: workspaceRoot, store });
+	const supervisor = new ProviderSupervisor(systemClock, new Timings(systemClock), () => policy.current);
 	hold({ store, supervisor });
 
-	const service = new LexiconService(store, supervisor, sourceReader(workspaceRoot), workspaceRoot);
+	const service = new LexiconService(
+		store,
+		supervisor,
+		sourceReader(workspaceRoot),
+		workspaceRoot,
+		systemClock,
+		policy,
+	);
+	const journal = new TransactionManager(store, workspaceRoot, policy);
+	policy.attach({ index: service.indexer, journal, providers: supervisor });
+	await service.gate.exclusive(async () => {
+		await policy.refresh({ kind: "startup" });
+		await service.reconcileSecretPolicy();
+	});
 
 	await startProviders(supervisor, workspaceRoot);
 	const outcomes = await service.indexWorkspace();

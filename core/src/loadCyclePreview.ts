@@ -11,7 +11,7 @@ import { type Cycle, newCycleComponents, previewComponents, withPreviewComponent
 import type { ProviderPort } from "./providerPort.js";
 import type { ProviderProbe } from "./providerProbe.js";
 import type { Gate } from "./stepRunners.js";
-import { type IndexStore, type ReplaceFileInput, resolutionKey } from "./store.js";
+import { type FileWrite, type IndexStore, resolutionKey } from "./store.js";
 import { ProviderUnavailableError } from "./supervisor.js";
 
 type Result = ReturnType<typeof ModuleCycleSchema.parse>;
@@ -34,10 +34,7 @@ function unknown(cycle: Cycle, reason: UnknownReason): Result {
 	});
 }
 
-function inputOf(
-	provider: string,
-	answer: Extract<PrepareLoadCyclePreviewResponse, { status: "ready" }>,
-): ReplaceFileInput[] {
+function inputOf(provider: string, answer: Extract<PrepareLoadCyclePreviewResponse, { status: "ready" }>): FileWrite[] {
 	return answer.facts.map((facts) => ({
 		module: facts.module,
 		contentHash: facts.contentHash,
@@ -249,7 +246,7 @@ export async function previewLoadCycles(
 		owner: string;
 		incarnation: number;
 		token: string;
-		facts: ReplaceFileInput[];
+		facts: FileWrite[];
 		response: Extract<PrepareLoadCyclePreviewResponse, { status: "ready" }>;
 	}> = [];
 	const tokens: Array<{ owner: string; incarnation: number; token: string }> = [];

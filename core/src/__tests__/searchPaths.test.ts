@@ -5,6 +5,7 @@ import path from "node:path";
 import { composeSymbolId, type Declaration, type Range } from "@nyaa-lexicon/protocol";
 import { IndexReadModel } from "../indexReads";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 
 ////////////////////////////////
 //  Helpers
@@ -45,14 +46,14 @@ beforeEach(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "lexicon-search-paths-"));
 	store = IndexStore.open(path.join(dir, "index.sqlite")).store;
 	reads = new IndexReadModel(store);
-	store.replaceFile({
+	writePlain(store, {
 		module: "lib/shared.ts",
 		contentHash: "s",
 		declarations: [declared("lib/shared.ts", "shared")],
 		references: [],
 	});
 	for (const module of MODULES) {
-		store.replaceFile({
+		writePlain(store, {
 			module,
 			contentHash: module,
 			declarations: [declared(module, "ready")],

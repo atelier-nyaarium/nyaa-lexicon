@@ -2,7 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import { type Declaration, handlersFor, moduleOf, PROTOCOL_VERSION, type Range } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { GDScriptProvider } from "../main.js";
 
 ////////////////////////////////
@@ -35,8 +37,8 @@ function started(cartText: string) {
 		writeFileSync(full, text);
 	}
 	const provider = new GDScriptProvider();
-	const handlers = handlersFor(provider);
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(provider, SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return { handlers, provider, root };
 }
@@ -113,7 +115,7 @@ test("a fresh initialize can read a module the prior index forgot", () => {
 	const range = cartRange(facts);
 	handlers.forgetModule?.({ module: TARGET });
 
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	expect(handlers.bind({ module: TARGET, name: "Cart", range }).status).toBe("bound");
 });

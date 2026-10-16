@@ -13,6 +13,7 @@ import {
 	type Range,
 	type Reference,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { PythonProvider, wireHandlers } from "../main";
 import { Python3Dispatch } from "../python3";
 import { tokenize } from "../syntax/tokenizer";
@@ -78,7 +79,7 @@ function writtenIn(facts: { references: Reference[] }): string[] {
 
 function initializeProvider(provider: PythonProvider, root: string) {
 	const handlers = wireHandlers(provider);
-	const info = handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const info = handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return info;
 }
@@ -89,6 +90,19 @@ function parseFile(provider: PythonProvider, params: Parameters<ReturnType<typeo
 
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+it("keeps source claims on repeated discovery", () => {
+	const root = workspace({ "main.py": "def main():\n    return 1\n" });
+	const handlers = wireHandlers(new PythonProvider());
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
+	const first = handlers.discoverProject({ workspaceRoot: root });
+	const second = handlers.discoverProject({ workspaceRoot: root });
+
+	expect({ first: first.files, second: second.files }).toEqual({
+		first: ["main.py"],
+		second: ["main.py"],
+	});
 });
 
 const ITEM = "class Item:\n    pass\n";
@@ -2597,7 +2611,7 @@ describe("Python provider project behavior", () => {
 
 		const provider = new PythonProvider();
 		const handlers = wireHandlers(provider);
-		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 		const model = handlers.discoverProject({ workspaceRoot: root });
 
 		expect(model).toEqual({

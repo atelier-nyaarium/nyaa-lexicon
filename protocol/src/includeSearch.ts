@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ExcludedDirectories } from "./excludedDirectories.js";
 import { excludesDirectory } from "./excludedDirectories.js";
 import type { ReadPolicy } from "./readPolicy.js";
-import { workspaceFile, workspaceModule } from "./workspacePath.js";
+import { resolveContained, workspaceFile, workspaceModule } from "./workspacePath.js";
 
 export type IncludeKind = "quoted" | "angle";
 
@@ -43,7 +43,15 @@ export function discoverIncludeDirectories(root: string, excluded: ExcludedDirec
 			if (!entry.isDirectory() || excludesDirectory(excluded, entry.name, directory === root, () => names))
 				continue;
 			const child = path.join(directory, entry.name);
-			if (!policy.readable(child)) continue;
+			const module = workspaceModule(root, child);
+			const target = module === null ? null : resolveContained(root, module);
+			if (
+				module === null ||
+				target?.kind !== "file" ||
+				!policy.admits(module) ||
+				!policy.admits(target.real ?? module)
+			)
+				continue;
 			if (entry.name === "include") found.push(child);
 			pending.push(child);
 		}
@@ -78,8 +86,8 @@ export function findWorkspaceInclude(
 ): FoundInclude | undefined {
 	for (const directory of directories) {
 		const candidate = path.resolve(directory, name);
-		if (!policy.readable(candidate)) continue;
 		const module = workspaceModule(root, candidate);
+		if (module !== null && !policy.exists(candidate)) continue;
 		const absolute = module === null ? candidate : workspaceFile(root, module);
 		if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) continue;
 		return module === null ? { outside: true } : { module };

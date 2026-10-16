@@ -5,13 +5,14 @@ import path from "node:path";
 import type { ModuleAdmission } from "@nyaa-lexicon/protocol";
 import { Database } from "../database";
 import type { MethodRequest } from "../providerPort";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
-import { BATCH_MS, BatchFailed, IndexStore, type ReplaceFileInput } from "../store";
+import { BATCH_MS, BatchFailed, type FileWrite, IndexStore } from "../store";
+import { writePlain } from "./admissions";
 import { type FakeClock, fakeClock } from "./fakeClock";
 import { fakeSupervisor, parseFake } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
 import { failingCommit, fillDisk } from "./storeFailures";
+import { TestLexiconService as LexiconService, testPolicy } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -48,7 +49,7 @@ function service(during: (parse: number, request: MethodRequest<"parseFile">) =>
 			},
 		},
 	});
-	return new LexiconService(store, provider, sourceReader(root), root);
+	return new LexiconService(store, provider, sourceReader(root), root, undefined, testPolicy(root));
 }
 
 /** What another connection reads: only what has committed. */
@@ -84,7 +85,7 @@ function onFakeClock(): FakeClock {
 const RANGE = { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } };
 
 /** A module's facts: imports of `targets`, each resolved, and `bulk` declarations wide enough to fill pages. */
-function facts(module: string, targets: string[] = [], bulk = 0): ReplaceFileInput {
+function facts(module: string, targets: string[] = [], bulk = 0): FileWrite {
 	return {
 		module,
 		contentHash: module,
@@ -162,7 +163,10 @@ describe("an index pass's writes", () => {
 		let image = "";
 		svc = service((parse) => {
 			if (parse === 4) svc?.writeNote({ symbolId: note, text: "Written mid-pass.", expectedRevision: 0 });
-			if (parse === 6) store.putBlob("snapshot", new Uint8Array([1, 2, 3]));
+			if (parse === 6) {
+				const result = svc?.policy.admitBytes("snapshot.fake", new Uint8Array([1, 2, 3]));
+				if (result?.kind === "admitted") store.putBlob(result.value);
+			}
 			if (parse === 7) image = crashImage();
 		});
 		await svc.indexWorkspace();
@@ -172,9 +176,19 @@ describe("an index pass's writes", () => {
 		const survived = {
 			files: crashed.indexedFiles(),
 			note: crashed.notes.byAddress(note)?.text,
-			blob: crashed.blob("snapshot") !== null,
+			blob: crashed.admissions().some((admission) => {
+				if (admission.module !== "snapshot.fake") return false;
+				return crashed.heldImage(admission.module, admission.hash)?.bytes !== null;
+			}),
 		};
-		const repaired = new LexiconService(crashed, fakeSupervisor(), sourceReader(root), root);
+		const repaired = new LexiconService(
+			crashed,
+			fakeSupervisor(),
+			sourceReader(root),
+			root,
+			undefined,
+			testPolicy(root),
+		);
 		await repaired.indexWorkspace();
 
 		expect({
@@ -251,7 +265,7 @@ describe("an index pass's writes", () => {
 		await store.pass(async () => {
 			late = (async () => {
 				await new Promise((resolve) => setTimeout(resolve, 5));
-				store.replaceFile(facts("late.fake"));
+				writePlain(store, facts("late.fake"));
 			})();
 		});
 
@@ -267,7 +281,7 @@ describe("an index pass's writes", () => {
 				}),
 		);
 		await store.pass(async () => {
-			store.replaceFile(facts("a.fake"));
+			writePlain(store, facts("a.fake"));
 		});
 		const atEnd = [...committed().keys()];
 		endOther();
@@ -388,7 +402,9 @@ describe("an open batch's timer", () => {
 				},
 			},
 		});
-		const pass = await settled(new LexiconService(store, provider, sourceReader(root), root).indexWorkspace());
+		const pass = await settled(
+			new LexiconService(store, provider, sourceReader(root), root, undefined, testPolicy(root)).indexWorkspace(),
+		);
 
 		expect({ pass, failures: store.parseFailures() }).toEqual({ pass: "threw", failures: [] });
 	});
@@ -399,14 +415,14 @@ describe("a write that fails", () => {
 		error instanceof BatchFailed ? "refused" : (error as Error).message.includes("full") ? "disk" : "other";
 
 	it("on a full disk inside a pass, throws the disk's error, loses the batch, refuses the pass's later writes, and leaves the store writable", async () => {
-		store.replaceFile(facts("kept.fake"));
+		writePlain(store, facts("kept.fake"));
 		const free = fillDisk(store);
 		const errors: string[] = [];
 		const pass = await store
 			.pass(async () => {
 				for (let at = 0; at < 40 && errors.length < 2; at++) {
 					try {
-						store.replaceFile(facts(`big${at}.fake`, [], 40));
+						writePlain(store, facts(`big${at}.fake`, [], 40));
 					} catch (error) {
 						errors.push(reason(error));
 					}
@@ -415,7 +431,7 @@ describe("a write that fails", () => {
 			.then(() => "returned", reason);
 		free();
 		const speculated = store.readOverlaid([], () => true);
-		store.replaceFile(facts("after.fake"));
+		writePlain(store, facts("after.fake"));
 
 		expect({
 			errors,
@@ -438,7 +454,7 @@ describe("a write that fails", () => {
 		const landed: string[] = [];
 		for (let at = 0; at < 40 && error === ""; at++) {
 			try {
-				store.replaceFile(facts(`big${at}.fake`, [], 40));
+				writePlain(store, facts(`big${at}.fake`, [], 40));
 				landed.push(`big${at}.fake`);
 			} catch (thrown) {
 				error = reason(thrown);
@@ -475,10 +491,10 @@ describe("a write that fails", () => {
 		};
 		const pass = await store
 			.pass(async () => {
-				store.replaceFile(facts("before.fake"));
+				writePlain(store, facts("before.fake"));
 				failing = true;
 				try {
-					store.replaceFile(facts("full.fake"));
+					writePlain(store, facts("full.fake"));
 				} catch {
 					// The store's failure, thrown to the write that met it.
 				}
@@ -492,16 +508,16 @@ describe("a write that fails", () => {
 		const refused = facts("refused.fake", [], 1);
 		const pass = await settled(
 			store.pass(async () => {
-				store.replaceFile(facts("before.fake"));
+				writePlain(store, facts("before.fake"));
 				try {
-					store.replaceFile({
+					writePlain(store, {
 						...refused,
 						declarations: refused.declarations.map((each) => ({ ...each, contains: "nothing" as never })),
 					});
 				} catch {
 					// The CHECK on `contains` refused it.
 				}
-				store.replaceFile(facts("after.fake"));
+				writePlain(store, facts("after.fake"));
 			}),
 		);
 
@@ -521,15 +537,15 @@ describe("the facts generation", () => {
 		let during: string[][] = [];
 		const pass = await settled(
 			store.pass(async () => {
-				store.replaceFile(facts("a.fake", ["b.fake"]));
-				store.replaceFile(facts("b.fake", ["a.fake"]));
+				writePlain(store, facts("a.fake", ["b.fake"]));
+				writePlain(store, facts("b.fake", ["a.fake"]));
 				during = await cycles();
 				commit.arm();
 				clock.advance(BATCH_MS);
 			}),
 		);
-		store.replaceFile(facts("c.fake"));
-		store.replaceFile(facts("d.fake"));
+		writePlain(store, facts("c.fake"));
+		writePlain(store, facts("d.fake"));
 
 		expect({ during, pass, after: await cycles() }).toEqual({
 			during: [["a.fake", "b.fake"]],
@@ -539,7 +555,7 @@ describe("the facts generation", () => {
 	});
 
 	it("holds across a rollback that took back no generation, so a pinned plan still holds", () => {
-		store.replaceFile(facts("a.fake"));
+		writePlain(store, facts("a.fake"));
 		const before = store.factsGeneration();
 
 		expect(() =>
@@ -551,11 +567,11 @@ describe("the facts generation", () => {
 	});
 
 	it("read inside a speculation is its own, and one read before it still holds after it", () => {
-		store.replaceFile(facts("a.fake"));
+		writePlain(store, facts("a.fake"));
 		const before = store.factsGeneration();
 		const inside = store.readOverlaid([facts("b.fake")], () => store.factsGeneration());
 		const after = store.factsGeneration();
-		store.replaceFile(facts("b.fake"));
+		writePlain(store, facts("b.fake"));
 
 		expect({ held: after === before, own: inside !== store.factsGeneration() }).toEqual({ held: true, own: true });
 	});
@@ -589,7 +605,7 @@ describe("another process's lock", () => {
 	it("waits on an open batch until it commits, rather than failing at once", async () => {
 		let said = "";
 		await store.pass(async () => {
-			store.replaceFile(facts("held.fake"));
+			writePlain(store, facts("held.fake"));
 			const other = elsewhere(
 				`try { const db = Database.open(file); db.exec("BEGIN IMMEDIATE"); db.exec("ROLLBACK"); console.log("acquired"); } catch (error) { console.log(error.message); }`,
 			);
@@ -604,7 +620,7 @@ describe("another process's lock", () => {
 			`const db = Database.open(file); db.exec("BEGIN IMMEDIATE"); console.log("held"); await Bun.sleep(300); db.exec("ROLLBACK");`,
 		);
 		await holder.stdout.getReader().read();
-		store.replaceFile(facts("late.fake"));
+		writePlain(store, facts("late.fake"));
 		await holder.exited;
 
 		expect(store.indexedFiles()).toContain("late.fake");

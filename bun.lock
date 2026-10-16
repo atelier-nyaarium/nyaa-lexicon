@@ -12,7 +12,7 @@
     },
     "adapters/lsp": {
       "name": "@nyaa-lexicon/adapter-lsp",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
         "@nyaa-lexicon/core": "workspace:*",
@@ -21,7 +21,7 @@
     },
     "adapters/mcp": {
       "name": "@nyaa-lexicon/adapter-mcp",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
         "@nyaa-lexicon/client": "workspace:*",
@@ -38,16 +38,17 @@
     },
     "client": {
       "name": "@nyaa-lexicon/client",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
       },
     },
     "core": {
       "name": "@nyaa-lexicon/core",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/client": "workspace:*",
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "@types/mdast": "4.0.4",
         "mdast-util-from-markdown": "2.0.3",
@@ -58,7 +59,7 @@
     },
     "formats": {
       "name": "@nyaa-lexicon/formats",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/protocol": "workspace:*",
         "jsonc-parser": "3.3.1",
@@ -68,7 +69,7 @@
     },
     "protocol": {
       "name": "@nyaa-lexicon/protocol",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "micromark": "4.0.2",
         "vscode-jsonrpc": "9.0.2",
@@ -80,15 +81,16 @@
     },
     "providers/bash": {
       "name": "@nyaa-lexicon/provider-bash",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/c": {
       "name": "@nyaa-lexicon/provider-c",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -97,7 +99,7 @@
     },
     "providers/cpp": {
       "name": "@nyaa-lexicon/provider-cpp",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -106,7 +108,7 @@
     },
     "providers/csharp": {
       "name": "@nyaa-lexicon/provider-csharp",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -115,15 +117,16 @@
     },
     "providers/gdscript": {
       "name": "@nyaa-lexicon/provider-gdscript",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/html": {
       "name": "@nyaa-lexicon/provider-html",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -132,7 +135,7 @@
     },
     "providers/json": {
       "name": "@nyaa-lexicon/provider-json",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -141,15 +144,16 @@
     },
     "providers/kotlin": {
       "name": "@nyaa-lexicon/provider-kotlin",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/markdown": {
       "name": "@nyaa-lexicon/provider-markdown",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -163,31 +167,34 @@
     },
     "providers/powershell": {
       "name": "@nyaa-lexicon/provider-powershell",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/python": {
       "name": "@nyaa-lexicon/provider-python",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/rust": {
       "name": "@nyaa-lexicon/provider-rust",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "vscode-jsonrpc": "9.0.2",
       },
     },
     "providers/text": {
       "name": "@nyaa-lexicon/provider-text",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -196,8 +203,9 @@
     },
     "providers/typescript": {
       "name": "@nyaa-lexicon/provider-typescript",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
+        "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
         "typescript": "6.0.3",
         "vscode-jsonrpc": "9.0.2",
@@ -205,7 +213,7 @@
     },
     "providers/xml": {
       "name": "@nyaa-lexicon/provider-xml",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",
@@ -214,7 +222,7 @@
     },
     "providers/yaml": {
       "name": "@nyaa-lexicon/provider-yaml",
-      "version": "14.0.0",
+      "version": "19.0.0",
       "dependencies": {
         "@nyaa-lexicon/formats": "workspace:*",
         "@nyaa-lexicon/protocol": "workspace:*",

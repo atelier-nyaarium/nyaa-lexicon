@@ -16,6 +16,7 @@ import {
 	checkWordsDeclared,
 } from "./methodCases.js";
 import { runMoveCase } from "./moveCases.js";
+import { CONFORMANCE_POLICY } from "./policy.js";
 import { runProbeBatchCase as runProbeBatchCaseWithChecker } from "./probeCases.js";
 import { ProviderSession, Stall } from "./providerSession.js";
 import { counts, unreached } from "./report.js";
@@ -151,7 +152,12 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 	try {
 		// The live constant rather than a spelled version: a literal here silently stops matching
 		// what the suite actually ships on the first bump.
-		const hello = () => session.call("initialize", { workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+		const hello = () =>
+			session.call("initialize", {
+				workspaceRoot: root,
+				protocolVersion: PROTOCOL_VERSION,
+				policy: CONFORMANCE_POLICY,
+			});
 		let info: Awaited<ReturnType<typeof hello>>;
 		try {
 			info = await hello();
@@ -209,7 +215,11 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			writeFixture(caseRoot, fixture.files);
 			// Discovery before questions, the order core uses, so a model built at discovery is present.
 			try {
-				await session.call("initialize", { workspaceRoot: caseRoot, protocolVersion: PROTOCOL_VERSION });
+				await session.call("initialize", {
+					workspaceRoot: caseRoot,
+					protocolVersion: PROTOCOL_VERSION,
+					policy: CONFORMANCE_POLICY,
+				});
 				const project = await session.call("discoverProject", { workspaceRoot: caseRoot });
 				const problems = [
 					...discoveryProblems(fixture, project.files),
@@ -257,7 +267,11 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			const moveRoot = path.join(root, `move-${index}`);
 			writeFixture(moveRoot, fixture.files);
 			try {
-				await session.call("initialize", { workspaceRoot: moveRoot, protocolVersion: PROTOCOL_VERSION });
+				await session.call("initialize", {
+					workspaceRoot: moveRoot,
+					protocolVersion: PROTOCOL_VERSION,
+					policy: CONFORMANCE_POLICY,
+				});
 				await session.call("discoverProject", { workspaceRoot: moveRoot });
 				results.push(await runMoveCase(session, testCase, fixture));
 			} catch (error) {
@@ -294,7 +308,11 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 					results.push(await runUnseenCase(options.command, timeoutMs, lifecycleRoot, testCase, fixture));
 					continue;
 				}
-				await session.call("initialize", { workspaceRoot: lifecycleRoot, protocolVersion: PROTOCOL_VERSION });
+				await session.call("initialize", {
+					workspaceRoot: lifecycleRoot,
+					protocolVersion: PROTOCOL_VERSION,
+					policy: CONFORMANCE_POLICY,
+				});
 				await session.call("discoverProject", { workspaceRoot: lifecycleRoot });
 				results.push(await runLifecycleCase(session, testCase, fixture));
 			} catch (error) {
@@ -327,7 +345,11 @@ export async function runSuite(options: RunOptions): Promise<SuiteReport> {
 			const probeRoot = path.join(root, `probe-${testCase.id}`);
 			writeFixture(probeRoot, fixture.files);
 			try {
-				await session.call("initialize", { workspaceRoot: probeRoot, protocolVersion: PROTOCOL_VERSION });
+				await session.call("initialize", {
+					workspaceRoot: probeRoot,
+					protocolVersion: PROTOCOL_VERSION,
+					policy: CONFORMANCE_POLICY,
+				});
 				await session.call("discoverProject", { workspaceRoot: probeRoot });
 				results.push(await runProbeBatchCase(session, testCase, fixture));
 			} catch (error) {

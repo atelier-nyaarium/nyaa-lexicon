@@ -46,9 +46,11 @@ import { finishAbandonedDelete, pruneProjectStores } from "./projectStores.js";
 import { describeStart, startProviders } from "./providers.js";
 import { recoverSteps } from "./refactorStep.js";
 import { type RelationWork, startRelationWork } from "./relationWork.js";
+import { SecretPolicy } from "./secretPolicy.js";
 import { LexiconService } from "./service.js";
 import { sourceReader } from "./sourceRead.js";
 import { IndexStore } from "./store.js";
+import { megabytes } from "./storePurge.js";
 import { ProviderSupervisor } from "./supervisor.js";
 import { Timings } from "./timings.js";
 import { TransactionManager } from "./transactions.js";
@@ -57,13 +59,25 @@ import { admitStateDir, admitWorkspace } from "./workspaceAdmission.js";
 import type { WorkspaceGate } from "./workspaceGate.js";
 
 ////////////////////////////////
+//  Interfaces & Types
+
+/** Startup wait target and whether patience applies. */
+export interface StartupStep {
+	waitingFor: string;
+	patient: boolean;
+}
+
+////////////////////////////////
 //  Constants
 
 /** Headroom over the slowest provider start. Published to clients rather than mirrored by them. */
 const STARTUP_ALLOWANCE_MS = 90_000;
 
-/** Re-offered while the first scan runs. The client's ceiling ends the wait; the scan finishes anyway. */
+/** Re-offered during scans and rewrites; timeouts do not cancel work. */
 const FIRST_SCAN_PATIENCE_MS = 30_000;
+
+/** Initial index-open wait. */
+const OPENING: StartupStep = { waitingFor: "the index to open", patient: false };
 
 /** How long shutdown waits for in-flight answers. Past it, the journal is the safety net. */
 const SETTLE_LIMIT_MS = 30_000;
@@ -103,6 +117,18 @@ export function refusalFor(
 	if (rule.waits) return warmRefusal(service);
 	if (!rule.refusedAfterFailedWarmup || service.warmFailure() === null) return null;
 	return warmRefusal(service);
+}
+
+/** Remaining startup allowance or re-offered patience. */
+export function startupCountdown(
+	since: number,
+	now: number,
+	step: StartupStep,
+): { retryInMs: number; waitingFor: string } {
+	return {
+		retryInMs: step.patient ? FIRST_SCAN_PATIENCE_MS : Math.max(0, since + STARTUP_ALLOWANCE_MS - now),
+		waitingFor: step.waitingFor,
+	};
 }
 
 /**
@@ -314,7 +340,7 @@ async function main(argv: string[]): Promise<void> {
 	// What a request arriving before the handler is told, so no client is more impatient than this
 	// process is slow.
 	let startingSince = clock.now();
-	let waitingFor = "the index to open";
+	let step = OPENING;
 	// Warmup requests count even when answered "starting".
 	let askedEarly = false;
 	// Reply before shutdown or the caller sees a dropped connection.
@@ -329,10 +355,11 @@ async function main(argv: string[]): Promise<void> {
 		...defined({ stateDir }),
 		onConnections: (n) => observe(n),
 		early: (method) => {
-			const { answer, warms } = earlyAnswer(method, (name) => controls[name](), {
-				retryInMs: Math.max(0, startingSince + STARTUP_ALLOWANCE_MS - clock.now()),
-				waitingFor,
-			});
+			const { answer, warms } = earlyAnswer(
+				method,
+				(name) => controls[name](),
+				startupCountdown(startingSince, clock.now(), step),
+			);
 			if (warms) askedEarly = true;
 			return answer;
 		},
@@ -356,12 +383,41 @@ async function main(argv: string[]): Promise<void> {
 			log(`a delete of ${paths.dir} was left unfinished; removed what it left behind`);
 		}
 
-		const seeded = seedIndex(paths.dir);
-		if (seeded !== null) log(`copied ${seeded} forward to ${paths.index}`);
 		const source = ownSource();
-		const opened = IndexStore.open(paths.index, storeCompatibilityKey(source.root), root, clock);
+		const compatibility = storeCompatibilityKey(source.root);
+		// Skip unreadable older indexes; preserve their files.
+		try {
+			const seeded = seedIndex(paths.dir, { clock, compatibility });
+			if (seeded !== null) log(`created ${paths.index} from the knowledge in ${seeded}`);
+		} catch (error) {
+			log(
+				`starting without an older index's knowledge: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		// Worker rewrites keep requests responsive.
+		const ahead = await IndexStore.scrubAhead(paths.index, compatibility, clock, {
+			starting: (bytes) => {
+				step = { waitingFor: "the index to be compacted", patient: true };
+				log(`rewriting the index's freed pages (${megabytes(bytes)}); requests wait meanwhile`);
+			},
+		});
+		step = OPENING;
+		const opened = IndexStore.open(
+			paths.index,
+			compatibility,
+			root,
+			clock,
+			ahead === null ? {} : { inline: false },
+		);
 		store = opened.store;
+		startingSince = clock.now();
+		const scrub = ahead ?? opened.scrub;
 		if (opened.rebuilt) log(`${opened.reason ?? "the index could not be trusted"}; rebuilt from empty`);
+		if (scrub?.status === "done") {
+			log(`rewrote the index's freed pages under major ${scrub.major} in ${scrub.ms} ms`);
+		} else if (scrub !== undefined) {
+			log(`rewrite of the index's freed pages deferred (${scrub.reason}); the next start tries again`);
+		}
 		if (opened.unplaced !== undefined) {
 			log(`${opened.unplaced} knowledge row(s) lost their subject and another holds their recorded address`);
 		}
@@ -371,22 +427,38 @@ async function main(argv: string[]): Promise<void> {
 
 		// One ring for the daemon's methods and the provider work under them.
 		const timings = new Timings(clock);
-		const spawned = new ProviderSupervisor(clock, timings);
+		const policy = SecretPolicy.initial({
+			root,
+			...(source.bundleStamp === null ? {} : { judge: source.bundleStamp }),
+			clock,
+			store,
+		});
+		const spawned = new ProviderSupervisor(clock, timings, () => policy.current);
 		supervisor = spawned;
 		// Held until the collector exists, so a death during startup is still an incident.
 		const earlyExits: Parameters<Collector["recordExit"]>[0][] = [];
 		spawned.observeExits((exit) => (collector === null ? earlyExits.push(exit) : collector.recordExit(exit)));
-		startingSince = clock.now();
-		waitingFor = "the language providers to start";
-		const providers = await startProviders(spawned, root);
-		log(`providers:\n${describeStart(providers)}`);
-
 		const openStore = store;
-		const service = new LexiconService(openStore, supervisor, sourceReader(root), root, clock);
+		const service = new LexiconService(openStore, supervisor, sourceReader(root), root, clock, policy);
 		gate = service.gate;
 
-		transactions = new TransactionManager(openStore, root, () => clock.now());
+		transactions = new TransactionManager(openStore, root, policy, {
+			now: () => clock.now(),
+		});
 		const journal = transactions;
+		policy.attach({ index: service.indexer, journal, providers: spawned });
+		await service.gate.exclusive(async () => {
+			await policy.refresh({ kind: "startup" });
+			await service.reconcileSecretPolicy();
+		});
+		const readmitted = transactions.readmit();
+		if (readmitted.purged > 0)
+			log(`purged ${readmitted.purged} journal image reference(s) without a current admission`);
+
+		startingSince = clock.now();
+		step = { waitingFor: "the language providers to start", patient: false };
+		const providers = await startProviders(spawned, root);
+		log(`providers:\n${describeStart(providers)}`);
 
 		// Before the handler is published, so nothing can ask about a workspace still holding a
 		// half-applied step. The lock is already claimed, so no other daemon is writing here.
@@ -437,6 +509,7 @@ async function main(argv: string[]): Promise<void> {
 			},
 			onError: (message) => log(message),
 			timings: () => timings.recorded(),
+			store: () => ({ scrub: scrub ?? null }),
 		});
 		for (const exit of earlyExits.splice(0)) collector.recordExit(exit);
 		log(`diagnostics ${paths.diagnosticsFile}`);
@@ -473,6 +546,7 @@ async function main(argv: string[]): Promise<void> {
 			scan = (async () => {
 				try {
 					await service.currentScope();
+					for (const note of service.indexStatus().scopeNotes ?? []) log(`scope note: ${note}`);
 				} catch (error) {
 					// A transient failure, unlike a failed pass: nothing else here ran, so the next
 					// request's warm() retries rather than leaving the daemon permanently unable to.

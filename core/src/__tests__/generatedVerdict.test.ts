@@ -5,11 +5,12 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Declaration } from "@nyaa-lexicon/protocol";
 import type { GeneratedVerdict } from "../fileScope";
-import { LexiconService } from "../service";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
+import { writePlain } from "./admissions";
 import { fakeSupervisor } from "./fakeProvider";
 import { gitInit } from "./gitFixture";
+import { TestLexiconService as LexiconService } from "./testPolicy";
 
 ////////////////////////////////
 //  Helpers
@@ -31,7 +32,7 @@ function plant(module: string, generated: GeneratedVerdict | null = { status: "n
 		selectionRange: at(0),
 		visibility: "public",
 	};
-	store.replaceFile({
+	writePlain(store, {
 		module,
 		contentHash: `h-${module}`,
 		declarations: [declaration],

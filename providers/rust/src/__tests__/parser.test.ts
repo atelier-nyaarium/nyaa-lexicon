@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type Conflict,
 	coordinatesOf,
@@ -11,6 +12,7 @@ import {
 	parseSymbolId,
 	type Range,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { RustProvider } from "../main.js";
 
 const roots: string[] = [];
@@ -26,8 +28,8 @@ function parse(text: string, module = "src/lib.rs", depth?: "outline" | undefine
 	mkdirSync(path.dirname(file), { recursive: true });
 	writeFileSync(file, text);
 	const provider = new RustProvider();
-	const handlers = handlersFor(provider);
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(provider, SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	return {
 		provider: handlers,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { SECRET_READERS } from "@nyaa-lexicon/formats/secret";
 import {
 	type Binding,
 	coordinatesOf,
@@ -11,6 +12,7 @@ import {
 	parseSymbolId,
 	type Range,
 } from "@nyaa-lexicon/protocol";
+import { secretWire } from "../../../../protocol/src/__tests__/secretWire.js";
 import { parsePowerShellFile } from "../extract.js";
 import { PowerShellProvider } from "../main.js";
 
@@ -26,8 +28,8 @@ function workspace(files: Record<string, string>): string {
 
 function provider(files: Record<string, string>) {
 	const root = workspace(files);
-	const handlers = handlersFor(new PowerShellProvider());
-	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION });
+	const handlers = handlersFor(new PowerShellProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
 	handlers.discoverProject({ workspaceRoot: root });
 	const parse = (module: string) => handlers.parseFile({ module, contentHash: "h", text: files[module] as string });
 	return { handlers, parse };
@@ -50,6 +52,19 @@ function reachedIn(files: Record<string, string>, module: string): Array<[string
 		.parse(module)
 		.references.map((reference) => [reference.name, reached(reference.binding)]);
 }
+
+it("keeps shebang claims on repeated discovery", () => {
+	const root = workspace({ "run.ps1": "", "bin/run": "#!/usr/bin/env pwsh\nWrite-Output hi\n" });
+	const handlers = handlersFor(new PowerShellProvider(), SECRET_READERS);
+	handlers.initialize({ workspaceRoot: root, protocolVersion: PROTOCOL_VERSION, policy: secretWire() });
+	const first = handlers.discoverProject({ workspaceRoot: root });
+	const second = handlers.discoverProject({ workspaceRoot: root });
+
+	expect({ first: first.files, second: second.files }).toEqual({
+		first: ["bin/run", "run.ps1"],
+		second: ["bin/run", "run.ps1"],
+	});
+});
 
 describe("declarations", () => {
 	const text = [
