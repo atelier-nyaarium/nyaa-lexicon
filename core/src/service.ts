@@ -50,7 +50,7 @@ import {
 	readHistory,
 } from "./history.js";
 import { ImportResolver } from "./imports.js";
-import { type Doing, type IndexCaches, WorkspaceIndexer } from "./indexer.js";
+import { type Doing, type IndexCaches, type ModuleSecretModeRequest, WorkspaceIndexer } from "./indexer.js";
 import {
 	type CallHierarchy,
 	type CommentsResult,
@@ -284,7 +284,7 @@ export class LexiconService {
 		return this.indexer.admittedModules(modules);
 	}
 
-	moduleSecretModes(modules: string[]): ReturnType<WorkspaceIndexer["moduleSecretModes"]> {
+	moduleSecretModes(modules: ModuleSecretModeRequest[]): ReturnType<WorkspaceIndexer["moduleSecretModes"]> {
 		return this.indexer.moduleSecretModes(modules);
 	}
 

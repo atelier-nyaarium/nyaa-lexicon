@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DAEMON_METHODS } from "@nyaa-lexicon/protocol";
+import { DAEMON_METHODS, MAX_SOURCE_BYTES } from "@nyaa-lexicon/protocol";
+import { Database } from "../database";
 import { daemonHandlers, gateOf } from "../dispatch";
 import { sourceReader } from "../sourceRead";
 import { IndexStore } from "../store";
@@ -13,6 +14,23 @@ import {
 	TestProviderSupervisor as ProviderSupervisor,
 	testPolicy,
 } from "./testPolicy";
+
+////////////////////////////////
+//  Helpers
+
+function filesUnder(directory: string): string[] {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const file = path.join(directory, entry.name);
+		return entry.isDirectory() ? filesUnder(file) : entry.isFile() ? [file] : [];
+	});
+}
+
+function containsBytes(directory: string, needles: readonly Buffer[]): boolean {
+	return filesUnder(directory).some((file) => {
+		const contents = readFileSync(file);
+		return needles.some((needle) => contents.includes(needle));
+	});
+}
 
 describe("moduleSecretModes answers", () => {
 	let root: string;
@@ -112,5 +130,132 @@ describe("moduleSecretModes answers", () => {
 		]);
 		expect(reads.sort()).toEqual(["deployment.yaml", "missing.yaml", "package.json", "secret.yaml"]);
 		expect(service.policy.current.answer("deployment.yaml").kind).toBe("matchers");
+	});
+
+	it("judges supplied text instead of the disk copy", async () => {
+		const secretText = "kind: Secret\ndata:\n  token: EDITOR_ONLY_SECRET_VALUE\n";
+		const deploymentText = "kind: Deployment\nmetadata:\n  name: editor-buffer\n";
+		const disk = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({ modules: ["deployment.yaml", "secret.yaml"] }),
+			gateOf(service.gate),
+		);
+		expect(disk).toEqual([
+			{ module: "deployment.yaml", mode: "plain" },
+			{ module: "secret.yaml", mode: "redact" },
+		]);
+
+		reads = [];
+		const params = DAEMON_METHODS.moduleSecretModes.request.parse({
+			modules: [
+				{ module: "deployment.yaml", text: secretText },
+				{ module: "secret.yaml", text: deploymentText },
+			],
+		});
+		const answer = DAEMON_METHODS.moduleSecretModes.response.parse(
+			await handlers.moduleSecretModes.run(params, gateOf(service.gate)),
+		);
+
+		expect(answer).toEqual([
+			{ module: "deployment.yaml", mode: "redact" },
+			{ module: "secret.yaml", mode: "plain" },
+		]);
+		expect(reads).toEqual([]);
+		expect(JSON.stringify(answer)).not.toContain("EDITOR_ONLY_SECRET_VALUE");
+		const next = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({
+				modules: [{ module: "deployment.yaml", text: deploymentText }],
+			}),
+			gateOf(service.gate),
+		);
+		expect(next).toEqual([{ module: "deployment.yaml", mode: "plain" }]);
+	});
+
+	it("keeps whole-file dotenv rules independent of supplied text", async () => {
+		const disk = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({ modules: [".env.local"] }),
+			gateOf(service.gate),
+		);
+		const answer = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({
+				modules: [{ module: ".env.local", text: "kind: Deployment\n" }],
+			}),
+			gateOf(service.gate),
+		);
+
+		expect(disk).toEqual([{ module: ".env.local", mode: "redact" }]);
+		expect(answer).toEqual([{ module: ".env.local", mode: "redact" }]);
+	});
+
+	it("leaves no supplied text in store files, logs, answers, or diagnostics", async () => {
+		const secretText = "kind: Secret\nstringData:\n  token: BUFFER_RESIDUE_SECRET_VALUE\n";
+		const secretBytes = Buffer.from(secretText, "utf8");
+		const marker = Buffer.from("BUFFER_RESIDUE_SECRET_VALUE", "utf8");
+		const planted = path.join(root, "control.log");
+		writeFileSync(planted, secretBytes);
+		expect(containsBytes(root, [secretBytes, marker])).toBe(true);
+		rmSync(planted);
+
+		const logged: string[] = [];
+		const originalLog = console.log;
+		console.log = (...values: unknown[]) => logged.push(values.map(String).join(" "));
+		let answer: unknown;
+		try {
+			answer = await handlers.moduleSecretModes.run(
+				DAEMON_METHODS.moduleSecretModes.request.parse({
+					modules: [{ module: "deployment.yaml", text: secretText }],
+				}),
+				gateOf(service.gate),
+			);
+		} finally {
+			console.log = originalLog;
+		}
+		const checkpoint = Database.open(path.join(root, "index.sqlite"));
+		checkpoint.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+		checkpoint.close();
+		const diagnostics = JSON.stringify(service.indexStatus());
+
+		expect(answer).toEqual([{ module: "deployment.yaml", mode: "redact" }]);
+		expect(JSON.stringify(answer)).not.toContain("BUFFER_RESIDUE_SECRET_VALUE");
+		expect(logged.join("\n")).not.toContain("BUFFER_RESIDUE_SECRET_VALUE");
+		expect(diagnostics).not.toContain("BUFFER_RESIDUE_SECRET_VALUE");
+		expect(containsBytes(root, [secretBytes, marker])).toBe(false);
+	});
+
+	it("fails closed when entry or request text exceeds its byte cap", async () => {
+		const underEntryCap = `#${"x".repeat(MAX_SOURCE_BYTES - 2)}`;
+		const entryControl = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({
+				modules: [{ module: "oversized.yaml", text: underEntryCap }],
+			}),
+			gateOf(service.gate),
+		);
+		const entryOverCap = `#${"x".repeat(MAX_SOURCE_BYTES)}`;
+		const entryAnswer = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({
+				modules: [{ module: "oversized.yaml", text: entryOverCap }],
+			}),
+			gateOf(service.gate),
+		);
+		const requestText = `#${"x".repeat(2 * 1024 * 1024 - 1)}`;
+		const requestControl = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({
+				modules: [{ module: "request/0.yaml", text: requestText }],
+			}),
+			gateOf(service.gate),
+		);
+		const requestOverCap = await handlers.moduleSecretModes.run(
+			DAEMON_METHODS.moduleSecretModes.request.parse({
+				modules: [0, 1, 2, 3, 4].map((index) => ({ module: `request/${index}.yaml`, text: requestText })),
+			}),
+			gateOf(service.gate),
+		);
+
+		expect(Buffer.byteLength(underEntryCap, "utf8")).toBeLessThanOrEqual(MAX_SOURCE_BYTES);
+		expect(entryControl).toEqual([{ module: "oversized.yaml", mode: "plain" }]);
+		expect(entryAnswer).toEqual([{ module: "oversized.yaml", mode: "redact" }]);
+		expect(requestControl).toEqual([{ module: "request/0.yaml", mode: "plain" }]);
+		expect(requestOverCap).toEqual(
+			[0, 1, 2, 3, 4].map((index) => ({ module: `request/${index}.yaml`, mode: "redact" })),
+		);
 	});
 });

@@ -300,7 +300,13 @@ const FindImports = z
 	})
 	.meta({ id: "FindImportsRequest" });
 const AdmittedModules = z.object({ modules: z.array(ModulePath).max(512) }).meta({ id: "AdmittedModulesRequest" });
-const ModuleSecretModes = z.object({ modules: z.array(ModulePath).max(512) }).meta({ id: "ModuleSecretModesRequest" });
+const ModuleSecretModeInput = z.union([
+	ModulePath,
+	z.object({ module: ModulePath, text: z.string().optional() }).meta({ id: "ModuleSecretModeInput" }),
+]);
+const ModuleSecretModes = z
+	.object({ modules: z.array(ModuleSecretModeInput).max(512) })
+	.meta({ id: "ModuleSecretModesRequest" });
 const SymbolSource = z
 	.object({ symbolId: z.string().min(1).optional(), factId: z.string().min(1).optional() })
 	.meta({ id: "SymbolSourceRequest" });

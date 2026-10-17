@@ -87,11 +87,13 @@ import {
 	DENIED_BY_SCOPE_REASON,
 	hashOfView,
 	insideWorkspace,
+	MAX_SOURCE_BYTES,
 	OUTSIDE_WORKSPACE_REASON,
 	readHead,
 	type SealedRead,
 	type SealedText,
 	type SourceReader,
+	sourceReadBytes,
 	unreadableReason,
 } from "./sourceRead.js";
 import { BatchFailed, type FileNote, type IndexStore, resolutionKey, type SurfaceChange } from "./store.js";
@@ -169,6 +171,14 @@ const EXCLUDED_DIRECTORY_REASON = "under a directory its provider excludes";
 
 /** Of overlapping works, the one a status names first: each holds or waits out those after it. */
 const ACTIVITY_ORDER: ReadonlyArray<IndexActivity["kind"]> = ["refactor", "batch", "scan", "rebind", "upgrade"];
+const MAX_MODULE_SECRET_MODE_TEXT_BYTES = 8 * 1024 * 1024;
+
+export interface ModuleSecretModeInput {
+	module: string;
+	text?: string | undefined;
+}
+
+export type ModuleSecretModeRequest = string | ModuleSecretModeInput;
 
 /** The depth a pass ends at: an outline floor is a first read the pump carries to full. */
 function settledDepth(depth: IndexDepth | undefined): IndexDepth | undefined {
@@ -1918,15 +1928,31 @@ export class WorkspaceIndexer {
 		return modules.map((module) => ({ module, admitted: this.admissionIn(scope, module) }));
 	}
 
-	async moduleSecretModes(modules: string[]): Promise<ModuleSecretModeAnswer[]> {
+	async moduleSecretModes(modules: ModuleSecretModeRequest[]): Promise<ModuleSecretModeAnswer[]> {
 		await this.currentScope();
 		const current = this.secretPolicy.current;
-		return modules.map((module) => {
+		const inputs = modules.map((input) => (typeof input === "string" ? { module: input } : input));
+		const entries = inputs.map((input) => ({
+			...input,
+			textBytes: input.text === undefined ? 0 : Buffer.byteLength(input.text, "utf8"),
+		}));
+		const requestTooLarge =
+			entries.reduce((total, entry) => total + entry.textBytes, 0) > MAX_MODULE_SECRET_MODE_TEXT_BYTES;
+		return entries.map(({ module, text, textBytes }) => {
 			const answer = current.answer(module);
-			if (answer.kind !== "matchers") return { module, mode: secretModeOf(current.admission(module).as) };
-			const read = this.readSource(module);
-			const admission = read.kind === "text" ? current.admission(read) : current.admission(module);
-			return { module, mode: secretModeOf(admission.as) };
+			if (text === undefined) {
+				if (answer.kind !== "matchers") return { module, mode: secretModeOf(current.admission(module).as) };
+				const read = this.readSource(module);
+				const admission = read.kind === "text" ? current.admission(read) : current.admission(module);
+				return { module, mode: secretModeOf(admission.as) };
+			}
+			if (textBytes > MAX_SOURCE_BYTES || requestTooLarge)
+				return {
+					module,
+					mode: answer.kind === "matchers" ? "redact" : secretModeOf(current.admission(module).as),
+				};
+			const read = sourceReadBytes(module, Buffer.from(text, "utf8"));
+			return { module, mode: secretModeOf(current.admission(read).as) };
 		});
 	}
 

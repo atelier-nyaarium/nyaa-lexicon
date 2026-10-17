@@ -245,8 +245,11 @@ import, and `null` when the scope denies it or nothing reaches it. `moduleStatus
 a claim admits any path a caller names, and the text provider claims every file.
 
 `moduleSecretModes` answers, for up to 512 modules, whether a client may use the text as `plain`,
-must `redact` it, or must `omit` it. Matcher rules are judged against current text; if the file is
-missing or unreadable, the answer uses the path rule alone. An existing whole-file `omit` remains
+must `redact` it, or must `omit` it. Each entry may be a path string or `{module, text?}`; supplied
+text is judged under the same policy snapshot as a disk read and is never returned or stored. Each
+text is limited to 4 MiB and all supplied text to 8 MiB per request. An over-limit matcher entry
+answers `redact`; path-only rules keep their mode. Without text, matcher rules use current disk
+text, and missing or unreadable files use the path rule. An existing whole-file `omit` remains
 listed and indexed, with no content or keys revealed. The response contains only `module` and `mode`.
 
 ## Refactor methods

@@ -19,7 +19,7 @@ export type Compatibility =
 ////////////////////////////////
 //  Constants
 
-export const PROTOCOL_VERSION = "9.0.0" as const;
+export const PROTOCOL_VERSION = "9.1.0" as const;
 
 /** The oldest protocol major whose method table this build's daemon still answers in full. */
 export const OLDEST_CLIENT_MAJOR = 8;
