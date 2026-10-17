@@ -307,7 +307,7 @@ export function connectFrames(port: number, token: string, options: ConnectFrame
 			}
 		});
 
-		socket.on("connect", () => writeFrame(socket, { kind: "hello", token }));
+		socket.on("connect", () => writeFrame(socket, { kind: "hello", token, protocolVersion: PROTOCOL_VERSION }));
 
 		function sendRequest(method: string, params: unknown, frameOptions: RequestOptions): Promise<ResponseFrame> {
 			return new Promise((resolve, reject) => {

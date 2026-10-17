@@ -22,6 +22,8 @@ export const HelloFrameSchema = z
 		kind: z.literal("hello"),
 		/** From the lock file. Presenting it is what makes binding a TCP port safe on a shared box. */
 		token: z.string().min(32),
+		/** Optional negotiated protocol version. */
+		protocolVersion: z.string().min(1).optional(),
 	})
 	.meta({ id: "HelloFrame" });
 

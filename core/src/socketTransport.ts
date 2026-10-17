@@ -17,10 +17,12 @@ import {
 	HELLO_DEADLINE_MS,
 	OLDEST_CLIENT_MAJOR,
 	PROTOCOL_VERSION,
+	parseVersion,
 	type RequestFrame,
 	type RequestOptions,
 	SERVER_LINE_CAP,
 } from "@nyaa-lexicon/protocol";
+import { downgradeAnswerForClientMajor } from "./answerCompatibility.js";
 import { type Clock, systemClock, type TimerHandle } from "./clock.js";
 import { GateBusy } from "./workspaceGate.js";
 
@@ -62,6 +64,7 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 
 	const server: Server = createNetServer((socket) => {
 		let helloed = false;
+		let clientMajor = OLDEST_CLIENT_MAJOR;
 		let missed = 0;
 		let pings = 0;
 		socket.setNoDelay(true);
@@ -126,6 +129,7 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 					return;
 				}
 				helloed = true;
+				clientMajor = parseVersion(frame.protocolVersion ?? "")?.major ?? OLDEST_CLIENT_MAJOR;
 				authed.add(socket);
 				options.onConnections?.(authed.size);
 				writeFrame(socket, {
@@ -152,11 +156,12 @@ export async function serveFrames(options: FrameServerOptions): Promise<FrameSer
 
 		async function answer(frame: RequestFrame): Promise<void> {
 			try {
-				const result = await options.handle(
+				const answer = await options.handle(
 					frame.method,
 					frame.params,
 					frame.gateWaitMs === undefined ? {} : { gateWaitMs: frame.gateWaitMs },
 				);
+				const result = downgradeAnswerForClientMajor(frame.method, answer, clientMajor);
 				writeFrame(socket, { kind: "response", id: frame.id, ok: true, result });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
