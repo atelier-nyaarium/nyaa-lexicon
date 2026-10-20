@@ -437,13 +437,13 @@ describe("following evidence subscriptions", () => {
 		});
 
 		const collected = subscription(second, "listing:vendor");
-		writeFileSync(second, "1");
+		writeFileSync(second, "first change");
 		move([subscription(first, "listing:"), collected]);
 		await settle();
 
 		expect(batches).toEqual([{ files: [], evidence: ["listing:vendor"] }]);
 		batches.length = 0;
-		writeFileSync(second, "2");
+		writeFileSync(second, "second, longer change");
 		await settle(150);
 		expect(batches).toEqual([{ files: [], evidence: ["listing:vendor"] }]);
 	});
@@ -464,11 +464,11 @@ describe("following evidence subscriptions", () => {
 		await settle();
 		expect(batches).toEqual([]);
 
-		writeFileSync(first, "1");
+		writeFileSync(first, "changed");
 		await settle(150);
 		expect(batches).toEqual([]);
 
-		writeFileSync(second, "1");
+		writeFileSync(second, "changed");
 		await settle(150);
 		expect(batches).toEqual([{ files: [], evidence: ["listing:second"] }]);
 	});
