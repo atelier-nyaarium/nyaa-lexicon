@@ -410,6 +410,8 @@ describe("submodules", () => {
 		expect(collected?.modules.has("sub/inner.txt")).toBe(false);
 		expect(scope.known?.has("sub/inner.txt")).toBe(false);
 		expect(scope.allows("sub/inner.txt")).toBe(false);
+		expect(scope.cause("sub/inner.txt")).toBe("nestedProject");
+		expect(scope.cause("sub", true)).toBe("nestedProject");
 		expect(calls).toHaveLength(3);
 		expect(calls.every((call) => call.startsWith(`${root}:`))).toBe(true);
 	});
@@ -429,6 +431,7 @@ describe("submodules", () => {
 		expect(included.policy.current.answer("vendor/lib/.env").kind).toBe("plain");
 		expect(included.scope.allows("vendor/lib/.env")).toBe(true);
 		expect(excluded.scope.known?.has("vendor/lib/.env")).toBe(false);
+		expect(excluded.scope.cause("vendor/lib/.env")).toBe("nestedProject");
 		expect(excluded.policy.current.answer("vendor/lib/.env").kind).toBe("wholeRedact");
 	});
 

@@ -63,6 +63,24 @@ export function maskSecretText(text: string, spans: readonly Range[]): string | 
 	return units.join("");
 }
 
+export function displaySecretText(text: string, mask: SecretMask): { allowed: string; spans: readonly Range[] } | null {
+	const coordinates = coordinatesOf(text);
+	const keyEnds = new Set(mask.shown.map(({ range }) => coordinates.offsetAt(range.end)));
+	const spans: Range[] = [];
+	for (const span of mask.spans) {
+		const offsets = coordinates.offsetsForRange(span);
+		if (offsets === undefined) return null;
+		const separator = keyEnds.has(offsets.start)
+			? /^[ \t]*[:=][ \t]*/.exec(text.slice(offsets.start, offsets.end))?.[0]
+			: undefined;
+		const display = coordinates.rangeAt(offsets.start + (separator?.length ?? 0), offsets.end);
+		if (display === undefined) return null;
+		spans.push(display);
+	}
+	const allowed = maskSecretText(text, spans);
+	return allowed === null ? null : { allowed, spans };
+}
+
 /** Whole-file mask, or null for invalid offsets. */
 export function wholeFileMask(text: string): SecretMask | null {
 	const full = coordinatesOf(text).rangeAt(0, text.length);
@@ -207,7 +225,7 @@ export function protectSecretFacts(facts: ParseFacts, mask: SecretMask): ParseFa
 //  Views
 
 /** Reads hidden spans as markers; null for invalid ranges. */
-function redactedSlice(text: string, range: Range, spans: readonly Range[]): string | null {
+function redactedSlice(text: string, range: Range, spans: readonly Range[], display = false): string | null {
 	const coordinates = coordinatesOf(text);
 	const slice = coordinates.offsetsForRange(range);
 	if (slice === undefined) return null;
@@ -221,11 +239,14 @@ function redactedSlice(text: string, range: Range, spans: readonly Range[]): str
 		for (let offset = span.start; offset < span.end; offset++) hiddenUnits[offset] = 1;
 	}
 	let result = "";
+	const marker = display ? "********" : REDACTED_MARK;
 	for (let offset = slice.start; offset <= slice.end; offset++) {
-		if (zeroWidth[offset] === 1) result += REDACTED_MARK;
+		if (zeroWidth[offset] === 1) result += marker;
 		if (offset === slice.end) break;
 		if (hiddenUnits[offset] === 1) {
-			if (offset === slice.start || hiddenUnits[offset - 1] !== 1) result += REDACTED_MARK;
+			if (offset === slice.start || hiddenUnits[offset - 1] !== 1 || (display && text[offset - 1] === "\n"))
+				result += marker;
+			if (display && (text[offset] === "\n" || text[offset] === "\r")) result += text[offset];
 			continue;
 		}
 		result += text[offset];
@@ -240,13 +261,24 @@ export function redactedText(text: string, spans: readonly Range[]): string {
 }
 
 /** Consumer view with hidden values blanked. */
-export function maskedView(allowed: string, hash: string, mask: SecretMask): MaskedView {
+export function maskedView(
+	allowed: string,
+	hash: string,
+	mask: SecretMask,
+	display?: { allowed: string; spans: readonly Range[] } | null,
+): MaskedView {
 	return {
 		kind: "masked",
 		text: allowed,
 		hash,
 		hidden: mask.wholeFile || mask.spans.length > 0,
 		slice: (range) => redactedSlice(allowed, range, mask.spans),
+		display: (range) => {
+			if (display === null) return null;
+			const text = display?.allowed ?? allowed;
+			const selected = range ?? coordinatesOf(text).rangeAt(0, text.length);
+			return selected === undefined ? null : redactedSlice(text, selected, display?.spans ?? mask.spans, true);
+		},
 		touches: (range) => mask.wholeFile || touchesAny(range, mask.spans),
 		omits: (range) => inAny(range, mask.omitted),
 	};

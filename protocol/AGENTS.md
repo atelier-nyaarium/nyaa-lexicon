@@ -5,7 +5,7 @@ conformance tools. It runs without the core so provider teams can validate again
 
 ## Wire and compatibility
 
-`PROTOCOL_VERSION` is `9.1.0`. The daemon's `OLDEST_CLIENT_MAJOR` is `8`, so it serves client major 8
+`PROTOCOL_VERSION` is `9.2.0`. The daemon's `OLDEST_CLIENT_MAJOR` is `8`, so it serves client major 8
 while providers must speak major 9. Package versions and the wire version are separate.
 
 Protocol majors break the wire. Changes within a major are additive. Daemon wire object schemas

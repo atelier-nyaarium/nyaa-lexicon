@@ -6,6 +6,7 @@ import { type Dirent, existsSync, lstatSync, readdirSync, readFileSync, realpath
 import path from "node:path";
 import { canonicalRoot } from "@nyaa-lexicon/client";
 import {
+	type AdmissionCause,
 	type BoundedTimer,
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	globToRegExp,
@@ -62,6 +63,7 @@ export interface FileScope {
 	deny: string[];
 	/** Whether this module is forbidden from roots and import closure. */
 	denies: (module: string) => boolean;
+	cause: (module: string, folder?: boolean) => AdmissionCause;
 	bundles: string[];
 	/** Whether this module must use surface indexing even when it is explicitly included. */
 	surface: (module: string) => boolean;
@@ -585,7 +587,8 @@ function gitEvidenceHost(clock: Clock, run: GitRunner): GitEvidenceHost {
 function owningRepository(module: string, repositories: readonly GitRepository[]): GitRepository | null {
 	let owner: GitRepository | null = null;
 	for (const repository of repositories) {
-		const matches = repository.prefix === "" || module.startsWith(`${repository.prefix}/`);
+		const matches =
+			repository.prefix === "" || module === repository.prefix || module.startsWith(`${repository.prefix}/`);
 		if (matches && (owner === null || repository.prefix.length > owner.prefix.length)) owner = repository;
 	}
 	if (owner === null) return null;
@@ -630,6 +633,7 @@ export function scopeFor(view: EvidenceView, secretPolicy: SecretPolicySnapshot)
 	const entries = (directory: string) => entrySnapshot.get(directory) ?? [];
 	const matchers = include.map((glob) => globToRegExp(glob));
 	const excluded = exclude.map((glob) => globToRegExp(glob));
+	const denied = deny.map((glob) => globToRegExp(glob));
 	const surfaces = bundles.map((glob) => globToRegExp(glob));
 	const included = (module: string) => matchers.some((matcher) => matcher.test(module));
 	const underGitlink = (module: string) => gitlinks.some((root) => module === root || module.startsWith(`${root}/`));
@@ -647,6 +651,37 @@ export function scopeFor(view: EvidenceView, secretPolicy: SecretPolicySnapshot)
 	};
 	const allowed = (module: string) => withinExcludes(module);
 	const surface = (module: string) => surfaces.some((matcher) => matcher.test(module));
+	const cause = (module: string, folder = false): AdmissionCause => {
+		const matches = (matcher: RegExp) => matcher.test(module) || (folder && matcher.test(`${module}/`));
+		const answer = secretPolicy.answer(module);
+		if (
+			module.split("/").includes(".git") ||
+			(answer.kind === "omit" && answer.by === "deny") ||
+			(folder && denied.some(matches))
+		)
+			return "denied";
+		if (underGitlink(module)) return "nestedProject";
+		if (!included(module) && excluded.some(matches)) return "excluded";
+		for (const repository of repositories)
+			for (const nested of repository.nested)
+				if (
+					(module === nested || module.startsWith(`${nested}/`)) &&
+					!repositories.some((candidate) => candidate.prefix === nested)
+				)
+					return "nestedProject";
+		const owner = owningRepository(module, repositories);
+		if (owner?.state === "ok") {
+			if (owner.ignored.files.has(module)) return "ignored";
+			for (const root of owner.ignored.folders)
+				if (module === root || module.startsWith(`${root}/`)) return "ignored";
+		}
+		if (
+			!included(module) &&
+			underExcludedDirectory(folder ? `${module}/` : module, DEFAULT_EXCLUDED_DIRECTORIES, entries)
+		)
+			return "excluded";
+		return "unlisted";
+	};
 	if (known === null) {
 		return {
 			mode: "walk",
@@ -657,6 +692,7 @@ export function scopeFor(view: EvidenceView, secretPolicy: SecretPolicySnapshot)
 			exclude,
 			deny,
 			denies,
+			cause,
 			bundles,
 			surface,
 		};
@@ -674,6 +710,7 @@ export function scopeFor(view: EvidenceView, secretPolicy: SecretPolicySnapshot)
 		exclude,
 		deny,
 		denies,
+		cause,
 		bundles,
 		surface,
 	};

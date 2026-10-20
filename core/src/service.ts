@@ -288,6 +288,10 @@ export class LexiconService {
 		return this.indexer.moduleSecretModes(modules);
 	}
 
+	moduleView(...args: Parameters<WorkspaceIndexer["moduleView"]>): ReturnType<WorkspaceIndexer["moduleView"]> {
+		return this.indexer.moduleView(...args);
+	}
+
 	warmHold(): string | null {
 		return this.indexer.warmHold();
 	}

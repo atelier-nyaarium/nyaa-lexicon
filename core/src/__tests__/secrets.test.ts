@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { composeSymbolId, type Declaration, type Range } from "@nyaa-lexicon/protocol";
+import { composeSymbolId, coordinatesOf, type Declaration, type Range } from "@nyaa-lexicon/protocol";
 import {
+	maskedView,
 	maskForDecision,
+	maskSecretText,
 	protectSecretFacts,
 	type RedactedDecision,
 	type SecretMask,
@@ -36,6 +38,20 @@ function idOf(...names: Array<string | number>): string {
 
 ////////////////////////////////
 //  Tests
+
+it("displays multiline masks without changing the indexed view", () => {
+	const raw = "key: secret\r\nmore secret\r\npublic";
+	const span = { start: { line: 0, character: 5 }, end: { line: 1, character: 11 } };
+	const allowed = maskSecretText(raw, [span]);
+	if (allowed === null) throw new Error("invalid fixture");
+	const view = maskedView(allowed, "unchanged", { wholeFile: false, spans: [span], omitted: [], shown: [] });
+	expect(view.display()).toBe("key: ********\r\n********\r\npublic");
+	expect(view.display({ start: { line: 1, character: 2 }, end: { line: 1, character: 8 } })).toBe("********");
+	const all = coordinatesOf(raw).rangeAt(0, raw.length);
+	if (all === undefined) throw new Error("invalid fixture");
+	expect(view.slice(all)).toBe("key: (redacted)\r\npublic");
+	expect(view.hash).toBe("unchanged");
+});
 
 describe("secret declarations", () => {
 	it("declares each shown key under its nearest keyed ancestor, array items passing through", () => {

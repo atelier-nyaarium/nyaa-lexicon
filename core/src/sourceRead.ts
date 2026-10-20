@@ -77,6 +77,8 @@ export interface MaskedView {
 	hidden: boolean;
 	/** Reads hidden spans as markers; null for invalid ranges. */
 	slice(range: Range): string | null;
+	/** Fixed markers; source newlines remain. */
+	display(range?: Range): string | null;
 	/** Whether hidden text or a whole-file secret overlaps a range. */
 	touches(range: Range): boolean;
 	/** Whether a range lies inside an omitted extent. */

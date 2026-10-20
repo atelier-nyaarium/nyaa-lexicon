@@ -48,12 +48,19 @@ export const ModuleStatusSchema = z
 
 export type ModuleStatus = z.infer<typeof ModuleStatusSchema>;
 
-/**
- * Why the index may read a module: auto-discovery admits it, or an indexed module imports it.
- * Null when the scope denies it or nothing reaches it.
- */
+export const AdmissionCauseSchema = z
+	.enum(["ignored", "excluded", "denied", "nestedProject", "unlisted"])
+	.meta({ id: "AdmissionCause" });
+
+export type AdmissionCause = z.infer<typeof AdmissionCauseSchema>;
+
+/** Discovery, import closure, or omission. */
 export const AdmittedModuleSchema = z
-	.object({ module: z.string(), admitted: z.enum(["discovered", "imported"]).nullable() })
+	.object({
+		module: z.string(),
+		admitted: z.enum(["discovered", "imported"]).nullable(),
+		cause: AdmissionCauseSchema.optional(),
+	})
 	.meta({ id: "AdmittedModule" });
 
 export type AdmittedModule = z.infer<typeof AdmittedModuleSchema>;
@@ -67,6 +74,16 @@ export const ModuleSecretModeSchema = z
 export type ModuleSecretModeValue = z.infer<typeof ModuleSecretModeValueSchema>;
 
 export type ModuleSecretModeAnswer = z.infer<typeof ModuleSecretModeSchema>;
+
+export const ModuleViewSchema = z
+	.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("plain"), text: z.string() }),
+		z.object({ kind: z.literal("masked"), text: z.string() }),
+		z.object({ kind: z.enum(["omit", "withheld", "missing", "binary", "tooLarge", "invalidRange"]) }),
+	])
+	.meta({ id: "ModuleView" });
+
+export type ModuleView = z.infer<typeof ModuleViewSchema>;
 
 /** What one read found. `detail` explains `binary`, `tooLarge`, or a link-outside `missing`. */
 export const SourceReadOutcomeSchema = z

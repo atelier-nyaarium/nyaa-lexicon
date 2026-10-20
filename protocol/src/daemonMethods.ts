@@ -35,6 +35,7 @@ import {
 	ModuleProblemsResponseSchema,
 	ModuleSecretModeSchema,
 	ModuleStatusSchema,
+	ModuleViewSchema,
 	MostReferencedResultSchema,
 	MoveOutcomeSchema,
 	MovePlanSchema,
@@ -105,7 +106,7 @@ import {
 	RelationsSchema,
 	WriteRelationRequestSchema,
 } from "./relationShapes.js";
-import { PositionSchema } from "./symbols.js";
+import { PositionSchema, RangeSchema } from "./symbols.js";
 import { TypeInfoSchema } from "./values.js";
 
 ////////////////////////////////
@@ -652,6 +653,16 @@ export const DAEMON_METHODS = {
 	moduleSecretModes: {
 		request: ModuleSecretModes,
 		response: z.array(ModuleSecretModeSchema),
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
+	/** Policy-visible module text. */
+	moduleView: {
+		request: ByModule.extend({ range: RangeSchema.optional(), text: z.string().optional() }).meta({
+			id: "ModuleViewRequest",
+		}),
+		response: ModuleViewSchema,
 		lifecycle: "query",
 		mutates: false,
 		budget: "read",

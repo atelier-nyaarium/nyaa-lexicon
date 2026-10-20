@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DAEMON_METHODS, MAX_SOURCE_BYTES } from "@nyaa-lexicon/protocol";
+import { DAEMON_METHODS, MAX_SOURCE_BYTES, type RequestOf } from "@nyaa-lexicon/protocol";
 import { Database } from "../database";
 import { daemonHandlers, gateOf } from "../dispatch";
 import { sourceReader } from "../sourceRead";
@@ -93,6 +93,56 @@ describe("moduleSecretModes answers", () => {
 		supervisor?.stopAll();
 		store?.close();
 		if (root !== undefined) rmSync(root, { recursive: true, force: true });
+	});
+
+	beforeEach(() => {
+		reads = [];
+	});
+
+	async function view(module: string, options: Omit<RequestOf<"moduleView">, "module"> = {}) {
+		const params = DAEMON_METHODS.moduleView.request.parse({ module, ...options });
+		const answer = await handlers.moduleView.run(params, gateOf(service.gate));
+		expect(DAEMON_METHODS.moduleView.response.parse(answer)).toEqual(answer);
+		return answer;
+	}
+
+	it("renders keys and masked views without revealing values or their lengths", async () => {
+		for (const [module, admission] of [
+			[".env.local", "keys"],
+			["secret.yaml", "masked"],
+		] as const) {
+			const read = sourceReader(workspace)(module);
+			if (read.kind !== "text") throw new Error("invalid fixture");
+			expect(service.policy.current.admission(read).as).toBe(admission);
+			expect(service.policy.current.view(read, true).hash).toBe(service.policy.current.view(read).hash);
+			const answer = await view(module);
+			expect(answer.kind).toBe("masked");
+			expect(JSON.stringify(answer)).not.toContain("hidden");
+			expect(JSON.stringify(answer)).not.toContain("HIDDEN_TOKEN");
+			expect(JSON.stringify(answer)).toContain("********");
+		}
+		const yaml = (value: string) => `kind: Secret\ndata:\n  token: ${value}\n`;
+		expect(await view("secret.yaml", { text: yaml("a") })).toEqual(
+			await view("secret.yaml", { text: yaml("much-longer-value") }),
+		);
+		expect(await view("omit.json")).toEqual({ kind: "omit" });
+		expect(await view("denied/config.json")).toEqual({ kind: "withheld" });
+	});
+
+	it("masks before selecting source ranges and preserves line endings", async () => {
+		const text = "kind: Secret\r\ndata:\r\n  token: SECRET_VALUE\r\n";
+		const answer = await view("secret.yaml", {
+			text,
+			range: { start: { line: 2, character: 0 }, end: { line: 3, character: 0 } },
+		});
+		expect(answer).toEqual({ kind: "masked", text: "  token: ********\r\n" });
+		expect(
+			await view("plain.txt", { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } } }),
+		).toEqual({ kind: "plain", text: "plain" });
+		expect(
+			await view("plain.txt", { range: { start: { line: 99, character: 0 }, end: { line: 99, character: 1 } } }),
+		).toEqual({ kind: "invalidRange" });
+		expect(await view("plain.txt", { text: "x".repeat(MAX_SOURCE_BYTES + 1) })).toEqual({ kind: "tooLarge" });
 	});
 
 	it("returns text-aware modes without exposing file details", async () => {

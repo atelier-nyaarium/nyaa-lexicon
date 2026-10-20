@@ -25,6 +25,7 @@ import { type EvidenceKind, type EvidenceView, PolicyEvidence } from "./policyEv
 import type { MethodResponse } from "./providerPort.js";
 import { type Refusal, secretFile } from "./refusals.js";
 import {
+	displaySecretText,
 	maskedView,
 	maskForDecision,
 	maskSecretText,
@@ -326,9 +327,9 @@ export class SecretPolicySnapshot {
 	}
 
 	/** Policy-visible view and index hash. */
-	view(read: SealedText): TextView;
-	view(read: SealedRead): AllowedView;
-	view(read: SealedRead): AllowedView {
+	view(read: SealedText, display?: boolean): TextView;
+	view(read: SealedRead, display?: boolean): AllowedView;
+	view(read: SealedRead, display = false): AllowedView {
 		const verdict = this.assess(read);
 		switch (verdict.kind) {
 			case "plain": {
@@ -343,8 +344,11 @@ export class SecretPolicySnapshot {
 					hash: hashContent(JSON.stringify({ module: read.module, verdict: verdict.kind })),
 				};
 			case "keys":
-			case "masked":
-				return maskedView(verdict.allowed, maskedHash(verdict), verdict.mask);
+			case "masked": {
+				const raw = display ? unseal(read) : undefined;
+				const shown = raw?.kind === "text" ? displaySecretText(raw.text, verdict.mask) : undefined;
+				return maskedView(verdict.allowed, maskedHash(verdict), verdict.mask, shown);
+			}
 		}
 	}
 
@@ -532,6 +536,12 @@ function affectedBetween(before: EvidenceView | null, after: EvidenceView): Poli
 		const discovered = new Set([...(previous?.discovered ?? []), ...(next?.discovered ?? [])]);
 		for (const module of discovered)
 			if (previous?.discovered.has(module) !== next?.discovered.has(module)) addRelated(module);
+		const ignored = new Set([...(previous?.ignored.files ?? []), ...(next?.ignored.files ?? [])]);
+		for (const module of ignored)
+			if (previous?.ignored.files.has(module) !== next?.ignored.files.has(module)) addRelated(module);
+		const ignoredFolders = new Set([...(previous?.ignored.folders ?? []), ...(next?.ignored.folders ?? [])]);
+		for (const folder of ignoredFolders)
+			if (previous?.ignored.folders.has(folder) !== next?.ignored.folders.has(folder)) prefixes.add(folder);
 	}
 	const oldLinks = before.collected.links;
 	const newLinks = after.collected.links;

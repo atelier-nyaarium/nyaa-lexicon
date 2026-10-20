@@ -89,6 +89,7 @@ export interface GitRepository {
 	/** Gitlink roots, for exclusion. */
 	gitlinks: ReadonlySet<string>;
 	untracked: ReadonlySet<string>;
+	ignored: { files: ReadonlySet<string>; folders: ReadonlySet<string> };
 	/** Nested repositories, discovered or not. */
 	nested: ReadonlySet<string>;
 	/** Ignored files kept by discovery. */
@@ -202,15 +203,23 @@ async function collectRepository(
 	};
 	if (listed === null || ignored === null) return [found];
 	const listing = parseListing(listed, prefix);
+	const ignoredPaths = parseIgnored(ignored, prefix);
 	const discovery = discoverIgnored(
 		host,
 		workspaceRoot,
-		parseIgnored(ignored, prefix),
+		ignoredPaths,
 		new Set([...listing.gitlinks, ...listing.nested]),
 		options,
 	);
 	const nestedRoots = new Set([...listing.nested, ...discovery.nested]);
-	const repository: GitRepository = { ...found, ...listing, ...discovery, nested: nestedRoots, state: "ok" };
+	const repository: GitRepository = {
+		...found,
+		...listing,
+		...discovery,
+		ignored: ignoredPaths,
+		nested: nestedRoots,
+		state: "ok",
+	};
 	const nested = await Promise.all(
 		[...nestedRoots]
 			.sort()
@@ -230,6 +239,7 @@ function emptyRepository(prefix: string, state: RepositoryState): GitRepository 
 		links: new Set(),
 		gitlinks: new Set(),
 		untracked: new Set(),
+		ignored: { files: new Set(), folders: new Set() },
 		nested: new Set(),
 		discovered: new Set(),
 		undiscovered: new Set(),

@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type {
+	AdmissionCause,
 	AdmittedModule,
 	Import,
 	ImportResolution,
@@ -19,9 +20,17 @@ import type {
 	ModuleSecretModeAnswer,
 	ModuleSecretModeValue,
 	ModuleStatus,
+	ModuleView,
+	Range,
 	ResolutionMode,
 } from "@nyaa-lexicon/protocol";
-import { DEFAULT_EXCLUDED_DIRECTORIES, defined, resolveContained } from "@nyaa-lexicon/protocol";
+import {
+	coordinatesOf,
+	DEFAULT_EXCLUDED_DIRECTORIES,
+	defined,
+	normalizeModulePath,
+	resolveContained,
+} from "@nyaa-lexicon/protocol";
 import { directoryEntries, underExcludedDirectory } from "@nyaa-lexicon/protocol/excludedDirectories";
 import type { Clock, TimerHandle } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
@@ -1939,7 +1948,57 @@ export class WorkspaceIndexer {
 	/** Why the index may read a module: discovered by scope, or reached by import. Narrower than a claim. */
 	async admittedModules(modules: string[]): Promise<AdmittedModule[]> {
 		const scope = await this.currentScope();
-		return modules.map((module) => ({ module, admitted: this.admissionIn(scope, module) }));
+		let candidates: Set<string> | undefined;
+		const answers: AdmittedModule[] = modules.map((requested) => {
+			const module = normalizeModulePath(requested);
+			const contained = resolveContained(this.workspaceRoot, module);
+			if (contained.kind !== "file") return { module, admitted: null };
+			const folder = statSync(contained.path, { throwIfNoEntry: false })?.isDirectory() === true;
+			let admitted = folder ? null : this.admissionIn(scope, module);
+			let cause = scope.cause(module, folder);
+			if (folder) {
+				candidates ??= new Set([...(scope.known ?? []), ...(this.reachable ?? [])]);
+				const omitted = new Set<AdmissionCause>();
+				for (const candidate of candidates) {
+					if (!candidate.startsWith(`${module}/`)) continue;
+					const admission = this.admissionIn(scope, candidate);
+					if (admission === "discovered") {
+						admitted = admission;
+						break;
+					}
+					if (admission === "imported") admitted = admission;
+					if (admission === null) omitted.add(scope.cause(candidate));
+				}
+				if (cause === "unlisted" && omitted.size === 1) cause = [...omitted][0] as AdmissionCause;
+				if (scope.mode === "walk" && cause === "unlisted" && scope.allows(module)) admitted = "discovered";
+			}
+			return { module, admitted, ...(admitted === null ? { cause } : {}) };
+		});
+		const unlisted = answers.filter((answer) => answer.cause === "unlisted").map((answer) => answer.module);
+		if (scope.mode === "git" && unlisted.length > 0) {
+			const ignored = await gitIgnored(this.workspaceRoot, unlisted, this.clock);
+			for (const answer of answers)
+				if (answer.cause === "unlisted" && ignored?.has(answer.module) === true) answer.cause = "ignored";
+		}
+		return answers;
+	}
+
+	async moduleView(module: string, range?: Range, text?: string): Promise<ModuleView> {
+		const scope = await this.currentScope();
+		if (scope.denies(module) || resolveContained(this.workspaceRoot, module).kind === "outside")
+			return { kind: "withheld" };
+		const read = text === undefined ? this.readSource(module) : sourceReadBytes(module, Buffer.from(text, "utf8"));
+		if (read.kind !== "text") return { kind: read.kind === "outside" ? "withheld" : read.kind };
+		const current = this.secretPolicy.current;
+		const view = current.view(read, true);
+		if (view.kind === "refused") return { kind: current.admission(read).as === "omit" ? "omit" : "withheld" };
+		const shown =
+			view.kind === "masked"
+				? view.display(range)
+				: range === undefined
+					? view.text
+					: coordinatesOf(view.text).sliceRange(range);
+		return shown == null ? { kind: "invalidRange" } : { kind: view.kind, text: shown };
 	}
 
 	async moduleSecretModes(modules: ModuleSecretModeRequest[]): Promise<ModuleSecretModeAnswer[]> {

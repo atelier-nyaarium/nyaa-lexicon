@@ -218,6 +218,12 @@ const PATH_SCHEMA_CASES = [
 		{ module: "./src/./a.ts" },
 		{ module: "src/a.ts" },
 	],
+	[
+		"daemon module view",
+		DAEMON_METHODS.moduleView.request,
+		{ module: "./src/./a.ts", text: "buffer text" },
+		{ module: "src/a.ts", text: "buffer text" },
+	],
 ] satisfies Array<[string, z.ZodType, unknown, unknown]>;
 
 describe("a module on the wire is the one key the index files under", () => {

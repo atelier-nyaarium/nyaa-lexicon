@@ -40,6 +40,7 @@ function collected(root: string): CollectedScopeEvidence {
 	const repository: GitRepository = {
 		prefix: "",
 		state: "ok",
+		ignored: { files: new Set(), folders: new Set() },
 		gitDir: path.join(root, ".git"),
 		indexPath: path.join(root, ".git", "index"),
 		tracked: new Set(["tracked.ts"]),

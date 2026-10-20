@@ -346,6 +346,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		moduleStatus: read((params) => service.moduleStatus(params.module)),
 		admittedModules: read((params) => service.admittedModules(params.modules)),
 		moduleSecretModes: read((params) => service.moduleSecretModes(params.modules)),
+		moduleView: read((params) => service.moduleView(params.module, params.range, params.text)),
 		moduleDeclarations: read((params) => service.moduleDeclarations(params.module)),
 		moduleFacts: read((params) => service.moduleFacts(params.module)),
 		// Candidate parses read under the gate: an index parse landing between a candidate and its

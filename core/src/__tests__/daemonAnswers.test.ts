@@ -288,6 +288,10 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 			{ module: "ghost.ref", mode: "plain" },
 		]);
 	},
+	moduleView: async () => {
+		expect(await ask("moduleView", { module: "notes.txt" })).toMatchObject({ kind: "plain" });
+		expect(await ask("moduleView", { module: "ghost.ref" })).toEqual({ kind: "missing" });
+	},
 	moduleDeclarations: async () => {
 		const held = await ask("moduleDeclarations", { module: "cart.ref" });
 		expect(held).toMatchObject({ exists: true, claimed: true, indexed: true, read: { kind: "text" } });

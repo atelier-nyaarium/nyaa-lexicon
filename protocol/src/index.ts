@@ -66,6 +66,8 @@ export {
 } from "./daemonRecords.js";
 export {
 	ADVISORY_ISSUE_KINDS,
+	type AdmissionCause,
+	AdmissionCauseSchema,
 	type AdmittedModule,
 	AdmittedModuleSchema,
 	type AnswerTier,
@@ -181,6 +183,8 @@ export {
 	ModuleSecretModeValueSchema,
 	type ModuleStatus,
 	ModuleStatusSchema,
+	type ModuleView,
+	ModuleViewSchema,
 	type MostReferencedEntry,
 	MostReferencedEntrySchema,
 	type MostReferencedResult,

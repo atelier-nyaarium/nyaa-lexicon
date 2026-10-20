@@ -357,8 +357,9 @@ describe("daemon answer schema compatibility registry", () => {
 		).toBe(false);
 		expect(downgraded).toEqual(["readNote", "writeNote"]);
 		expect(downgraded).toEqual([...MAJOR_8_DOWNGRADE_METHODS].sort());
-		expect(added).toEqual(["moduleSecretModes"]);
+		expect(added).toEqual(["moduleSecretModes", "moduleView"]);
 		expect(safe).toEqual([
+			"admittedModules",
 			"callHierarchy",
 			"declarationOf",
 			"declarationsIn",
@@ -535,14 +536,19 @@ const MAJOR_8_RESPONSE_SHAPES = {
 		hash: "a729fc4d3550eb641a00ef8da7ceefe233ad6fb96cf644ce1c564c61227c03f5",
 	},
 	admittedModules: {
-		policy: "same",
+		policy: "additive",
 		legacyHash: "aa07673961300763c06fa2a31e47c10a0e0014b58a4c0e7cef22d0603b73423d",
-		hash: "aa07673961300763c06fa2a31e47c10a0e0014b58a4c0e7cef22d0603b73423d",
+		hash: "8b52f8a0185cc487c5fbac1a994bc20b923c201d8b3ddb773dd2c7f1ea367608",
 	},
 	moduleSecretModes: {
 		policy: "new",
 		legacyHash: null,
 		hash: "4c7f6cb71f7bf0152181e608a3cad85780f832b133cea2561741e0045d30b19d",
+	},
+	moduleView: {
+		policy: "new",
+		legacyHash: null,
+		hash: "2f75ba31f5cb1264a1f23a60073d32665e4aff54d9a40d96a6e026bb91d44868",
 	},
 	moduleDeclarations: {
 		policy: "additive",

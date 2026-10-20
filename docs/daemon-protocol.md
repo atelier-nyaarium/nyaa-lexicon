@@ -241,7 +241,9 @@ check.
 
 `admittedModules` answers, for up to 512 modules, why the index may read each one: `discovered`
 when the scope admits it to auto-discovery, `imported` when the last pass reached it only through an
-import, and `null` when the scope denies it or nothing reaches it. `moduleStatus.claimed` is broader:
+import, and `null` when nothing admits it. Existing workspace paths carry a `cause` of `ignored`,
+`excluded`, `denied`, `nestedProject`, or `unlisted`. Missing and outside paths carry no scope cause.
+Folder paths answer from admitted descendants. `moduleStatus.claimed` is broader:
 a claim admits any path a caller names, and the text provider claims every file.
 
 `moduleSecretModes` answers, for up to 512 modules, whether a client may use the text as `plain`,
@@ -251,6 +253,11 @@ text is limited to 4 MiB and all supplied text to 8 MiB per request. An over-lim
 answers `redact`; path-only rules keep their mode. Without text, matcher rules use current disk
 text, and missing or unreadable files use the path rule. An existing whole-file `omit` remains
 listed and indexed, with no content or keys revealed. The response contains only `module` and `mode`.
+
+`moduleView` returns policy-visible text for one module. Hidden spans become `********`; newlines
+remain. Optional `range` selects original zero-based, end-exclusive coordinates. Optional `text`
+supplies an editor buffer, limited to 4 MiB. Results are `plain` or `masked` with text, or `omit`,
+`withheld`, `missing`, `binary`, `tooLarge`, or `invalidRange` without text. Nothing is stored.
 
 ## Refactor methods
 
