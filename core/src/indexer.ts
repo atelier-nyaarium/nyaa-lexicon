@@ -821,6 +821,20 @@ export class WorkspaceIndexer {
 	 */
 	async indexFile(module: string, depth: IndexDepth = "full", skipIfCurrent = false): Promise<IndexOutcome> {
 		const outcome = await this.parseAndStore(module, depth, skipIfCurrent);
+		const scope = this.baseScope;
+		if (outcome.cause === "missing") {
+			if (this.observedModules.delete(module) && scope !== null) this.installScope(scope);
+		} else if (
+			scope?.mode === "git" &&
+			// Imports stay imported.
+			this.admissionIn(this.scopeOrThrow(), module) === null &&
+			scope.admitsEvent(module) &&
+			this.store.contentHashOf(module) !== null &&
+			(await gitIgnored(this.workspaceRoot, [module], this.clock))?.has(module) === false
+		) {
+			this.observedModules.add(module);
+			this.installScope(scope);
+		}
 		this.unasked.add(module);
 		this.ensurePumping();
 		return outcome;

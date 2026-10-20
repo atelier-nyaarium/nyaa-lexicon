@@ -43,6 +43,42 @@ afterEach(() => {
 //  Tests
 
 describe("why the index may read a module", () => {
+	it.each(["write-first", "event-first"])("admits an explicit new file with %s ordering", async (order) => {
+		await service.indexWorkspace();
+		put("new.fake", "export class New {}\n");
+		const event = { kind: "changed" as const, module: "new.fake", contentHash: "new" };
+		if (order === "event-first") await service.applyBatch([event]);
+		await service.indexFile("new.fake");
+		expect(await service.admittedModules(["new.fake"])).toEqual([{ module: "new.fake", admitted: "discovered" }]);
+		await service.applyBatch([event]);
+		await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-again" }]);
+		expect(await service.admittedModules(["new.fake", "stray.fake", "vault.fake"])).toEqual([
+			{ module: "new.fake", admitted: "discovered" },
+			{ module: "stray.fake", admitted: null },
+			{ module: "vault.fake", admitted: null },
+		]);
+	});
+
+	it("removes a missing explicit file before its delete event", async () => {
+		await service.indexWorkspace();
+		put("new.fake", "export class New {}\n");
+		await service.indexFile("new.fake");
+		rmSync(path.join(root, "new.fake"));
+		await service.indexFile("new.fake");
+		expect(await service.admittedModules(["new.fake"])).toEqual([{ module: "new.fake", admitted: null }]);
+	});
+
+	it("does not discover an ignored explicit file or a default excluded directory", async () => {
+		await service.indexWorkspace();
+		put("node_modules/local.fake", "export class Local {}\n");
+		for (const module of ["stray.fake", "node_modules/local.fake"]) {
+			await service.indexFile(module);
+			expect(await service.admittedModules([module])).toEqual([{ module, admitted: null }]);
+		}
+		await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-again" }]);
+		expect(service.moduleStatus("stray.fake").indexed).toBe(false);
+	});
+
 	it("admits discovered and imported modules, and nothing denied, stray or never reached", async () => {
 		await service.indexWorkspace();
 
@@ -72,8 +108,22 @@ describe("why the index may read a module", () => {
 		});
 	});
 
-	it("drops an import once nothing reaches it", async () => {
+	it.each(["warm", "reopened"])("drops a %s import once nothing reaches it", async (state) => {
 		await service.indexWorkspace();
+		if (state === "reopened")
+			service = new LexiconService(
+				store,
+				fakeSupervisor(),
+				sourceReader(root),
+				root,
+				undefined,
+				testPolicy(root),
+			);
+		await service.indexFile("gen/types.fake");
+		if (state === "reopened") await service.indexWorkspace();
+		expect(await service.admittedModules(["gen/types.fake"])).toEqual([
+			{ module: "gen/types.fake", admitted: "imported" },
+		]);
 		put("root.fake", "export class Root {}\n");
 		await service.applyBatch([{ kind: "changed", module: "root.fake", contentHash: "root-2" }]);
 
