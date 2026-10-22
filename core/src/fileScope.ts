@@ -606,12 +606,17 @@ function owningRepository(module: string, repositories: readonly GitRepository[]
 	return owner;
 }
 
+/** A glob's path before its first wildcard. */
+function literalOf(glob: string): string {
+	const meta = glob.search(/[?*[{]/);
+	return (meta === -1 ? glob : glob.slice(0, meta)).replace(/\/$/, "");
+}
+
 function includeReaches(prefix: string, includes: readonly string[]): boolean {
 	return includes.some((glob) => {
 		const matcher = globToRegExp(glob);
 		if (matcher.test(prefix)) return true;
-		const meta = glob.search(/[?*[{]/);
-		const literal = (meta === -1 ? glob : glob.slice(0, meta)).replace(/\/$/, "");
+		const literal = literalOf(glob);
 		return (
 			literal.length === 0 ||
 			literal === prefix ||
@@ -787,6 +792,7 @@ export async function generatedVerdicts(
 export function includedFiles(workspaceRoot: string, globs: string[]): string[] {
 	if (globs.length === 0) return [];
 	const matchers = globs.map((glob) => globToRegExp(glob));
+	const literals = globs.map(literalOf);
 	const found: string[] = [];
 
 	const walk = (relative: string, depth: number) => {
@@ -802,7 +808,10 @@ export function includedFiles(workspaceRoot: string, globs: string[]): string[] 
 			const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
 			if (entry.isDirectory()) {
 				// Descend only where a glob could still match, so one include never walks the world.
-				if (matchers.some((matcher) => matcher.test(child) || couldReach(matcher, child)))
+				if (
+					matchers.some((matcher) => matcher.test(child) || couldReach(matcher, child)) ||
+					literals.some((literal) => literal.startsWith(`${child}/`))
+				)
 					walk(child, depth + 1);
 				continue;
 			}

@@ -149,6 +149,16 @@ describe("why the index may read a module", () => {
 		]);
 	});
 
+	it("answers for an ignored folder with an explicitly included descendant before and after scanning", async () => {
+		put(".gitignore", "vendor/\ngen/\nstray.fake\n.lexicon.sqlite*\n");
+		put("lexicon.json", JSON.stringify({ include: ["vendor/keep.fake"] }));
+		put("vendor/keep.fake", "export class Kept {}\n");
+
+		expect(await service.admittedModules(["vendor"])).toEqual([{ module: "vendor", admitted: "discovered" }]);
+		await service.indexWorkspace();
+		expect(await service.admittedModules(["vendor"])).toEqual([{ module: "vendor", admitted: "discovered" }]);
+	});
+
 	it("checks new ignored files and leaves missing or outside paths without a scope cause", async () => {
 		put(".gitignore", "*.log\ngen/\nstray.fake\n.lexicon.sqlite*\n");
 		await service.indexWorkspace();

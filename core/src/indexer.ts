@@ -1641,10 +1641,7 @@ export class WorkspaceIndexer {
 			this.installScope(preparedScope);
 		}
 		const scope = this.scopeOrThrow();
-		const includeKey = JSON.stringify(scope.include);
-		if (this.includeCache?.key !== includeKey)
-			this.includeCache = { key: includeKey, files: includedFiles(this.workspaceRoot, scope.include) };
-		const named = this.includeCache.files;
+		const named = this.includedIn(scope);
 		const namedSet = new Set(named);
 		const goneSet = new Set(gone);
 		const discovered = [...this.discovered.values()].flatMap((files) => [...files]);
@@ -1945,6 +1942,14 @@ export class WorkspaceIndexer {
 		}
 	}
 
+	/** Files the scope's explicit includes name, cached until the includes or admission move. */
+	private includedIn(scope: FileScope): string[] {
+		const key = JSON.stringify(scope.include);
+		if (this.includeCache?.key !== key)
+			this.includeCache = { key, files: includedFiles(this.workspaceRoot, scope.include) };
+		return this.includeCache.files;
+	}
+
 	/** Why the index may read a module: discovered by scope, or reached by import. Narrower than a claim. */
 	async admittedModules(modules: string[]): Promise<AdmittedModule[]> {
 		const scope = await this.currentScope();
@@ -1957,7 +1962,7 @@ export class WorkspaceIndexer {
 			let admitted = folder ? null : this.admissionIn(scope, module);
 			let cause = scope.cause(module, folder);
 			if (folder) {
-				candidates ??= new Set([...(scope.known ?? []), ...(this.reachable ?? [])]);
+				candidates ??= new Set([...(scope.known ?? []), ...(this.reachable ?? []), ...this.includedIn(scope)]);
 				const omitted = new Set<AdmissionCause>();
 				for (const candidate of candidates) {
 					if (!candidate.startsWith(`${module}/`)) continue;
