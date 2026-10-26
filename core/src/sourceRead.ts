@@ -75,6 +75,7 @@ export interface MaskedView {
 	hash: string;
 	/** Whether any span is hidden. */
 	hidden: boolean;
+	hiddenRanges(): readonly Range[];
 	/** Reads hidden spans as markers; null for invalid ranges. */
 	slice(range: Range): string | null;
 	/** Fixed markers; source newlines remain. */

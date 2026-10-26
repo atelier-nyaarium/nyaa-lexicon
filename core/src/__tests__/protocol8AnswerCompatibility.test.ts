@@ -357,7 +357,7 @@ describe("daemon answer schema compatibility registry", () => {
 		).toBe(false);
 		expect(downgraded).toEqual(["readNote", "writeNote"]);
 		expect(downgraded).toEqual([...MAJOR_8_DOWNGRADE_METHODS].sort());
-		expect(added).toEqual(["moduleSecretModes", "moduleView"]);
+		expect(added).toEqual(["grep", "moduleSecretModes", "moduleView"]);
 		expect(safe).toEqual([
 			"admittedModules",
 			"callHierarchy",
@@ -514,6 +514,11 @@ const MAJOR_8_RESPONSE_SHAPES = {
 		policy: "same",
 		legacyHash: "f532cc72a8280d4fa53a710b04064d403d6fc4f38eb835b39bda7f57b4050135",
 		hash: "f532cc72a8280d4fa53a710b04064d403d6fc4f38eb835b39bda7f57b4050135",
+	},
+	grep: {
+		policy: "new",
+		legacyHash: null,
+		hash: "3e3abb2d95597c193e0674948b915e063a4400798ecc01096975ea307400dfb9",
 	},
 	searchSymbols: {
 		policy: "additive",

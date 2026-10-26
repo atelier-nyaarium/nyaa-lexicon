@@ -390,6 +390,19 @@ export {
 	referenceFactId,
 } from "./factId.js";
 export { globToRegExp } from "./glob.js";
+export {
+	type GrepMatch,
+	GrepMatchSchema,
+	GrepNoteMatchSchema,
+	GrepPathMatchSchema,
+	type GrepRequest,
+	GrepRequestSchema,
+	type GrepResult,
+	GrepResultSchema,
+	type GrepSource,
+	GrepSourceMatchSchema,
+	GrepSourceSchema,
+} from "./grep.js";
 export { hashBytes, hashContent } from "./hash.js";
 export {
 	blankLinesFromTrivia,

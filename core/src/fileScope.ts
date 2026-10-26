@@ -11,6 +11,7 @@ import {
 	DEFAULT_EXCLUDED_DIRECTORIES,
 	globToRegExp,
 	normalizeModulePath,
+	resolveContained,
 	runBounded,
 	type SecretsConfig,
 	workspaceFile,
@@ -69,6 +70,11 @@ export interface FileScope {
 	surface: (module: string) => boolean;
 }
 
+export interface SourceInventory {
+	modules: string[];
+	incomplete: boolean;
+}
+
 export interface CollectedScopeEvidence {
 	known: Set<string> | null;
 	tracking: GitTracking;
@@ -103,6 +109,7 @@ export const CONFIG_FILE = "lexicon.json";
 
 /** Stops an include glob from walking a deep tree forever. Deeper than any real source layout. */
 const MAX_INCLUDE_DEPTH = 12;
+const SEARCH_VISITS = 50_000;
 
 /** Never indexed, whatever the config includes. */
 const BUILT_IN_DENY = ["**/.git/**"];
@@ -821,6 +828,52 @@ export function includedFiles(workspaceRoot: string, globs: string[]): string[] 
 
 	walk("", 0);
 	return found;
+}
+
+export function searchFiles(workspaceRoot: string, scope: FileScope, under?: string): SourceInventory {
+	const modules: string[] = [];
+	if (under !== undefined && under !== "." && resolveContained(workspaceRoot, under).kind === "outside")
+		return { modules, incomplete: false };
+	const folders = [{ relative: under === undefined || under === "." ? "" : under, depth: 0 }];
+	let visits = 0;
+	let incomplete = false;
+	while (folders.length > 0) {
+		const folder = folders.pop();
+		if (folder === undefined) break;
+		if (folder.depth > MAX_INCLUDE_DEPTH) {
+			incomplete = true;
+			continue;
+		}
+		const target = path.join(workspaceRoot, folder.relative);
+		const state = lstatSync(target, { throwIfNoEntry: false });
+		if (state?.isFile() === true) {
+			if (scope.allows(folder.relative) && !scope.denies(folder.relative)) modules.push(folder.relative);
+			continue;
+		}
+		if (state?.isDirectory() !== true) continue;
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(target, { withFileTypes: true }).sort((left, right) =>
+				left.name.localeCompare(right.name),
+			);
+		} catch {
+			incomplete = true;
+			continue;
+		}
+		for (const entry of entries) {
+			if (++visits > SEARCH_VISITS) return { modules, incomplete: true };
+			const child = folder.relative === "" ? entry.name : `${folder.relative}/${entry.name}`;
+			if (entry.isFile()) {
+				if (scope.allows(child) && !scope.denies(child)) modules.push(child);
+			} else if (entry.isDirectory()) {
+				const cause = scope.cause(child, true);
+				if (["denied", "excluded", "ignored", "nestedProject"].includes(cause)) continue;
+				if (existsSync(path.join(workspaceRoot, child, ".git"))) continue;
+				folders.push({ relative: child, depth: folder.depth + 1 });
+			}
+		}
+	}
+	return { modules, incomplete };
 }
 
 /** Whether a directory could still lead to a match, so the walk prunes instead of exploring. */

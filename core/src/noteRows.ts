@@ -70,6 +70,18 @@ export class NoteRows {
 		return row === undefined ? null : (row as unknown as NoteRow);
 	}
 
+	addresses(limit: number, modules: readonly string[]): string[] {
+		return (
+			this.db
+				.prepare(
+					`SELECT n.symbolId FROM notes_addressed n JOIN symbols s ON s.symbolId = n.symbolId
+					 WHERE n.state = 'bound' AND s.module IN (SELECT value FROM json_each(?))
+					 ORDER BY n.symbolId LIMIT ?`,
+				)
+				.all(JSON.stringify(modules), limit) as Array<{ symbolId: string }>
+		).map((row) => row.symbolId);
+	}
+
 	links(subjectId: string): NoteLinkRow[] {
 		return this.linksOf(subjectId);
 	}

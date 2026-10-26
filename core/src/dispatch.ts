@@ -341,6 +341,7 @@ export function daemonHandlers(service: LexiconService, refactor?: RefactorDeps)
 		hubs: read((params) => service.mostReferenced(params.limit)),
 		cacheStats: status(() => service.cacheStats()),
 		searchSymbols: read((params) => service.searchSymbols(params.text, params)),
+		grep: read((params) => service.grep(params)),
 		outlineModule: read((params) => service.outline(params.module)),
 		fileNotes: read((params) => service.fileNotes(params.module)),
 		moduleStatus: read((params) => service.moduleStatus(params.module)),

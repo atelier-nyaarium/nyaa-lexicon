@@ -244,6 +244,10 @@ const SAMPLES: { [M in DaemonMethod]: () => Promise<unknown> | unknown } = {
 	mostReferenced: () => ask("mostReferenced", { limit: 5 }),
 	hubs: () => ask("hubs", { limit: 5 }),
 	cacheStats: () => ask("cacheStats", {}),
+	grep: async () => {
+		const found = await ask("grep", { text: "Cart", sources: ["source"] });
+		expect(found.matches.length).toBeGreaterThan(0);
+	},
 	searchSymbols: async () => {
 		expect((await ask("searchSymbols", { text: "Cart" })).symbols.length).toBeGreaterThan(1);
 		const exact = await ask("searchSymbols", { regex: "/^add$/", kind: "function", module: "cart.ref", limit: 5 });

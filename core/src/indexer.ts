@@ -35,7 +35,15 @@ import { directoryEntries, underExcludedDirectory } from "@nyaa-lexicon/protocol
 import type { Clock, TimerHandle } from "./clock.js";
 import { attachComments } from "./commentAttach.js";
 import { FactAdmissionError } from "./factAdmission.js";
-import { type FileScope, type GeneratedVerdict, generatedVerdicts, gitIgnored, includedFiles } from "./fileScope.js";
+import {
+	type FileScope,
+	type GeneratedVerdict,
+	generatedVerdicts,
+	gitIgnored,
+	includedFiles,
+	type SourceInventory,
+	searchFiles,
+} from "./fileScope.js";
 import { importTarget } from "./imports.js";
 import {
 	ensurePumping as coordinateEnsurePumping,
@@ -1948,6 +1956,33 @@ export class WorkspaceIndexer {
 		if (this.includeCache?.key !== key)
 			this.includeCache = { key, files: includedFiles(this.workspaceRoot, scope.include) };
 		return this.includeCache.files;
+	}
+
+	async searchModules(scopePath?: string): Promise<SourceInventory> {
+		const scope = await this.currentScope();
+		const discovered = [...this.discovered.values()].flatMap((files) => [...files]);
+		const walked = scope.mode === "walk" ? searchFiles(this.workspaceRoot, scope, scopePath) : null;
+		const modules = [
+			...new Set([
+				...(scope.known ?? this.secretPolicy.evidence.current()?.collected.modules ?? []),
+				...(walked?.modules ?? []),
+				...this.includedIn(scope),
+				...discovered,
+				...this.store.indexedFiles(),
+			]),
+		]
+			.filter(
+				(module) =>
+					(scopePath === undefined ||
+						scopePath === "." ||
+						module === scopePath ||
+						module.startsWith(`${scopePath}/`)) &&
+					!scope.denies(module) &&
+					(scope.allows(module) || this.reachable?.has(module) === true) &&
+					resolveContained(this.workspaceRoot, module).kind === "file",
+			)
+			.sort();
+		return { modules, incomplete: walked?.incomplete ?? false };
 	}
 
 	/** Why the index may read a module: discovered by scope, or reached by import. Narrower than a claim. */

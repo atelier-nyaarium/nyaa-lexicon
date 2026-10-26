@@ -272,6 +272,11 @@ export function maskedView(
 		text: allowed,
 		hash,
 		hidden: mask.wholeFile || mask.spans.length > 0,
+		hiddenRanges: () => {
+			if (!mask.wholeFile) return [...mask.spans, ...mask.omitted];
+			const full = coordinatesOf(allowed).rangeAt(0, allowed.length);
+			return full === undefined ? [] : [full];
+		},
 		slice: (range) => redactedSlice(allowed, range, mask.spans),
 		display: (range) => {
 			if (display === null) return null;

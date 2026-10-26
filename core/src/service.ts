@@ -38,6 +38,7 @@ import {
 	isExternalModule,
 } from "./fileScope.js";
 import { runFix, runFixText } from "./fixOnWrite.js";
+import { GrepReader } from "./grep.js";
 import {
 	CoChangeIndex,
 	type Commit,
@@ -580,6 +581,14 @@ export class LexiconService {
 
 	searchSymbols(...args: Parameters<IndexReadModel["searchSymbols"]>): ReturnType<IndexReadModel["searchSymbols"]> {
 		return this.reads.searchSymbols(...args);
+	}
+
+	grep(...args: Parameters<GrepReader["search"]>): ReturnType<GrepReader["search"]> {
+		return new GrepReader(this.store, {
+			modules: (scope) => this.indexer.searchModules(scope),
+			view: (module) => this.allowedView(module),
+			notes: this.notes,
+		}).search(...args);
 	}
 
 	findReferences(

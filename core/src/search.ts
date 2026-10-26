@@ -1,11 +1,13 @@
 // Regex compiler and term check, owned once.
 
+import type { OffsetRange } from "@nyaa-lexicon/protocol";
 import { RE2JS } from "re2js";
 
 /** Linear time; never stalls. */
 export interface SearchPattern {
 	test(text: string): boolean;
 	find(text: string): string | null;
+	ranges(text: string, limit: number, skip?: (span: OffsetRange) => number | undefined): OffsetRange[];
 }
 
 // g, u and y change nothing here.
@@ -41,6 +43,26 @@ export function compileSearchRegex(source: string): SearchPattern {
 			find: (text) => {
 				const matcher = compiled.matcher(text);
 				return matcher.find() ? matcher.group() : null;
+			},
+			ranges: (text, limit, skip) => {
+				const matcher = compiled.matcher(text);
+				const ranges: OffsetRange[] = [];
+				let from = 0;
+				while (ranges.length < limit && matcher.find(from)) {
+					const start = matcher.start();
+					const end = matcher.end();
+					const onward = skip?.({ start, end });
+					if (onward !== undefined) {
+						from = Math.max(onward, start + 1);
+						if (from > text.length) break;
+						continue;
+					}
+					ranges.push({ start, end });
+					const next = text.indexOf("\n", Math.max(start, end - 1));
+					if (next === -1) break;
+					from = next + 1;
+				}
+				return ranges;
 			},
 		};
 	} catch (error) {

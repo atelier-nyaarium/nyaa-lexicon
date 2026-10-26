@@ -75,6 +75,7 @@ import {
 	TypeHierarchySchema,
 	UsesFromResultSchema,
 } from "./daemonShapes.js";
+import { GrepRequestSchema, GrepResultSchema } from "./grep.js";
 import { ImportEditsResponseSchema } from "./importEdits.js";
 import { ModuleExclusionSchema } from "./moduleExclusion.js";
 import { ModulePathSchema as ModulePath } from "./modulePath.js";
@@ -614,6 +615,14 @@ export const DAEMON_METHODS = {
 	hubs: { request: Paged, response: MostReferencedResultSchema, lifecycle: "query", mutates: false, budget: "read" },
 	/** Cache hits and misses. */
 	cacheStats: { request: Empty, response: CacheStatsSchema, lifecycle: "status", mutates: false, budget: "status" },
+	/** Search visible source and notes. */
+	grep: {
+		request: GrepRequestSchema,
+		response: GrepResultSchema,
+		lifecycle: "query",
+		mutates: false,
+		budget: "read",
+	},
 	/** Search declarations by name. */
 	searchSymbols: {
 		request: Search,
