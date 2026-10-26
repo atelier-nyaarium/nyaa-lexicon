@@ -1,6 +1,6 @@
 {
 	"name": "@nyaa-lexicon/provider-yaml",
-	"version": "20.2.1",
+	"version": "20.3.0",
 	"private": true,
 	"type": "module",
 	"description": "YAML provider for nyaa-lexicon, covering keys, values and comments",
